@@ -8,12 +8,12 @@
 
 - Frontend：声明式 Surface 展示 Connector 的连接、录制、目录与导出结果；动作可用性由真实状态更新。
 - Middle：`feature-packages/recording/source/middle/worker.cjs` 调用窄化 recording command，写入 Feature evidence store。
-- Connector：`src/connector/recording/recording-service.ts` 负责 CDP 交互/页面/网络证据、脱敏响应体、关键 endpoint 完整性和 graceful stop；Local/Remote 使用同一 `omnia.v5.recording-command/v1` payload。
+- Connector：`src/connector/recording/recording-service.ts` 由 Remote Worker 的 `WorkstationOmniaSession` 宿主，负责 CDP 交互/页面/网络证据、脱敏响应体、关键 endpoint 完整性和 graceful stop；使用同一 `omnia.v5.recording-command/v1` payload。
 - Package：`scripts/package-recording-feature.mjs` 生成官方不可变 0.1.1 `.ofp`；`scripts/package-windows.mjs` 把它装入 Shell 0.4.1 便携包。
 
 ## v4 复用与重构
 
-v4 `omnia-recorder.js` 的事件类型、凭据排除、关键 response body 完整性和停止 drain 语义重构为 v5 Playwright CDP 会话。v4 `omnia-session-host.js` 的唯一 Pack/Engagement 绑定原则进入 v5 Local Connector。v4 浮动 recording controller 不复用；v5 使用隔离 Feature Surface。所有代码和产物均在 v5 工作区，不存在 v4 运行时路径依赖。
+v4 `omnia-recorder.js` 的事件类型、凭据排除、关键 response body 完整性和停止 drain 语义重构为 v5 Playwright CDP 会话。v4 `omnia-session-host.js` 的唯一 Pack/Engagement 绑定原则进入 Remote Connector 内部的 `WorkstationOmniaSession`。v4 浮动 recording controller 不复用；v5 使用隔离 Feature Surface。所有代码和产物均在 v5 工作区，不存在 v4 运行时路径依赖。
 
 ## Phase1 Risk/Control 完整目录
 
@@ -32,3 +32,7 @@ Higher/Lower 只按 `capturedRait` 记录和合并。观察到的关系单列保
 ## 验收边界
 
 自动化使用受控 CDP/HTTP fixture 验证代码与合同。未使用用户 Omnia 登录，因此真实 Pack 的 endpoint 返回形态、Edge 交互覆盖和 Remote 跨 Bridge 现场录制仍需用户授权环境 canary；不得把 fixture 通过描述为生产数据验收。
+
+## Remote-only 平台边界（2026-08-03）
+
+本轮不改写 `omnia.recording@0.1.1` 包、sequence、Worker、Operation 或随包文档。Shell 0.4.2 删除 Local 产品链后，录制 Connector command 只能经 RemoteConnectorTransport → Bridge → 公司电脑 Remote Worker → `WorkstationOmniaSession` 的同一签名 recording contract 执行；缺 binding、Connector offline、不兼容或真实 Pack 未就绪时失败关闭，不存在 Local fallback。公司电脑真实录制 canary 未通过/待 canary。

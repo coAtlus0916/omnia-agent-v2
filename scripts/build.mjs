@@ -42,16 +42,6 @@ await Promise.all([
     sourcemap: false
   }),
   build({
-    entryPoints: [path.join(root, 'src/connector/index.ts')],
-    outfile: path.join(dist, 'main/connector.cjs'),
-    bundle: true,
-    platform: 'node',
-    format: 'cjs',
-    target: 'node24',
-    external: ['playwright-core'],
-    sourcemap: true
-  }),
-  build({
     entryPoints: [path.join(root, 'src/preload/index.ts')],
     outfile: path.join(dist, 'main/preload.cjs'),
     bundle: true,

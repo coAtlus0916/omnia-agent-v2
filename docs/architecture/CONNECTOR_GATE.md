@@ -1,13 +1,15 @@
 # Connector Gate 与 Transport 合同
 
 状态：Draft for Review  
-核心原则：Connector Core 只做 Transport、Session、Gate；业务能力由签名、受限、隔离的 Operation/Capability Module 扩展。
+核心原则：Shell 只使用 Remote Connector；公司电脑 Connector Core 只做 Transport、Session、Gate，业务能力由签名、受限、隔离的 Operation/Capability Module 扩展。Remote 不可用时失败关闭，不存在 Local fallback。
+
+2026-08-03 的 Remote-only 决策以 [ADR-0035](../adr/0035-remote-only-connector-and-link-code-pairing.md) 为准，并取代本文早期 Local/Remote 双模式和 Transport 切换设计。历史 ADR/发布记录可以保留当时事实，但当前产品、合同和验收不得继续实现 Local 分支。
 
 ## 1. 边界
 
 ### 1.1 Connector Core 拥有
 
-- Local/Remote Transport 接入、设备身份、配对、撤销和心跳；
+- Remote Transport 接入、设备身份、一次性链接码、长期 binding/generation、撤销和心跳；
 - 既有 Omnia 登录 Session 的持有与精确 Engagement/Pack 绑定；
 - 签名 Operation Registry、版本协商、权限与资源门禁；
 - 标准命令信封校验、claim、deadline、取消、并发和作用域控制；
@@ -27,15 +29,16 @@
 - 把 Omnia Cookie/Authorization/会话材料上传给 Core/Bridge/Feature；
 - 将超时或断线解释为 mutation 未发生。
 
-## 2. 单一 `ConnectorTransport`
+## 2. 唯一 `RemoteConnectorTransport`
 
-`LocalTransport` 与 `RemoteBridgeTransport` 必须实现完全相同的业务无关接口：
+Shell 只实现 Remote transport。业务无关接口为：
 
 ```text
-pair(request) -> PairingResult
-bind(identity, proof) -> Binding
+createPairingSession(request) -> PairingSession
+pollPairingSession(sessionId, proof) -> PairingResult
+bind(identity, protectedCredential) -> Binding
 negotiate(binding) -> CapabilitySnapshot
-acquireActiveLease(mode, generation) -> TransportLease
+acquireBindingGeneration(bindingId, generation) -> TransportLease
 submit(commandEnvelope) -> SubmissionReceipt
 subscribe(commandId, afterSequence) -> ProgressStream
 cancel(commandId, reason) -> CancellationReceipt
@@ -48,16 +51,23 @@ revoke(bindingId) -> RevocationReceipt
 
 Transport 只感知连接拓扑、传输顺序、重连和流控，不修改命令 payload 或业务状态。
 
-## 3. Local/Remote 等价性
+Shell package、Main import graph、IPC allowlist 和进程列表必须证明没有 `LocalConnectorAdapter`、Transport router、本地 Connector 子进程或 Edge/CDP 访问。Remote 错误不能走隐藏的 Local 分支。
 
-| 语义 | LocalTransport | RemoteBridgeTransport | 必须相同 |
-|---|---|---|---|
-| 身份 | 本机受保护通道 + Connector 设备身份 | 用户/设备配对 + 双向认证 | 逻辑 connector/session binding |
-| 提交 | 本机 IPC/受保护 loopback（选型待定） | 加密认证中继 | receipt、commandId、幂等 |
-| 进度 | 本机有序流 | 远程有序流/断点续传 | sequence、重放边界 |
-| Artifact | 本机受控流 | 分块密文中继 + TTL | digest、size、type、provenance |
-| 故障 | 进程/IPC 断开 | 网络/Bridge/设备断开 | mutation → uncertain 规则 |
-| 对账 | 只读新命令 | 只读新命令 | 原 mutation 不重放 |
+## 3. 首次链接码与长期 binding
+
+方向固定为：Shell/Bridge 创建配对会话和一次性链接码，用户把链接码输入公司电脑 Remote Connector。禁止匿名 waiting discovery、候选设备枚举和自动认领唯一 Connector。
+
+| 阶段 | owner | 必须事实 |
+|---|---|---|
+| create | Shell + Bridge | 密码学安全随机码；绑定 session/product/protocol/角色；最长十分钟；Bridge 只存 hash |
+| consume | Remote Connector + Bridge | 单次消费；提交 Connector identity/version/platform/protocol；错误不枚举 |
+| candidate | Bridge | 新 binding 不影响旧 active；完成身份、协议和健康验证 |
+| active | Bridge + 双端 Secret Store | `pairId + generation` 原子激活；Shell credential 由 safeStorage/实例加密，Connector credential 由 DPAPI CurrentUser 保护 |
+| reconnect | Shell/Connector | 普通重启、Bridge 重启和网络恢复复用 binding；重新检查 Session/Pack |
+| repair | Connect flow | revoked/不可恢复/重装才要求新码；显示 `repair_required` |
+| unbind | Connect flow | 撤销 binding/credential，不删除聊天、Feature、Evidence 或文档 |
+
+一次性码、polling secret、token 和密文不得进入 Renderer snapshot、日志、Evidence 正文或诊断包。
 
 ## 4. Operation/Capability Module
 
@@ -201,33 +211,28 @@ stateDiagram-v2
 - 结果为 `applied | not_applied | inconclusive | drifted`，附 Evidence；
 - `applied` 将原命令转为 `succeeded`；`not_applied` 将原命令转为 `closed_not_applied`；`inconclusive/drifted` 保持原命令和 Run 为 `uncertain`。
 
-## 9. Transport 切换状态机
+## 9. Remote binding 与 Pack Connect 状态机
 
-```mermaid
-stateDiagram-v2
-    [*] --> LocalActive: 首次运行
-    LocalActive --> SwitchingToRemote: 用户请求
-    RemoteActive --> SwitchingToLocal: 用户请求
-    SwitchingToRemote --> Blocked: 有 mutation/uncertain
-    SwitchingToLocal --> Blocked: 有 mutation/uncertain
-    SwitchingToRemote --> RemoteActive: 候选验证 + 原子 lease 切换
-    SwitchingToLocal --> LocalActive: 候选验证 + 原子 lease 切换
-    SwitchingToRemote --> LocalActive: 候选失败，旧 lease 仍有效
-    SwitchingToLocal --> RemoteActive: 候选失败，旧 lease 仍有效
-    Blocked --> LocalActive: 原模式 local
-    Blocked --> RemoteActive: 原模式 remote
+配对 lifecycle：
+
+```text
+unpaired
+  → pairing_waiting
+  → candidate
+  → active
+  → revoked | repair_required
 ```
 
-切换步骤：
+重新配对从 active 创建独立 candidate。candidate 失败时旧 active 保持；新 candidate 完成身份、协议、Bridge 和 Connector 健康验证后，以更高 generation 原子激活并撤销 previous。
 
-1. 获取全局 switch lock，拒绝新 Run 进入 Connector effect。
-2. 查询活动命令；存在任何非终态 mutation、未解决 `uncertain`、Connector Artifact 上传、无法判断状态，或只读命令无法按合同取消/完成时阻断。
-3. 验证候选地址、TLS/身份、配对、Connector 绑定、健康、capability snapshot。
-4. 创建新 generation lease，原子更新 active pointer。
-5. 撤销旧 generation 的 claim 权；旧事件仍可按 commandId 回传和审计。
-6. 持久化上次有效模式并解除 switch lock。
+Pack Connect 至少投影：`bridge_connecting`、`connector_offline`、`connector_incompatible`、`browser_starting`、`waiting_login`、`waiting_pack`、`waiting_authorization`、`identifying_pack`、`connected`、`target_closed`、`multiple_targets`、`identity_changed`、`timed_out`、`cancelled`、`repair_required`。
 
-当前 active Transport 故障时，不自动走另一 Transport；状态为 degraded/unavailable 并要求用户修复或显式切换。
+- 最长等待十分钟，约每 2.5 秒只读 status；用户可取消，取消不关闭受控 Edge。
+- 只在 Connect 起始需要时请求 Remote Worker 打开/聚焦受控浏览器；status polling 不 reload。
+- `connected` 需要新鲜 Connector online、CDP/browser ready、唯一受信 target、合法 Engagement ID、同 target Authorization 和返回相同 identity 的实时 hierarchy/Pack 名称。
+- 用户稍后登录或打开 Pack 后自动晋升，不要求第二次点击 Connect。
+- Bridge WebSocket 在线不等于 Connector/Pack 在线；`state.connectorOnline=false` 必须立即投影离线。
+- heartbeat 清理 stale socket，`onlineConnectors` 只统计新鲜、协议兼容的 active generation。重连使用有界 backoff+jitter。
 
 ## 10. Remote Bridge 最小化
 
@@ -314,9 +319,9 @@ Operation Module 可在旧版本仍被活动 Run 引用时 side-by-side 安装�
 4. 持久化 active generation、命令 checkpoint 和更新状态；
 5. 在新进程验证身份、Session/Engagement、capability 和 lease 后才恢复领取。
 
-用户选择 `remote` 时，更新期间 Transport 状态为 `maintenance/upgrading`；升级失败保持 Remote 选择并恢复 previous，不启动 Local claim。
+Remote Connector 更新期间 Transport 状态为 `maintenance/upgrading`；升级失败恢复 previous，不启动任何 Local claim。
 
-高危/严重更新到达 `newRunStopAt` 后，admission rule 停止接收会继续扩大风险暴露面的新高风险 Run。到达 `maxDrainUntil` 仍存在已提交 mutation 时不得强杀、重放或切 Local；仅允许既有 effect 安全完成、兼容 read-only reconcile 或明确人工处置。
+高危/严重更新到达 `newRunStopAt` 后，admission rule 停止接收会继续扩大风险暴露面的新高风险 Run。到达 `maxDrainUntil` 仍存在已提交 mutation 时不得强杀、重放或改走其他链路；仅允许既有 effect 安全完成、兼容 read-only reconcile 或明确人工处置。
 
 ### 11.4 回滚与防降级
 
@@ -350,6 +355,8 @@ Operation Module 可在旧版本仍被活动 Run 引用时 side-by-side 安装�
 `2026-07-31` 已发布 v5 Remote Connector `0.1.0` 的独立便携包、固定签名更新清单、候选/active/previous、安全窗口、probation 和回滚基线。它使用独立于 v4 的 Windows 根、服务器根、产品身份和更新路径；共存验收见 [Remote Connector 0.1.0 发布与共存记录](../implementation/REMOTE_CONNECTOR_0_1_0_RELEASE.md)。
 
 该基线尚未实现本章的 Remote Bridge 配对、命令、进度、Artifact 或 reconcile 传输，运行时明确报告 `bridgeState=unconfigured`。因此“更新通道已发布”不能解释为“Remote Transport 已可执行业务命令”。
+
+上述两段是 2026-07-31 的历史基线。当前 Remote-only 候选为 Bridge `0.4.1` 和 Remote Connector `0.3.5 / sequence 8`，采用一次性链接码、长期受保护 binding、heartbeat/state envelope 与 `WorkstationOmniaSession`。自动化与便携结果见 [Shell 0.4.2 Remote-only 验收](../reviews/SHELL_0_4_2_REMOTE_ONLY_ACCEPTANCE.md)；公司电脑真实 Pack canary 未通过/待 canary。
 
 ## 12. 禁止任意 HTTP 后门
 
@@ -396,8 +403,8 @@ openFile(path)
 ## 14. 验收门槛
 
 - [ ] Core 代码与 Schema 不含具体业务 Feature 分支。
-- [ ] Local/Remote 通过同一 Transport 合同与故障注入测试。
-- [ ] 单 active lease 在并发启动、崩溃恢复和切换中保持。
+- [ ] Remote Transport 通过命令、状态、断线、heartbeat、重启和故障注入测试；不存在 Local 实现或 fallback。
+- [ ] 单 active binding generation 在并发启动、崩溃恢复、重新配对和撤销中保持。
 - [ ] mutation 在提交点后所有断线场景进入 `uncertain`，无自动重放。
 - [ ] reconcile 只读且不能复用原命令。
 - [ ] Operation Worker 越权网络/文件/Secret/endpoint 请求被拒绝。
@@ -406,6 +413,6 @@ openFile(path)
 - [ ] Remote Connector 能在线升级 Operation Module 和 Connector Core；篡改/降级/不兼容失败关闭，活动 mutation/uncertain 阻断激活，失败不 fallback 到 Local。
 - [ ] Remote Connector 自动接收官方签名 offer，并只在真实安全窗口自动激活；不存在关闭签名、A/B、回滚或 active mutation/uncertain 阻断的设置。
 - [ ] 轻抓取只返回权威 Section + Workspace；重抓取只读取冻结的 Pack/选定 Workspace/Feature capability scope，且分页、可取消、可观测。
-- [ ] Section 缺失父级 identity 或改名时不使用名称推断，Local/Remote 返回等价错误/显示元数据。
+- [ ] Section 缺失父级 identity 或改名时不使用名称推断，Remote Worker 返回稳定错误/显示元数据。
 - [ ] 真实 Omnia canary 验证 identity binding、预检、确认和写后读回。
 - [ ] “新建与关联”的首个 canary 通过小型 Operation 创建并读回两个 IT Element、两个 GRA core 和唯一 DB → APP 双边关系，Connector Core 无 Feature 业务分支。

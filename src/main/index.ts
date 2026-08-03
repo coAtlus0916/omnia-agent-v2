@@ -1,9 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell as electronShell } from 'electron';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { LocalConnectorAdapter } from './connector/local-connector-adapter.js';
 import { RemoteConnectorTransport } from './connector/remote-connector-transport.js';
-import { ConnectorTransportRouter } from './connector/transport-router.js';
 import { CoreDatabase } from './database.js';
 import { createWindowsProtectedContentCipher } from './windows-content-cipher.js';
 import { findPortableProductRoot, resolveProductPaths } from './paths.js';
@@ -19,7 +17,7 @@ import { SurfaceWindowManager } from './services/surface-window-manager.js';
 let mainWindow: BrowserWindow | null = null;
 let database: CoreDatabase | null = null;
 let shell: ShellService | null = null;
-let connector: ConnectorTransportRouter | null = null;
+let connector: RemoteConnectorTransport | null = null;
 let surfaceWindows: SurfaceWindowManager | null = null;
 
 function rendererPath(filename: string): string {
@@ -109,10 +107,13 @@ function registerIpc(service: ShellService): void {
   handle('shell:save-ai-settings', (input: Parameters<ShellService['saveAiSettings']>[0]) =>
     service.saveAiSettings(input));
   handle('shell:test-ai-provider', () => service.testAiProvider());
-  handle('shell:pair-remote', (input: Parameters<ShellService['pairRemote']>[0]) =>
-    service.pairRemote(input));
-  handle('shell:set-connection-mode', (input: { mode: 'local' | 'remote'; expectedStateVersion: number }) =>
-    service.setConnectionMode(input.mode, input.expectedStateVersion));
+  handle('shell:diagnose-remote', () => service.diagnoseRemoteConnection());
+  handle('shell:begin-remote-pairing', (input: Parameters<ShellService['beginRemotePairing']>[0]) =>
+    service.beginRemotePairing(input));
+  handle('shell:poll-remote-pairing', () => service.pollRemotePairing());
+  handle('shell:cancel-remote-pairing', () => service.cancelRemotePairing());
+  handle('shell:revoke-remote-binding', (input: Parameters<ShellService['revokeRemoteBinding']>[0]) =>
+    service.revokeRemoteBinding(input));
   handle('shell:save-scale', (input: { percent: number; expectedStateVersion: number }) =>
     service.saveScale(input.percent, input.expectedStateVersion));
   handle('shell:save-layout', (input: {
@@ -173,18 +174,18 @@ app.whenReady().then(async () => {
   const paths = resolveProductPaths(productRoot);
   const contentCipher = createWindowsProtectedContentCipher(paths.stores);
   database = new CoreDatabase(paths.database, contentCipher);
-  const local = new LocalConnectorAdapter(path.resolve(__dirname, 'connector.cjs'), paths.data);
-  const remote = new RemoteConnectorTransport(() => {
-    const settings = database!.getConnectionSettings();
+  connector = new RemoteConnectorTransport(() => {
+    const binding = database!.getRemoteBinding();
+    const lifecycleRecoveryPending = database!.hasPendingRemoteLifecycleWork();
+    const usable = binding.bindingState === 'bound' && binding.remotePaired && !lifecycleRecoveryPending;
     return {
-      bridgeUrl: settings.remoteBridgeUrl,
-      pairId: settings.remotePairId,
-      token: settings.remoteToken
+      bridgeUrl: binding.bridgeUrl,
+      pairId: usable ? binding.pairId : '',
+      token: usable ? binding.remoteToken : '',
+      generation: binding.generation
     };
   });
-  connector = new ConnectorTransportRouter(database, local, remote);
   await connector.start();
-  const adapter = connector;
   const chat = new ChatService(database);
   const attachments = new AttachmentService(database, path.join(paths.data, 'artifacts'));
   const featurePackages = new FeaturePackageManager(database.db, paths, undefined, {
@@ -193,7 +194,7 @@ app.whenReady().then(async () => {
   });
   installBuiltinFeaturePackages(featurePackages, app.getAppPath(), app.isPackaged);
   await featurePackages.initializeRuntime();
-  shell = new ShellService(database, adapter, chat, attachments, featurePackages);
+  shell = new ShellService(database, connector, chat, attachments, featurePackages);
   registerIpc(shell);
   await shell.initialize();
   await createWindow();

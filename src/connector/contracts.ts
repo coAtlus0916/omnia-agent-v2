@@ -46,7 +46,18 @@ export interface ConnectorResponse {
 }
 
 export interface ConnectorConnection {
-  status: 'not_connected' | 'opening' | 'waiting' | 'checking' | 'connected' | 'error';
+  status:
+    | 'not_connected'
+    | 'browser_starting'
+    | 'waiting_login'
+    | 'waiting_pack'
+    | 'waiting_authorization'
+    | 'identifying_pack'
+    | 'connected'
+    | 'target_closed'
+    | 'multiple_targets'
+    | 'identity_changed'
+    | 'error';
   connected: boolean;
   connecting: boolean;
   connectorId: string;

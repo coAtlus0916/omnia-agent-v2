@@ -511,6 +511,55 @@ stateDiagram-v2
 
 空 operations 表示经评估合法全默认，不表示缺失已被默认化。
 
+## 10.5 Remote binding 与 Pack Connect
+
+2026-08-03 起，Connector 产品合同为 Remote-only；ADR-0003/0008 的 Local/Remote mode 与切换合同不再生产实现。Shell 不提供 Local fallback。
+
+### `RemotePairingSession`
+
+| 字段 | 规则 |
+|---|---|
+| `schemaVersion` | `omnia.remote-pairing-session/v1` |
+| `sessionId` | Bridge 生成的不透明唯一 ID |
+| `pairingCode` | 仅 create response/Connect 引导可见；短期、单次；成功/结束后不再返回 |
+| `expiresAt` | 最长十分钟 |
+| `state` | `waiting|candidate|matched|expired|cancelled` |
+| `replacementPairId` | 重新配对时指向旧 active；否则 null |
+| `connector` | 只有认证 polling 且已消费后返回非敏感 `connectorId/name/version/platform/protocol` |
+
+Bridge 只保存 code hash。polling secret 只能作为 Shell pairing session proof；Shell 可在 Migration 11 的短期 pending 表中用实例密钥加密保存以恢复崩溃，但不能保存为设备 credential、进入 Renderer snapshot/普通诊断/导出或写日志，完成、Bridge 确认过期或取消后清除。Shell 不得仅凭本地 code `expiresAt` 删除 pending：ready/active session 在独立 recovery TTL 内仍须通过 Bridge poll 恢复。创建 session 前 Core 必须先占 durable `creating` reservation，所有 begin/poll/cancel/revoke 生命周期入口单飞；进程中断时 reservation 持续阻断新流程，直到安全到期。错误/过期/已消费 code 对匿名调用方返回不可枚举错误。
+
+### `RemoteBinding`
+
+| 字段 | 规则 |
+|---|---|
+| `schemaVersion` | `omnia.remote-binding/v1` |
+| `pairId/connectorId` | 不透明稳定身份；UI 默认只展示脱敏信息 |
+| `generation` | 单调递增 fencing；previous generation 被撤销后不能认证 |
+| `protocol/connectorVersion/platform` | 兼容性门禁 |
+| `lifecycle` | `candidate|active|revoked|repair_required` |
+| `credentialState` | `available|unavailable|revoked`；不包含 token/密文 |
+| `createdAt/activatedAt/revokedAt/lastVerifiedAt` | Bridge/Core owner 时间 |
+| `replacesPairId` | 重新配对 lineage |
+
+candidate Connector WSS 成功鉴权只把 binding 标为 `ready`，不激活、不撤销 previous，也不允许 Worker 提升长期 credential。Shell 先 poll ready candidate 并把新 token/identity 加密暂存为 `commit_required`，再以同一 poll proof 调用显式 commit。Bridge 在 commit 当下重新验证 candidate socket 为 OPEN/fresh，且 pair、generation、device、protocol、version 全部一致，才原子激活并撤销 previous；随后发送身份绑定的 `binding_committed`，Worker 才提升 candidate credential。断线或校验失败返回冲突，旧 active 不变。
+
+ready candidate 的 recovery TTL 独立于十分钟 code 消费窗口；Bridge 重启或 candidate 重连不得延长 TTL，但在 TTL 内可继续 poll/commit。Shell 在 stage 后、commit 响应丢失或 Bridge commit 后本地 promote 前崩溃，都通过 durable pending 恢复：poll 为 candidate 才重试 commit，poll 为 matched 则不重复切换，直接原子 promote staged binding 并清 pending。普通未 stage pairing 的 poll proof 损坏时，即使 matched pair 尚未知且本地 code 已过期，也必须转为无限期 `manual_reconcile_required` tombstone并持续 gate；只暴露 session hash 供 Bridge 管理员确认 candidate 已取消、recovery TTL 已过或已 revoke，不能自动清理。损坏的 candidate cleanup 或 revocation 证明同样不得通过删除 pending 解除 gate；能从同 pair 当前 binding 恢复则继续，否则保留 `manual_cleanup_required` / `manual_revoke_required` tombstone。
+
+### `RemotePackConnection`
+
+| 字段 | 规则 |
+|---|---|
+| `schemaVersion` | `omnia.remote-pack-connection/v1` |
+| `state` | `bridge_connecting|connector_offline|connector_incompatible|browser_starting|waiting_login|waiting_pack|waiting_authorization|identifying_pack|connected|target_closed|multiple_targets|identity_changed|timed_out|cancelled|repair_required` |
+| `binding` | 当前 `pairId/generation/connectorId/protocol` 的非敏感冻结摘要 |
+| `bridgeOnline/connectorOnline/browserReady` | 分开的实时事实，不能相互替代 |
+| `engagementId/packName` | 仅在同 target Authorization 和实时 hierarchy 一致后可投影 |
+| `checkedAt/stateVersion` | freshness 与并发控制 |
+| `message/error` | 脱敏稳定状态；不含 credential/Authorization |
+
+Connect 最长等待十分钟并约每 2.5 秒读取 status。polling 不 reload；用户完成登录、Pack 和 Authorization 后无需第二次点击即可进入 `connected`。取消只停止 Core 等待，不关闭受控 Edge。重连必须使旧 Pack identity 失效并重新验证。
+
 ## 11. Connector Command
 
 | 字段 | 类型 | 说明 |
@@ -920,7 +969,7 @@ Phase 2 与其他 Feature 使用版本化只读查询，至少声明：
 - [ ] 所有 schema 有 `$id`、major、required、enum、格式、大小/深度上限。
 - [ ] 正/负/边界 fixture 明确标注“合同示例”。
 - [ ] 生产测试不从合同示例生成假 UI 业务数据。
-- [ ] Local/Remote、Core/Worker、Shell/Core 双方执行同一 schema。
+- [ ] Remote Shell/Bridge/Worker、Core/Feature Worker、Shell/Core 双方执行同一 schema；源码与 package 证明无 Local/fallback 消费者。
 - [ ] Feature Navigation 同时覆盖二级/三级 Feature 叶子，拒绝 level 1 feature、level 3 group、level 4 和 feature 子节点。
 - [ ] unknown field、安全默认、版本不兼容均有测试。
 - [ ] Event sequence、Lease fencing、stateVersion conflict 可重启恢复。
@@ -946,9 +995,11 @@ Phase 2 与其他 Feature 使用版本化只读查询，至少声明：
 - `sendMessage({content, attachmentIds})`
 - `saveComposerHeight`
 - `saveAiSettings / testAiProvider`
-- `pairRemote / setConnectionMode`
+- `beginRemotePairing({repair,confirmed,expectedStateVersion}) / pollRemotePairing`
+- `diagnoseRemoteConnection / revokeRemoteBinding({confirmed,expectedStateVersion})`
+- `connect / cancelConnect / refresh`（只使用 Remote binding）
 
-所有输入均由 Main/Core 再验证。API Key 与 Remote token 不返回 Renderer。
+所有输入均由 Main/Core 再验证。API Key、链接码之外的 pairing proof、Remote token 和任何 credential 密文不返回 Renderer。Connector Settings、Local/Remote mode IPC 和匿名 discovery 已删除。
 
 ### Connector IPC
 
@@ -960,18 +1011,23 @@ Phase 2 与其他 Feature 使用版本化只读查询，至少声明：
 - `refresh`
 - `workspace_light_read`
 
-Local 子进程和 Remote WSS 使用同一请求/响应合同。本版本未开放任意 HTTP 代理和 mutation operation。
+只有 Remote WSS/Bridge/公司电脑 Worker 使用该请求/响应合同；Shell 不再打包或启动 Local 子进程。本版本仍禁止任意 HTTP 代理；mutation 只通过已登记签名 Operation。
 
 ### Bridge 合同
 
-实现 Schema 为 `omnia.v5.bridge/v1`：
+实现 Schema 为 `omnia.v5.bridge/v1`，Remote-only 升级的协议标识为 `omnia.v5.remote-connector/v2`：
 
-- `POST /v1/admin/pairing-bundles`：管理员 Bearer token 创建 10 分钟、一次性、角色绑定的 Shell/Connector code；
-- `POST /v1/pair`：消费一次性 code，返回绑定 Pair ID/角色的 token；
-- `GET /v1/health`：返回无敏感信息的健康状态；
+- `POST /v1/pairing/sessions`：Shell 建立十分钟、单次、产品/协议/角色绑定 session，并取得链接码和受保护 polling proof；
+- `POST /v1/pair`：公司电脑 Connector 消费一次性链接码，形成 candidate binding；
+- `GET /v1/pairing/sessions/:id`：只有持有 polling proof 的 Shell 可读取 candidate/matched；
+- `POST /v1/pairing/sessions/:id/commit`：同一 polling proof 提交两阶段激活；candidate socket 必须在提交瞬间新鲜且身份/协议/版本一致，否则 `409` 且 previous 继续 active；已 active 的同 session 可幂等返回 matched；
+- `DELETE /v1/pairing/sessions/:id`：只有持有同一 polling proof 的 Shell 可取消；waiting 立即使 code 永久不可消费，未激活 candidate 被 revoke。若 activation 已先赢，Bridge 返回 `409 matched`，Shell 必须继续 poll/save 新 binding，或在本地 expected identity 已变化时以持久 cleanup proof 撤销该新 binding；网络失败不得清本地 pending。
+- `WS /v1/connect`（Connector role）：candidate 通过身份/协议/generation 鉴权并上线时仅进入 ready；active 重连会收到 `binding_committed(pairId,generation)`，不会通过 WSS open 隐式激活；
+- `DELETE /v1/bindings/:id`：持有当前 Shell binding credential 的用户显式撤销；
+- `GET /v1/health`：返回无敏感 `version/build/release/protocol/startedAt`；
 - `WS /v1/connect`：Bearer token 鉴权，只中继合同化 Connector command/result/state。
 
-Bridge token 签名包含 `role`、`pairId`、`exp`。请求所有者有 95 秒 deadline，双方断连时确定性清理在途请求。
+Bridge credential 绑定 `role/pairId/generation/protocol`。WebSocket 使用 ping/pong freshness；`onlineConnectors` 只统计新鲜、协议兼容的 active generation。请求 owner 绑定 pair/generation/deadline，双方断连时确定性清理在途请求并返回准确的失败或 uncertain 语义。
 
 ### AI Provider 合同
 

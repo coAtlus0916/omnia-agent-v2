@@ -2,60 +2,43 @@ import type { ConnectorRequest, ConnectorResponse } from '../connector/contracts
 
 export const BRIDGE_SCHEMA = 'omnia.v5.bridge/v1' as const;
 export const BRIDGE_PRODUCT = 'omnia-agent-v5' as const;
-export const BRIDGE_PROTOCOL = 'omnia.v5.remote-connector/v1' as const;
+export const BRIDGE_PROTOCOL = 'omnia.v5.remote-connector/v2' as const;
+export const BRIDGE_VERSION = '0.4.1' as const;
 export const DEFAULT_V5_BRIDGE_URL = 'https://agent.labcaspian.com/v5-bridge/' as const;
 
-export interface BridgeWaitingConnector {
-  connectorId: string;
-  name: string;
-  platform: string;
-  startedAt: string;
-}
-
-export interface BridgeConnectorRegistrationRequest {
-  schemaVersion: typeof BRIDGE_SCHEMA;
-  product: typeof BRIDGE_PRODUCT;
-  protocol: typeof BRIDGE_PROTOCOL;
-  connectorId: string;
-  name: string;
-  platform: string;
-}
-
-export interface BridgeConnectorRegistrationResponse {
-  schemaVersion: typeof BRIDGE_SCHEMA;
-  leaseId: string;
-  leaseSecret: string;
-  expiresAt: string;
-}
-
-export interface BridgeDiscoverySessionRequest {
+export interface BridgePairingSessionRequest {
   schemaVersion: typeof BRIDGE_SCHEMA;
   product: typeof BRIDGE_PRODUCT;
   protocol: typeof BRIDGE_PROTOCOL;
   shellNonce: string;
-  connectorId?: string;
+  replacementPairId?: string;
 }
 
-export interface BridgeDiscoverySessionResponse {
+export interface BridgePairingSessionResponse {
   schemaVersion: typeof BRIDGE_SCHEMA;
   product: typeof BRIDGE_PRODUCT;
   protocol: typeof BRIDGE_PROTOCOL;
   sessionId: string;
-  pairId: string;
-  connector: BridgeWaitingConnector;
-  confirmationCode: string;
-  token: string;
+  pairingCode: string;
+  pollSecret: string;
   expiresAt: string;
 }
 
-export interface BridgeConnectorLeaseResult {
+export interface BridgePairingPollResponse {
   schemaVersion: typeof BRIDGE_SCHEMA;
-  state: 'waiting' | 'matched' | 'expired' | 'cancelled';
-  sessionId?: string;
+  product: typeof BRIDGE_PRODUCT;
+  protocol: typeof BRIDGE_PROTOCOL;
+  state: 'waiting' | 'candidate' | 'matched' | 'expired';
   pairId?: string;
-  confirmationCode?: string;
   token?: string;
   expiresAt?: string;
+  generation?: number;
+  connector?: {
+    connectorId: string;
+    name: string;
+    version: string;
+    platform: string;
+  };
 }
 
 export interface BridgePairRequest {
@@ -63,6 +46,11 @@ export interface BridgePairRequest {
   role: 'shell' | 'connector';
   pairingCode: string;
   name: string;
+  connectorId?: string;
+  connectorVersion?: string;
+  platform?: string;
+  product?: typeof BRIDGE_PRODUCT;
+  protocol?: typeof BRIDGE_PROTOCOL;
 }
 
 export interface BridgePairResponse {
@@ -70,6 +58,7 @@ export interface BridgePairResponse {
   token: string;
   pairId: string;
   expiresAt: string;
+  generation: number;
 }
 
 export interface BridgeCommandEnvelope {
@@ -96,7 +85,19 @@ export interface BridgeStateEnvelope {
   schemaVersion: typeof BRIDGE_SCHEMA;
   kind: 'state';
   connectorOnline: boolean;
+  bridgeVersion: typeof BRIDGE_VERSION;
+  protocol: typeof BRIDGE_PROTOCOL;
+  connectorId: string;
+  connectorVersion: string;
+  generation: number;
   message: string;
 }
 
-export type BridgeEnvelope = BridgeCommandEnvelope | BridgeCancelEnvelope | BridgeResultEnvelope | BridgeStateEnvelope;
+export interface BridgeBindingCommittedEnvelope {
+  schemaVersion: typeof BRIDGE_SCHEMA;
+  kind: 'binding_committed';
+  pairId: string;
+  generation: number;
+}
+
+export type BridgeEnvelope = BridgeCommandEnvelope | BridgeCancelEnvelope | BridgeResultEnvelope | BridgeStateEnvelope | BridgeBindingCommittedEnvelope;

@@ -97,7 +97,7 @@ detached(visible/minimized)
 本节澄清既有决策，不改变 Feature/Shell 边界：`placement`、Feature Run/Worker 生命周期和当前可见/附着状态是三个独立维度。`docked(background)` 表示实例和其 WebContents 可以保留，但不表示它仍附着在 Shell `contentView`。
 
 - `SurfaceWindowManager` 是 native attachment 的唯一 owner；Renderer 只声明当前活动 docked instance 以及 Shell overlay 是否打开。
-- 任意时刻最多一个 docked `WebContentsView` 附着并显示。活动 `Comments` 或 Settings/modal overlay 时附着集合必须为空；关闭 overlay 并返回 Feature 时才重新附着正确实例并按最新宿主几何计算 bounds。
+- 任意时刻最多一个 docked `WebContentsView` 附着并显示。活动 `Comments` 或 Settings/modal overlay 时附着集合必须为空；Shell 0.4.2 的 Remote 首次链接码、诊断、重新配对和解除绑定也属于该 overlay 合同。关闭 overlay 并返回 Feature 时才重新附着正确实例并按最新宿主几何计算 bounds。
 - 切换标签、折叠菜单或移动 splitter 只调和当前活动实例。隐藏不会关闭 WebContents、停止 Worker 或终止 Run；关闭标签/窗口才清理对应 UI instance。
 - Renderer/Feature render process gone、窗口重复关闭或实例已经不存在时，detach、sender authorization 清理和 close 必须幂等。detached window 的 `closed`、`webContents.destroyed` 与 `render-process-gone` 使用对称清理，但不得触碰业务 Worker/Run。
 

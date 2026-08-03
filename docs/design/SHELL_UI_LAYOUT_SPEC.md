@@ -1,8 +1,8 @@
 # Omnia Agent v5 主界面 UI 布局规范
 
-状态：Shell 0.4.1 已实现本次 UI regression 范围；完整 Windows DPI 矩阵与真实 Omnia canary 待执行  
+状态：Shell 0.4.2 Remote-only 候选；继承 0.4.1 UI regression 修复，完整 Windows DPI 矩阵与公司电脑真实 Omnia canary 待执行
 日期：2026-08-03  
-适用范围：Windows 本地主窗口、标签式 Feature Surface、设置 Surface 与可弹出 Feature 窗口；0.4.1 已实现 native attachment、Comments/Settings、统一 zoom 和 settings layout，未来 Feature 专属布局与未列入本次自动化的真机组合仍以各自状态为准
+适用范围：Windows 本地主窗口、标签式 Feature Surface、设置 Surface 与可弹出 Feature 窗口；0.4.2 保留 native attachment、Comments/Settings、统一 zoom 和 settings layout，并删除 Connector 设置页/Local 模式，首次配对只从顶部 Connect 进入
 
 ## 1. 设计结论
 
@@ -80,7 +80,7 @@
 
 推荐从左到右排列：
 
-1. Local/Remote 当前 active Transport 的只读状态；模式切换仍进入“设置”；
+1. Remote Bridge/Connector 的只读状态；产品没有 Local/Remote 模式切换；
 2. 连接主动作与真实连接状态；
 3. 刷新会话/Pack 动作，仅在后台允许时启用；
 4. 当前 Pack 的真实名称及必要的短 ID；没有权威身份时显示“未读取”或“状态未知”，禁止沿用旧名称；
@@ -101,6 +101,20 @@
 推荐做成跨列状态栏，理由是：连接、Pack、保活和安全锁共同描述当前 Omnia 会话，既不属于某个 Feature，也不属于聊天；跨列后，切换 Feature、拖宽功能区或滚动聊天时不会丢失关键上下文，同时与用户给出的顶部锚点一致。
 
 顶部状态栏不得展示由前端计时器或缓存猜测出的“已连接”“当前 Pack”或“安全”。每个值必须带后台 `stateVersion` 或来自同一会话快照。若组成状态来自不同版本，UI 显示“状态更新中”并暂时阻断危险动作。
+
+#### 3.2.1 Connect、首次配对与修复
+
+Connect 是 Remote-only 的单一入口：
+
+- 没有有效 binding 时，点击 Connect 打开首次连接引导，显示由 Bridge pairing session 返回的短期一次性链接码和过期时间；文案明确要求在公司电脑 Remote Connector 输入。
+- Shell 不搜索、列出或自动认领 waiting Connector，不显示匿名可见的公司电脑名称/完整 Connector ID。
+- pairing matched 后同一流程继续验证 Bridge、Shell WSS、精确 Remote Connector、协议/版本，再发起浏览器 Connect。
+- `Connecting` 可持续等待用户在受控 Edge 登录并打开 Pack；Authorization/hierarchy 稍后就绪时自动显示 Connected，不要求第二次点击。
+- Connect 错误/详情允许真实“诊断连接”“重新配对”“解除绑定”。重新配对和解除绑定需要明确确认；candidate 失败保留旧 active。
+- 连接详情只展示非敏感 identity/version/protocol/generation/freshness。token、链接码历史、poll secret、DPAPI/safeStorage 密文不显示、不复制、不导出。
+- revoked 或 credential 不可恢复时显示 `repair_required`；普通 Shell/Connector/Bridge 重启和断网恢复不重新要求链接码。
+
+Bridge reachable、Shell WSS online、Connector online、browser ready、Authorization 和 Pack identity 分别呈现，不能把前一项成功当成后一项成功。顶栏不显示 Local 标签或模式菜单；Remote 故障也不能出现“已自动切换 Local”。
 
 默认使用单行。若当前逻辑宽度不足以同时满足按钮命中区和 Pack/安全锁最小可读宽度，则切换为受控两行：第一行保留 Transport、连接、当前 Pack、安全锁和缩放，第二行放刷新、保活及最近成功时间。关键状态不得折叠到不可见菜单，也不以截断名称冒充完整 Pack identity；完整值通过 tooltip/可访问名称读取。
 
@@ -172,14 +186,15 @@ Feature 视觉上可 dock 在第三列，但安全架构不变：
 │ 左列：设置菜单      │ 右列：当前设置项的具体内容               │
 │                   │                                          │
 │ AI 设置            │ Provider / Base URL / 模型 / Thinking / Key│
-│ 连接器设置          │ Local / Remote / 配对 / 测试              │
+│ 安全锁等真实设置     │ 只呈现具有真实 Core action/state 的内容    │
 │                   │                                          │
 │     独立滚动 ↕      │                         独立滚动 ↕       │
 └───────────────────┴──────────────────────────────────────────┘
                     ↔ 公共 Splitter
 ```
 
-- 左列只显示有真实页面、真实读取 action 和真实保存 action 的设置入口；当前至少包含“AI 设置”和“连接器设置”。
+- 左列只显示有真实页面、真实读取 action 和真实保存 action 的设置入口；保留“AI 设置”、安全锁等真实页面。
+- 整个 Connector 设置子菜单已删除：不得显示 Local/Remote、Bridge URL、候选 Connector ID、查找/匹配或 Pair ID，也不得放不可点击占位页。
 - 未实现的常规、数据、诊断、更新等页面不得放入可点击菜单；若产品必须告知未来方向，应使用不可点击说明文字，不占用设置导航层级。
 - 右列只显示当前选中设置项的真实表单、读取状态、保存/测试结果和错误；切换菜单不会丢失已成功持久化的状态。
 - 左列菜单和右列内容必须是两个独立的 `overflow`/滚动容器。滚动右侧长表单不能移动左侧菜单位置；滚动左侧菜单也不能改变右侧滚动位置。
@@ -189,7 +204,7 @@ Feature 视觉上可 dock 在第三列，但安全架构不变：
 - 设置标题栏右上角保留继承同一 `UserPreference` 的 `− / 百分比 / +`；不再放第二个“设置”入口。
 - 设置外框宽高在切换真实子菜单时保持稳定，并按 viewport clamp；短内容不能令外框收缩，长内容只能在右侧内部滚动。左侧导航和右侧内容是两个独立滚动容器。
 - 设置导航/内容之间使用 `settings.main` 公共 splitter；pointer、键盘和 reset 均持久化到 Core LayoutPreference。窗口临时变小或全局缩放只做运行时 clamp，不覆盖用户保存比例。
-- 密钥输入、Provider 测试、Local/Remote 切换等必须调用真实 Core action。保存失败保持后台已确认值；模式切换仍遵守活动 mutation/`uncertain` 等阻断合同。
+- 密钥输入和 Provider 测试必须调用真实 Core action。首次配对、诊断、重新配对和解除绑定属于顶部 Connect 状态机，不进入 Settings。
 - DeepSeek 设置的新配置默认显示 `deepseek-v4-flash`，模型仍需真实 `/models` 验证；Thinking 由显式开关和 `low|high|max` 档位控制，图片与文字文件能力按 [DeepSeek V4 Flash 官方 API 差异评审](../reviews/DEEPSEEK_V4_FLASH_API_REVIEW.md) 如实呈现。
 
 ## 4. 删除元素的单点确认
@@ -264,7 +279,7 @@ Feature 视觉上可 dock 在第三列，但安全架构不变：
 
 | 会话状态 | 顶部状态栏 | 第二列 | 第三列 |
 |---|---|---|---|
-| 未连接 | 显示模式、未连接；连接可用，保活/Pack/安全锁禁用 | 功能可浏览；依赖 Omnia 的 Surface 入口禁用并说明 | Comments/本地聊天/附件按真实能力开放 |
+| 未配对/未连接 | 显示 Remote unpaired/offline；Connect 进入链接码或现有 binding 验证，保活/Pack/安全锁禁用 | 功能可浏览；依赖 Omnia 的 Surface 入口禁用并说明 | Comments/本地聊天/附件按真实能力开放 |
 | 连接中 | 显示 Connecting；hover/focus 可 Cancel | 菜单保持，但依赖连接的 Surface 入口禁用 | 保持当前标签；不虚构成功 |
 | 已连接、Pack 未读取 | Pack 显示未读取；允许刷新 | 依赖 Pack 的 Surface 入口禁用 | Comments 说明下一步 |
 | 已连接、Pack ready、安全锁未启用 | Pack 显示权威名称；安全锁入口可用 | 可打开只读 Feature；危险 Feature 按 capability 禁用 | 保持聊天 |
@@ -322,7 +337,8 @@ Feature 视觉上可 dock 在第三列，但安全架构不变：
 - [ ] 100% 默认字号和行高达到紧凑基线，且 Windows 100%/125%/150%/200% 下可读。
 - [ ] loading/empty/disabled/error/partial/uncertain 全部由后台真实状态驱动。
 - [ ] 未实现或依赖不满足的控件隐藏或禁用，没有可点击假功能。
-- [ ] 设置界面为两列：左列真实菜单，右列对应具体设置；当前至少有 AI 设置和连接器设置。
+- [ ] 设置界面为两列：左列真实菜单，右列对应具体设置；AI、安全锁等真实页面保持，整个 Connector 设置子菜单不存在。
+- [ ] 首次链接码、诊断、重新配对和解除绑定只从顶部 Connect 流程进入；顶栏不显示 Local 标签或模式切换。
 - [ ] 设置左右两列各自独立滚动，任一列滚动不会改变另一列位置。
 - [ ] 设置两列边界使用公共 Splitter 并真实持久化；主 Shell 固定 Rail 仍无 Splitter。
 

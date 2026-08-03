@@ -92,3 +92,30 @@ Migration 是单调、事务应用。当前没有破坏性 migration。旧程序
 - Omnia Authorization 仍只在 Connector 进程内存中。
 
 Migration 单调、事务化，不读写 v4 数据库或路径。
+
+## Migration 9：Remote-only binding 与旧 mode 退役（Shell 0.4.2）
+
+Migration 9 前向、事务化、幂等地增加 Remote binding/pairing/audit 状态。当前实现的精确表名和列以 `src/main/database.ts` 的 migration 与测试为准，但所有权和迁移语义固定如下：
+
+| 数据 | Owner / 规则 |
+|---|---|
+| Remote binding | Core；保存 Pair ID、Connector identity/version/platform、protocol、generation、lifecycle、last verified time 和加密 credential，不保存明文 token |
+| Pairing state | Core；保存当前短期 session、expiry、expected old binding 和实例加密 polling secret 以支持崩溃恢复；一次性链接码绝不入库，poll secret 不成为长期设备凭据且完成/过期/取消即清除 |
+| Binding audit | Core 追加式；记录 migrate/pair/activate/replace/revoke/repair，不含 token、链接码或密文 |
+| Bridge binding | Bridge 独立持久 store；保存 active/candidate/revoked generation 与 credential verifier，不进入 Shell Core DB |
+
+旧 `connection_settings.mode` 从本 migration 起不再是产品运行语义：
+
+- 旧 `remote` 且 credential 可恢复时迁移为 Remote binding，仍须启动后实时验证 Bridge、Connector 和 protocol；数据库中有 token 不等于 connected。
+- 旧 `local` 迁移为 Remote `unpaired`，不复制 Local `connection_state`、Edge profile、port state 或 instance lock。
+- credential 解密失败、已撤销或身份/协议不兼容时迁为 `repair_required`，不降级明文、不 fallback Local。
+- Migration 9 的审计 decision 明确区分 `fresh_remote_unpaired`、`migrated_remote_binding_pending_live_validation` 与 `local_retired_remote_unpaired`，避免把全新安装误记为 Local 退役。
+- Migration 10 在 Migration 9 已把必要来源写入加密审计后删除旧 `connection_settings` 表；0.4.2 不再保留、更新或读取 active mode，也不向 Renderer 暴露 mode switch。
+
+Migration 9 不修改聊天、附件、Feature/Documentation Registry、Feature Store、Managed Content、Evidence、Workspace/Safety、AI 设置或 LayoutPreference。升级/回滚只切换 release；`data/` 不被覆盖或清空。完整矩阵见 [Remote-only 迁移说明](REMOTE_ONLY_MIGRATION.md)。
+
+## Migration 11：可恢复配对与解除绑定（Shell 0.4.2）
+
+Migration 11 增加 `remote_pairing_pending`、`remote_revocation_pending` 与 append-only `remote_binding_events`。前者在任何 Bridge await 前先保存 `creating` reservation，Bridge 返回后再持久化 session ID、加密 poll secret、expiry、expected old binding CAS 身份以及两阶段 commit/cleanup 状态；绝不保存一次性链接码。Shell 崩溃或重启后可继续 poll ready/active candidate，并在 old pair/generation/lifecycle 仍匹配时完成本地 binding 持久化。若普通、尚未 stage 的 pairing poll proof 损坏，不能用本地 code expiry 推断 Bridge 一小时 recovery TTL 已结束，也不能删除 pending 解锁 transport；Core 将其转为无限期 `manual_reconcile_required` tombstone，只保留 session hash 等非敏感审计定位，等待 Bridge 管理员确认 candidate 已取消、recovery TTL 已过或已 revoke 后再清理。已知 candidate cleanup token 损坏使用 `manual_cleanup_required`；解绑 token 双份均不可恢复使用 `manual_revoke_required`，三者都持续阻断生命周期和 transport。事件表记录 pairing reservation/start、activation/replacement、repair、revoke pending/completed 和损坏 pending 的非敏感顺序证据，不保存 code、secret、token 或密文。
+
+解除绑定先以事务写入 `remote_revocation_pending` 并把 public lifecycle 置为 `repair_required`，同时保留受保护旧 credential 供后台重试。网络失败不得继续投影 `bound` 或 Connected；Bridge 返回成功，或对这次明确解除请求返回 401/403（旧凭据已不可用）后，Core 才原子清除身份并转为 `revoked`。普通 Transport 的 401/403 不等同于用户解除，仍进入 `repair_required`。

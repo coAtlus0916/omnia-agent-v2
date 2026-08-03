@@ -52,7 +52,7 @@ test('official recording Feature is built in and actions follow real Connector s
   let state: Record<string, any> = { schemaVersion: 'omnia.v5.recording-status/v1', state: 'idle', active: false, recordingId: '', message: 'idle' };
   const commands: string[] = [];
   const connector: any = {
-    mode: 'local', start: async () => undefined, stop: async () => undefined,
+    mode: 'remote', start: async () => undefined, stop: async () => undefined,
     unavailableSnapshot: () => ({}), load: async () => ({}), connect: async () => ({}), refresh: async () => ({}), lightRead: async () => ({}),
     registerOperation: async (input: any) => {
       const envelope = verifyOfficialPackage(input.operationPackage, 'omnia-connector-operation');
@@ -67,7 +67,7 @@ test('official recording Feature is built in and actions follow real Connector s
     }
   };
   const runtime = new FeaturePackageManager(database.db, paths, undefined, { connector, workerHostEntrypoint: hostEntrypoint });
-  const context: any = { connection: { transport: 'local', connected: true, connectorId: 'v5-local-connector', sessionGeneration: 7, engagementId }, safetyLock: { enabled: false, validForCurrentConnection: true } };
+  const context: any = { connection: { transport: 'remote', connected: true, connectorId: 'v5-remote-connector', sessionGeneration: 7, engagementId }, safetyLock: { enabled: false, validForCurrentConnection: true } };
   try {
     await runtime.initializeRuntime();
     runtime.select('omnia.recording');

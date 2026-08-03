@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { LocalConnector, _test } from '../src/connector/local-connector.ts';
+import { WorkstationOmniaSession, _test } from '../src/connector/workstation-omnia-session.ts';
 import { isAllowedOmniaUrl, isGuid, parseEngagementId } from '../src/connector/omnia-origin.ts';
 
 const engagementId = '11111111-1111-4111-8111-111111111111';
@@ -62,6 +62,80 @@ test('target binding rejects multiple Pack pages instead of selecting the first'
   ]), 0);
 });
 
+test('Authorization is bound to the exact target Engagement and rejects identity drift', () => {
+  const first = '11111111-1111-4111-8111-111111111111';
+  const second = '22222222-2222-4222-8222-222222222222';
+  const target = `https://deloitteomnia.deloitte.com.cn/engagement/${first}/home`;
+  assert.deepEqual(
+    _test.authorizationEngagementId(`https://api.deloitteomnia.deloitte.com.cn/work/v1/engagements/${first}/items`, target),
+    { engagementId: first, identityMismatch: false }
+  );
+  assert.deepEqual(
+    _test.authorizationEngagementId(`https://api.deloitteomnia.deloitte.com.cn/engagements/v1/${second}/headers/hierarchy`, target),
+    { engagementId: second, identityMismatch: true }
+  );
+});
+
+test('SSO/new-tab handoff accepts one Pack only in the bound browser context', () => {
+  const pack = `https://deloitteomnia.deloitte.com.cn/engagement/${engagementId}/home`;
+  assert.equal(_test.selectSafeTargetIndex([
+    { url: 'https://deloitteomnia.deloitte.com.cn/login', contextId: 1 },
+    { url: pack, contextId: 1 }
+  ], 0), 1);
+  assert.throws(
+    () => _test.selectSafeTargetIndex([
+      { url: 'https://deloitteomnia.deloitte.com.cn/login', contextId: 1 },
+      { url: pack, contextId: 2 }
+    ], 0),
+    (error: any) => error.code === 'CONNECTOR.MULTIPLE_PACK_TARGETS'
+  );
+  assert.equal(_test.selectSafeTargetIndex([
+    { url: 'https://login.microsoftonline.com/tenant/oauth2/authorize', contextId: 1 },
+    { url: pack, contextId: 1 }
+  ], 0), 1);
+});
+
+test('external enterprise IdP navigation remains waiting_login and is never trusted as a Pack', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-external-sso-'));
+  const connector = new WorkstationOmniaSession(root, fetch);
+  const page = { url: () => 'https://login.microsoftonline.com/tenant/oauth2/authorize' };
+  try {
+    (connector as any).port = 32123;
+    (connector as any).cdpReady = async () => true;
+    (connector as any).currentPage = async () => page;
+    const status = await connector.status();
+    assert.equal(status.status, 'waiting_login');
+    assert.equal(status.connected, false);
+    assert.equal(status.engagementId, '');
+  } finally {
+    await connector.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('status fails closed as identity_changed when stale Authorization belongs to another Engagement', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-stale-auth-'));
+  const connector = new WorkstationOmniaSession(root, fetch);
+  const page = { url: () => `https://deloitteomnia.deloitte.com.cn/engagement/${engagementId}/home` };
+  try {
+    (connector as any).port = 32123;
+    (connector as any).cdpReady = async () => true;
+    (connector as any).currentPage = async () => page;
+    (connector as any).authByPage.set(page, {
+      headers: { authorization: 'Bearer stale' },
+      apiOrigin: 'https://api.deloitteomnia.deloitte.com.cn',
+      engagementId: '22222222-2222-4222-8222-222222222222',
+      identityMismatch: true
+    });
+    const status = await connector.status();
+    assert.equal(status.status, 'identity_changed');
+    assert.equal(status.connected, false);
+  } finally {
+    await connector.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('CDP identity must bind the exact profile and dynamically selected port', () => {
   const profile = path.resolve('C:\\omnia-v5-data\\connector\\edge-profile');
   assert.equal(_test.browserIdentityMatches([
@@ -78,11 +152,11 @@ test('CDP identity must bind the exact profile and dynamically selected port', (
   ], profile, 51234), false);
 });
 
-test('local Connector health is self-contained and does not start a browser', () => {
+test('Workstation Session Core health is self-contained and does not start a browser', () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-connector-'));
-  const connector = new LocalConnector(root, fetch);
+  const connector = new WorkstationOmniaSession(root, fetch);
   try {
-    assert.deepEqual(connector.health(), { ready: true, connectorVersion: '0.2.0' });
+    assert.deepEqual(connector.health(), { ready: true, connectorVersion: '0.3.5' });
   } finally {
     void connector.close();
     rmSync(root, { recursive: true, force: true });
@@ -91,7 +165,7 @@ test('local Connector health is self-contained and does not start a browser', ()
 
 test('closing Connector never closes or terminates the controlled Edge session', async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-close-'));
-  const connector = new LocalConnector(root, fetch);
+  const connector = new WorkstationOmniaSession(root, fetch);
   let browserCloseCalls = 0;
   let processKillCalls = 0;
   (connector as any).browser = { close: async () => { browserCloseCalls += 1; } };

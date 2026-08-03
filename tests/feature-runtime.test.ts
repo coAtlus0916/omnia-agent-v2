@@ -34,9 +34,10 @@ test('installed 0.1.2 starts a real worker, persists selection/card/evidence, an
   installer.install(packageFilename);
   let deleted = false;
   let reconcileFails = false;
+  let mutationErrorCode = '';
   const mutations: boolean[] = [];
   const connector: any = {
-    mode: 'local', start: async () => undefined, stop: async () => undefined,
+    mode: 'remote', start: async () => undefined, stop: async () => undefined,
     unavailableSnapshot: () => ({}), load: async () => ({}), connect: async () => ({}), refresh: async () => ({}),
     lightRead: async () => ({}),
     registerOperation: async (input: any) => {
@@ -76,6 +77,7 @@ test('installed 0.1.2 starts a real worker, persists selection/card/evidence, an
       if (input.operationId === 'omnia.delete.information.direct.v1') {
         mutations.push(input.mutationAuthorized);
         deleted = true;
+        if (mutationErrorCode) throw Object.assign(new Error('remote mutation response lost'), { code: mutationErrorCode });
         return { accepted: true };
       }
       if (input.operationId === 'omnia.delete.information.reconcile.v1') {
@@ -88,7 +90,7 @@ test('installed 0.1.2 starts a real worker, persists selection/card/evidence, an
   const runtime = new FeaturePackageManager(database.db, paths, undefined, { connector, workerHostEntrypoint: hostEntrypoint });
   const context: any = {
     connection: {
-      transport: 'local', connected: true, connectorId: 'connector-1', sessionGeneration: 9, engagementId
+      transport: 'remote', connected: true, connectorId: 'connector-1', sessionGeneration: 9, engagementId
     },
     safetyLock: {
       enabled: true, engagementId, workspaceIds: [workspaceId], authorityObservationId: 'observation-1',
@@ -133,6 +135,7 @@ test('installed 0.1.2 starts a real worker, persists selection/card/evidence, an
 
     deleted = false;
     reconcileFails = true;
+    mutationErrorCode = 'REMOTE.MUTATION_UNCERTAIN';
     snapshot = await runtime.action({
       featureId: 'omnia.delete-elements', featureVersion: '0.1.2', surfaceId: 'delete-elements.workbench',
       actionId: 'runtime.set-selection', expectedStateVersion: snapshot.surface!.stateVersion,

@@ -6,13 +6,13 @@
 
 | 项目 | 当前状态 | 仍待完成 |
 |---|---|---|
-| Shell | `0.4.1` UI regression patch：native Surface 单实例附着、Comments/Settings 遮挡修复、真实统一缩放、稳定设置外框与持久化 splitter | 真实 Pack hierarchy、真实 Provider 和公司设备表现需 canary |
+| Shell | `0.4.2` Remote-only 候选：继承 0.4.1 UI regression 修复，删除 Local/模式切换/Connector Settings，首次配对进入顶部 Connect | 自动化/便携结果以验收记录为准；公司电脑真实 Pack canary 未通过/待 canary |
 | 录制 | 官方签名独立 Feature `omnia.recording 0.1.1 / sequence 2`，随 Shell 便携包内置，首次启动自动升级/注册；显式 rollback 不被启动覆盖 | 真实 Pack/Remote 现场 canary |
-| 删除元素 | 独立后装 Feature `0.1.2`，Local 自动化闭环已接通 | 目标 Pack 的真实 mutation 与 Remote 业务删除待 canary |
+| 删除元素 | 独立后装 Feature `0.1.2`；Remote-only 前的 Local 自动化仅保留为历史合同证据 | 目标 Pack 的真实 Remote mutation 待公司电脑 canary；不允许 fallback Local |
 | 删除聊天记录 | 未交付 | 仍处于产品设计阶段 |
 | 新建与关联 | 未交付 | 需要 TemplateVersion、Managed Content 和签名 Operation |
 | Phase 1 母版 | 已完成治理母版：7 sheets、183 字段、68 条关系、21 条 v4 证据、180/180 源字段追溯、公式错误 0 | 用户整理业务值并发布首个 TemplateVersion |
-| Remote | Connector `0.3.4 / sequence 7`、Bridge `0.4.0` 独立上线；支持 discovery、status/light read、录制、签名 Operation register/invoke 传输与自动升级 | 具体业务 mutation 仍待公司电脑 canary；v4 更新通道保持不变 |
+| Remote | Remote-only 候选：Connector `0.3.5 / sequence 8`、Bridge `0.4.1`；短期链接码 + 长期 protected binding、heartbeat/state、无 Local fallback | 公司电脑真实 Pack canary 未通过/待 canary；0.3.4/0.4.0 与 v4 更新通道保持不可变 |
 | Nova | 仅保留 OpenAI-compatible 配置路径 | Nova 专有协议尚未校验 |
 
 Feature 的原装/内置/后装/Operation/额外部署边界以 [Feature 包总览](implementation/FEATURE_PACKAGE_CATALOG.md) 为准；Shell 的实际代码映射以 [Shell 实现映射](implementation/SHELL_IMPLEMENTATION_MAP.md) 为准。
@@ -35,7 +35,8 @@ Feature 的原装/内置/后装/Operation/额外部署边界以 [Feature 包总�
 - [系统架构](architecture/SYSTEM_ARCHITECTURE.md)：前台、中台、后台、Connector 四 Plane、进程与信任边界。
 - [统一合同](contracts/CONTRACTS.md)：公共对象、状态、错误、幂等、`uncertain`、`reconcile`。
 - [Feature Package 标准](architecture/FEATURE_PACKAGE_STANDARD.md)：独立包、manifest、四 Plane 实现、安装升级回滚。
-- [Connector Gate](architecture/CONNECTOR_GATE.md)：Transport/Session/Gate/Operation host、Local/Remote 切换。
+- [Connector Gate](architecture/CONNECTOR_GATE.md)：Remote-only Transport/Session/Gate/Operation host、链接码/binding/Pack 状态。
+- [ADR-0035 Remote-only Connector](adr/0035-remote-only-connector-and-link-code-pairing.md)：无 Local、一次性链接码、长期 credential、重新配对和解除绑定。
 - [数据与存储](data/DATA_AND_STORAGE.md)：Core Store、便携数据根、迁移、备份和保留。
 - [Agent Managed Content 登记簿](data/AGENT_MANAGED_CONTENT_REGISTRY.md)：创建、修改、删除、revision、relation、tombstone。
 - [模板与文档管线](data/TEMPLATE_AND_DOCUMENT_PIPELINE.md)：默认模板、最小 Patch、验证和发布。
@@ -49,7 +50,11 @@ Feature 的原装/内置/后装/Operation/额外部署边界以 [Feature 包总�
 - [Feature 随包文档模板](development/FEATURE_DOCUMENTATION_TEMPLATE.md)
 - [录制 Feature 实现](implementation/RECORDING_FEATURE.md)
 - [Remote Connector 0.3.4 发布记录](implementation/REMOTE_CONNECTOR_0_3_4_RELEASE.md)
+- [Remote Connector 0.3.5 Remote-only 发布记录](implementation/REMOTE_CONNECTOR_0_3_5_RELEASE.md)
 - [v5 Bridge 部署合同](implementation/V5_BRIDGE_DEPLOYMENT.md)
+- [Remote-only 迁移说明](implementation/REMOTE_ONLY_MIGRATION.md)
+- [Shell 0.4.2 Remote-only UI/Connector 验收](reviews/SHELL_0_4_2_REMOTE_ONLY_ACCEPTANCE.md)
+- [公司电脑 Remote Pack canary](reviews/REMOTE_PACK_CANARY_0_4_2.md)
 - [前代实现复用清单](implementation/V4_REUSE_MANIFEST.md)
 - [Phase 1 母版待办与最终工作簿](planning/PHASE1_TEMPLATE_MASTER_WORKBOOK_TODO.md)
 - [最终 Phase 1 母版文件](../outputs/019fb190-b0b1-7fb2-94d1-f3f7cad4a853-sol-rebuild/omnia-agent-phase1-master-v4-based.xlsx)

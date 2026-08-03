@@ -1,10 +1,9 @@
 import { WebSocket } from 'ws';
-import { LocalConnector, ConnectorOperationError } from '../connector/local-connector.js';
+import { WorkstationOmniaSession, ConnectorOperationError } from '../connector/workstation-omnia-session.js';
 import type { ConnectorRequest } from '../connector/contracts.js';
-import { BRIDGE_SCHEMA, type BridgeEnvelope } from '../shared/bridge-contracts.js';
+import { BRIDGE_PROTOCOL, BRIDGE_SCHEMA, type BridgeEnvelope } from '../shared/bridge-contracts.js';
 import {
   REMOTE_CONNECTOR_PRODUCT,
-  REMOTE_CONNECTOR_BRIDGE_URL,
   REMOTE_CONNECTOR_UPDATE_MANIFEST_URL,
   REMOTE_CONNECTOR_VERSION
 } from './constants.js';
@@ -15,10 +14,12 @@ import {
 } from './managed-state.js';
 import { RemoteCommandGate } from './wire-request.js';
 import {
-  pollWaitingConnector,
+  clearStoredBridgeCredential,
+  clearCandidateBridgeCredential,
+  acceptCommittedCandidateBridgeCredential,
+  readCandidateBridgeCredential,
   readOrCreateConnectorDeviceIdentity,
-  readStoredBridgeCredential,
-  registerWaitingConnector,
+  readStoredBridgeCredentialState,
   validateRemoteBridgeUrl
 } from './bridge-credential.js';
 
@@ -28,7 +29,7 @@ if (process.argv.includes('--health-probe')) {
     product: REMOTE_CONNECTOR_PRODUCT,
     version: REMOTE_CONNECTOR_VERSION,
     mode: 'remote',
-    protocol: BRIDGE_SCHEMA,
+    protocol: BRIDGE_PROTOCOL,
     operationHost: 'official-signed-package-gate',
     recordingCommand: 'omnia.v5.recording-command/v1'
   })}\n`);
@@ -38,18 +39,28 @@ if (process.argv.includes('--health-probe')) {
 const paths = resolveRemoteConnectorPaths();
 ensureRemoteConnectorDirectories(paths);
 const deviceIdentity = readOrCreateConnectorDeviceIdentity(paths.dataRoot);
-const connector = new LocalConnector(paths.dataRoot, fetch, {
+const connector = new WorkstationOmniaSession(paths.dataRoot, fetch, {
   id: deviceIdentity.connectorId,
   name: 'Omnia Agent v5 Remote Connector',
   version: REMOTE_CONNECTOR_VERSION
 });
 const commandGate = new RemoteCommandGate();
 let stopping = false;
-let bridgeState: 'waiting_matching' | 'connecting' | 'connected' | 'disconnected' = 'waiting_matching';
+let bridgeState: 'unpaired' | 'repair_required' | 'connector_incompatible' | 'connecting' | 'connected' | 'disconnected' = 'unpaired';
 let bridgeReason = '';
 let activeOperations = 0;
+let candidateFailureCount = 0;
 let socket: WebSocket | null = null;
 const cancelledRequests = new Set<string>();
+let reconnectAttempt = 0;
+let credentialRepairRequired = false;
+let socketCredentialPairId = '';
+
+async function reconnectDelay(): Promise<void> {
+  const base = Math.min(30_000, 1_000 * (2 ** Math.min(reconnectAttempt, 5)));
+  reconnectAttempt += 1;
+  await new Promise((resolve) => setTimeout(resolve, base + Math.floor(Math.random() * Math.max(250, base / 3))));
+}
 
 function status(): void {
   writeJsonAtomic(paths.status, {
@@ -87,37 +98,21 @@ async function dispatch(request: ConnectorRequest): Promise<unknown> {
 }
 
 async function runSocket(): Promise<void> {
-  const credential = readStoredBridgeCredential(paths.dataRoot);
+  const credentialState = readStoredBridgeCredentialState(paths.dataRoot);
+  const candidateCredential = readCandidateBridgeCredential(paths.dataRoot);
+  const credential = candidateCredential || credentialState.credential;
   if (!credential) {
-    bridgeState = 'waiting_matching';
-    bridgeReason = '正在等待 Omnia Agent Remote Connect 匹配。';
+    if (credentialState.state === 'repair_required') credentialRepairRequired = true;
+    bridgeState = credentialRepairRequired ? 'repair_required' : 'unpaired';
+    bridgeReason = credentialRepairRequired
+      ? '设备凭据已撤销或 generation 失效，需要从 Agent Connect 流程重新配对。'
+      : '尚未绑定 Omnia Agent；请在 Agent 顶部 Connect 流程生成链接码后运行 PairRemoteConnector.cmd。';
     status();
-    try {
-      const lease = await registerWaitingConnector({
-        dataRoot: paths.dataRoot,
-        bridgeUrl: process.env.OMNIA_V5_REMOTE_BRIDGE_URL || REMOTE_CONNECTOR_BRIDGE_URL
-      });
-      bridgeReason = `等待匹配设备 ${lease.connectorId}；lease 将于 ${lease.expiresAt} 到期。`;
-      status();
-      while (!stopping && Date.parse(lease.expiresAt) > Date.now()) {
-        const state = await pollWaitingConnector({ dataRoot: paths.dataRoot, lease });
-        if (state === 'matched') {
-          bridgeReason = '匹配完成，正在建立受保护的 v5 Bridge 会话。';
-          status();
-          return;
-        }
-        if (state === 'expired') return;
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
-      }
-    } catch (error) {
-      bridgeState = 'disconnected';
-      bridgeReason = error instanceof Error ? `等待匹配失败：${error.message}`.slice(0, 500) : '等待匹配失败。';
-      status();
-      await new Promise((resolve) => setTimeout(resolve, 3_000));
-    }
+    await new Promise((resolve) => setTimeout(resolve, 5_000));
     return;
   }
   try {
+    socketCredentialPairId = credential.pairId;
     bridgeState = 'connecting';
     bridgeReason = '';
     status();
@@ -126,12 +121,18 @@ async function runSocket(): Promise<void> {
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     await new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(url, {
-        headers: { Authorization: `Bearer ${credential.token}` },
+        headers: {
+          Authorization: `Bearer ${credential.token}`,
+          'X-Omnia-Protocol': BRIDGE_PROTOCOL,
+          'X-Omnia-Connector-Id': deviceIdentity.connectorId,
+          'X-Omnia-Connector-Version': REMOTE_CONNECTOR_VERSION
+        },
         handshakeTimeout: 15_000,
         maxPayload: 2 * 1024 * 1024
       });
       socket = ws;
       ws.once('open', () => {
+        reconnectAttempt = 0;
         bridgeState = 'connected';
         bridgeReason = '';
         status();
@@ -140,6 +141,18 @@ async function runSocket(): Promise<void> {
         let envelope: BridgeEnvelope;
         try { envelope = JSON.parse(data.toString()) as BridgeEnvelope; } catch { return; }
         if (envelope.schemaVersion !== BRIDGE_SCHEMA) return;
+        if (envelope.kind === 'binding_committed') {
+          if (
+            candidateCredential?.pairId === credential.pairId
+            && envelope.pairId === credential.pairId
+            && envelope.generation === credential.generation
+          ) {
+            if (acceptCommittedCandidateBridgeCredential(paths.dataRoot, envelope.pairId, envelope.generation)) {
+              candidateFailureCount = 0;
+            }
+          }
+          return;
+        }
         if (envelope.kind === 'cancel') {
           if (commandGate.isActive(envelope.requestId)) cancelledRequests.add(envelope.requestId);
           return;
@@ -171,20 +184,87 @@ async function runSocket(): Promise<void> {
           status();
         });
       });
-      ws.once('close', () => resolve());
+      ws.once('close', (code) => {
+        if (code === 4003) {
+          if (candidateCredential?.pairId === credential.pairId) {
+            clearCandidateBridgeCredential(paths.dataRoot);
+            bridgeState = credentialState.credential ? 'disconnected' : 'repair_required';
+            credentialRepairRequired = !credentialState.credential;
+            bridgeReason = credentialState.credential ? '候选绑定验证失败，已保留并恢复旧绑定。' : '候选设备凭据被拒，需要重新配对。';
+          } else {
+            clearStoredBridgeCredential(paths.dataRoot);
+            credentialRepairRequired = true;
+            bridgeState = 'repair_required';
+            bridgeReason = '设备凭据已撤销或 generation 失效，需要从 Agent Connect 流程重新配对。';
+          }
+          status();
+        }
+        resolve();
+      });
       ws.once('error', reject);
+      ws.once('unexpected-response', (_request, response) => {
+        if (response.statusCode === 426) {
+          if (candidateCredential && credentialState.credential) {
+            clearCandidateBridgeCredential(paths.dataRoot);
+            candidateFailureCount = 0;
+            bridgeState = 'disconnected';
+            bridgeReason = '候选绑定协议不兼容，已保留并恢复旧绑定。';
+          } else {
+            bridgeState = 'connector_incompatible';
+            bridgeReason = 'Remote Connector 版本或协议与 Bridge 不兼容。';
+            stopping = true;
+          }
+        } else if ([401, 403].includes(response.statusCode || 0)) {
+          if (candidateCredential) {
+            clearCandidateBridgeCredential(paths.dataRoot);
+            bridgeState = credentialState.credential ? 'disconnected' : 'repair_required';
+            credentialRepairRequired = !credentialState.credential;
+          } else {
+            clearStoredBridgeCredential(paths.dataRoot);
+            bridgeState = 'repair_required';
+            credentialRepairRequired = true;
+          }
+          bridgeReason = credentialRepairRequired ? '设备凭据已失效，需要重新配对。' : '候选绑定失败，正在恢复旧绑定。';
+        }
+        status();
+        ws.terminate();
+        reject(new Error(bridgeReason));
+      });
     });
   } catch (error) {
-    bridgeState = 'disconnected';
-    bridgeReason = error instanceof Error ? error.message.slice(0, 500) : 'Remote Bridge 连接失败。';
+    if (candidateCredential && bridgeState !== 'repair_required' && bridgeState !== 'connector_incompatible') {
+      candidateFailureCount += 1;
+      if (candidateFailureCount >= 3) {
+        clearCandidateBridgeCredential(paths.dataRoot);
+        candidateFailureCount = 0;
+        bridgeReason = credentialState.credential
+          ? '候选绑定连续连接失败，已清除候选并恢复旧绑定。'
+          : '候选绑定连续连接失败，需要重新配对。';
+        if (!credentialState.credential) {
+          credentialRepairRequired = true;
+          bridgeState = 'repair_required';
+        }
+      }
+    }
+    if (bridgeState !== 'repair_required' && bridgeState !== 'connector_incompatible') {
+      bridgeState = 'disconnected';
+      if (!bridgeReason) bridgeReason = error instanceof Error ? error.message.slice(0, 500) : 'Remote Bridge 连接失败。';
+    }
     status();
-    await new Promise((resolve) => setTimeout(resolve, 3_000));
   } finally {
     socket = null;
+    socketCredentialPairId = '';
   }
+  if (!stopping && !credentialRepairRequired) await reconnectDelay();
 }
 
-const timer = setInterval(status, 2_000);
+const timer = setInterval(() => {
+  status();
+  const candidate = readCandidateBridgeCredential(paths.dataRoot);
+  if (candidate && activeOperations === 0 && socket?.readyState === WebSocket.OPEN && candidate.pairId !== socketCredentialPairId) {
+    socket.close(4000, 'candidate credential ready');
+  }
+}, 2_000);
 timer.unref();
 status();
 void (async () => {

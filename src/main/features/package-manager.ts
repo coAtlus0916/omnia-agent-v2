@@ -22,7 +22,7 @@ import {
 import { FeatureRuntimeStore } from './feature-runtime-store.js';
 import { FeatureWorkerSupervisor } from './worker-supervisor.js';
 
-const PRODUCT_VERSION = '0.4.1';
+const PRODUCT_VERSION = '0.4.2';
 const REQUIRED_FEATURE_MEMBERS = [
   'SIGNATURE.json',
   'backend/migrations/001.json',
@@ -1186,15 +1186,30 @@ export class FeaturePackageManager {
             || invocation.featureId !== context.featureId
             || invocation.featureVersion !== context.featureVersion
           ) throw new AppError('FEATURE.OPERATION_IDENTITY_MISMATCH', 'Feature Operation identity is invalid.');
-          return this.runtime!.connector.invokeOperation({
-            schemaVersion: 'omnia.operation-invocation/v1',
-            featureId: context.featureId,
-            featureVersion: context.featureVersion,
-            operationId: String(invocation.operationId || ''),
-            request: invocation.request as Record<string, unknown>,
-            operationPackageDigest: registration.packageDigest,
-            mutationAuthorized: context.allowMutation
-          });
+          try {
+            return await this.runtime!.connector.invokeOperation({
+              schemaVersion: 'omnia.operation-invocation/v1',
+              featureId: context.featureId,
+              featureVersion: context.featureVersion,
+              operationId: String(invocation.operationId || ''),
+              request: invocation.request as Record<string, unknown>,
+              operationPackageDigest: registration.packageDigest,
+              mutationAuthorized: context.allowMutation
+            });
+          } catch (error) {
+            const code = error instanceof AppError ? error.code : String((error as any)?.code || '');
+            if (context.allowMutation && [
+              'REMOTE.MUTATION_UNCERTAIN',
+              'REMOTE.CONNECTOR_DISCONNECTED',
+              'REMOTE.IN_FLIGHT_DISCONNECTED'
+            ].includes(code)) {
+              throw new AppError(
+                'CONNECTOR.RESPONSE_LOST',
+                'Remote mutation 的响应或连接已丢失；effect 状态未知，禁止自动重放，只允许只读 reconcile。'
+              );
+            }
+            throw error;
+          }
         },
         storeCall: async (method, input, context) => this.runtimeStore.call(method, input, context),
         emitEvent: async (input, context) => {
@@ -1282,7 +1297,6 @@ export class FeaturePackageManager {
       if (!context.connection.sessionGeneration || context.connection.sessionGeneration < 1) return 'Connector 会话标识不可用，请重新连接。';
       return '';
     }
-    if (context.connection.transport === 'remote') return 'Remote Connector Operation host 尚未发布；请切换为本地连接。';
     if (!context.connection.connected) return '请先连接 Omnia Pack。';
     if (!context.connection.sessionGeneration || context.connection.sessionGeneration < 1) return 'Connector 会话标识不可用，请重新连接。';
     if (!context.safetyLock.enabled || !context.safetyLock.validForCurrentConnection) {

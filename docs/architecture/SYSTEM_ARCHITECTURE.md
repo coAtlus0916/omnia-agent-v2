@@ -1,15 +1,15 @@
 # Omnia Agent v5 系统架构
 
 状态：Draft for Review  
-架构风格：微内核控制面 + 隔离 Feature Worker + 可替换 Connector Transport  
+架构风格：微内核控制面 + 隔离 Feature Worker + Remote-only Connector Transport
 合同基线：`omnia.contracts/v1`（开发前冻结；变更规则见 `../contracts/CONTRACTS.md`）
 
 ## 1. 决策状态
 
 | 决策 | 状态 | 说明 |
 |---|---|---|
-| 单一 Local 桌面产品 | Accepted（需求约束） | Remote 仅为 Connector Transport |
-| Remote 面向全部版本 | Accepted（用户决策） | 不按 Edition 裁剪；未满足安全/配对门禁时仍禁用 |
+| Remote-only Connector | Accepted（2026-08-03 用户决策） | Shell 删除 Local Transport/子进程/模式切换；公司电脑 Remote Connector 是唯一 Omnia Session owner，见 ADR-0035 |
+| Remote 面向全部版本 | Accepted（用户决策） | 不按 Edition 裁剪；未满足配对/在线/Session/Pack 门禁时失败关闭，无 Local fallback |
 | 三列 Shell，第三列保留聊天 | Accepted（用户决策） | 第二列只放 Feature 树；第三列用固定 Comments + docked Feature 标签，工作台可主动弹出；聊天绑定持久 FeatureContext |
 | 首批四个 Feature | Accepted（用户决策） | 新建与关联、删除元素、删除聊天记录、录制 |
 | 首批开发顺序 | Accepted（用户决策） | 录制 → 删除元素 → 删除聊天记录 → 新建与关联；第四项用窄 canary 完成四 Plane 综合验收 |
@@ -50,9 +50,8 @@ flowchart LR
 
     U -->|"上传、复核、确认、交付"| V5
     V5 -->|"受控 AI 请求"| AI
-    V5 -->|"Local Connector"| O
-    V5 -.->|"Remote Transport 密文中继"| RB
-    RB -.->|"到已配对工作站 Connector"| O
+    V5 -.->|"Remote-only Transport"| RB
+    RB -.->|"到已配对公司工作站 Connector"| O
 ```
 
 边界说明：
@@ -77,10 +76,7 @@ flowchart TB
         AS["Artifact Store"]
         SS["Secret Store"]
         ES["Evidence Store"]
-        LT["LocalTransport Adapter"]
-        RT["RemoteBridgeTransport Adapter"]
-        LC["Local Connector Core<br/>Integration Plane"]
-        OM["Signed Operation Modules"]
+        RT["RemoteConnectorTransport Adapter"]
     end
 
     Shell <-->|"versioned UI API"| Core
@@ -94,10 +90,16 @@ flowchart TB
     Core --> AS
     Core --> SS
     Core --> ES
-    Core -->|"one active adapter"| LT
-    Core -->|"one active adapter"| RT
-    LT <--> LC
-    LC <--> OM
+    Core -->|"only Connector transport"| RT
+
+    subgraph Workstation["公司电脑 Remote Connector 信任域"]
+        RW["Remote Connector Worker"]
+        WS["WorkstationOmniaSession<br/>Edge/CDP/Auth/Pack"]
+        OM["Signed Operation Modules"]
+    end
+    RT -.->|"authenticated Bridge relay"| RW
+    RW --> WS
+    WS --> OM
 ```
 
 `FW1/FW2` 代表任意数量的隔离 Worker，并非预置业务功能。Shell、Core、每个 Worker、Parser 和 Connector 均是独立进程或等价强隔离边界。
@@ -132,7 +134,7 @@ flowchart LR
     ORCH --> AI
     ORCH --> CMD
     CMD --> TMODE
-    TMODE -->|"LocalTransport or RemoteBridgeTransport"| CMD
+    TMODE -->|"RemoteConnectorTransport only"| CMD
     ORCH --> AUD
     CMD --> AUD
     MCR --> AUD
@@ -190,8 +192,6 @@ flowchart TB
         CP["Control Service（数据 owner）"]
         F1["Feature Worker<br/>job token + quotas"]
         PS["Parser Sandbox<br/>无网络、临时目录"]
-        CN["Connector Core<br/>Omnia credential owner"]
-        OP["Operation Worker<br/>signed + allowlisted"]
     end
     subgraph LocalData["受控用户数据目录"]
         D1["Core DB"]
@@ -200,7 +200,7 @@ flowchart TB
         D4["OS Secret Store"]
         D5["Managed Content Store"]
     end
-    subgraph Optional["可选远程边界"]
+    subgraph RemoteBoundary["必需的 Remote Connector 边界"]
         BR["Remote Bridge<br/>authenticated relay + TTL"]
         RC["Remote Connector 工作站<br/>Supervisor + A/B Core + Operation slots"]
         UP["受信更新服务<br/>signed manifest/package"]
@@ -214,8 +214,6 @@ flowchart TB
     CP --> D3
     CP --> D4
     CP --> D5
-    CP --> CN
-    CN --> OP
     CP -.-> BR
     BR -.-> RC
     UP -.-> BR
@@ -231,7 +229,8 @@ flowchart TB
 - Remote Connector Supervisor 在工作站本地验证在线更新的目标身份、签名、hash/SBOM、sequence 和兼容性；Bridge/更新服务不能代替最终信任判断。
 - Worker 只获得短期 job token、只读输入句柄、专属输出上传句柄和资源配额。
 - Parser 默认无网络，不继承用户环境秘密；压缩包递归、文件数、解压比、CPU、内存、时间上限均需配置。
-- Connector 是 Omnia credential owner；Core 只持有设备/会话逻辑 ID 和受控命令状态。
+- 公司电脑 Remote Connector 的 `WorkstationOmniaSession` 是 Omnia credential owner；Shell/Core 只持有受保护 Remote binding、设备/会话逻辑 ID 和受控命令状态。
+- Shell release 不包含 Local Connector 子进程，也不创建 Edge profile、CDP port state 或 Connector instance lock。
 
 ## 7. 统一 Run 数据流
 
@@ -271,52 +270,37 @@ sequenceDiagram
 
 若功能不需要 AI 或 Omnia，相应步骤被合同明确省略，不创建假调用。Run 仍使用同一状态、事件和 Evidence 模型。Agent 发起的 create/update/delete 只有在真实读回或 reconcile 证明后才推进 Managed Content current；`partial/uncertain` 不把计划值写成当前事实。
 
-## 8. Local 时序
+## 8. Remote-only 配对与命令时序
 
 ```mermaid
 sequenceDiagram
     participant C as Control Plane
-    participant TM as Transport Manager
-    participant L as LocalTransport
-    participant X as Local Connector
-
-    C->>TM: active transport request
-    TM->>TM: verify persisted mode=local + active lease
-    TM->>L: submit(command envelope)
-    L->>X: protected local IPC
-    X-->>L: claim/progress/result/artifact
-    L-->>TM: normalized transport events
-    TM-->>C: same ConnectorTransport contract
-```
-
-Local 可优化拓扑，但不得改变业务命令 Schema、确认、幂等、结果或 uncertain 语义。
-
-## 9. Remote 时序
-
-```mermaid
-sequenceDiagram
-    participant C as Control Plane
-    participant TM as Transport Manager
-    participant R as RemoteBridgeTransport
+    participant R as RemoteConnectorTransport
     participant B as Remote Bridge
-    participant X as Paired Connector
+    participant X as Paired Remote Connector
+    participant S as WorkstationOmniaSession
 
-    C->>TM: submit using active remote lease
-    TM->>R: command envelope
+    C->>B: first-use pairing session
+    B-->>C: one-time link code + protected poll secret
+    C-->>X: user transfers code to company workstation
+    X->>B: consume one-time code + device identity
+    B-->>C: active binding + generation + Shell credential
+    C->>R: submit using verified binding generation
     R->>B: authenticated encrypted relay
     B->>X: deliver to bound device
+    X->>S: execute standard Connector contract
+    S-->>X: progress/result/evidence
     X-->>B: progress/result/artifact chunks
     B-->>R: ordered relay with TTL
-    R-->>TM: normalized transport events
-    TM-->>C: same ConnectorTransport contract
+    R-->>C: normalized transport events
 ```
 
-Bridge 只知道路由所需逻辑身份和密文/受控摘要。Remote 故障不触发 Local fallback。
+Bridge 只知道路由所需逻辑身份和密文/受控摘要。一次性链接码短期、单次、role/session-bound 且不进入日志或长期存储。普通重启复用受保护设备 binding；Remote 故障明确失败且不存在 Local fallback。
 
 ## 10. 架构不变量
 
 1. Run/Event/Command 必须先持久化再产生外部 effect。
-2. 同一时刻仅一个 active Transport lease。
+2. 同一 Shell binding 只有一个 active Remote generation；撤销或替换后的 generation 不能继续认证。
 3. mutation 命令绑定 connector/session/engagement/pack/run/operation/effect/plan digest。
 4. 内存状态只是缓存或 lease 投影；重启后的真相来自数据库和 reconcile。
 5. Core 不解析业务文档；通用 quarantine/解析调度与具体场景算法分离。
@@ -335,7 +319,7 @@ Bridge 只知道路由所需逻辑身份和密文/受控摘要。Remote 故障�
 
 ## 11. 部署与升级边界
 
-- 基础安装包先包含稳定 Shell/Core/Transport/Connector Core，不内置首批业务 Feature；干净安装的业务 Registry 为空。
+- 基础 Shell 安装包包含稳定 Shell/Core/Remote Transport，不包含 Local Connector 或工作站 Session Core；公司电脑 Remote Connector 单独发布。干净安装的业务 Registry 为空。
 - 四个首批功能是可独立安装、启停、升级和回滚的签名 Feature 包，按录制 → 删除元素 → 删除聊天记录 → 新建与关联逐包验收，见 [ADR-0022](../adr/0022-shell-first-independent-feature-packages.md)。
 - 每个 Feature 包携带签名文档 manifest、四 Plane 实现映射和运维/测试文档；Package Manager 将其发布到 Documentation Registry，并与 Feature Registry 在同一提交中切换 active/previous，见 [ADR-0023](../adr/0023-feature-documentation-bundle.md)。
 - Feature 独立交付已确定；生产仅通过官方受控发布服务取得官方签名 Feature/Operation 包。首版不开放第三方或任意离线导入；未来只可另行评审官方签名离线包，见 [ADR-0026](../adr/0026-official-signed-package-supply-chain.md)。
@@ -345,22 +329,22 @@ Bridge 只知道路由所需逻辑身份和密文/受控摘要。Remote 故障�
 - Core 升级前 drain 新 Run、活动 upload 和 mutation；`uncertain` 必须保留并在升级后只读对账。
 - Feature A 升级不能重启 Core、Connector Core 或 Feature B。
 - Module Store migration 只由其 owner 运行，使用 candidate 副本/expand-contract 和观察期。
-- Remote 面向全部版本已确定；Bridge 的部署、身份系统、端到端保护、TTL 与 SLA 仍为 `Proposed`。
+- Remote 面向全部版本且是唯一 Transport；一次性链接码、持久 binding/generation、撤销和无 fallback 由 ADR-0035 约束。Bridge 生产部署、端到端保护、TTL 与 SLA 仍须持续威胁评审。
 - 产品根内 `releases` 与稳定 `data` 分离；更新/回滚只切换 release/activation，Secret 在复制或迁机后要求重配；受控移除实例还必须撤销外部 Secret、Remote 注册和服务，见 [ADR-0027](../adr/0027-portable-data-root-and-update-boundary.md)。
 
 ## 12. 架构验收门槛
 
 - [ ] 依赖扫描证明无 Feature→Feature import、Feature→Core DB、Delivery→AI/Omnia。
 - [ ] 进程测试证明 Feature A 崩溃/升级时 Feature B 的 Run 连续。
-- [ ] Local/Remote 通过同一合同套件和同一命令 replay fixture。
-- [ ] Transport 切换在在途 mutation、未解决 uncertain、Connector Artifact 上传、状态未知或只读任务无法安全结束时被阻断。
+- [ ] import/build/package/process 扫描证明不存在 Shell Local adapter、Local 子进程、模式切换、Local IPC 或 fallback。
+- [ ] Remote binding generation、在途 mutation、未解决 uncertain、Connector Artifact 和断线恢复遵守同一命令/证据合同。
 - [ ] Core/Connector 源码结构门禁拒绝业务 Feature ID/操作分支进入核心。
 - [ ] 每个 capability 的四 Plane 实现映射与 UI action、schema、migration、Template binding、Connector operation 和测试 ID 双向一致。
 - [ ] 文档缺失、digest/链接错误、敏感内容或危险 Markdown 会拒绝候选；代码与项目文档的安装/升级/回滚保持原子一致。
 - [ ] create/update/delete/adopt/partial/uncertain/reconcile 能正确维护 Managed Content current、revision、relation、change 与 tombstone。
 - [ ] Phase 2 查询能取得经验证的 RAIT/Factors 等域字段；schema/freshness/unresolved 不满足时失败关闭，且无法直连 Store。
 - [ ] Remote Connector 在线升级通过签名/sequence/A-B/安全窗口/probation/回滚测试，且失败不启动 Local claim。
-- [ ] Workspace 轻/重抓取通过权威 identity、改名、同名、缺失父级、分页/取消和 Local/Remote parity 测试。
+- [ ] Workspace 轻/重抓取在 Remote Worker 上通过权威 identity、改名、同名、缺失父级、分页/取消测试；Shell 不实现第二份本地抓取。
 - [ ] 官方签名包以外的所有生产包失败关闭，且无任意导入绕过入口。
 - [ ] 更新、回滚和旧 release 清理不改变 `data`；迁机后 Secret 明确要求重配。
 - [ ] 重启恢复只从持久状态重建，不自动重放 mutation。

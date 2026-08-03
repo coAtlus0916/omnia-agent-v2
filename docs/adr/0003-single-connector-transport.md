@@ -4,6 +4,8 @@
 日期：2026-07-30  
 决策来源：v5 已收敛产品与架构约束
 
+> 2026-08-03 supersession：本文关于 LocalTransport、首次默认 Local 和 Local/Remote 切换的部分已由 [ADR-0035](0035-remote-only-connector-and-link-code-pairing.md) 取代。单一合同、generation/fencing、无静默 fallback 和签名 Operation/Gate 原则继续有效；本文件其余文字保留为历史决策证据。
+
 ## Context
 
 v5 是单一 Local 产品：首次使用本地 Connector，用户可在设置切换 Remote 并沿用上次有效值。Local/Remote 如果形成两套业务实现，会在确认、幂等、错误、Artifact 和 uncertain 上漂移。故障时静默 fallback 可能导致命令在另一工作站/Session 重复执行。

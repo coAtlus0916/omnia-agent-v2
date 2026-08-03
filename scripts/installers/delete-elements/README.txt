@@ -11,7 +11,7 @@ Omnia Agent v5「删除元素」Feature __FEATURE_VERSION__ 安装说明
 2. 完全关闭 Omnia Agent v5。
 3. 双击本安装包里的 InstallFeature.cmd。
 4. 看到“安装成功”后，重新打开 Omnia Agent v5。
-5. 使用本地连接进入 Omnia，打开「其他 > 删除元素」。
+5. 从 Shell 顶部 Connect 使用 Remote Connector 连接真实 Omnia Pack，再打开「其他 > 删除元素」；v5 不提供 Local fallback。
 
 如果同一目录有多个便携包
 --------------------------

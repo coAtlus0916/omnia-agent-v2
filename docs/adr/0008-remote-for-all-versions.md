@@ -4,6 +4,8 @@
 日期：2026-07-30  
 决策来源：用户产品决策
 
+> 2026-08-03 supersession：Remote 面向全部版本继续有效；本文关于“单一 Local 产品”、首次默认 Local、设置页切换和 Local/Remote parity 的双模式部分已由 [ADR-0035](0035-remote-only-connector-and-link-code-pairing.md) 取代。v5 当前为 Remote-only 且无 Local fallback。本文件其余文字保留为历史决策证据。
+
 ## Context
 
 v5 只维护一个 Local 产品，但 Connector 可以位于本机或远程工作站。此前尚未决定 Remote 只供开发/验收还是也提供给普通用户。

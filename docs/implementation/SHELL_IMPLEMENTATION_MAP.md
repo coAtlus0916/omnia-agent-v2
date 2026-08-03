@@ -1,23 +1,25 @@
 # Shell Baseline 实现映射
 
-版本：`0.4.1`  
-状态：Shell UI regression patch implemented；录制 0.1.1 为随 Shell 自动注册的独立签名 Feature，删除元素 0.1.2 为独立后装 Feature。真实 Omnia mutation 仍按 canary 边界表达。
+版本：`0.4.2`
+状态：Remote-only 候选；继承 Shell 0.4.1 UI regression patch。录制沿用当前独立签名 patch，删除元素 0.1.2 为独立后装 Feature。公司电脑真实 Remote Pack canary 未通过/待 canary。
 
 ## 范围
 
-Shell 原装平台包含 Core Store、Feature/Documentation Registry、通用 Worker/Store/Event/Managed Content ports、Local/Remote Transport 和 Operation host 基础设施。业务不硬编码进 Shell：omnia.recording 0.1.1 作为独立签名 Feature 随便携包携带并首次启动自动升级/注册；删除元素 0.1.2 作为独立签名 Feature 按需后装。删除聊天记录、新建与关联仍未交付。
+Shell 原装平台包含 Core Store、Feature/Documentation Registry、通用 Worker/Store/Event/Managed Content ports 和唯一 RemoteConnectorTransport。Shell 不包含 Local Connector、Edge/CDP Session Core、Transport router 或 fallback。业务不硬编码进 Shell：当前 recording patch 作为独立签名 Feature 随便携包携带并首次启动自动升级/注册；删除元素 0.1.2 作为独立签名 Feature按需后装。删除聊天记录、新建与关联仍未交付。
 
 | 能力 | Delivery | Control & Data | Integration | 真实状态 |
 |---|---|---|---|---|
-| 连接 | `src/renderer/index.tsx` 的连接按钮与状态 | `ShellService.connect` 持久化连接快照 | `LocalConnectorAdapter` → 独立 Connector → 受控 Edge/CDP | 已实现；真实 Omnia canary 待执行 |
-| 刷新 | 首页刷新按钮与错误提示 | `ShellService.refresh` 更新 Core 状态 | `LocalConnector.refresh` 重新加载页面、识别 Pack，并触发轻抓取 | 已实现；失败不覆盖成功 observation |
+| 首次配对 | 顶部 Connect 引导显示短期链接码/expiry | Core pairing session、safeStorage credential、Remote binding/generation/audit | Bridge 0.4.1 → Remote Connector 0.3.5 消费链接码 | 候选实现；真实公司电脑配对待 canary |
+| 连接 | 顶部 Connect/Cancel 与分阶段状态 | `ShellService` 持久 Remote-only connect state，最长 10 分钟只读 polling | Remote transport → Bridge → Remote Worker → `WorkstationOmniaSession` | 自动化收口中；真实 Omnia canary 待执行 |
+| 刷新 | 顶部刷新按钮与错误提示 | `ShellService.refresh` 更新 Core 状态 | Remote Worker 的 Session Core 重新加载页面、识别 Pack，并触发轻抓取 | 失败不覆盖成功 observation；真实 Pack 待 canary |
 | 保活 | 启停、运行/下次/错误状态 | Core DB `keepalive_state` + 后台 5 秒调度扫描 | 到期调用真实只读 refresh | 已实现；重启恢复 |
 | 安全锁 | 权威 Section/Workspace 树与保存 | `workspace_observations`、`workspace_safety`、CAS 与目标校验 | `workspace_light_read` 只读 Operation | 已实现；缺 `parentSectionId` 失败关闭 |
 | 对话 | 第三列消息列表与输入区 | `chat_sessions/chat_messages` 持久化状态 | Provider 只由 Main 受控调用；未配置则不调用 | 已实现；无假回复 |
 | 缩放 | 右上角/设置 `− 百分比 +`、快捷键 | `user_preferences` CAS；Main 对所有当前/新建 WebContents `setZoomFactor` | Feature view/window 继承同一值 | 0.4.1 已按实际 DPR/viewport/bounds 验证；重启恢复、无 CSS 双缩放 |
 | Splitter | Feature 菜单/Tabbed Host、Comments 内容/composer、设置导航/内容 | `layout_preferences` 与 `settings.main` CAS | 不适用 | 已实现；pointer/键盘；Rail 固定且无 splitter |
 | Native Surface 可见性 | Renderer 只声明 active tab/overlay | `SurfaceWindowManager` 唯一拥有 attached/visible，Comments/Settings 时附着数为 0 | Worker/Run 生命周期不随隐藏终止 | 0.4.1；任意时刻最多一个 docked view |
-| 设置稳定布局 | 固定/clamp 外框、左右独立滚动、公共 splitter | `settings.main` LayoutPreference CAS | 不适用 | 0.4.1；各真实子页外框几何稳定 |
+| 设置稳定布局 | 固定/clamp 外框、左右独立滚动、公共 splitter；无 Connector 子菜单 | `settings.main` LayoutPreference CAS | 配对/修复只从顶部 Connect 进入 | 继承 0.4.1；0.4.2 删除 Local/Remote/Bridge/Pair 表单 |
+| 重新配对/解除绑定 | Connect 错误/详情弹层，明确确认 | candidate 原子切换、previous generation 撤销；解除不清其他用户数据 | Bridge binding store + 双端 protected credential | 自动化收口中；真实撤销/重配待 canary |
 
 ## 进程与信任边界
 
@@ -25,11 +27,12 @@ Shell 原装平台包含 Core Store、Feature/Documentation Registry、通用 Wo
 Electron Renderer（无 Node）
   → contextIsolation + sandbox preload
   → allowlisted typed IPC
-Electron Main / Core（SQLite owner、AI broker）
-  → framed child-process IPC: omnia.connector-ipc/v1
-v5 Local Connector（Omnia credential/session owner）
-  → verified dedicated Edge CDP
-  → allowlisted read-only Omnia routes
+Electron Main / Core（SQLite owner、AI broker、Remote binding owner）
+  → authenticated RemoteConnectorTransport
+v5 Bridge 0.4.1（binding/generation/relay/heartbeat）
+  → v5 Remote Connector Worker 0.3.5 / sequence 8
+  → WorkstationOmniaSession（Omnia credential/session owner）
+  → verified dedicated Edge CDP + signed OperationHost
 ```
 
 关键约束：
@@ -38,11 +41,12 @@ v5 Local Connector（Omnia credential/session owner）
 - Connector 不接收任意 URL/method/body；基础 Shell 使用 `health/connect/status/refresh/workspace_light_read`，已装载的官方签名 Operation 通过固定 step gate 执行。
 - Omnia host 仅允许 Deloitte Omnia HTTPS suffix；回环 CDP 必须同时匹配动态端口与精确 profile。
 - Connector 退出不关闭 Edge。
+- Shell package、Main 和 data root 不包含/启动 Local Connector，不创建 Edge profile/port/instance lock；Remote 故障不存在 fallback。
 - 具体 Feature 的 mutation 是否可用由签名 Operation、依赖状态和真实 canary 决定；失败时明确禁用，不静默回退或重放猜测。
 
 ## Remote
 
-`0.3.4 / sequence 7` Remote Connector 和 `0.4.0` Bridge 已独立部署。Discovery、状态/轻抓取、录制和签名 Operation register/invoke 传输可用；Shell 设置页消费 Shell 角色一次性码，Remote 便携包消费 Connector 角色一次性码。Bridge token 由 Shell safeStorage/Remote DPAPI 保护。一次性 discovery 成功后，设置页显示已匹配状态并隐藏重复查找入口；同一 Bridge 的重复配对请求由 Main 幂等处理，不会把“当前没有等待中的 Connector”误报为首次匹配失败。只有目标 Remote Transport 与对应 Connector 真实可用时才提交模式切换；失败保持原模式，不启动 Local fallback。具体 create/delete 等业务 mutation 仍待公司电脑真实 canary。
+`0.3.4 / sequence 7` Remote Connector 和 `0.4.0` Bridge 是不可变 historical previous。0.4.2 配套候选为 Remote Connector `0.3.5 / sequence 8` 与 Bridge `0.4.1`：删除 waiting discovery/匿名候选认领，改为顶部 Connect 创建短期链接码、公司电脑 Connector 消费、双端保存长期受保护 credential。普通重启/断线不重新配对；撤销/不可恢复进入 `repair_required`。`state` envelope、heartbeat freshness、协议兼容和 Pack Session 分开投影。具体真实 Pack、录制与 mutation 仍待公司电脑 canary。
 
 ## AI
 
@@ -64,7 +68,7 @@ canary 未通过不改变失败关闭语义。
 
 ## 历史快照：正式版实施增量（2026-07-31）
 
-以下表格记录 0.2.0 当时的实施范围。它保留作验收证据，不覆盖本页顶部 0.4.1 状态；当前 Feature/Remote 状态以 [Feature 包总览](FEATURE_PACKAGE_CATALOG.md) 和 [Remote 0.3.4 发布记录](REMOTE_CONNECTOR_0_3_4_RELEASE.md) 为准。
+以下表格记录 0.2.0 当时的实施范围。它保留作验收证据，不覆盖本页顶部 Remote-only 0.4.2 状态；当时的 Local/Remote 设置已被 [ADR-0035](../adr/0035-remote-only-connector-and-link-code-pairing.md) 取代。
 
 版本：0.2.0。范围仍只有三列首页 Shell，无业务 Feature。
 
@@ -94,12 +98,10 @@ Base URL 必须 HTTPS，禁止 URL 凭据、查询参数、localhost、私网、
 
 Custom 仅声明 OpenAI-compatible 合同。它可填写 Nova API 地址，但没有验证 Nova 专有协议。
 
-## 传输一致性
+## Remote-only 传输
 
-Local 与 Remote 只暴露：
+Remote 只暴露：
 
 `health | connect | status | refresh | workspace_light_read`
 
-Remote 不增加 Omnia mutation，也不把任意 URL/method/body 传给 Connector。模式切换必须先
-证明目标 Transport 可用，再持久化；失败保持原模式，不静默 fallback。Remote 模式启动时不会
-启动 Local Connector。
+Remote 不把任意 URL/method/body 传给 Connector；mutation 只使用官方签名 Operation。Bridge、Connector、Session 或 Pack 不可验证时失败关闭，且代码、IPC、package 和运行时均不存在 Local fallback。

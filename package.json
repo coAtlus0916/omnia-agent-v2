@@ -1,7 +1,7 @@
 {
   "name": "omnia-agent-v5-shell",
-  "version": "0.4.1",
-  "description": "Omnia Agent v5 formal local-first shell baseline",
+  "version": "0.4.2",
+  "description": "Omnia Agent v5 Remote-only shell",
   "private": true,
   "type": "module",
   "main": "dist/main/main.cjs",
@@ -27,8 +27,8 @@
     "test": "tsx --test tests/*.test.ts",
     "test:independence": "tsx --test tests/independence.test.ts",
     "acceptance:ui-regression": "node scripts/ui-regression-acceptance-v5.mjs",
-    "acceptance:upgrade-0.4.1": "node scripts/portable-upgrade-0.4.0-to-0.4.1.mjs",
-    "acceptance:portable-0.4.1": "node scripts/portable-0.4.1-smoke.mjs",
+    "acceptance:upgrade-0.4.2": "node scripts/portable-upgrade-0.4.1-to-0.4.2.mjs",
+    "acceptance:portable-0.4.2": "node scripts/portable-0.4.2-smoke.mjs",
     "check": "npm run lint && npm run typecheck && npm test && npm run build && npm run test:independence"
   },
   "engines": {

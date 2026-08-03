@@ -23,7 +23,7 @@ Omnia Agent v5 是一个本地优先、契约驱动、模板优先、功能包�
 
 ## 2. 产品原则
 
-1. **单一 Local 产品**：只维护一个面向用户的本地桌面产品。Remote 是 Connector Transport 选项，不是第二套在线产品。
+1. **Remote-only Connector**：只维护一个桌面 Shell 和一条 Remote Connector 产品链；Shell 不提供 Local Transport、模式切换或 Local fallback，公司电脑 Remote Connector 是唯一 Omnia Session owner。
 2. **后台唯一事实**：刷新、重启、多窗口都从后台恢复；前端内存状态不得冒充任务事实。
 3. **真实入口**：按钮、菜单、统计、筛选、搜索、导出和详情入口只有在真实后端、真实数据或真实状态逻辑闭环存在时才开放。
 4. **安全写入**：所有 Omnia mutation 必须预检、冻结计划、明确确认、幂等、使用并发令牌并写后读回；`uncertain` 禁止自动重试。
@@ -40,7 +40,7 @@ Omnia Agent v5 是一个本地优先、契约驱动、模板优先、功能包�
 |---|---|---|
 | 业务用户 | 选择功能、提交资料、复核差异、确认执行、取得成果 | 不接触数据库、密钥、内部路径或任意 Connector 命令 |
 | 模板/规则负责人 | 审核场景、模板、默认规则、白名单 Patch 和校验器 | 用户本人或持有该用户针对精确 TemplateVersion/digest 的单次授权的 Codex 可发布；记录授权/签名/validation/Evidence；不能原地修改已发布模板 |
-| 本机管理员 | 管理官方签名功能包、配置 Provider/Remote、checkpoint/恢复、查看脱敏诊断 | 管理操作必须审计；不能读取明文 Key、导入第三方/未签名包或关闭安全门禁 |
+| 本机管理员 | 管理官方签名功能包、配置 Provider、从 Connect 流程诊断/修复 Remote binding、checkpoint/恢复、查看脱敏诊断 | 管理操作必须审计；不能读取明文 Key/Connector credential、导入第三方/未签名包或关闭安全门禁 |
 | 开发/发布人员 | 构建签名包、运行合同测试和真实 canary | 不因开发便利绕过签名、确认、对账或数据隔离 |
 
 本地单用户形态不等于“无授权”。管理员能力与普通业务入口仍必须在合同和审计上区分。
@@ -61,7 +61,8 @@ Omnia Agent v5 是一个本地优先、契约驱动、模板优先、功能包�
 - 权威 Workspace 轻抓取（Section + Workspace）和按 Feature/选定 Workspace 有界的重抓取（Section + Workspace + 必要元素）；
 - 模板目录、场景选择、Run 专属模板实例和最小 Patch；
 - DeepSeek 与 OpenAI-compatible Custom Provider 配置；Nova 协议验证暂缓，未来实测后再决定专用 adapter；
-- Local/Remote 两种 Connector Transport，任一时刻仅一个 active；
+- 唯一 Remote Connector Transport；没有 Shell Local Transport、Local 子进程、模式切换或 fallback；
+- 顶部 Connect 中的首次一次性链接码、长期受保护设备 binding、撤销、重新配对和 Remote Pack Connect 状态机；
 - Remote Connector 的签名分层在线升级：优先独立升级 Operation Module，必要时安全升级 Connector Core；
 - 仅从官方受控发布服务取得并激活官方签名的 Feature/Operation 包；首版不开放第三方或任意离线包导入；
 - 程序 release 与可变 data 在同一稳定产品根内分离；更新不得覆盖 data，Secret 使用 Windows 保护且迁机后重新配置；
@@ -72,6 +73,7 @@ Omnia Agent v5 是一个本地优先、契约驱动、模板优先、功能包�
 ### 4.2 非目标
 
 - 面向用户维护一套独立在线版产品；
+- Shell 内置 Local Connector、Local/Remote 双模式、隐藏 Local fallback 或 Connector 设置子菜单；
 - 延续 v4 的多 Agent、Employee、Group Room 或“+ 添加 Agent”信息架构；
 - 通用低代码工作流设计器、任意脚本执行或任意 HTTP 代理；
 - 让前台解析 Excel/PDF/Word、直接调用 AI、直连数据库或 Omnia；
@@ -101,8 +103,8 @@ Omnia Agent v5 是一个本地优先、契约驱动、模板优先、功能包�
 
 ### 5.1 首次启动
 
-1. 本地应用启动后台并读取持久配置；没有有效 Transport 记录时选择 `local`。
-2. 后台验证 Core DB、Secret Store、Artifact Store、模块 registry 和 Local Connector 身份/健康。
+1. 本地应用启动后台并读取持久配置；没有有效 Remote binding 时保持真实 `unpaired`，不启动 Local Connector。
+2. 后台验证 Core DB、Secret Store、Artifact Store、模块 registry、Bridge 配置和已有 Remote binding；只有实时验证后才投影在线状态。
 3. Shell 获取真实功能导航快照；只有 `installed + enabled + compatible + healthy + authorized` 的叶子可进入。
 4. 任一必要组件失败时，显示真实失败原因和可执行的诊断/修复入口；不得展示虚构业务结果。
 
@@ -140,13 +142,15 @@ Omnia Agent v5 是一个本地优先、契约驱动、模板优先、功能包�
 6. `uncertain` 时禁止自动重放，禁止切换 Transport；用户只能启动只读 reconcile。
 7. 对账证明已应用则原命令/Run 成功；证明未应用则原命令转为 `closed_not_applied`、Run 转为 `failed`，任何重试都必须形成新 Run、新计划、新确认和新命令。
 
-### 5.5 切换 Local/Remote
+### 5.5 Remote 首次配对、恢复和解除绑定
 
-1. 用户在设置中发起切换；后台先冻结新 Run 接收。
-2. 有在途 mutation、未解决 `uncertain`、Connector Artifact 上传、状态未知，或只读任务无法按合同取消/完成时阻断切换。
-3. 后台对候选 Transport 完成地址、身份、配对、健康和 capability 验证。
-4. 原子切换 active lease，撤销旧路由，再持久化“上次有效值”。
-5. 失败时保持旧 active Transport；若旧 Transport 本身不可用，则明确失败，不静默选另一条路径。
+1. 用户第一次点击顶部 Connect；Shell 发现没有有效 Remote binding，创建短期 pairing session 并展示一次性链接码。
+2. 用户在公司电脑 Remote Connector 输入该码。Bridge 校验产品、协议、角色、expiry 和单次消费；禁止匿名 discovery 或候选设备枚举。
+3. Connector identity、版本、协议和健康验证成功后，Bridge 激活 `pairId + generation`；Connector 以 DPAPI CurrentUser 保存设备 credential，Shell 以 safeStorage/实例加密保存 Shell credential。
+4. 后续 Shell、Connector、Bridge 普通重启或网络恢复自动复用 binding，不再次显示链接码。实时健康未恢复前不得因 token 存在显示 connected。
+5. 用户在 Connect 错误/详情流程明确确认“重新配对”时建立 candidate；candidate 失败保留旧 active，成功才原子切换并撤销 previous generation。
+6. “解除绑定”只撤销 Connector identity/credential，不删除聊天、Feature、Evidence、附件、文档或其他用户数据。
+7. credential 被撤销、不可恢复或设备重装时显示 `repair_required`；不得无限重试旧 token，也不得 fallback Local。
 
 ### 5.6 Remote Connector 在线升级
 
@@ -169,7 +173,7 @@ Omnia Agent v5 是一个本地优先、契约驱动、模板优先、功能包�
 3. 删除、新建元素、关联或编辑底稿需要元素目录时，再对用户选定 Workspace 执行重抓取。
 4. 重抓取只读取当前 Feature capability 声明的元素类型和必要字段，必须分页、可取消、可观测并有 deadline；禁止默认爬完整 Pack 的全部正文/关系。
 5. 历史读取结果可以带新鲜度复用，但 Sync 只是可选性能优化。生成 mutation 计划和提交前仍分别执行窄范围实时检查。
-6. Local/Remote 使用同一 profile、scope、分页、Evidence 和错误合同。完整决定见 [ADR-0025](../adr/0025-authoritative-light-heavy-workspace-reads.md)。
+6. Remote Worker 的 `WorkstationOmniaSession` 使用同一签名 profile、scope、分页、Evidence 和错误合同；Shell 不实现第二套本地读取。完整决定见 [ADR-0025](../adr/0025-authoritative-light-heavy-workspace-reads.md)与 [ADR-0035](../adr/0035-remote-only-connector-and-link-code-pairing.md)。
 
 ## 6. 前台信息架构
 
@@ -292,7 +296,8 @@ Omnia Agent v5 是一个本地优先、契约驱动、模板优先、功能包�
 
 ### 7.3 设置两列
 
-- 设置 Surface 使用两列：左列为真实设置菜单，右列为当前设置的具体内容；当前至少包含 AI 设置和连接器设置。
+- 设置 Surface 使用两列：左列为真实设置菜单，右列为当前设置的具体内容；保留 AI、安全锁等具有真实 Core action/state 的设置。
+- 设置中不得存在 Connector 子菜单、Local/Remote 按钮、Bridge URL、候选 Connector ID、查找/匹配或 Pair ID；首次/重新配对和解除绑定只从顶部 Connect 流程进入。
 - 两列分别拥有独立 overflow/滚动容器，滚动互不影响。
 - 两列边界使用公共 `settings.main` Splitter 并持久化；这一规则不改变主 Shell 第一列的最小固定宽度。
 - 没有真实读取、保存、测试和错误状态合同的设置项不得做成可点击菜单。
@@ -328,9 +333,12 @@ Omnia Agent v5 是一个本地优先、契约驱动、模板优先、功能包�
 
 ### 8.3 Connector 与写入
 
-- [ ] 首次为 Local，成功切换后重启沿用上次有效 Transport。
-- [ ] 同一时刻只有一个 active Transport lease。
-- [ ] 故障不静默 fallback；在途 mutation、未解决 `uncertain`、Connector Artifact 上传、状态未知或无法安全结束的只读任务阻断切换。
+- [ ] Shell 只有 Remote Transport；构建、进程、IPC、设置和运行时不存在 Local adapter、Local 子进程、模式切换或 fallback。
+- [ ] 首次链接码短期、单次、角色/会话绑定且不落日志；匿名调用者不能枚举或自动认领 Connector。
+- [ ] 配对后 Shell/Connector/Bridge 普通重启和网络恢复不要求链接码；撤销/凭据不可恢复进入 `repair_required`。
+- [ ] 重新配对 candidate 失败保留旧 active，成功后 previous generation 失效；解除绑定不删除其他用户数据。
+- [ ] Bridge WSS、Connector online、browser/CDP、Authorization、Engagement 和 Pack hierarchy 分开验证；不得仅凭 token 或 socket 显示 connected。
+- [ ] 故障明确失败且不静默 fallback；在途 mutation 或未解决 `uncertain` 继续遵守禁止重放和只读 reconcile。
 - [ ] mutation 完成预检、计划冻结、确认、幂等、并发令牌和写后读回。
 - [ ] `uncertain` 不自动重试，只允许只读 reconcile。
 - [ ] 真实 Omnia canary 经 Shell → 后台 → Feature → Connector → 已登录 Omnia 会话完成。
@@ -370,7 +378,7 @@ DeepSeek 正式版合同差异与实施清单见 [DeepSeek V4 Flash 官方 API �
 |---|---|---|
 | P-01 | 主界面保持三列，第三列保留聊天 | Accepted，见 ADR-0010；列职责更新见 ADR-0032 |
 | P-02 | 首批为新建与关联、删除元素、删除聊天记录、录制 | Accepted，见 ADR-0018 |
-| P-03 | Remote Transport 面向全部版本 | Accepted，见 ADR-0008 |
+| P-03 | Remote Connector 面向全部版本；2026-08-03 起进一步收敛为唯一 Transport | Accepted；ADR-0008 的双模式部分由 ADR-0035 取代 |
 | P-09 | Nova 协议当前不验证，不阻塞首批范围 | Deferred，见 ADR-0013 |
 | P-11 | 开发顺序为录制 → 删除元素 → 删除聊天记录 → 新建与关联；第四项完成四 Plane 综合验收 | Accepted，见 ADR-0021；新建与关联范围/canary 见 ADR-0018 |
 | P-13 | Remote Connector 保留分层在线升级能力，并尽量少升级 Core | Accepted，见 ADR-0019 |
@@ -391,6 +399,7 @@ DeepSeek 正式版合同差异与实施清单见 [DeepSeek V4 Flash 官方 API �
 | P-23 | 第一列为只含 OA 与底部设置的最小固定 Rail；顶部会话栏跨第二/第三列；设置采用可调双列独立滚动 | Accepted，见 ADR-0032 与主界面 UI 布局规范 |
 | P-24 | 第二列只保留无标题栏的真实功能树；第三列聊天事实和唯一确认保持；连接控件参考 v4 的胶囊/刷新/A 状态；默认 Feature placement 已由 P-25 更新 | Accepted，见 ADR-0033、ADR-0034 与主界面 UI 布局规范 |
 | P-25 | 第二列可通过 v4 式按钮折叠；第三列使用固定 Comments + 多 Feature 标签；Feature 默认 docked，支持弹出、转为独立窗口后最小化及关闭 UI 实例 | Accepted，见 ADR-0034 与主界面 UI 布局规范 |
+| P-26 | v5 为 Remote-only：删除 Shell Local Transport/子进程/模式设置；顶部 Connect 使用一次性链接码，后续保存长期设备 binding；公司电脑 Remote Connector 独占 Omnia Session | Accepted，见 ADR-0035 |
 
 ## 11. 仍待用户确认
 

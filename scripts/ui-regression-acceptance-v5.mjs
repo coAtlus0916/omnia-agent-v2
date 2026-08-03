@@ -1,11 +1,14 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import net from 'node:net';
+import { WebSocket } from 'ws';
+import { DatabaseSync } from 'node:sqlite';
 import { _electron as electron } from 'playwright-core';
 
 const root = path.resolve(import.meta.dirname, '..');
-const evidenceRoot = path.join(root, 'acceptance', 'shell-0.4.1-ui-regression');
+const evidenceRoot = path.join(root, 'acceptance', 'shell-0.4.2-ui-regression');
 const productRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omnia-agent-v5-ui-regression-'));
 const executablePath = path.join(root, 'node_modules', 'electron', 'dist', process.platform === 'win32' ? 'electron.exe' : 'Electron');
 const deletePackage = path.join(root, 'feature-packages', 'delete-elements', 'candidates', 'delete-elements-0.1.2.ofp');
@@ -16,7 +19,26 @@ fs.writeFileSync(path.join(productRoot, 'portable-root.json'), JSON.stringify({
 const install = spawnSync(process.execPath, [path.join(root, 'dist', 'tools', 'feature-installer.cjs'), '--root', productRoot, 'install', deletePackage], { encoding: 'utf8' });
 if (install.status !== 0) throw new Error(`delete-elements install failed: ${install.stderr || install.stdout}`);
 
-const launch = () => electron.launch({ executablePath, args: [root], env: { ...process.env, OMNIA_AGENT_PRODUCT_ROOT: productRoot } });
+const bridgePort = await new Promise((resolve, reject) => {
+  const server = net.createServer(); server.once('error', reject);
+  server.listen(0, '127.0.0.1', () => { const address = server.address(); const port = typeof address === 'object' && address ? address.port : 0; server.close((error) => error ? reject(error) : resolve(port)); });
+});
+const bridgeUrl = `http://127.0.0.1:${bridgePort}/`;
+const bridgeProcess = spawn(process.execPath, [path.join(root, 'dist', 'bridge', 'server.cjs')], { cwd: productRoot, windowsHide: true, stdio: 'ignore', env: {
+  ...process.env, NODE_ENV: 'test', OMNIA_V5_BRIDGE_HOST: '127.0.0.1', OMNIA_V5_BRIDGE_PORT: String(bridgePort),
+  OMNIA_V5_BRIDGE_TOKEN_SECRET: 'ui-acceptance-bridge-secret-at-least-32-bytes', OMNIA_V5_BRIDGE_STATE_PATH: path.join(productRoot, 'bridge-bindings.json')
+} });
+for (const deadline = Date.now() + 15_000;;) {
+  try { if ((await fetch(`${bridgeUrl}v1/health`)).ok) break; } catch { /* wait */ }
+  if (Date.now() >= deadline) throw new Error('UI acceptance Bridge did not start.');
+  await new Promise((resolve) => setTimeout(resolve, 100));
+}
+const acceptanceDatabase = new DatabaseSync(path.join(productRoot, 'data', 'stores', 'core.sqlite'));
+acceptanceDatabase.prepare(`UPDATE remote_binding_settings SET bridge_url=? WHERE singleton=1`).run(bridgeUrl);
+acceptanceDatabase.close();
+const launch = () => electron.launch({ executablePath, args: [root], env: {
+  ...process.env, NODE_ENV: 'test', OMNIA_AGENT_PRODUCT_ROOT: productRoot, OMNIA_V5_REMOTE_BRIDGE_URL: bridgeUrl
+} });
 const within = (child, parent) => child.x >= parent.x - 1 && child.y >= parent.y - 1
   && child.x + child.width <= parent.x + parent.width + 1
   && child.y + child.height <= parent.y + parent.height + 1;
@@ -76,6 +98,7 @@ const captureCompositedShellWindow = async (app, outputPath) => {
 };
 
 let app = await launch();
+let connectorSocket = null;
 try {
   let page = await app.firstWindow();
   await page.waitForFunction(() => Boolean(window.omnia), undefined, { timeout: 20_000 });
@@ -91,10 +114,46 @@ try {
       otherLeaves: snapshot.features.navigation.filter((leaf) => leaf.parentId === 'other').map((leaf) => `${leaf.featureId}@${leaf.featureVersion}`)
     };
   });
-  assert(registry.productVersion === '0.4.1', 'Shell product version is not 0.4.1');
+  assert(registry.productVersion === '0.4.2', 'Shell product version is not 0.4.2');
   assert(registry.otherGroups.length === 1 && registry.otherGroups[0].label === '其他', 'other group was not merged exactly once');
   assert(registry.otherLeaves.includes('omnia.recording@0.1.1') && registry.otherLeaves.includes('omnia.delete-elements@0.1.2'), 'expected Feature leaves are missing');
   await page.screenshot({ path: path.join(evidenceRoot, 'other-group-recording-delete.png') });
+
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  const pairingCode = await page.locator('[data-testid=remote-pairing-code]').textContent();
+  assert(Boolean(pairingCode), 'top Connect did not produce a link code');
+  const connectorId = 'v5-connector-ui-acceptance';
+  const pairResponse = await fetch(`${bridgeUrl}v1/pair`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+    schemaVersion: 'omnia.v5.bridge/v1', role: 'connector', pairingCode, name: 'UI acceptance workstation', connectorId,
+    connectorVersion: '0.3.5', platform: 'win32-x64', product: 'omnia-agent-v5', protocol: 'omnia.v5.remote-connector/v2'
+  }) });
+  const paired = await pairResponse.json();
+  assert(pairResponse.ok && paired.token, 'Connector could not consume link code');
+  connectorSocket = new WebSocket(`${bridgeUrl.replace(/^http/, 'ws')}v1/connect`, { headers: { Authorization: `Bearer ${paired.token}`,
+    'X-Omnia-Protocol': 'omnia.v5.remote-connector/v2', 'X-Omnia-Connector-Id': connectorId, 'X-Omnia-Connector-Version': '0.3.5' } });
+  await new Promise((resolve, reject) => { connectorSocket.once('open', resolve); connectorSocket.once('error', reject); });
+  connectorSocket.on('message', (data) => {
+    const envelope = JSON.parse(data.toString()); if (envelope.kind !== 'command') return;
+    const connected = { status: 'connected', connected: true, connecting: false, connectorId, connectorName: 'UI acceptance workstation', connectorVersion: '0.3.5', sessionGeneration: 1,
+      engagementId: '11111111-1111-4111-8111-111111111111', engagementName: 'UI Acceptance Pack', clientName: 'Acceptance', checkedAt: new Date().toISOString(), message: 'Remote Pack connected' };
+    const value = envelope.request.operation === 'operation_register' ? {
+      schemaVersion: 'omnia.operation-registration-result/v1', featureId: envelope.request.payload.featureId,
+      featureVersion: envelope.request.payload.featureVersion, packageId: envelope.request.payload.operationPackage?.packageId || 'ui.acceptance.operation',
+      packageDigest: 'sha256:ui-acceptance', operationIds: (envelope.request.payload.operationPackage?.operations || []).map((item) => item.operationId)
+    } : envelope.request.operation === 'workspace_light_read' ? { schemaVersion: 'omnia.workspace-light-read/v1', profile: 'workspace_light_read', authorityId: 'ui-acceptance',
+      engagementId: connected.engagementId, source: 'ui_acceptance_remote_connector', sections: [{ id: '22222222-2222-4222-8222-222222222222', name: 'Acceptance Section', order: 0 }],
+      workspaces: [{ id: '33333333-3333-4333-8333-333333333333', parentSectionId: '22222222-2222-4222-8222-222222222222', name: 'Acceptance Workspace', status: 'active' }] } : connected;
+    connectorSocket.send(JSON.stringify({ schemaVersion: 'omnia.v5.bridge/v1', kind: 'result', response: { schemaVersion: 'omnia.connector-ipc/v1', id: envelope.request.id, ok: true, value } }));
+  });
+  for (const deadline = Date.now() + 30_000;;) {
+    const current = await page.evaluate(() => window.omnia.pollRemotePairing());
+    if (current.settings.connection.remotePaired && current.connection.connected) break;
+    if (Date.now() >= deadline) throw new Error(`automatic pairing/connect did not settle: ${JSON.stringify(current)}`);
+    await page.waitForTimeout(250);
+  }
+  await page.locator('[data-testid=remote-connection-dialog]').getByRole('button', { name: '关闭', exact: true }).click();
+  const runtimeAfterConnect = await page.evaluate(async () => { const value = await window.omnia.getSnapshot(); return { binding: value.settings.connection, connection: value.connection, leaves: value.features.navigation.map((leaf) => ({ id: leaf.featureId, availability: leaf.availability, reason: leaf.reason })) }; });
+  assert(runtimeAfterConnect.leaves.every((leaf) => leaf.availability === 'available'), `Feature runtimes did not recover after Remote pairing: ${JSON.stringify(runtimeAfterConnect)}`);
 
   const geometry100 = await page.evaluate(() => ({
     innerWidth: window.innerWidth,
@@ -155,11 +214,11 @@ try {
     await dialog.waitFor();
     await waitSurfaceManager(page, 0);
     const sizes = [];
-    for (const name of ['AI 设置', 'Connector', '安全锁']) {
+    for (const name of ['AI 设置', '安全锁']) {
       await page.getByRole('button', { name, exact: true }).click();
       const box = await dialog.boundingBox();
       sizes.push({ name, width: box.width, height: box.height });
-      await page.screenshot({ path: path.join(evidenceRoot, `settings-${origin}-${name === 'AI 设置' ? 'ai' : name === 'Connector' ? 'connector' : 'safety'}.png`) });
+      await page.screenshot({ path: path.join(evidenceRoot, `settings-${origin}-${name === 'AI 设置' ? 'ai' : 'safety'}.png`) });
     }
     assert(sizes.every((value) => Math.abs(value.width - sizes[0].width) <= 1 && Math.abs(value.height - sizes[0].height) <= 1), `${origin}: settings frame changed between sections`);
     const scroll = await page.evaluate(() => ({
@@ -355,5 +414,12 @@ try {
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 } finally {
   await app.close().catch(() => undefined);
-  fs.rmSync(productRoot, { recursive: true, force: true });
+  if (connectorSocket && connectorSocket.readyState < WebSocket.CLOSING) connectorSocket.close();
+  bridgeProcess.kill();
+  await new Promise((resolve) => {
+    if (bridgeProcess.exitCode !== null) return resolve();
+    bridgeProcess.once('exit', resolve);
+    setTimeout(resolve, 3_000);
+  });
+  fs.rmSync(productRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
 }

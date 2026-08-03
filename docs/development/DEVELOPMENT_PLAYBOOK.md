@@ -8,6 +8,8 @@
 [ADR-0031](../adr/0031-fast-local-feature-iteration-and-automated-integrity.md)。Windows 强隔离认证
 不是安装/启用门槛；包签名和 digest 由工具自动处理，不要求开发者逐次人工核对 SHA。
 
+2026-08-03 Connector 执行说明：v5 已按 [ADR-0035](../adr/0035-remote-only-connector-and-link-code-pairing.md) 收敛为 Remote-only。本文后续历史清单中的 “Local/Remote parity”“Transport 切换”只保留为旧设计证据；当前完成门槛是 Remote 合同、公司电脑 Session Core、无 Local/fallback 证明和真实 Remote canary。
+
 ## 1. 从提案到交付
 
 ```mermaid
@@ -300,8 +302,8 @@ Fixture 使用合成/脱敏数据时必须标为测试数据，不能在运行�
 - 独立 Feature 包与 Shell-first 已确定；生产只允许官方签名包，首版不开放第三方或任意离线导入；
 - Remote Connector 默认服务器自动下发、自动验证并在真实安全窗口激活；在线升级保持“优先模块、少升 Core”，并遵循 ADR-0028 的 new-run 截止/max-drain 规则；
 - 数据根/更新边界、默认无按年龄自动删除、模板发布者和 v4 首版零迁移已确定；配额、低磁盘、checkpoint/恢复和普通 ThinkPad 基准随相关 Feature 做行为测试，不构成统一安装门槛；
-- Workspace 权威轻/重抓取与 Sync 降级已确定；真实 Section identity、分页/取消/一致性和 Local/Remote parity 随依赖它的 Feature 实测；
-- 通用 Feature Worker supervisor/action 路由和 Local/Remote Operation host 是当前真实实现缺口，应优先补齐；Windows sandbox/认证只作为后续加固，不阻塞安装或使用；
+- Workspace 权威轻/重抓取与 Sync 降级已确定；真实 Section identity、分页/取消/一致性和 Remote 链路行为随依赖它的 Feature 实测；
+- 通用 Feature Worker supervisor/action 路由和 Remote Connector Operation host 是当前真实实现缺口，应优先补齐；Windows sandbox/认证只作为后续加固，不阻塞安装或使用；
 - 用代表性文件/设备冻结 NFR 和资源配额。
 
 已确认：三列主界面保留聊天；首批为新建与关联、删除元素、删除聊天记录、录制；Shell Baseline 已实现，后续按录制 → 删除元素 → 删除聊天记录 → 新建与关联逐个安装独立 Feature 包，第四项完成首批四 Plane 综合验收；每个 Feature 的实现文档随签名包 staging，并通过单一 activation record 与代码一致激活到项目 Documentation Registry；后台保存 Agent 创建/修改/删除内容的 current/revision/change/tombstone，供 Phase 2 通过合同读取；Workspace 采用权威轻抓取与有界重抓取，禁止名称推断；生产只允许官方签名包且签名/hash 由工具自动处理；数据根与 release 分离，更新不覆盖 data；模板由用户或持有单次精确授权的 Codex 发布；v4 首版零迁移；Remote 面向全部版本并自动安全窗口更新；Nova 协议验证暂缓且不阻塞首批范围；Windows 强隔离认证不再是安装或使用门槛。

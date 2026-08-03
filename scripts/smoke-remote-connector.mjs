@@ -21,17 +21,20 @@ const environment = {
 };
 const legacyRoot = path.join(String(process.env.LOCALAPPDATA || ''), 'OmniaAgentConnector');
 const legacyBefore = inventory(legacyRoot);
+let supervisorPid = 0;
 
 try {
   run('start');
   const statusPath = path.join(dataRoot, 'status.json');
   const lockPath = path.join(dataRoot, 'supervisor.lock');
   await waitFor(() => fs.existsSync(statusPath) && fs.existsSync(lockPath), 15_000);
+  supervisorPid = Number(JSON.parse(fs.readFileSync(lockPath, 'utf8')).pid);
+  assert.ok(supervisorPid > 0);
   const status = JSON.parse(fs.readFileSync(statusPath, 'utf8'));
   assert.equal(status.product, 'omnia-agent-v5-remote-connector');
   assert.equal(status.version, version);
   assert.equal(status.mode, 'remote');
-  assert.ok(['waiting_matching', 'disconnected'].includes(status.bridgeState));
+  assert.equal(status.bridgeState, 'unpaired');
   assert.equal(status.activeOperations, 0);
   assert.equal(status.uncertainOperations, 0);
   assert.match(status.updateManifestUrl, /\/files\/v5-remote-connector\/stable\.json$/);
@@ -41,7 +44,7 @@ try {
   assert.equal(fs.existsSync(lockPath), true);
 
   run('stop');
-  await waitFor(() => !fs.existsSync(lockPath), 15_000);
+  await waitFor(() => !fs.existsSync(lockPath) && !isProcessAlive(supervisorPid), 15_000);
   assert.deepEqual(inventory(legacyRoot), legacyBefore);
   process.stdout.write(`${JSON.stringify({
     ok: true,
@@ -57,10 +60,16 @@ try {
   if (fs.existsSync(lockPath)) {
     try {
       const pid = Number(JSON.parse(fs.readFileSync(lockPath, 'utf8')).pid);
-      if (pid > 0) process.kill(pid, 'SIGTERM');
+      if (pid > 0) {
+        supervisorPid = pid;
+        process.kill(pid, 'SIGTERM');
+      }
     } catch { /* best effort for the test-owned process */ }
   }
-  fs.rmSync(smokeRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  if (supervisorPid > 0) {
+    try { await waitFor(() => !isProcessAlive(supervisorPid), 5_000); } catch { /* cleanup retry reports a persistent handle */ }
+  }
+  await removeTreeWithRetry(smokeRoot);
 }
 
 function run(command) {
@@ -99,4 +108,26 @@ async function waitFor(predicate, timeoutMs) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error('Timed out waiting for the v5 Remote Connector smoke-test state.');
+}
+
+function isProcessAlive(pid) {
+  if (!(pid > 0)) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function removeTreeWithRetry(directory) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      fs.rmSync(directory, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (!['EBUSY', 'ENOTEMPTY', 'EPERM'].includes(error?.code) || attempt === 19) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
 }

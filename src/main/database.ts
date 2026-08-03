@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import type {
   AiAttachmentCapability,
@@ -17,6 +17,7 @@ import { AppError } from '../shared/errors.js';
 import type { ContentCipher } from './content-cipher.js';
 
 const utcNow = () => new Date().toISOString();
+const defaultRemoteBridgeUrl = () => process.env.OMNIA_V5_REMOTE_BRIDGE_URL || 'https://agent.labcaspian.com/v5-bridge/';
 
 export class CoreDatabase {
   readonly db: DatabaseSync;
@@ -274,6 +275,90 @@ export class CoreDatabase {
           feature_navigation_collapsed, state_version, updated_at
         FROM layout_preferences
         WHERE profile_id='local-user' AND surface_id='shell.main' AND layout_version=1;
+      `],
+      [9, `
+        CREATE TABLE remote_binding_settings (
+          singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+          bridge_url TEXT NOT NULL,
+          pair_id TEXT NOT NULL,
+          connector_id TEXT NOT NULL,
+          connector_name TEXT NOT NULL,
+          connector_version TEXT NOT NULL,
+          protocol_version TEXT NOT NULL,
+          generation INTEGER NOT NULL CHECK(generation >= 0),
+          token_ciphertext TEXT NOT NULL,
+          lifecycle TEXT NOT NULL CHECK(lifecycle IN ('unpaired','bound','repair_required','revoked')),
+          state_version INTEGER NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE connector_migration_audit (
+          audit_id TEXT PRIMARY KEY,
+          migration_version INTEGER NOT NULL,
+          legacy_mode TEXT NOT NULL,
+          decision TEXT NOT NULL,
+          legacy_connection_snapshot_ciphertext TEXT NOT NULL,
+          occurred_at TEXT NOT NULL
+        );
+        INSERT INTO remote_binding_settings(
+          singleton, bridge_url, pair_id, connector_id, connector_name, connector_version,
+          protocol_version, generation, token_ciphertext, lifecycle, state_version, updated_at
+        )
+        SELECT 1, remote_bridge_url,
+          CASE WHEN mode='remote' AND remote_token_ciphertext!='' THEN remote_pair_id ELSE '' END,
+          '', '', '',
+          CASE WHEN mode='remote' AND remote_token_ciphertext!='' THEN 'omnia.v5.remote-connector/v1' ELSE '' END,
+          CASE WHEN mode='remote' AND remote_token_ciphertext!='' THEN 1 ELSE 0 END,
+          CASE WHEN mode='remote' AND remote_token_ciphertext!='' THEN remote_token_ciphertext ELSE '' END,
+          CASE WHEN mode='remote' AND remote_token_ciphertext!='' THEN 'bound' ELSE 'unpaired' END,
+          state_version + 1, strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        FROM connection_settings WHERE singleton=1;
+      `],
+      [10, `
+        DROP TABLE connection_settings;
+      `],
+      [11, `
+        CREATE TABLE remote_pairing_pending (
+          singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+          session_id TEXT NOT NULL,
+          poll_secret_ciphertext TEXT NOT NULL,
+          bridge_url TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          expected_pair_id TEXT NOT NULL,
+          expected_generation INTEGER NOT NULL,
+          expected_binding_state TEXT NOT NULL,
+          expected_state_version INTEGER NOT NULL,
+          matched_pair_id TEXT NOT NULL,
+          matched_token_ciphertext TEXT NOT NULL,
+          matched_generation INTEGER NOT NULL,
+          matched_connector_id TEXT NOT NULL,
+          matched_connector_name TEXT NOT NULL,
+          matched_connector_version TEXT NOT NULL,
+          commit_required INTEGER NOT NULL CHECK(commit_required IN (0,1)),
+          cleanup_required INTEGER NOT NULL CHECK(cleanup_required IN (0,1)),
+          status TEXT NOT NULL CHECK(status IN ('creating','active','corrupt','manual_reconcile_required','manual_cleanup_required')),
+          session_id_hash TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE remote_revocation_pending (
+          singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+          bridge_url TEXT NOT NULL,
+          pair_id TEXT NOT NULL,
+          token_ciphertext TEXT NOT NULL,
+          requested_at TEXT NOT NULL,
+          last_attempt_at TEXT NOT NULL,
+          last_error TEXT NOT NULL,
+          attempts INTEGER NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('active','manual_revoke_required'))
+        );
+        CREATE TABLE remote_binding_events (
+          event_id TEXT PRIMARY KEY,
+          event_type TEXT NOT NULL,
+          pair_id TEXT NOT NULL,
+          generation INTEGER NOT NULL,
+          previous_pair_id TEXT NOT NULL,
+          details_json TEXT NOT NULL,
+          occurred_at TEXT NOT NULL
+        );
       `]
     ];
     for (const [version, sql] of migrations) {
@@ -281,6 +366,24 @@ export class CoreDatabase {
       this.db.exec('BEGIN IMMEDIATE;');
       try {
         this.db.exec(sql);
+        if (version === 9) {
+          const legacy = this.db.prepare('SELECT mode FROM connection_settings WHERE singleton=1').get() as { mode: string } | undefined;
+          const snapshot = this.db.prepare('SELECT payload_json FROM connection_state WHERE singleton=1').get() as { payload_json?: string } | undefined;
+          this.db.prepare(`
+            INSERT INTO connector_migration_audit(
+              audit_id, migration_version, legacy_mode, decision,
+              legacy_connection_snapshot_ciphertext, occurred_at
+            ) VALUES(?, 9, ?, ?, ?, ?)
+          `).run(
+            randomUUID(), legacy?.mode || 'fresh_install',
+            legacy?.mode === 'remote'
+              ? 'migrated_remote_binding_pending_live_validation'
+              : legacy?.mode === 'local'
+                ? 'local_retired_remote_unpaired'
+                : 'fresh_remote_unpaired',
+            snapshot?.payload_json || '', utcNow()
+          );
+        }
         this.db.prepare('INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)').run(version, utcNow());
         this.db.exec('COMMIT;');
       } catch (error) {
@@ -333,10 +436,11 @@ export class CoreDatabase {
       ) VALUES(1, 'deepseek', 'https://api.deepseek.com/v1/', 'deepseek-chat', 'text_only', '', 1, 'untested', '', '', ?)
     `).run(now);
     this.db.prepare(`
-      INSERT OR IGNORE INTO connection_settings(
-        singleton, mode, remote_bridge_url, remote_pair_id, remote_token_ciphertext, state_version, updated_at
-      ) VALUES(1, 'local', 'https://agent.labcaspian.com/v5-bridge/', '', '', 1, ?)
-    `).run(now);
+      INSERT OR IGNORE INTO remote_binding_settings(
+        singleton, bridge_url, pair_id, connector_id, connector_name, connector_version,
+        protocol_version, generation, token_ciphertext, lifecycle, state_version, updated_at
+      ) VALUES(1, ?, '', '', '', '', '', 0, '', 'unpaired', 1, ?)
+    `).run(defaultRemoteBridgeUrl(), now);
   }
 
   getPreference(): UserViewPreference {
@@ -783,51 +887,511 @@ export class CoreDatabase {
     return snapshot;
   }
 
-  getConnectionSettings(): ConnectionSettingsSnapshot & { remoteToken: string } {
-    const row = this.db.prepare(`SELECT * FROM connection_settings WHERE singleton=1`).get() as Record<string, any>;
-    const remoteToken = row.remote_token_ciphertext
-      ? this.contentCipher.decrypt(String(row.remote_token_ciphertext))
-      : '';
+  getRemoteBinding(): ConnectionSettingsSnapshot & { bridgeUrl: string; pairId: string; remoteToken: string } {
+    const row = this.db.prepare(`SELECT * FROM remote_binding_settings WHERE singleton=1`).get() as Record<string, any>;
+    let remoteToken = '';
+    let lifecycle = String(row.lifecycle) as ConnectionSettingsSnapshot['bindingState'];
+    if (row.token_ciphertext) {
+      try {
+        remoteToken = this.contentCipher.decrypt(String(row.token_ciphertext));
+      } catch {
+        lifecycle = 'repair_required';
+        if (row.lifecycle !== 'repair_required') {
+          const updatedAt = utcNow();
+          this.db.prepare(`
+          UPDATE remote_binding_settings SET lifecycle='repair_required', state_version=state_version+1, updated_at=?
+          WHERE singleton=1
+          `).run(updatedAt);
+          row.state_version = Number(row.state_version) + 1;
+          row.updated_at = updatedAt;
+        }
+      }
+    }
     return {
-      mode: row.mode,
-      remoteBridgeUrl: String(row.remote_bridge_url),
-      remotePairId: String(row.remote_pair_id),
+      bridgeUrl: String(row.bridge_url),
+      pairId: String(row.pair_id),
+      bindingState: lifecycle,
       remotePaired: Boolean(remoteToken),
+      connectorId: String(row.connector_id),
+      connectorName: String(row.connector_name),
+      connectorVersion: String(row.connector_version),
+      protocolVersion: String(row.protocol_version),
+      generation: Number(row.generation),
       remoteToken,
       stateVersion: Number(row.state_version),
       updatedAt: String(row.updated_at)
     };
   }
 
-  saveRemotePairing(input: {
+  saveRemoteBinding(input: {
     bridgeUrl: string;
     pairId: string;
     token: string;
+    connectorId: string;
+    connectorName: string;
+    connectorVersion: string;
+    protocolVersion: string;
+    generation: number;
     expectedStateVersion: number;
   }): ConnectionSettingsSnapshot {
     const now = utcNow();
+    this.db.exec('BEGIN IMMEDIATE;');
+    try {
+    const previous = this.db.prepare('SELECT pair_id, generation FROM remote_binding_settings WHERE singleton=1').get() as any;
     const result = this.db.prepare(`
-      UPDATE connection_settings SET remote_bridge_url=?, remote_pair_id=?, remote_token_ciphertext=?,
+      UPDATE remote_binding_settings SET bridge_url=?, pair_id=?, token_ciphertext=?,
+        connector_id=?, connector_name=?, connector_version=?, protocol_version=?, generation=?, lifecycle='bound',
         state_version=state_version+1, updated_at=? WHERE singleton=1 AND state_version=?
     `).run(
-      input.bridgeUrl, input.pairId, this.contentCipher.encrypt(input.token), now, input.expectedStateVersion
+      input.bridgeUrl, input.pairId, this.contentCipher.encrypt(input.token),
+      input.connectorId, input.connectorName, input.connectorVersion, input.protocolVersion, input.generation,
+      now, input.expectedStateVersion
     );
+    if (result.changes !== 1) throw new AppError('SETTINGS.CONFLICT', '连接设置已在其他窗口更新，请刷新后重试。', true);
+    this.appendRemoteBindingEvent(
+      previous?.pair_id && previous.pair_id !== input.pairId ? 'binding_replaced' : 'binding_activated',
+      input.pairId, input.generation, String(previous?.pair_id || ''), { protocolVersion: input.protocolVersion }
+    );
+    this.db.exec('COMMIT;');
+    return this.publicConnectionSettings();
+    } catch (error) {
+      this.db.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
+  clearRemoteBinding(expectedStateVersion: number, lifecycle: 'unpaired' | 'repair_required' | 'revoked'): ConnectionSettingsSnapshot {
+    const now = utcNow();
+    const result = this.db.prepare(`
+      UPDATE remote_binding_settings SET pair_id='', connector_id='', connector_name='', connector_version='',
+        protocol_version='', generation=0, token_ciphertext='', lifecycle=?,
+        state_version=state_version+1, updated_at=? WHERE singleton=1 AND state_version=?
+    `).run(lifecycle, now, expectedStateVersion);
     if (result.changes !== 1) throw new AppError('SETTINGS.CONFLICT', '连接设置已在其他窗口更新，请刷新后重试。', true);
     return this.publicConnectionSettings();
   }
 
-  saveConnectionMode(mode: 'local' | 'remote', expectedStateVersion: number): ConnectionSettingsSnapshot {
+  markRemoteBindingRepairRequired(expectedStateVersion: number): ConnectionSettingsSnapshot {
     const now = utcNow();
+    this.db.exec('BEGIN IMMEDIATE;');
+    try {
+    const current = this.db.prepare('SELECT pair_id, generation FROM remote_binding_settings WHERE singleton=1').get() as any;
     const result = this.db.prepare(`
-      UPDATE connection_settings SET mode=?, state_version=state_version+1, updated_at=?
-      WHERE singleton=1 AND state_version=?
-    `).run(mode, now, expectedStateVersion);
+      UPDATE remote_binding_settings SET lifecycle='repair_required',
+        state_version=state_version+1, updated_at=? WHERE singleton=1 AND state_version=?
+    `).run(now, expectedStateVersion);
     if (result.changes !== 1) throw new AppError('SETTINGS.CONFLICT', '连接设置已在其他窗口更新，请刷新后重试。', true);
+    this.appendRemoteBindingEvent('repair_required', String(current?.pair_id || ''), Number(current?.generation || 0), '', {});
+    this.db.exec('COMMIT;');
     return this.publicConnectionSettings();
+    } catch (error) {
+      this.db.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
+  savePendingRemotePairing(input: {
+    sessionId: string;
+    pollSecret: string;
+    bridgeUrl: string;
+    expiresAt: string;
+    expectedPairId: string;
+    expectedGeneration: number;
+    expectedBindingState: ConnectionSettingsSnapshot['bindingState'];
+    expectedStateVersion: number;
+  }): void {
+    this.db.exec('BEGIN IMMEDIATE;');
+    try {
+    this.db.prepare(`
+      INSERT OR REPLACE INTO remote_pairing_pending(
+        singleton, session_id, poll_secret_ciphertext, bridge_url, expires_at,
+        expected_pair_id, expected_generation, expected_binding_state, expected_state_version,
+        matched_pair_id, matched_token_ciphertext, matched_generation,
+        matched_connector_id, matched_connector_name, matched_connector_version,
+        commit_required, cleanup_required, status, session_id_hash, created_at
+      ) VALUES(1, ?, ?, ?, ?, ?, ?, ?, ?, '', '', 0, '', '', '', 0, 0, 'active', ?, ?)
+    `).run(
+      input.sessionId, this.contentCipher.encrypt(input.pollSecret), input.bridgeUrl, input.expiresAt,
+      input.expectedPairId, input.expectedGeneration, input.expectedBindingState, input.expectedStateVersion,
+      this.eventDigest(input.sessionId), utcNow()
+    );
+    this.appendRemoteBindingEvent(
+      input.expectedPairId ? 'replacement_pairing_started' : 'pairing_started',
+      input.expectedPairId, input.expectedGeneration, '', { sessionIdHash: this.eventDigest(input.sessionId), expiresAt: input.expiresAt }
+    );
+    this.db.exec('COMMIT;');
+    } catch (error) {
+      this.db.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
+  reserveRemotePairingIntent(input: {
+    bridgeUrl: string;
+    expectedPairId: string;
+    expectedGeneration: number;
+    expectedBindingState: ConnectionSettingsSnapshot['bindingState'];
+    expectedStateVersion: number;
+  }): { intentId: string; requestNonce: string; expiresAt: string } {
+    const intentId = `intent-${randomUUID()}`;
+    const requestNonce = `shell-${randomUUID()}`;
+    const expiresAt = new Date(Date.now() + 11 * 60_000).toISOString();
+    this.db.exec('BEGIN IMMEDIATE;');
+    try {
+      const pairing = this.db.prepare('SELECT COUNT(*) AS count FROM remote_pairing_pending').get() as any;
+      const revocation = this.db.prepare('SELECT COUNT(*) AS count FROM remote_revocation_pending').get() as any;
+      if (Number(pairing.count) > 0 || Number(revocation.count) > 0) {
+        throw new AppError('REMOTE.LIFECYCLE_PENDING', '已有 Remote 生命周期变更正在进行。', true);
+      }
+      this.db.prepare(`
+        INSERT INTO remote_pairing_pending(
+          singleton, session_id, poll_secret_ciphertext, bridge_url, expires_at,
+          expected_pair_id, expected_generation, expected_binding_state, expected_state_version,
+          matched_pair_id, matched_token_ciphertext, matched_generation,
+          matched_connector_id, matched_connector_name, matched_connector_version,
+          commit_required, cleanup_required, status, session_id_hash, created_at
+        ) VALUES(1, ?, ?, ?, ?, ?, ?, ?, ?, '', '', 0, '', '', '', 0, 0, 'creating', ?, ?)
+      `).run(
+        intentId, this.contentCipher.encrypt(requestNonce), input.bridgeUrl, expiresAt,
+        input.expectedPairId, input.expectedGeneration, input.expectedBindingState, input.expectedStateVersion,
+        this.eventDigest(intentId), utcNow()
+      );
+      this.appendRemoteBindingEvent('pairing_intent_reserved', input.expectedPairId, input.expectedGeneration, '', {
+        intentIdHash: this.eventDigest(intentId), requestNonceHash: this.eventDigest(requestNonce), expiresAt
+      });
+      this.db.exec('COMMIT;');
+      return { intentId, requestNonce, expiresAt };
+    } catch (error) {
+      this.db.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
+  finalizeRemotePairingIntent(input: {
+    intentId: string;
+    sessionId: string;
+    pollSecret: string;
+    expiresAt: string;
+  }): void {
+    this.db.exec('BEGIN IMMEDIATE;');
+    try {
+      const pending = this.db.prepare(`SELECT expected_pair_id, expected_generation FROM remote_pairing_pending WHERE singleton=1 AND session_id=? AND status='creating'`).get(input.intentId) as any;
+      const result = this.db.prepare(`
+        UPDATE remote_pairing_pending SET session_id=?, poll_secret_ciphertext=?, expires_at=?,
+          status='active', session_id_hash=? WHERE singleton=1 AND session_id=? AND status='creating'
+      `).run(
+        input.sessionId, this.contentCipher.encrypt(input.pollSecret), input.expiresAt,
+        this.eventDigest(input.sessionId), input.intentId
+      );
+      if (result.changes !== 1) throw new AppError('REMOTE.PAIRING_INTENT_LOST', '配对 reservation 已变化，拒绝接管 Bridge 会话。');
+      this.appendRemoteBindingEvent(
+        pending?.expected_pair_id ? 'replacement_pairing_started' : 'pairing_started',
+        String(pending?.expected_pair_id || ''), Number(pending?.expected_generation || 0), '',
+        { sessionIdHash: this.eventDigest(input.sessionId), expiresAt: input.expiresAt }
+      );
+      this.db.exec('COMMIT;');
+    } catch (error) {
+      this.db.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
+  clearRemotePairingIntent(intentId: string): void {
+    this.db.prepare(`DELETE FROM remote_pairing_pending WHERE singleton=1 AND session_id=? AND status='creating'`).run(intentId);
+  }
+
+  getPendingRemotePairing(): null | {
+    sessionId: string;
+    pollSecret: string;
+    bridgeUrl: string;
+    expiresAt: string;
+    expectedPairId: string;
+    expectedGeneration: number;
+    expectedBindingState: ConnectionSettingsSnapshot['bindingState'];
+    expectedStateVersion: number;
+    cleanupRequired: boolean;
+    matchedPairId: string;
+    matchedToken: string;
+    matchedGeneration: number;
+    matchedConnectorId: string;
+    matchedConnectorName: string;
+    matchedConnectorVersion: string;
+    commitRequired: boolean;
+    status: 'creating' | 'active' | 'corrupt' | 'manual_reconcile_required' | 'manual_cleanup_required';
+    sessionIdHash: string;
+  } {
+    const row = this.db.prepare('SELECT * FROM remote_pairing_pending WHERE singleton=1').get() as Record<string, any> | undefined;
+    if (!row) return null;
+    const tombstone = (status: 'corrupt' | 'manual_reconcile_required' | 'manual_cleanup_required') => ({
+      sessionId: '', pollSecret: '', bridgeUrl: String(row.bridge_url), expiresAt: String(row.expires_at),
+      expectedPairId: String(row.expected_pair_id), expectedGeneration: Number(row.expected_generation),
+      expectedBindingState: row.expected_binding_state, expectedStateVersion: Number(row.expected_state_version),
+      cleanupRequired: Boolean(row.cleanup_required), matchedPairId: String(row.matched_pair_id), matchedToken: '',
+      matchedGeneration: Number(row.matched_generation), matchedConnectorId: String(row.matched_connector_id),
+      matchedConnectorName: String(row.matched_connector_name), matchedConnectorVersion: String(row.matched_connector_version),
+      commitRequired: Boolean(row.commit_required), status, sessionIdHash: String(row.session_id_hash)
+    });
+    if (row.status === 'creating') {
+      return { ...tombstone('corrupt'), status: 'creating', sessionId: String(row.session_id), pollSecret: '' };
+    }
+    if (row.status === 'corrupt' || row.status === 'manual_reconcile_required' || row.status === 'manual_cleanup_required') return tombstone(row.status);
+    try {
+      return {
+        sessionId: String(row.session_id), pollSecret: this.contentCipher.decrypt(String(row.poll_secret_ciphertext)),
+        bridgeUrl: String(row.bridge_url), expiresAt: String(row.expires_at), expectedPairId: String(row.expected_pair_id),
+        expectedGeneration: Number(row.expected_generation), expectedBindingState: row.expected_binding_state,
+        expectedStateVersion: Number(row.expected_state_version), cleanupRequired: Boolean(row.cleanup_required),
+        matchedPairId: String(row.matched_pair_id),
+        matchedToken: row.matched_token_ciphertext ? this.contentCipher.decrypt(String(row.matched_token_ciphertext)) : '',
+        matchedGeneration: Number(row.matched_generation),
+        matchedConnectorId: String(row.matched_connector_id), matchedConnectorName: String(row.matched_connector_name),
+        matchedConnectorVersion: String(row.matched_connector_version), commitRequired: Boolean(row.commit_required),
+        status: 'active', sessionIdHash: String(row.session_id_hash)
+      };
+    } catch {
+      let status: 'manual_reconcile_required' | 'manual_cleanup_required' = row.matched_pair_id
+        ? 'manual_cleanup_required'
+        : 'manual_reconcile_required';
+      if (row.matched_pair_id && row.matched_token_ciphertext) {
+        try { this.contentCipher.decrypt(String(row.matched_token_ciphertext)); }
+        catch { status = 'manual_cleanup_required'; }
+      }
+      this.db.exec('BEGIN IMMEDIATE;');
+      try {
+        this.db.prepare(`UPDATE remote_pairing_pending SET status=? WHERE singleton=1`).run(status);
+        const current = this.db.prepare('SELECT pair_id, generation, lifecycle FROM remote_binding_settings WHERE singleton=1').get() as any;
+        if (current?.lifecycle === 'bound') {
+          this.db.prepare(`UPDATE remote_binding_settings SET lifecycle='repair_required', state_version=state_version+1, updated_at=? WHERE singleton=1`).run(utcNow());
+        }
+        this.appendRemoteBindingEvent('pairing_pending_corrupt', String(current?.pair_id || ''), Number(current?.generation || 0), '', {
+          pendingStatus: status, sessionIdHash: String(row.session_id_hash)
+        });
+        this.db.exec('COMMIT;');
+      } catch (error) {
+        this.db.exec('ROLLBACK;');
+        throw error;
+      }
+      return tombstone(status);
+    }
+  }
+
+  hasPendingRemoteLifecycleWork(): boolean {
+    const pairing = this.db.prepare('SELECT COUNT(*) AS count FROM remote_pairing_pending').get() as any;
+    const revocation = this.db.prepare('SELECT COUNT(*) AS count FROM remote_revocation_pending').get() as any;
+    return Number(pairing.count) > 0 || Number(revocation.count) > 0;
+  }
+
+  clearPendingRemotePairing(): void {
+    this.db.prepare('DELETE FROM remote_pairing_pending WHERE singleton=1').run();
+  }
+
+  stagePendingPairingCleanup(sessionId: string, pairId: string, token: string, generation: number): void {
+    this.db.exec('BEGIN IMMEDIATE;');
+    try {
+      const result = this.db.prepare(`
+        UPDATE remote_pairing_pending SET matched_pair_id=?, matched_token_ciphertext=?, matched_generation=?, commit_required=0, cleanup_required=1
+        WHERE singleton=1 AND session_id=?
+      `).run(pairId, this.contentCipher.encrypt(token), generation, sessionId);
+      if (result.changes !== 1) throw new AppError('REMOTE.PAIRING_PENDING_MISSING', '配对恢复记录不存在。');
+      this.appendRemoteBindingEvent('pairing_cleanup_pending', pairId, generation, '', {});
+      this.db.exec('COMMIT;');
+    } catch (error) {
+      this.db.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
+  stagePendingPairingCommit(input: {
+    sessionId: string; pairId: string; token: string; generation: number;
+    connectorId: string; connectorName: string; connectorVersion: string;
+  }): void {
+    this.db.exec('BEGIN IMMEDIATE;');
+    try {
+      const result = this.db.prepare(`
+        UPDATE remote_pairing_pending SET matched_pair_id=?, matched_token_ciphertext=?, matched_generation=?,
+          matched_connector_id=?, matched_connector_name=?, matched_connector_version=?, commit_required=1, cleanup_required=0
+        WHERE singleton=1 AND session_id=?
+      `).run(
+        input.pairId, this.contentCipher.encrypt(input.token), input.generation,
+        input.connectorId, input.connectorName, input.connectorVersion, input.sessionId
+      );
+      if (result.changes !== 1) throw new AppError('REMOTE.PAIRING_PENDING_MISSING', '配对恢复记录不存在。');
+      this.appendRemoteBindingEvent('pairing_commit_staged', input.pairId, input.generation, '', {});
+      this.db.exec('COMMIT;');
+    } catch (error) {
+      this.db.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
+  promotePendingPairingCommit(sessionId: string, protocolVersion: string): ConnectionSettingsSnapshot {
+    this.db.exec('BEGIN IMMEDIATE;');
+    try {
+      const pending = this.db.prepare(`
+        SELECT * FROM remote_pairing_pending
+        WHERE singleton=1 AND session_id=? AND commit_required=1 AND cleanup_required=0
+      `).get(sessionId) as Record<string, any> | undefined;
+      if (!pending || !pending.matched_pair_id || !pending.matched_token_ciphertext) {
+        throw new AppError('REMOTE.PAIRING_COMMIT_NOT_STAGED', '配对候选尚未安全暂存。');
+      }
+      const current = this.db.prepare('SELECT * FROM remote_binding_settings WHERE singleton=1').get() as Record<string, any>;
+      if (
+        String(current.pair_id) !== String(pending.expected_pair_id)
+        || Number(current.generation) !== Number(pending.expected_generation)
+        || String(current.lifecycle) !== String(pending.expected_binding_state)
+      ) {
+        throw new AppError('SETTINGS.CONFLICT', 'Bridge 已提交候选，但本地 binding 身份已变化；必须进入人工修复。');
+      }
+      // Decrypt before mutating anything. A corrupt staged credential must
+      // leave the durable pending row in place and fail closed.
+      const token = this.contentCipher.decrypt(String(pending.matched_token_ciphertext));
+      const now = utcNow();
+      const update = this.db.prepare(`
+        UPDATE remote_binding_settings SET bridge_url=?, pair_id=?, token_ciphertext=?,
+          connector_id=?, connector_name=?, connector_version=?, protocol_version=?, generation=?, lifecycle='bound',
+          state_version=state_version+1, updated_at=? WHERE singleton=1 AND state_version=?
+      `).run(
+        String(pending.bridge_url), String(pending.matched_pair_id), this.contentCipher.encrypt(token),
+        String(pending.matched_connector_id), String(pending.matched_connector_name),
+        String(pending.matched_connector_version), protocolVersion, Number(pending.matched_generation),
+        now, Number(current.state_version)
+      );
+      if (update.changes !== 1) throw new AppError('SETTINGS.CONFLICT', '连接设置已更新，请重试。', true);
+      this.appendRemoteBindingEvent(
+        pending.expected_pair_id ? 'binding_replaced' : 'binding_activated',
+        String(pending.matched_pair_id), Number(pending.matched_generation), String(pending.expected_pair_id),
+        { protocolVersion, recoveredFromStagedCommit: true }
+      );
+      this.db.prepare('DELETE FROM remote_pairing_pending WHERE singleton=1 AND session_id=?').run(sessionId);
+      this.db.exec('COMMIT;');
+      return this.publicConnectionSettings();
+    } catch (error) {
+      this.db.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
+  beginRemoteRevocation(expectedStateVersion: number): void {
+    this.db.exec('BEGIN IMMEDIATE;');
+    try {
+      const row = this.db.prepare('SELECT * FROM remote_binding_settings WHERE singleton=1 AND state_version=?').get(expectedStateVersion) as Record<string, any> | undefined;
+      if (!row || !row.pair_id || !row.token_ciphertext) throw new AppError('SETTINGS.CONFLICT', '连接设置已更新，请重试。', true);
+      const now = utcNow();
+      this.db.prepare(`
+        INSERT OR REPLACE INTO remote_revocation_pending(
+          singleton, bridge_url, pair_id, token_ciphertext, requested_at, last_attempt_at, last_error, attempts, status
+        ) VALUES(1, ?, ?, ?, ?, '', '', 0, 'active')
+      `).run(row.bridge_url, row.pair_id, row.token_ciphertext, now);
+      this.db.prepare(`
+        UPDATE remote_binding_settings SET lifecycle='repair_required', state_version=state_version+1, updated_at=?
+        WHERE singleton=1 AND state_version=?
+      `).run(now, expectedStateVersion);
+      this.appendRemoteBindingEvent('revocation_pending', String(row.pair_id), Number(row.generation || 0), '', {});
+      this.db.exec('COMMIT;');
+    } catch (error) {
+      this.db.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
+  getPendingRemoteRevocation(): null | {
+    bridgeUrl: string; pairId: string; token: string; attempts: number;
+    status: 'active' | 'manual_revoke_required';
+  } {
+    const row = this.db.prepare('SELECT * FROM remote_revocation_pending WHERE singleton=1').get() as Record<string, any> | undefined;
+    if (!row) return null;
+    if (row.status === 'manual_revoke_required') {
+      return {
+        bridgeUrl: String(row.bridge_url), pairId: String(row.pair_id), token: '',
+        attempts: Number(row.attempts), status: 'manual_revoke_required'
+      };
+    }
+    try {
+      return {
+        bridgeUrl: String(row.bridge_url), pairId: String(row.pair_id),
+        token: this.contentCipher.decrypt(String(row.token_ciphertext)), attempts: Number(row.attempts), status: 'active'
+      };
+    } catch {
+      this.db.exec('BEGIN IMMEDIATE;');
+      try {
+        const binding = this.db.prepare(`SELECT pair_id, generation, token_ciphertext FROM remote_binding_settings WHERE singleton=1`).get() as any;
+        let recoveredToken = '';
+        if (String(binding?.pair_id || '') === String(row.pair_id) && binding?.token_ciphertext) {
+          try { recoveredToken = this.contentCipher.decrypt(String(binding.token_ciphertext)); } catch { /* manual tombstone below */ }
+        }
+        if (recoveredToken) {
+          this.db.prepare(`UPDATE remote_revocation_pending SET token_ciphertext=?, status='active' WHERE singleton=1`).run(
+            this.contentCipher.encrypt(recoveredToken)
+          );
+          this.appendRemoteBindingEvent('revocation_pending_credential_recovered', String(row.pair_id), Number(binding?.generation || 0), '', {});
+          this.db.exec('COMMIT;');
+          return {
+            bridgeUrl: String(row.bridge_url), pairId: String(row.pair_id), token: recoveredToken,
+            attempts: Number(row.attempts), status: 'active'
+          };
+        }
+        this.db.prepare(`UPDATE remote_revocation_pending SET status='manual_revoke_required', token_ciphertext='' WHERE singleton=1`).run();
+        this.db.prepare(`UPDATE remote_binding_settings SET lifecycle='repair_required', state_version=state_version+1, updated_at=? WHERE singleton=1`).run(utcNow());
+        this.appendRemoteBindingEvent('revocation_pending_corrupt', String(row.pair_id), Number(binding?.generation || 0), '', { manualRevokeRequired: true });
+        this.db.exec('COMMIT;');
+      } catch (error) {
+        this.db.exec('ROLLBACK;');
+        throw error;
+      }
+      return {
+        bridgeUrl: String(row.bridge_url), pairId: String(row.pair_id), token: '',
+        attempts: Number(row.attempts), status: 'manual_revoke_required'
+      };
+    }
+  }
+
+  noteRemoteRevocationFailure(message: string): void {
+    this.db.prepare(`
+      UPDATE remote_revocation_pending SET attempts=attempts+1, last_attempt_at=?, last_error=? WHERE singleton=1
+    `).run(utcNow(), message.slice(0, 1000));
+  }
+
+  completeRemoteRevocation(): void {
+    this.db.exec('BEGIN IMMEDIATE;');
+    try {
+      const now = utcNow();
+      const current = this.db.prepare('SELECT pair_id, generation FROM remote_binding_settings WHERE singleton=1').get() as any;
+      this.db.prepare(`
+        UPDATE remote_binding_settings SET pair_id='', connector_id='', connector_name='', connector_version='',
+          protocol_version='', generation=0, token_ciphertext='', lifecycle='revoked',
+          state_version=state_version+1, updated_at=? WHERE singleton=1
+      `).run(now);
+      this.db.prepare('DELETE FROM remote_revocation_pending WHERE singleton=1').run();
+      this.appendRemoteBindingEvent('revoked', String(current?.pair_id || ''), Number(current?.generation || 0), '', {});
+      this.db.exec('COMMIT;');
+    } catch (error) {
+      this.db.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
+  private eventDigest(value: string): string {
+    // Event correlation is non-secret and one-way; never store session IDs,
+    // poll secrets, link codes, tokens, or ciphertext in the append-only log.
+    return createHash('sha256').update(value).digest('hex');
+  }
+
+  private appendRemoteBindingEvent(
+    eventType: string,
+    pairId: string,
+    generation: number,
+    previousPairId: string,
+    details: Record<string, unknown>
+  ): void {
+    this.db.prepare(`
+      INSERT INTO remote_binding_events(
+        event_id, event_type, pair_id, generation, previous_pair_id, details_json, occurred_at
+      ) VALUES(?, ?, ?, ?, ?, ?, ?)
+    `).run(randomUUID(), eventType, pairId, generation, previousPairId, JSON.stringify(details), utcNow());
   }
 
   publicConnectionSettings(): ConnectionSettingsSnapshot {
-    const { remoteToken: _secret, ...snapshot } = this.getConnectionSettings();
+    const { remoteToken: _secret, bridgeUrl: _bridgeUrl, pairId: _pairId, ...snapshot } = this.getRemoteBinding();
     return snapshot;
   }
 

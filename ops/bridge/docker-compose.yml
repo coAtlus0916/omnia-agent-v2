@@ -10,6 +10,8 @@ services:
     ports:
       - "127.0.0.1:18785:18785"
     read_only: true
+    volumes:
+      - omnia-agent-v5-bridge-data:/var/lib/omnia-agent-v5-bridge
     tmpfs:
       - /tmp:size=16m,mode=1777
     cap_drop:
@@ -26,3 +28,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+volumes:
+  omnia-agent-v5-bridge-data:

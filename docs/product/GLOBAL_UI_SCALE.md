@@ -1,6 +1,6 @@
 # 全局界面缩放控制
 
-状态：Shell 0.4.1 已实现；真实 Windows 便携验收已完成，真实 Omnia canary 待执行  
+状态：Shell 0.4.2 继承 0.4.1 实现；Remote-only Connect/repair surface 纳入同一 zoom，真实公司电脑 Omnia canary 待执行
 日期：2026-08-03
 
 ## 1. 用户目标
@@ -143,3 +143,9 @@ docked host 的 Renderer 测量值是 CSS pixel，`contentView` bounds 是宿主
 ## 10. Shell 0.4.1 自动化证据
 
 `scripts/ui-regression-acceptance-v5.mjs` 已验证 100%、105%、115% 的真实 `devicePixelRatio`、Shell viewport、Settings 实际几何、manager zoomFactor 和 docked host bounds，而不是只读取百分比文字。键盘 `Ctrl+- / Ctrl++ / Ctrl+0` 分别验证 110%/115%/100% 的 DPR 与 manager 值，并由按钮恢复 115%。detached Feature、新建 docked Feature 和重启恢复均继承 115%，CSS token 保持 `1`，证明没有重复倍率。Windows 系统缩放组合与真实 Omnia 操作仍待 canary。
+
+## 11. Shell 0.4.2 Remote-only 回归
+
+0.4.2 不改变 `UserViewPreference` owner 或 Electron zoom 技术。删除 Connector Settings 后，顶部 Connect 的首次链接码引导、诊断、重新配对确认和解除绑定确认属于 Shell overlay，必须继承当前 zoom；打开这些 overlay 时仍由 `SurfaceWindowManager` detach 全部 docked native view。Remote Connector/Bridge 自身不保存 Shell UI scale。
+
+0.4.2 最终验收必须重新测量 100%、105%、115% 下 Shell/Comments/Settings/Connect overlay/docked/detached 的真实几何和 DPR，并验证重启持久化与无 CSS 双倍率。公司电脑真实 Pack canary 与 UI zoom 自动化是两类证据，均不能互相替代。

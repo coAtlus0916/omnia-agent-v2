@@ -534,7 +534,8 @@ button.danger { color: var(--danger); border-color: #d8aaaa; }
   white-space: nowrap;
 }
 .transport-state, .pack-identity { display: flex; align-items: center; gap: 5px; color: var(--muted); }
-.transport-state { font-size: 10px; }
+.transport-state { padding: 2px 5px; border: 0; background: transparent; font-size: 10px; }
+.transport-state:hover, .transport-state:focus-visible { background: #edf3f7; }
 .transport-dot, .nav-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: #8995a2; }
 .transport-dot.connected { background: #28a56b; }
 .transport-dot.connecting { background: #c7952d; }
@@ -621,4 +622,25 @@ button.danger { color: var(--danger); border-color: #d8aaaa; }
 .settings-workspaces strong, .settings-workspaces label { display: block; margin: 4px 0; font-size: 10px; }
 .settings-workspaces label { padding-left: 12px; }
 .settings-workspaces input { min-height: 0; margin-right: 5px; }
+.connection-dialog {
+  width: clamp(440px, 54vw, 620px);
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid #aeb8c1;
+  border-radius: 6px;
+  box-shadow: 0 18px 55px rgba(20,31,42,.28);
+}
+.connection-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 13px 15px; border-bottom: 1px solid var(--border); }
+.connection-dialog h2, .connection-dialog h3 { margin: 0; font-size: 15px; }
+.connection-dialog header p, .connection-dialog-body p { margin: 5px 0; color: var(--muted); line-height: 1.5; }
+.connection-dialog-body { min-height: 0; overflow: auto; padding: 15px; }
+.pairing-guide { padding: 12px; border: 1px solid #b9d2e5; background: #f3f8fc; }
+.pairing-guide code { display: block; margin: 12px 0 7px; padding: 10px; user-select: all; text-align: center; letter-spacing: 2px; font-size: 20px; font-weight: 700; background: #fff; border: 1px solid #c9dbe9; }
+.pairing-guide small { display: block; color: var(--muted); text-align: center; }
+.connection-facts { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 6px 10px; margin: 12px 0; }
+.connection-facts dt { color: var(--muted); }
+.connection-facts dd { margin: 0; overflow-wrap: anywhere; }
 .boot-screen { background: #eef1f4; }

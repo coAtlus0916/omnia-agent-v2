@@ -1,6 +1,6 @@
 # 统一可调整分区系统
 
-状态：Shell 0.4.1 的 `settings.main` 已实现；其余 Feature splitter 按各包状态推进  
+状态：Shell 0.4.2 继承 0.4.1 的 `settings.main`；Connector 子菜单删除后稳定外框/splitter 语义不变
 日期：2026-08-03
 
 ## 1. 用户目标
@@ -183,6 +183,8 @@ Feature 升级改变 panel/splitter 时：
 Feature 详细设计若最终采用单一区域，不为了“必须有 splitter”而制造无意义分区；一旦存在两个不同功能区域，边界必须使用统一 Splitter。
 
 Shell 0.4.1 的 `settings.main` 使用 Core SQLite 中的版本化 `SettingsLayoutPreference`，默认导航宽度 2200 basis points，合法范围 1600–3600。pointer release、方向键和 reset 都提交同一真实保存 action；高缩放或小 viewport 只做运行时 clamp，不覆盖已保存比例。设置外框使用稳定的 viewport clamp 宽高，左右列分别拥有 `overflow-y:auto`，内容多少只改变内部滚动，不改变外框。自动化已验证键盘调整到 2300、重启恢复、真实 AI 页面在 130%/小窗口下仅右区滚动且左区位置不变。
+
+Shell 0.4.2 删除整个 Connector 设置子菜单，但不得据此缩小 Settings 外框、删除 splitter 或合并滚动容器。AI、安全锁等剩余真实页面继续共享同一 `settings.main` preference。首次配对/诊断/重新配对/解除绑定属于顶部 Connect overlay，不新建第二份 Settings splitter，也不创建假的 Connector 占位页。
 
 主 Shell 第二列不存在 Feature Workbench，因此禁止增加“功能树/工作台”Splitter。Feature 内部布局偏好只属于自己的隔离 Surface，并在 docked/detached placement 间共用。折叠第二列时其主 Splitter 一并归零并禁用；展开后恢复后台最后确认宽度。
 

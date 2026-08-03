@@ -23,7 +23,7 @@ v4 名称：录制操作
 - 完整录制导出；
 - 不完整录制的受限诊断恢复；
 - Artifact/Evidence 持久化；
-- local/remote Transport 等价。
+- Remote Shell/Bridge/Worker 使用同一录制合同；不存在 Local Transport 或 fallback。
 
 暂不包含：
 
@@ -165,7 +165,7 @@ Connector 在任何磁盘、临时文件、Bridge 分块或普通 Event 之前�
 
 录制 Artifact 默认保留在稳定 `data` 根，程序更新/回滚不得覆盖。录制正文使用实例 DEK 静态保护，DEK 由 Windows Secret Store 包装；复制目录不能直接读取，跨设备使用受控导出。当前没有按年龄自动清理；用户显式清理时必须检查活动录制、Run/Evidence/诊断引用并报告未能物理删除的内容。低磁盘或任一 capture budget 达限时停止/受控结束当前录制并报告 partial/incomplete，不静默截断为完整，也不删除既有 Artifact。
 
-## 9. Local/Remote
+## 9. Remote-only Transport
 
 - Feature、Run、状态、权限和 Connector Operation 合同完全相同；
 - local 直接到本机 Connector；remote 经 Bridge 到远端 Connector；
@@ -192,7 +192,7 @@ Connector 在任何磁盘、临时文件、Bridge 分块或普通 Event 之前�
 
 - [ ] 只能录制当前绑定的一个 Omnia target 和 Engagement。
 - [ ] 多标签、目标漂移、页面关闭和登录失效均失败关闭。
-- [ ] local/remote 使用同一合同，remote 中断不静默 fallback。
+- [ ] Shell/Bridge/Remote Worker 使用同一合同；Remote 中断失败关闭且不 fallback。
 - [ ] start/pause/continue/stop 跨重启保持原 recordingId 和 attempt。
 - [ ] 响应丢失后不自动重放控制 mutation。
 - [ ] 凭据、Cookie、认证 header 和 Secret 不进入 Artifact、日志或 UI。
@@ -211,7 +211,7 @@ Connector 在任何磁盘、临时文件、Bridge 分块或普通 Event 之前�
 
 - IPC 背压、Worker crash、lease/checkpoint 和 Shell 重启；
 - Artifact 分块、digest、断点、磁盘满、finalize 与引用恢复；
-- LocalTransport 与 RemoteBridgeTransport 的同合同测试，包含断线、重复/乱序、TTL 和大文件；
+- Remote Shell/Bridge/Worker 的同合同测试，包含断线、重复/乱序、TTL 和大文件；
 - Connector capture source allowlist、凭据剔除和越权目标拒绝；
 - Worker/UI sandbox、资源回收和 Bridge 消息边界。
 

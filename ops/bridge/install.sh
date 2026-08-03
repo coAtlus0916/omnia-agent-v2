@@ -13,14 +13,11 @@ install -d -m 0750 "$INSTALL_ROOT"
 install -m 0644 "$SOURCE_DIR/server.cjs" "$INSTALL_ROOT/server.cjs"
 install -m 0644 "$SOURCE_DIR/Dockerfile" "$INSTALL_ROOT/Dockerfile"
 install -m 0644 "$SOURCE_DIR/docker-compose.yml" "$INSTALL_ROOT/docker-compose.yml"
-install -m 0750 "$SOURCE_DIR/create-pairing.sh" "$INSTALL_ROOT/create-pairing.sh"
 
 if [ ! -f "$INSTALL_ROOT/.env" ]; then
-  ADMIN_TOKEN=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
   TOKEN_SECRET=$(od -An -N48 -tx1 /dev/urandom | tr -d ' \n')
   umask 077
   {
-    echo "OMNIA_V5_BRIDGE_ADMIN_TOKEN=$ADMIN_TOKEN"
     echo "OMNIA_V5_BRIDGE_TOKEN_SECRET=$TOKEN_SECRET"
     echo "OMNIA_V5_BRIDGE_HOST=0.0.0.0"
     echo "OMNIA_V5_BRIDGE_PORT=18785"

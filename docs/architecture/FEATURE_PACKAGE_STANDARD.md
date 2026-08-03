@@ -274,7 +274,7 @@ Feature 的实现文档不是发布后的补充说明，而是签名包的强制
 | Delivery | 菜单/route、view、action、上传与状态呈现、用户确认和交付方式 |
 | Execution | Worker 入口、步骤、算法/规则、Validator、资源限制与失败语义 |
 | Control & Data | Run/Step/Event、repository command、数据 owner、迁移、Confirmation、Artifact 与 Evidence |
-| Integration | Connector capability/operation ID、effect、preflight、commit point、写后读回以及 Local/Remote 一致性 |
+| Integration | Remote Connector capability/operation ID、effect、preflight、commit point、写后读回、断线恢复与无 Local fallback |
 
 每条记录至少包含 `capabilityId/plane/responsibility/entrypoint/actionOrContractIds/dataOwner/effect/dependencies/testIds/status`。某 Plane 不适用时，`status=not_applicable` 且必须给出可评审原因；`planned` 不能冒充已安装实现。
 
@@ -441,7 +441,7 @@ Feature 引用的 Remote Connector Operation Module 作为独立签名包在线�
 - UI bundle 不在 Shell renderer 内执行；跨 DOM/CSS、Node/文件、网络、导航、存储和非法 Bridge 消息攻击被隔离/拒绝；
 - Feature UI crash、死循环、内存超限和重载不阻断 Shell、聊天或其他 Feature UI；
 - UI layout manifest、统一 Splitter、键盘/最小尺寸和 LayoutPreference 升级；
-- Local/Remote parity；
+- Remote Transport/Session/Operation 合同一致性与无 Local fallback；
 - Remote Operation Module side-by-side 在线升级、Run pinning、撤销和 previous 回滚；
 - 官方信任根、未知/测试/第三方 publisher、篡改、sequence 回退和撤销拒绝；生产无任意包导入入口；
 - 受控真实 Omnia canary（若声明 Connector effect）。

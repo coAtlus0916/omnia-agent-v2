@@ -3,6 +3,8 @@
 发布日期：2026-08-03  
 版本 / sequence：`0.3.4 / 7`
 
+> 2026-08-03 历史说明：本页记录的 waiting discovery、设置页匹配和双模式路径已由 [Remote-only ADR](../adr/0035-remote-only-connector-and-link-code-pairing.md) 取代。0.3.4/sequence 7 产物保持不可变；新候选见 [0.3.5 发布记录](REMOTE_CONNECTOR_0_3_5_RELEASE.md)。以下内容只描述当时发布事实，不是当前产品操作说明。
+
 ## 产物与地址
 
 - stable：`https://download.labcaspian.com/files/v5-remote-connector/stable.json`

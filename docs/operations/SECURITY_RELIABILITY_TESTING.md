@@ -1,7 +1,7 @@
 # 安全、可靠性与测试
 
 状态：Draft for Review  
-适用范围：Shell、Control & Data Plane、Feature/Parser Worker、Connector Core/Operation Module、Local/Remote Transport、AI Provider、数据与发布。
+适用范围：Shell、Control & Data Plane、Feature/Parser Worker、Remote Connector Core/Operation Module、Bridge/Remote Transport、AI Provider、数据与发布。2026-08-03 起以 ADR-0035 的 Remote-only/no-fallback 决策为准。
 
 ## 1. 威胁模型
 
@@ -153,7 +153,7 @@ OpenTelemetry 或本地等价实现为 `Proposed`。默认不上传 telemetry；
 | Artifact | 上传大小、吞吐、并发、恢复 | Proposed / 待代表文件基准 |
 | Parser | CPU/内存/时间/解压限制 | Proposed / 待正常与恶意样本 |
 | Worker | 每模块并发/资源上限 | 由 manifest + 平台上限，待基准 |
-| Transport | 心跳、断线检测、事件重放窗口 | Proposed / 待 Local/Remote 故障测试 |
+| Transport | 心跳、断线检测、事件重放窗口 | Remote-only 自动化已覆盖基础链路，真实公司电脑故障 canary 待执行 |
 | 可用性 | 模块故障不影响其他模块 | 强制行为目标 |
 | 恢复 | RPO/RTO、备份/恢复时间 | 待数据规模和用户要求 |
 | 安全 | uncertain 零自动重放、Secret 零明文泄漏 | 强制不变量 |
@@ -166,7 +166,7 @@ OpenTelemetry 或本地等价实现为 `Proposed`。默认不上传 telemetry；
 flowchart TB
     C["真实 Omnia canary<br/>最少、受控"]
     E["端到端：Shell→Core→Feature→Connector"]
-    P["进程/故障/升级/Local-Remote parity"]
+    P["进程/故障/升级/Remote 端到端合同"]
     I["Store/Parser/AI/Transport 集成"]
     K["Schema/Contract/Migration/Security"]
     U["单元/属性/模糊测试"]
@@ -184,7 +184,7 @@ flowchart TB
 
 - 所有 `omnia.* /v1` Schema 正/负/版本 fixture；
 - Feature/Operation manifest、RPC、权限；
-- Local/Remote 同一套 Transport kit；
+- Shell/Bridge/Remote Worker 使用同一套 Transport kit，且静态/运行时证明无 Local fallback；
 - Provider adapter 的 discovery/manual/test/error/usage；
 - 合同示例仅作 fixture，不驱动生产 UI 假数据。
 
@@ -194,7 +194,7 @@ flowchart TB
 - parser 真实 Office/PDF/ZIP 类型和恶意样本；
 - Worker crash、OOM、超时、越权、升级/回滚；
 - Remote Connector Operation side-by-side、Core candidate/active/previous、下载中断、篡改/降级、活动 mutation 阻断、probation rollback；
-- Workspace 轻抓取的权威 Section/Workspace identity，以及重抓取的分页、取消、partial、同名/改名/缺父级和 Local/Remote parity；
+- Workspace 轻抓取的权威 Section/Workspace identity，以及重抓取的分页、取消、partial、同名/改名/缺父级和 Remote 重连一致性；
 - Core 重启、lease 过期、Event 重连；
 - Transport 乱序、重复、丢包、提交点断线；
 - AI fake server 仅用于协议/安全测试，不能作为产品功能验收；真实 Provider test 单独执行。
@@ -206,7 +206,7 @@ flowchart TB
 - 刷新/重启/多窗口恢复；
 - 所有按钮的 success/empty/denied/failure/disabled；
 - 二级/三级 Feature 叶子混排时的鼠标、键盘、焦点、搜索、折叠、恢复和权限状态；
-- Transport 切换和阻断；
+- Remote Transport 断线、恢复、协议不兼容和阻断；
 - 不需要 Omnia 的功能也必须真实闭环到 Artifact/Evidence。
 
 ## 8. Worker 与 Feature UI 执行隔离验收
@@ -226,9 +226,9 @@ flowchart TB
 
 Windows Worker/Parser/Operation sandbox 和 Feature UI renderer/view 隔离实现未选定前，先以上述可验证能力模型和攻击测试作为选型门槛。
 
-## 9. Local/Remote parity
+## 9. Remote-only 端到端合同
 
-同一 canonical command fixture 在两种 Transport 下必须得到等价：
+同一 canonical command 在 Shell、Bridge 与 Remote Worker 各跳必须保持：
 
 - Schema/身份/effect/confirmation/idempotency；
 - progress sequence 与 terminal/uncertain 语义；
@@ -236,7 +236,7 @@ Windows Worker/Parser/Operation sandbox 和 Feature UI renderer/view 隔离实�
 - Artifact digest、size、type/provenance；
 - 错误分类和脱敏。
 
-允许差异仅限传输诊断（网络时延、Bridge route ID 等），不得被 Feature 观察为业务分支。测试需覆盖切换中可取消/不可取消 read、非终态 mutation、uncertain、Connector Artifact 上传、状态未知和 Bridge TTL。
+允许差异仅限传输诊断（网络时延、Bridge route ID 等），不得被 Feature 观察为业务分支。测试需覆盖重连中可取消/不可取消 read、非终态 mutation、uncertain、Connector Artifact 上传、状态未知和 Bridge TTL，并证明没有 Local 实现或 fallback。
 
 ## 10. 真实 Omnia canary
 
@@ -255,7 +255,7 @@ canary 类型：
 2. 真实导出/Artifact；
 3. 最小 mutation + 写后读回；
 4. 人工制造响应丢失并验证 uncertain/reconcile（仅在安全环境）；
-5. Local/Remote 同合同对比。
+5. Shell/Bridge/Remote Worker 同合同与断线恢复对比。
 
 “新建与关联”的首个能力 canary 进一步固定为一个 Generic APP、一个 Generic DB、两个 GRA core 和唯一 DB → APP 关系。它在首批开发顺序中位于第四项，负责综合验收四 Plane。必须保存创建读回、关系双边读回、单一 `traceId` 和 partial/uncertain 故障证据；Risk/Control、OS、Tool、SAP 和批外引用不纳入这次通过条件。
 
@@ -279,7 +279,7 @@ feature docs schema/link/drift/safe-render/secret scan
 publication privacy scan
 ```
 
-Nightly/候选发布增加 E2E、Local/Remote parity、backup/restore rehearsal、性能回归。真实 Provider/Omnia 测试使用受控环境与秘密，不在普通 PR 暴露。
+Nightly/候选发布增加 Remote E2E、断线/重启恢复、backup/restore rehearsal、性能回归。真实 Provider/Omnia 测试使用受控环境与秘密，不在普通 PR 暴露。
 
 已知高危/严重依赖漏洞不能只记录后继续发布；必须升级、替换、隔离或由安全负责人以有期限风险接受并有补偿控制。风险接受流程负责人待用户确认。
 
@@ -342,10 +342,10 @@ Remote Connector 在线发布还必须：
 - [ ] P0 不变量全部有自动测试或真实 canary 证据。
 - [ ] 关键结论不只依赖源码正则/快照。
 - [ ] Feature/Operation 越权与恶意上传测试通过。
-- [ ] Local/Remote parity 与 uncertain 故障注入通过。
+- [ ] Remote Shell/Bridge/Worker 合同与 uncertain 故障注入通过，并证明无 Local fallback。
 - [ ] Remote Connector 在线更新的篡改/降级/中断/A-B/阻断/probation/previous/不 fallback 测试通过。
 - [ ] 生产第三方/未签名/测试根/任意离线包全部被拒绝，且无关闭签名或撤销的设置。
-- [ ] Workspace 轻/重抓取通过 parentSectionId、硬预算、访问撤销、分页/取消和 Local/Remote parity 测试，无名称推断或越权缓存展示。
+- [ ] Workspace 轻/重抓取通过 parentSectionId、硬预算、访问撤销、分页/取消和 Remote 重连一致性测试，无名称推断或越权缓存展示。
 - [ ] 更新/回滚/删除旧 release 不改变稳定 `data`；复制便携根不会复制可用 Secret 或绕过敏感正文静态保护。
 - [ ] 受控移除实例能核对 OS Secret、Remote 注册/租约、产品根外 PendingRevocationCapsule 和 Supervisor/服务；直接删除文件夹不会被标记为完整卸载。
 - [ ] 详细录制的字段白名单、源头净化、二层扫描/quarantine、硬预算、导出授权和真实清理通过负面样本。

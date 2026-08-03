@@ -1,5 +1,5 @@
 import { cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
@@ -14,6 +14,13 @@ const runId = `${process.pid}-${Date.now()}`;
 const releaseTarget = path.join(releasesRoot, version);
 const release = path.join(releasesRoot, `.staging-${version}-${runId}`);
 const appRoot = path.join(release, 'resources', 'app');
+const artifactsRoot = path.join(root, 'artifacts');
+const portableName = `omnia-agent-v5-portable-${version}`;
+const portableTarget = path.join(artifactsRoot, portableName);
+const zip = path.join(artifactsRoot, `${portableName}.zip`);
+for (const target of [releaseTarget, portableTarget, zip]) if (existsSync(target)) {
+  throw new Error(`Immutable Shell artifact already exists: ${target}`);
+}
 
 async function removeWithRetry(target, recursive = true) {
   await rm(target, { recursive, force: true, maxRetries: 8, retryDelay: 250 });
@@ -86,11 +93,6 @@ await cp(
   path.join(appRoot, 'builtins', 'recording-0.1.1.ofp')
 );
 await mkdir(path.join(appRoot, 'node_modules'), { recursive: true });
-await cp(
-  path.join(root, 'node_modules', 'playwright-core'),
-  path.join(appRoot, 'node_modules', 'playwright-core'),
-  { recursive: true }
-);
 await writeFile(path.join(appRoot, 'package.json'), JSON.stringify({
   name: 'omnia-agent-v5-shell-release',
   version,
@@ -101,7 +103,6 @@ const releaseFiles = [
   'Omnia Agent v5.exe',
   'resources/app/dist/main/main.cjs',
   'resources/app/dist/main/preload.cjs',
-  'resources/app/dist/main/connector.cjs',
   'resources/app/dist/main/feature-worker-host.cjs',
   'resources/app/dist/tools/feature-installer.cjs',
   'resources/app/builtins/recording-0.1.1.ofp',
@@ -120,10 +121,6 @@ await writeFile(path.join(release, 'release-manifest.json'), JSON.stringify({
   signingStatus: 'organization_code_signing_required_before_distribution',
   files: digests
 }, null, 2));
-const playwrightPackage = JSON.parse(await readFile(
-  path.join(root, 'node_modules', 'playwright-core', 'package.json'),
-  'utf8'
-));
 const electronPackage = JSON.parse(await readFile(
   path.join(root, 'node_modules', 'electron', 'package.json'),
   'utf8'
@@ -143,17 +140,13 @@ await writeFile(path.join(release, 'sbom.json'), JSON.stringify({
   metadata: { component: { type: 'application', name: 'omnia-agent-v5-shell', version } },
   components: [
     { type: 'framework', name: 'electron', version: String(electronPackage.version) },
-    { type: 'library', name: 'playwright-core', version: String(playwrightPackage.version) },
     { type: 'library', name: 'react', version: String(reactPackage.version) },
     { type: 'library', name: 'react-dom', version: String(reactDomPackage.version) }
   ]
 }, null, 2));
 await publishDirectory(release, releaseTarget);
-const artifactsRoot = path.join(root, 'artifacts');
-const portableName = `omnia-agent-v5-portable-${version}`;
 const artifactsStageRoot = path.join(artifactsRoot, `.staging-${runId}`);
 const portableRoot = path.join(artifactsStageRoot, portableName);
-const portableTarget = path.join(artifactsRoot, portableName);
 const portableRelease = path.join(portableRoot, 'releases', version);
 await removeWithRetry(artifactsStageRoot);
 await mkdir(path.dirname(portableRelease), { recursive: true });
@@ -172,7 +165,6 @@ await writeFile(path.join(portableRoot, 'current'), JSON.stringify({
   relativePath: `releases/${version}`,
   activatedAt: new Date().toISOString()
 }, null, 2));
-const zip = path.join(artifactsRoot, `${portableName}.zip`);
 const stagedZip = path.join(artifactsStageRoot, `${portableName}.zip`);
 const archive = spawnSync('python', [
   path.join(root, 'scripts', 'create-portable-zip.py'),

@@ -8,19 +8,26 @@ if (process.platform !== 'win32') throw new Error('v5 Remote Connector portable 
 
 const root = path.resolve(import.meta.dirname, '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-const version = '0.3.4';
-const sequence = Number(process.env.OMNIA_V5_REMOTE_CONNECTOR_RELEASE_SEQUENCE || 7);
+const version = '0.3.5';
+const sequence = Number(process.env.OMNIA_V5_REMOTE_CONNECTOR_RELEASE_SEQUENCE || 8);
 const product = 'omnia-agent-v5-remote-connector';
 const platform = 'win32-x64';
 const keyId = 'v5-remote-connector-release-2026-01';
 const packageName = `Omnia-Agent-v5-Remote-Connector-v${version}-Portable`;
-const releaseRoot = path.join(root, 'remote-connector', 'releases', version);
+const runId = `${process.pid}-${Date.now()}`;
+const releasesRoot = path.join(root, 'remote-connector', 'releases');
+const releaseTarget = path.join(releasesRoot, version);
+const releaseRoot = path.join(releasesRoot, `.staging-${version}-${runId}`);
 const portableRoot = path.join(releaseRoot, packageName);
 const zipPath = path.join(releaseRoot, `${packageName}.zip`);
 const publicRoot = path.join(root, 'remote-connector', 'public');
-const publicReleaseRoot = path.join(publicRoot, 'releases', version);
+const publicReleasesRoot = path.join(publicRoot, 'releases');
+const publicReleaseTarget = path.join(publicReleasesRoot, version);
+const publicReleaseRoot = path.join(publicReleasesRoot, `.staging-${version}-${runId}`);
 const publicZipPath = path.join(publicReleaseRoot, path.basename(zipPath));
 const stableManifestPath = path.join(publicRoot, 'stable.json');
+const stableManifestStage = path.join(publicRoot, `.stable-${runId}.json`);
+const stableManifestBackup = path.join(publicRoot, `.stable-${runId}.previous.json`);
 const defaultPrivateKey = path.join(
   os.homedir(),
   '.omnia-agent-v5',
@@ -49,7 +56,18 @@ if (
   || !crypto.timingSafeEqual(derivedPublicKey, expectedPublicKey)
 ) throw new Error('The v5 Remote Connector signing key does not match the pinned public key.');
 
+for (const immutableTarget of [releaseTarget, publicReleaseTarget]) {
+  if (fs.existsSync(immutableTarget)) throw new Error(`Immutable Remote Connector release already exists: ${immutableTarget}`);
+}
 fs.rmSync(releaseRoot, { recursive: true, force: true });
+fs.rmSync(publicReleaseRoot, { recursive: true, force: true });
+fs.rmSync(stableManifestStage, { force: true });
+fs.rmSync(stableManifestBackup, { force: true });
+let releasePublished = false;
+let publicReleasePublished = false;
+let stablePreviousMoved = false;
+let stablePublished = false;
+try {
 fs.mkdirSync(path.join(portableRoot, 'runtime'), { recursive: true });
 fs.mkdirSync(path.join(portableRoot, 'app'), { recursive: true });
 fs.mkdirSync(path.join(portableRoot, 'app', 'node_modules'), { recursive: true });
@@ -108,12 +126,11 @@ writeText('README.txt', [
   'Omnia Agent v5 Remote Connector',
   `版本：${version}（sequence ${sequence}）`,
   '',
-  '正常使用（无需运行单独配对脚本）：',
-  '1. 在能够访问 Omnia 的公司电脑上双击 StartRemoteConnector.cmd。',
-  '2. Connector 会进入“等待 Omnia Agent 匹配”状态；不要关闭受控 Edge。',
-  '3. 在 Omnia Agent 设置中选择 Remote，点击“查找并匹配 Remote Connector”。',
-  '4. 如果出现多个候选，请核对公司电脑名称；匹配完成后点击首页 Connect。',
-  '5. 登录受控 Edge 并打开唯一的目标 Pack；连接、刷新、保活、Workspace 和 Feature Operation 均走同一 Remote 会话。',
+  '首次配对：',
+  '1. 在 Omnia Agent 顶部点击 Connect，读取 Shell 显示的一次性链接码。',
+  '2. 在能够访问 Omnia 的公司电脑上双击 PairRemoteConnector.cmd，并输入该链接码。',
+  '3. 双击 StartRemoteConnector.cmd；设备凭据由 Windows DPAPI CurrentUser 保护，正常重启无需再次输入链接码。',
+  '4. 登录受控 Edge 并打开唯一目标 Pack；Shell 会自动识别真实 Pack，无需第二次点击 Connect。',
   '',
   '安全与升级：',
   '- v5 与 v4 完全共存，不停止、不读取、不覆盖、不配对或升级 v4 Connector。',
@@ -126,7 +143,7 @@ writeText('README.txt', [
   '',
   '诊断/恢复：',
   '- StatusRemoteConnector.cmd：查看真实等待、连接、命令与更新状态。',
-  '- PairRemoteConnector.cmd：仅供管理员诊断旧式一次性 code；不是正常首次路径。',
+  '- PairRemoteConnector.cmd：首次配对或用户明确重新配对时，消费 Shell 生成的一次性链接码。',
   '- StopRemoteConnector.cmd：只停止 v5。'
 ].join('\r\n') + '\r\n');
 writeText('package-identity.json', `${JSON.stringify({
@@ -190,7 +207,7 @@ const updateManifest = {
   signature: ''
 };
 updateManifest.signature = sign(updateManifest);
-fs.writeFileSync(stableManifestPath, `${JSON.stringify(updateManifest, null, 2)}\n`, 'utf8');
+fs.writeFileSync(stableManifestStage, `${JSON.stringify(updateManifest, null, 2)}\n`, 'utf8');
 fs.writeFileSync(path.join(releaseRoot, 'sbom.json'), `${JSON.stringify({
   bomFormat: 'CycloneDX',
   specVersion: '1.6',
@@ -212,11 +229,37 @@ fs.writeFileSync(path.join(releaseRoot, 'sbom.json'), `${JSON.stringify({
   ]
 }, null, 2)}\n`, 'utf8');
 
-console.log(`Built ${portableRoot}`);
-console.log(`Archive ${zipPath}`);
+fs.renameSync(releaseRoot, releaseTarget);
+releasePublished = true;
+fs.renameSync(publicReleaseRoot, publicReleaseTarget);
+publicReleasePublished = true;
+if (fs.existsSync(stableManifestPath)) {
+  fs.renameSync(stableManifestPath, stableManifestBackup);
+  stablePreviousMoved = true;
+}
+fs.renameSync(stableManifestStage, stableManifestPath);
+stablePublished = true;
+if (stablePreviousMoved) {
+  try { fs.rmSync(stableManifestBackup, { force: true }); } catch { /* new stable is already atomically published */ }
+  stablePreviousMoved = false;
+}
+
+console.log(`Built ${path.join(releaseTarget, packageName)}`);
+console.log(`Archive ${path.join(releaseTarget, path.basename(zipPath))}`);
 console.log(`Stable manifest ${stableManifestPath}`);
 console.log(`SHA-256 ${archiveSha256}`);
 console.log(`Size ${archiveSize}`);
+} catch (error) {
+  if (stablePublished && fs.existsSync(stableManifestPath)) fs.renameSync(stableManifestPath, stableManifestStage);
+  if (stablePreviousMoved && fs.existsSync(stableManifestBackup)) fs.renameSync(stableManifestBackup, stableManifestPath);
+  if (publicReleasePublished && fs.existsSync(publicReleaseTarget)) fs.renameSync(publicReleaseTarget, publicReleaseRoot);
+  if (releasePublished && fs.existsSync(releaseTarget)) fs.renameSync(releaseTarget, releaseRoot);
+  fs.rmSync(releaseRoot, { recursive: true, force: true });
+  fs.rmSync(publicReleaseRoot, { recursive: true, force: true });
+  fs.rmSync(stableManifestStage, { force: true });
+  fs.rmSync(stableManifestBackup, { force: true });
+  throw error;
+}
 
 function writeText(relative, value) {
   fs.writeFileSync(path.join(portableRoot, relative), value, 'utf8');

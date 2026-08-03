@@ -1,20 +1,34 @@
 export type ConnectionStatus =
   | 'not_configured'
   | 'not_connected'
-  | 'opening'
-  | 'waiting'
-  | 'checking'
+  | 'bridge_connecting'
   | 'connected'
   | 'connector_offline'
+  | 'connector_incompatible'
+  | 'browser_starting'
+  | 'waiting_login'
+  | 'waiting_pack'
+  | 'waiting_authorization'
+  | 'identifying_pack'
+  | 'target_closed'
+  | 'multiple_targets'
+  | 'identity_changed'
+  | 'timed_out'
+  | 'cancelled'
+  | 'repair_required'
   | 'error';
 
 export interface ConnectionSnapshot {
-  transport: 'local' | 'remote';
-  adapter: 'v5_local_connector' | 'v5_remote_connector';
+  transport: 'remote';
+  adapter: 'v5_remote_connector';
   adapterAvailable: boolean;
   adapterReason: string;
   remoteAvailable: boolean;
   remoteReason: string;
+  bridgeOnline: boolean;
+  connectorOnline: boolean;
+  protocolCompatible: boolean;
+  bindingState: 'unpaired' | 'pairing' | 'bound' | 'repair_required' | 'revoked';
   status: ConnectionStatus;
   connected: boolean;
   connecting: boolean;
@@ -137,10 +151,13 @@ export interface AiSettingsSnapshot {
 }
 
 export interface ConnectionSettingsSnapshot {
-  mode: 'local' | 'remote';
-  remoteBridgeUrl: string;
-  remotePairId: string;
+  bindingState: 'unpaired' | 'bound' | 'repair_required' | 'revoked';
   remotePaired: boolean;
+  connectorId: string;
+  connectorName: string;
+  connectorVersion: string;
+  protocolVersion: string;
+  generation: number;
   stateVersion: number;
   updatedAt: string;
 }
@@ -148,6 +165,13 @@ export interface ConnectionSettingsSnapshot {
 export interface SettingsSnapshot {
   ai: AiSettingsSnapshot;
   connection: ConnectionSettingsSnapshot;
+}
+
+export interface RemotePairingSnapshot {
+  state: 'idle' | 'waiting' | 'candidate' | 'matched' | 'expired' | 'failed';
+  pairingCode: string;
+  expiresAt: string;
+  message: string;
 }
 
 export interface UserViewPreference {
@@ -213,6 +237,7 @@ export interface ShellSnapshot {
   layout: LayoutPreference;
   settingsLayout: SettingsLayoutPreference;
   settings: SettingsSnapshot;
+  remotePairing: RemotePairingSnapshot;
 }
 
 export interface ShellApi {
@@ -242,16 +267,11 @@ export interface ShellApi {
     expectedStateVersion: number;
   }): Promise<ShellSnapshot>;
   testAiProvider(): Promise<ShellSnapshot>;
-  pairRemote(input: {
-    bridgeUrl: string;
-    pairingCode: string;
-    connectorId?: string;
-    expectedStateVersion: number;
-  }): Promise<ShellSnapshot>;
-  setConnectionMode(input: {
-    mode: 'local' | 'remote';
-    expectedStateVersion: number;
-  }): Promise<ShellSnapshot>;
+  diagnoseRemoteConnection(): Promise<ShellSnapshot>;
+  beginRemotePairing(input: { repair: boolean; confirmed?: boolean; expectedStateVersion: number }): Promise<ShellSnapshot>;
+  pollRemotePairing(): Promise<ShellSnapshot>;
+  cancelRemotePairing(): Promise<ShellSnapshot>;
+  revokeRemoteBinding(input: { confirmed: boolean; expectedStateVersion: number }): Promise<ShellSnapshot>;
   saveScale(input: { percent: number; expectedStateVersion: number }): Promise<ShellSnapshot>;
   saveLayout(input: {
     featureNavigationBasisPoints: number;

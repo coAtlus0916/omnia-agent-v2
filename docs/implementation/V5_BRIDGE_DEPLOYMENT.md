@@ -1,37 +1,50 @@
 # v5 Bridge 与 Remote Connector 部署合同
 
-v5 Bridge 公开于 `https://agent.labcaspian.com/v5-bridge/`，内部只监听独立
-`127.0.0.1:18785`，容器与安装根分别为 `omnia-agent-v5-bridge` 和
-`/opt/omnia-agent-v5-bridge`。Bridge 发布包位于 `bridge/releases/0.4.0/`。
+当前目标：Bridge `0.4.1`、Remote Connector `0.3.5 / sequence 8`、协议 `omnia.v5.remote-connector/v2`。v5 为 Remote-only；Shell 不打包或启动 Local Connector，也不允许 fallback。
+
+配对 session 的读取、显式提交与取消均绑定同一 poll proof：`GET /v1/pairing/sessions/:id`、`POST /v1/pairing/sessions/:id/commit`、`DELETE /v1/pairing/sessions/:id`。Connector WSS open 只形成 ready，不激活。取消 waiting/ready candidate 会使 code 不可重放并撤销 candidate；commit 已先赢则返回 matched，由 Shell 完成 staged binding promote 或执行可恢复 cleanup。网络失败、损坏密文或本地 code 到期都不能直接丢 pending proof/生命周期 gate。
+
+生产部署沿用独立 v5 host/path/root，不复用或修改 v4 endpoint、Room/token/state、更新通道、服务或数据。历史 Bridge `0.4.0` 与 Remote Connector `0.3.4 / sequence 7` 产物和发布记录保持不可变。
 
 ## 正常首次路径
 
-1. 公司电脑双击最终 portable 内的 `StartRemoteConnector.cmd`。
-2. Worker 向 v5 Bridge 注册 2 分钟、单次使用的 waiting lease；状态为 `waiting_matching`。
-3. Omnia Agent 设置选择 Remote，点击“查找并匹配 Remote Connector”。单候选直接绑定；多候选
-   必须按电脑名称和 Connector ID 选择，未选择时失败关闭。
-4. Bridge 冻结 product、protocol、Connector device、matching session 和 pair identity，分别签发
-   Shell/Connector 角色 token。Connector token 由 DPAPI 保存，Shell token 由 `safeStorage` 保存。
-5. 回到首页点击 Connect；status/refresh/keepalive/workspace/recording/官方 Operation 均走同一
-   Remote transport，不会 fallback Local。
+1. 用户在 Shell 顶部第一次点击 Connect。
+2. Shell 在任何网络 await 前先占 durable `creating` reservation 和进程内 lifecycle mutex，再向 Bridge 创建最长十分钟的 pairing session。Bridge 返回密码学安全、单次、session/product/protocol/角色绑定的链接码，以及只交给 Shell Main 的 polling proof。
+3. Shell 在 Connect 引导中展示链接码；用户在公司电脑最终 Remote Connector 输入。正常产品路径不使用 Settings、waiting discovery、设备列表或唯一候选自动认领。
+4. Remote Connector 提交自己的受保护 device identity、版本、平台和协议并消费链接码；Bridge 建立 candidate binding。
+5. Connector WSS 鉴权成功只把 candidate 标为 ready。Shell 通过 pairing proof 读取 ready candidate，把 Shell token、pair/generation 和 Connector identity 用实例密钥持久 stage 为 `commit_required`，此时 previous 仍 active。
+6. Shell 用同一 proof 调用 commit。Bridge 当下再次验证 candidate socket OPEN/fresh 以及 pair/generation/device/protocol/version；全部一致才 CAS 激活并撤销 previous，否则返回 `409` 且 old 保持 active。Bridge 向 Connector 发 `binding_committed` 后，Worker 才把 DPAPI candidate credential 提升为 active；Shell 再原子 promote staged credential 并清 pending。
+7. 同一 Connect 流程发起浏览器连接并等待真实 Pack。后续普通启动、Shell/Connector/Bridge 重启和网络恢复不再要求链接码。
 
-`create-pairing.sh` 和 `PairRemoteConnector.cmd` 只用于管理员诊断旧式双 code 流程，不属于正常路径。
+链接码、polling proof、token、DPAPI/safeStorage 密文不写日志、不进入 Renderer snapshot、Evidence 正文或诊断包。匿名调用者不能查询 waiting Connector、公司电脑名称或完整 Connector ID。
+
+十分钟 code 窗口只限制消费；ready candidate 使用独立且不因重连延长的 recovery TTL。Shell/Bridge/Connector 重启、stage 后崩溃、commit 响应丢失以及 commit 后 promote 前崩溃，都先 poll 权威状态：candidate 才重试 commit，matched 直接 promote，expired 保持失败关闭并要求 reconcile。损坏的 revocation pending 优先从同 pair 当前 binding credential 恢复；两份均损坏则保留无限期 `manual_revoke_required` tombstone，不能删除 pending 来恢复 transport。
+
+## 重新配对与解除绑定
+
+- Connect 错误/详情提供诊断、重新配对和解除绑定；Settings 不含 Connector 子菜单。
+- 重新配对需要用户确认，建立替换 candidate；失败保留旧 active，成功才用更高 generation 激活并撤销 previous。
+- 解除绑定撤销 Bridge binding 和双端 credential，不删除聊天、Feature、Evidence、附件、文档或其他用户数据。
+- revoked/credential 不可恢复进入 `repair_required`；不得无限重试或 fallback Local。
+
+## WebSocket、heartbeat 与状态
+
+- Shell/Connector WebSocket 均有 ping/pong heartbeat，超过 freshness deadline 的 stale socket 被关闭并从在线集合移除。
+- `onlineConnectors` 只统计 active generation、新鲜且协议兼容的 Connector。
+- Bridge 向 Shell 发送 `state` envelope；`connectorOnline=false` 立即投影离线。Shell WSS online 不等于 Connector online。
+- 双端重连使用有界 exponential backoff + jitter。
+- 网络恢复后旧 Pack identity 先失效，再读取 Remote Session/hierarchy；不能因 token 或旧 snapshot 显示 connected。
+- Bridge health 只返回 `version/build/release/protocol/startedAt` 等非敏感字段。
 
 ## 命令与更新可靠性
 
-- Bridge deadline 取 Shell 签约 deadline，最大 185 秒；录制 stop/catalog 的 180 秒合同不会被提前截断。
-- request owner 同时绑定 pairId；同 ID 在途不重复分发，取消会移除 owner 并丢弃迟到结果。
-- 仅 health/status 可有界并发；connect/refresh/workspace/recording/Operation register/invoke 使用互斥 lane。
-- Remote 与 Local 共用 `ConnectorRequest/Response`、真实 `LocalConnector` 和签名 `OperationHost`。
-- Supervisor 只从 v5 stable 下载，验证 product/key/signature/hash/size/sequence/minimum Supervisor；
-  active/uncertain operation 会阻断激活，candidate/probation 失败恢复 previous 并记录坏 sequence。
+- request owner 绑定 `pairId + generation + requestId + deadline`；同 ID 在途不重复分发，断线按 effect/提交点返回失败或 uncertain。
+- 仅健康/status 可有界并发；connect/refresh/workspace/recording/Operation 使用受控 lane。
+- Remote Worker 的 `WorkstationOmniaSession` 持有受控 Edge/CDP/Authorization/Pack identity 与签名 OperationHost；Shell 不访问这些能力。
+- Supervisor 只从 v5 stable 下载，验证 product/key/signature/hash/size/sequence/minimum Supervisor；active/uncertain operation 阻断激活，candidate/probation 失败恢复 previous。
 
-## 生产状态与隔离
+## 生产状态与 canary
 
-2026-08-03 已部署 Bridge `0.4.0` 与 Remote Connector `0.3.4 / sequence 7`。公开 canary 完成
-waiting discovery、双角色匹配、DPAPI 持久化、WSS 和真实 `status` 往返。v4 stable manifest 部署
-前后 SHA-256 均为 `6e2130c27da3302877500539739ea8606ae514f999ec49da09826e516bfe9786`。
+Bridge `0.4.1` 与 Remote Connector `0.3.5 / sequence 8` 的自动化、package 和便携结果以 [0.3.5 发布记录](REMOTE_CONNECTOR_0_3_5_RELEASE.md)及 [0.4.2 验收记录](../reviews/SHELL_0_4_2_REMOTE_ONLY_ACCEPTANCE.md)为准。
 
-v5 不复用或修改 v4 endpoint、room/token/state、device credential、签名清单、安装/数据目录、
-Supervisor、更新通道或进程。生产 canary 未使用用户 Omnia 登录，`connectedToOmnia=false` 是真实
-结果；真实 Pack、workspace、录制和 mutation Operation 仍需公司电脑授权环境最终 canary。
+公司电脑真实 Pack canary：**未通过/待 canary**。在最终包上完成真实链接码、受控 Edge 登录、自动 Pack identity、`status/refresh/workspace_light_read`、四类重启/断网恢复和解除绑定/新 generation 前，不得声称 Remote 真实 Pack 已交付。

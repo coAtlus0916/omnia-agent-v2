@@ -1,0 +1,132 @@
+{
+  "ok": true,
+  "productRoot": "C:\\Users\\zpyoung\\AppData\\Local\\Temp\\omnia-agent-v5-ui-regression-4qSWM7",
+  "registry": {
+    "productVersion": "0.4.2",
+    "otherGroups": [
+      {
+        "id": "other",
+        "parentId": null,
+        "level": 1,
+        "label": "其他",
+        "order": 90
+      }
+    ],
+    "otherLeaves": [
+      "omnia.delete-elements@0.1.2",
+      "omnia.recording@0.1.1"
+    ]
+  },
+  "geometry100": {
+    "innerWidth": 1264,
+    "devicePixelRatio": 1,
+    "railWidth": 56,
+    "brandFont": "11px",
+    "uiScaleToken": "1"
+  },
+  "geometry105": {
+    "innerWidth": 1204,
+    "devicePixelRatio": 1.0499999523162842,
+    "railWidth": 55.99702835083008
+  },
+  "geometry115": {
+    "innerWidth": 1099,
+    "devicePixelRatio": 1.149999976158142,
+    "railWidth": 55.99184799194336,
+    "brandFont": "11px",
+    "uiScaleToken": "1",
+    "frame": {
+      "x": 360.2717590332031,
+      "y": 114.98641967773438,
+      "width": 738.8587036132812,
+      "height": 546.7527465820312
+    }
+  },
+  "settingsPhysical": {
+    "at100": {
+      "name": "AI 设置",
+      "width": 860,
+      "height": 547.90625
+    },
+    "at115": {
+      "x": 120.91033172607422,
+      "y": 92.64945983886719,
+      "width": 857.3098220825195,
+      "height": 476.4402618408203
+    }
+  },
+  "settingsKeyboardPersisted": 2300,
+  "nativeDockedCapture": {
+    "sourceId": "window:5835074:1",
+    "sourceName": "Omnia Agent v5",
+    "bytes": 60211,
+    "width": 1280,
+    "height": 771
+  },
+  "scrollExercise": {
+    "mainScrollHeight": 308,
+    "mainClientHeight": 280,
+    "mainScrollTop": 27.69230842590332,
+    "navBefore": 0,
+    "navAfter": 0
+  },
+  "keyboardZoom": {
+    "at110": {
+      "scale": 110,
+      "dpr": 1.100000023841858,
+      "managerZoom": 1.1
+    },
+    "at115": {
+      "scale": 115,
+      "dpr": 1.149999976158142,
+      "managerZoom": 1.15
+    },
+    "reset100": {
+      "scale": 100,
+      "dpr": 1,
+      "managerZoom": 1
+    }
+  },
+  "detachedGeometry": {
+    "devicePixelRatio": 1.149999976158142,
+    "innerWidth": 647,
+    "title": "删除元素"
+  },
+  "detachedCleanup": {
+    "instanceId": "omnia.delete-elements::0.1.2:delete-elements.workbench",
+    "senderMappingRemoved": true
+  },
+  "restart": {
+    "scale": 115,
+    "settingsBasis": 2300,
+    "dpr": 1.149999976158142,
+    "leaves": [
+      "omnia.delete-elements@0.1.2",
+      "omnia.recording@0.1.1"
+    ]
+  },
+  "nativeLifecycle": {
+    "commentsAttached": 0,
+    "featureAttachedMaximum": 1,
+    "menuBoundsChanged": true,
+    "settingsAttached": 0
+  },
+  "screenshots": [
+    "comments-menu-collapsed.png",
+    "comments-menu-expanded.png",
+    "feature-detached-115-percent.png",
+    "feature-docked-115-percent.png",
+    "other-group-recording-delete.png",
+    "settings-115-percent.png",
+    "settings-comments-ai.png",
+    "settings-comments-safety.png",
+    "settings-delete-elements-ai.png",
+    "settings-delete-elements-safety.png",
+    "settings-independent-scroll-130-percent.png",
+    "settings-recording-direct-ai.png",
+    "settings-recording-direct-safety.png",
+    "shell-100-percent.png",
+    "shell-105-percent.png",
+    "shell-115-percent.png"
+  ]
+}

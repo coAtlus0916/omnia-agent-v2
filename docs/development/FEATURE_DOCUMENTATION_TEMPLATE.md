@@ -84,7 +84,7 @@
 - Connector capability/operation ID 和版本范围；
 - effect 分类、目标身份和权限；
 - preflight、commit point、写后读回/双边验证；
-- Local/Remote 合同一致性；
+- Remote Shell/Bridge/Worker 合同一致性与无 Local fallback；
 - 超时、断线、partial/uncertain 与只读 reconcile；
 - Operation Module 依赖和在线升级；
 - 不需要 Integration 时的明确 `not_applicable` 原因。
@@ -117,7 +117,7 @@
 - 进程、权限和跨 Feature 隔离；
 - migration/backup/upgrade/rollback；
 - 文档 manifest、链接、digest、敏感信息、安全渲染和双向漂移；
-- Local/Remote parity；
+- Remote Transport 断线、重连、uncertain 与真实 canary；
 - 若有 Omnia effect，受控真实 canary、写后读回、partial/uncertain/reconcile；
 - 若管理业务内容，验证 Managed Content 投影、revision、adopted baseline、tombstone、Phase 2 查询和 projection 恢复；
 - 每项测试 ID、环境、owner、证据位置和通过条件。

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import {
   REMOTE_CONNECTOR_PRODUCT,
+  REMOTE_CONNECTOR_BRIDGE_URL,
   REMOTE_CONNECTOR_UPDATE_MANIFEST_URL
 } from './constants.js';
 import {
@@ -146,13 +147,12 @@ function checkUpdate(): void {
 
 async function pair(): Promise<void> {
   ensureRemoteConnectorDirectories(paths);
-  let bridgeUrl = String(process.argv[3] || '').trim();
-  let pairingCode = String(process.argv[4] || '').trim();
+  let pairingCode = String(process.argv[3] || '').trim();
+  const bridgeUrl = String(process.argv[4] || process.env.OMNIA_V5_REMOTE_BRIDGE_URL || REMOTE_CONNECTOR_BRIDGE_URL).trim();
   let prompt: ReturnType<typeof createInterface> | null = null;
   try {
-    if (!bridgeUrl || !pairingCode) {
+    if (!pairingCode) {
       prompt = createInterface({ input: process.stdin, output: process.stdout });
-      if (!bridgeUrl) bridgeUrl = (await prompt.question('Bridge HTTPS 地址：')).trim();
       if (!pairingCode) pairingCode = (await prompt.question('Connector 一次性配对码：')).trim();
     }
     const result = await pairRemoteConnector({
@@ -162,7 +162,7 @@ async function pair(): Promise<void> {
       name: `${os.hostname()} Omnia Agent v5 Remote Connector`
     });
     pairingCode = '';
-    process.stdout.write(`配对成功：${result.pairId}。凭据已由 Windows DPAPI 保护；现在可直接运行 StartRemoteConnector.cmd。\n`);
+    process.stdout.write(`候选绑定已接收：${result.pairId}。候选凭据已由 Windows DPAPI 保护；Remote Connector 在线验证成功后才会原子启用，验证失败会保留旧绑定。\n`);
   } finally {
     pairingCode = '';
     prompt?.close();

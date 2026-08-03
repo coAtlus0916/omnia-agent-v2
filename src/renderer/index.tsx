@@ -37,26 +37,31 @@ function ScaleControl({ snapshot, fail }: { snapshot: ShellSnapshot; fail(messag
   </div>;
 }
 
-function GlobalSessionBar({ snapshot, run, fail, openSettings, busy }: {
+function GlobalSessionBar({ snapshot, run, fail, openSettings, openConnection, busy }: {
   snapshot: ShellSnapshot;
   run: Run;
   fail(message: string): void;
   openSettings(): void;
+  openConnection(): void;
   busy?: string;
 }) {
   const connection = snapshot.connection;
   const keepalive = snapshot.keepalive;
-  const status = connection.connecting || connection.status === 'opening' ? 'connecting'
+  const status = connection.connecting ? 'connecting'
     : connection.connected ? 'connected' : 'disconnected';
   const connectionReason = connection.message || connection.adapterReason || 'Connector state is unavailable.';
   return <header className="global-session-bar" data-testid="global-session-bar">
-    <div className="transport-state" title={connectionReason} aria-label={`Transport ${connection.transport}`}>
+    <button type="button" className="transport-state" title={connectionReason} aria-label="Remote Connector 连接详情" onClick={openConnection}>
       <span className={`transport-dot ${status}`} />
-      <span>{connection.transport === 'remote' ? 'Remote' : 'Local'}</span>
-    </div>
-    <button type="button" className={`connect-capsule ${status}`} disabled={status !== 'connecting' && !connection.adapterAvailable}
+      <span>Remote</span>
+    </button>
+    <button type="button" className={`connect-capsule ${status}`}
       title={status === 'connecting' ? '取消当前连接尝试' : connectionReason}
-      onClick={() => run(status === 'connecting' ? 'cancel-connect' : 'connect', () => status === 'connecting' ? window.omnia.cancelConnect() : window.omnia.connect())}>
+      onClick={() => {
+        if (status === 'connecting') run('cancel-connect', () => window.omnia.cancelConnect());
+        else if (status === 'connected' || connection.bindingState === 'repair_required') openConnection();
+        else run('connect', () => window.omnia.connect());
+      }}>
       {status === 'connecting' ? 'Cancel' : status === 'connected'
         ? <><span className="connect-default">Connected</span><span className="connect-hover">Connect</span></>
         : 'Connect'}
@@ -304,15 +309,12 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
 
 function SettingsDialog({ snapshot, close, run, fail }: { snapshot: ShellSnapshot; close(): void; run: Run; fail(message: string): void }) {
   const ai = snapshot.settings.ai;
-  const connection = snapshot.settings.connection;
-  const [section, setSection] = useState<'ai' | 'connector' | 'safety'>('ai');
+  const [section, setSection] = useState<'ai' | 'safety'>('ai');
   const [provider, setProvider] = useState<AiProviderKind>(ai.provider);
   const [baseUrl, setBaseUrl] = useState(ai.baseUrl);
   const [model, setModel] = useState(ai.model);
   const [capability, setCapability] = useState<AiAttachmentCapability>(ai.attachmentCapability);
   const [apiKey, setApiKey] = useState('');
-  const [bridgeUrl, setBridgeUrl] = useState(connection.remoteBridgeUrl || 'https://agent.labcaspian.com/v5-bridge/');
-  const [remoteConnectorId, setRemoteConnectorId] = useState('');
   const [settingsBasis, setSettingsBasis] = useState(snapshot.settingsLayout.settingsNavigationBasisPoints);
   useEffect(() => setSettingsBasis(snapshot.settingsLayout.settingsNavigationBasisPoints), [snapshot.settingsLayout.stateVersion]);
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
@@ -320,7 +322,6 @@ function SettingsDialog({ snapshot, close, run, fail }: { snapshot: ShellSnapsho
       <header><h2>设置</h2><div className="header-actions"><ScaleControl snapshot={snapshot} fail={fail} /><button type="button" onClick={close}>关闭</button></div></header>
       <div className="settings-columns" style={{ gridTemplateColumns: `${settingsBasis / 100}% 7px minmax(0, 1fr)` }}><nav className="settings-nav" aria-label="设置导航" data-testid="settings-nav-scroll">
         <button type="button" className={section === 'ai' ? 'active' : ''} onClick={() => setSection('ai')}>AI 设置</button>
-        <button type="button" className={section === 'connector' ? 'active' : ''} onClick={() => setSection('connector')}>Connector</button>
         <button type="button" className={section === 'safety' ? 'active' : ''} onClick={() => setSection('safety')}>安全锁</button>
       </nav><div className="settings-splitter" role="separator" aria-orientation="vertical" aria-label="调整设置导航宽度"
         aria-valuemin={1600} aria-valuemax={3600} aria-valuenow={settingsBasis} tabIndex={0}
@@ -359,24 +360,43 @@ function SettingsDialog({ snapshot, close, run, fail }: { snapshot: ShellSnapsho
           <div className="button-row no-border"><button type="button" className="primary" onClick={() => run('save-ai', () => window.omnia.saveAiSettings({ provider, baseUrl, model, attachmentCapability: capability, ...(apiKey ? { apiKey } : {}), expectedStateVersion: ai.stateVersion }))}>保存 AI 设置</button>
             <button type="button" disabled={!ai.hasApiKey && !apiKey} onClick={() => run('test-ai', () => window.omnia.testAiProvider())}>测试连接</button></div>
         </section> : null}
-        {section === 'connector' ? <section className="settings-section"><h3>Connector 连接模式</h3>
-          <div className="mode-row"><button type="button" className={connection.mode === 'local' ? 'pressed' : ''} onClick={() => run('mode-local', () => window.omnia.setConnectionMode({ mode: 'local', expectedStateVersion: connection.stateVersion }))}>Local</button>
-            <button type="button" className={connection.mode === 'remote' ? 'pressed' : ''} onClick={() => run('mode-remote', () => connection.remotePaired
-              ? window.omnia.setConnectionMode({ mode: 'remote', expectedStateVersion: connection.stateVersion })
-              : window.omnia.pairRemote({ bridgeUrl, pairingCode: '', ...(remoteConnectorId ? { connectorId: remoteConnectorId } : {}), expectedStateVersion: connection.stateVersion }))}>Remote</button></div>
-          <label>Bridge URL<input value={bridgeUrl} disabled={connection.remotePaired} onChange={(event) => setBridgeUrl(event.target.value)} /></label>
-          {connection.remotePaired ? <div className="pair-result paired-success">
-            <strong>已匹配 Remote Connector</strong>
-            <p>匹配信息已经保存。关闭设置后点击顶部“连接”，无需再次查找。</p>
-            {connection.remotePairId ? <><span>Connector Pair ID</span><code>{connection.remotePairId}</code></> : null}
-          </div> : <>
-            <p>公司电脑双击 Start 后，点击下方按钮创建一次性匹配会话。无需另跑配对脚本。</p>
-            <label>候选 Connector ID（只有发现多台时填写）<input value={remoteConnectorId} onChange={(event) => setRemoteConnectorId(event.target.value.trim())} /></label>
-            <button type="button" className="primary" disabled={!bridgeUrl} onClick={() => run('pair-remote', () => window.omnia.pairRemote({ bridgeUrl, pairingCode: '', ...(remoteConnectorId ? { connectorId: remoteConnectorId } : {}), expectedStateVersion: connection.stateVersion }))}>查找并匹配 Remote Connector</button>
-          </>}
-        </section> : null}
         {section === 'safety' ? <SafetyPanel snapshot={snapshot} run={run} /> : null}
       </div></div>
+    </section>
+  </div>;
+}
+
+function RemoteConnectionDialog({ snapshot, close, run }: { snapshot: ShellSnapshot; close(): void; run: Run }) {
+  const binding = snapshot.settings.connection;
+  const pairing = snapshot.remotePairing;
+  const pairingBusy = ['waiting', 'candidate'].includes(pairing.state);
+  const repair = () => {
+    if (!window.confirm('重新配对会在新设备验证成功后撤销旧绑定。是否继续？')) return;
+    run('remote-repair', () => window.omnia.beginRemotePairing({ repair: true, confirmed: true, expectedStateVersion: binding.stateVersion }));
+  };
+  const unbind = () => {
+    if (!window.confirm('解除绑定只会清除 Connector 身份，不会删除聊天、Feature、Evidence 或文档。是否继续？')) return;
+    run('remote-unbind', () => window.omnia.revokeRemoteBinding({ confirmed: true, expectedStateVersion: binding.stateVersion }), close);
+  };
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
+    <section className="connection-dialog" role="dialog" aria-modal="true" aria-label="Remote Connector 连接" data-testid="remote-connection-dialog">
+      <header><div><h2>Remote Connector</h2><p>{snapshot.connection.message || '等待连接状态。'}</p></div><button type="button" onClick={close}>关闭</button></header>
+      <div className="connection-dialog-body">
+        {pairing.state === 'waiting' ? <section className="pairing-guide">
+          <h3>首次连接</h3><p>在公司电脑的 Remote Connector 中输入以下一次性链接码。链接码短期有效且仅可使用一次。</p>
+          <code data-testid="remote-pairing-code">{pairing.pairingCode}</code><small>有效期至 {formatTime(pairing.expiresAt)}</small>
+        </section> : null}
+        {pairing.state === 'candidate' ? <p className="reason">{pairing.message}</p> : null}
+        {pairing.state === 'expired' || pairing.state === 'failed' ? <p className="reason error">{pairing.message}</p> : null}
+        {binding.remotePaired ? <dl className="connection-facts"><dt>状态</dt><dd>{binding.bindingState}</dd><dt>设备</dt><dd>{binding.connectorName || binding.connectorId}</dd><dt>Connector</dt><dd>{binding.connectorVersion || '未知'}</dd><dt>协议</dt><dd>{binding.protocolVersion || '未知'}</dd></dl> : null}
+        <div className="button-row no-border">
+          <button type="button" onClick={() => run('remote-diagnose', () => window.omnia.diagnoseRemoteConnection())}>诊断连接</button>
+          {!pairingBusy && (binding.remotePaired || binding.bindingState === 'repair_required') ? <button type="button" onClick={repair}>重新配对</button> : null}
+          {!pairingBusy && binding.remotePaired ? <button type="button" className="danger" onClick={unbind}>解除当前设备绑定</button> : null}
+          {pairingBusy ? <button type="button" onClick={() => run('remote-pair-cancel', () => window.omnia.cancelRemotePairing())}>取消当前链接码</button> : null}
+          {!binding.remotePaired && !pairingBusy ? <button type="button" className="primary" onClick={() => run('remote-pair', () => window.omnia.beginRemotePairing({ repair: false, expectedStateVersion: binding.stateVersion }))}>生成一次性链接码</button> : null}
+        </div>
+      </div>
     </section>
   </div>;
 }
@@ -387,6 +407,7 @@ function ShellApp() {
   const [busy, setBusy] = useState('');
   const [preview, setPreview] = useState<LayoutPreference | null>(null);
   const [settings, setSettings] = useState(false);
+  const [connectionDetails, setConnectionDetails] = useState(false);
   const [activeTab, setActiveTab] = useState('comments');
   const [hostVersion, setHostVersion] = useState(0);
   const hostRef = useRef(new SurfaceHost<DeclarativeFeatureSurface>());
@@ -416,12 +437,20 @@ function ShellApp() {
     });
   }, [host]);
   useEffect(() => {
+    if (snapshot?.remotePairing.state === 'waiting') setConnectionDetails(true);
+  }, [snapshot?.remotePairing.state]);
+  useEffect(() => {
+    if (snapshot?.remotePairing.state !== 'waiting') return;
+    const timer = window.setInterval(() => run('remote-pair-poll', () => window.omnia.pollRemotePairing()), 1_500);
+    return () => window.clearInterval(timer);
+  }, [snapshot?.remotePairing.state, run]);
+  useEffect(() => {
     const active = activeTab === 'comments' ? null : host.get(activeTab);
     void window.omnia.setDockedSurfaceVisibility?.({
-      activeInstanceId: !settings && active?.placement === 'docked' ? active.instanceId : null,
-      overlayActive: settings
+      activeInstanceId: !settings && !connectionDetails && active?.placement === 'docked' ? active.instanceId : null,
+      overlayActive: settings || connectionDetails
     });
-  }, [activeTab, settings, host, hostVersion]);
+  }, [activeTab, settings, connectionDetails, host, hostVersion]);
   useEffect(() => {
     if (!snapshot) return;
     const keydown = (event: KeyboardEvent) => {
@@ -492,7 +521,7 @@ function ShellApp() {
   return <div className="app-frame" aria-busy={Boolean(busy)}>
     <aside className="rail"><div className="brand-mark" aria-label="Omnia Agent">OA</div><div className="rail-spacer" />
       <button type="button" className="rail-settings" aria-label="设置" title="设置" onClick={openSettings}>⚙</button></aside>
-    <section className="workspace-shell"><GlobalSessionBar snapshot={snapshot} run={run} fail={setError} busy={busy} openSettings={openSettings} />
+    <section className="workspace-shell"><GlobalSessionBar snapshot={snapshot} run={run} fail={setError} busy={busy} openSettings={openSettings} openConnection={() => setConnectionDetails(true)} />
       <div className="content-grid" style={{ gridTemplateColumns: snapshot.layout.collapsedPanels['feature-menu'] ? '0 minmax(0, 1fr)' : `${layout.featureNavigationBasisPoints / 100}% 7px minmax(0, 1fr)` }}>
         <FeatureNavigation snapshot={snapshot} collapsed={snapshot.layout.collapsedPanels['feature-menu']} run={run} openFeature={openFeature} />
         {!snapshot.layout.collapsedPanels['feature-menu'] ? <div className="navigation-splitter" role="separator" aria-label="调整 FeatureNavigation 宽度" onPointerDown={(event) => {
@@ -509,6 +538,7 @@ function ShellApp() {
       </div>
     </section>
     {settings ? <SettingsDialog snapshot={snapshot} close={closeSettings} run={run} fail={setError} /> : null}
+    {connectionDetails ? <RemoteConnectionDialog snapshot={snapshot} close={() => setConnectionDetails(false)} run={run} /> : null}
     {error ? <div className="toast" role="alert"><span>{error}</span><button type="button" onClick={() => setError('')} aria-label="关闭错误">×</button></div> : null}
   </div>;
 }

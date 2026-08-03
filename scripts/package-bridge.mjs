@@ -3,33 +3,35 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const root = path.resolve(import.meta.dirname, '..');
-const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-const version = String(packageJson.version);
-const release = path.join(root, 'bridge', 'releases', version);
+const version = '0.4.1';
+const releasesRoot = path.join(root, 'bridge', 'releases');
+const releaseTarget = path.join(releasesRoot, version);
+const release = path.join(releasesRoot, `.staging-${version}-${process.pid}-${Date.now()}`);
 const windowsRoot = path.join(release, 'windows-portable');
 const linuxRoot = path.join(release, 'linux-docker');
 
 // Version directories are immutable. This only rebuilds the explicit current
 // target and never reads, removes, or rewrites bridge/releases/0.1.0.
+if (fs.existsSync(releaseTarget)) throw new Error(`Immutable Bridge release already exists: ${releaseTarget}`);
 fs.rmSync(release, { recursive: true, force: true });
 fs.mkdirSync(release, { recursive: true });
+
+try {
 
 if (process.platform === 'win32') {
   fs.mkdirSync(path.join(windowsRoot, 'runtime'), { recursive: true });
   fs.mkdirSync(path.join(windowsRoot, 'app'), { recursive: true });
   fs.copyFileSync(process.execPath, path.join(windowsRoot, 'runtime', 'node.exe'));
   fs.copyFileSync(path.join(root, 'dist', 'bridge', 'server.cjs'), path.join(windowsRoot, 'app', 'server.cjs'));
-  fs.copyFileSync(path.join(root, 'scripts', 'create-bridge-pairing.mjs'), path.join(windowsRoot, 'app', 'create-pairing.mjs'));
   fs.writeFileSync(path.join(windowsRoot, 'StartBridge.cmd'), [
     '@echo off',
     'setlocal',
-    'if "%OMNIA_V5_BRIDGE_ADMIN_TOKEN%"=="" echo Missing OMNIA_V5_BRIDGE_ADMIN_TOKEN & exit /b 1',
     'if "%OMNIA_V5_BRIDGE_TOKEN_SECRET%"=="" echo Missing OMNIA_V5_BRIDGE_TOKEN_SECRET & exit /b 1',
     '"%~dp0runtime\\node.exe" "%~dp0app\\server.cjs"'
   ].join('\r\n') + '\r\n');
   fs.writeFileSync(path.join(windowsRoot, 'README.txt'), [
     `Omnia Agent v5 Bridge ${version} - Windows portable`,
-    'Required: OMNIA_V5_BRIDGE_ADMIN_TOKEN (20+), OMNIA_V5_BRIDGE_TOKEN_SECRET (32+).',
+    'Required: OMNIA_V5_BRIDGE_TOKEN_SECRET (32+). Pairing sessions are created only by the Shell top Connect flow.',
     'Default bind: 127.0.0.1:18785.',
     'This package is independent from every v4 process, port, secret, and release path.'
   ].join('\r\n') + '\r\n');
@@ -42,7 +44,6 @@ for (const name of [
   'docker-compose.yml',
   'bridge.env.example',
   'install.sh',
-  'create-pairing.sh',
   'caddy-route.py',
   'install-caddy-route.sh',
   'rollback-caddy-route.sh'
@@ -55,13 +56,13 @@ fs.writeFileSync(path.join(linuxRoot, 'README.md'), [
   '```sh',
   'sudo sh install.sh',
   'sudo sh install-caddy-route.sh labcaspian.com /etc/caddy/Caddyfile',
-  'sudo /opt/omnia-agent-v5-bridge/create-pairing.sh',
   '```',
   '',
   '- Container: `omnia-agent-v5-bridge` (`node:24-alpine`, `restart: unless-stopped`).',
   '- Host bind: `127.0.0.1:18785` only.',
   '- Install root: `/opt/omnia-agent-v5-bridge` only.',
   '- Public route: `/v5-bridge/*`, with the prefix stripped before proxying.',
+  '- One-time pairing sessions are created by the authenticated product flow at the Shell top Connect surface.',
   '- Caddy patch is marker-bound, validated before reload, and has an explicit rollback.',
   '- The scripts never stop, inspect, replace, or reuse a v4 service/container.',
   ''
@@ -85,7 +86,12 @@ fs.writeFileSync(path.join(release, 'release-manifest.json'), `${JSON.stringify(
   files
 }, null, 2)}\n`);
 
-console.log(`Packaged v5 Bridge ${version} at ${release}`);
+fs.renameSync(release, releaseTarget);
+console.log(`Packaged v5 Bridge ${version} at ${releaseTarget}`);
+} catch (error) {
+  fs.rmSync(release, { recursive: true, force: true });
+  throw error;
+}
 
 function listFiles(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {

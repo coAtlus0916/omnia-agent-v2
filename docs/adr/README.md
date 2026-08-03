@@ -17,9 +17,9 @@ ADR 只记录跨模块、长期有效且需要解释取舍的决定。产品/协
 |---|---|---|---|
 | [ADR-0001](0001-microkernel-isolated-feature-workers.md) | 微内核 + 隔离 Feature Worker | Accepted | 已收敛需求约束 |
 | [ADR-0002](0002-control-plane-system-of-record.md) | Control & Data Plane 是唯一事实 | Accepted | 已收敛需求约束 |
-| [ADR-0003](0003-single-connector-transport.md) | 单一 ConnectorTransport 与单 active lease | Accepted | 已收敛需求约束 |
+| [ADR-0003](0003-single-connector-transport.md) | 单一 ConnectorTransport 与单 active lease | Accepted；双模式部分由 ADR-0035 取代 | 已收敛需求约束 |
 | [ADR-0004](0004-template-first-minimal-patch.md) | 模板优先、Run 副本与最小 Patch | Accepted | 已收敛需求约束 |
-| [ADR-0008](0008-remote-for-all-versions.md) | Remote Transport 面向全部版本 | Accepted | 用户产品决策 |
+| [ADR-0008](0008-remote-for-all-versions.md) | Remote Transport 面向全部版本 | Accepted；Local/Remote 双模式部分由 ADR-0035 取代 | 用户产品决策 |
 | [ADR-0010](0010-three-column-chat-shell.md) | 三列主界面且第三列保留聊天 | Accepted；列职责由 ADR-0032 更新 | 用户产品决策 |
 | [ADR-0012](0012-initial-feature-scope.md) | 原首批三个 Feature 范围 | Superseded by ADR-0018/0020/0021 | 用户产品决策 |
 | [ADR-0013](0013-defer-nova-protocol.md) | 延后 Nova 精确协议校验 | Proposed / Deferred | 用户产品决策 |
@@ -43,6 +43,7 @@ ADR 只记录跨模块、长期有效且需要解释取舍的决定。产品/协
 | [ADR-0032](0032-shell-layout-and-settings-surfaces.md) | 精简 Shell Rail、纯功能菜单、全局会话栏与设置双列布局 | Accepted；Feature placement 由 ADR-0034 更新 | 用户 UI 产品决策 |
 | [ADR-0033](0033-menu-only-shell-and-independent-feature-windows.md) | Shell 第二列只保留功能菜单，Feature Surface 保持受控隔离 | Accepted；默认 placement 由 ADR-0034 更新 | 用户 UI 产品决策 + v4 证据 |
 | [ADR-0034](0034-tabbed-feature-host-and-detachable-surfaces.md) | 第三列浏览器式 Feature 标签、功能栏折叠及弹出/最小化/关闭 | Accepted | 用户 UI 产品决策 + v4 折叠证据 |
+| [ADR-0035](0035-remote-only-connector-and-link-code-pairing.md) | Remote-only Connector、一次性链接码与长期设备 binding | Accepted | 用户正式产品决策 + v4 配对方向证据 |
 
 Accepted 表示架构方向已确定。根据 ADR-0031，未确定的 Windows sandbox/认证可以后续加固，
 但不再阻碍 Feature 安装、启用或开发测试；真实 Worker/后台/Operation 依赖仍必须接通。

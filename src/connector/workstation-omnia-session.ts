@@ -15,7 +15,7 @@ import {
 } from './recording/recording-service.js';
 
 const DEFAULT_HOME = 'https://deloitteomnia.deloitte.com.cn/';
-const CONNECTOR_VERSION = '0.2.0';
+const CONNECTOR_VERSION = '0.3.5';
 const WORKSPACE_FACET_TYPE = '8dba1267-9c45-4d88-a2e3-a1619bd905c2';
 
 type FetchLike = typeof fetch;
@@ -115,6 +115,37 @@ function selectUniqueTargetIndex(urls: string[]): number {
   return urls.length === 1 ? 0 : -1;
 }
 
+function authorizationEngagementId(requestUrl: string, targetUrl: string): { engagementId: string; identityMismatch: boolean } {
+  const request = new URL(requestUrl);
+  const targetEngagementId = parseEngagementId(targetUrl);
+  const requestEngagementId = request.pathname.match(
+    /(?:^|\/)engagements?(?:\/v1)?\/([0-9a-f-]{36})(?:\/|$)/i
+  )?.[1]?.toLowerCase() || '';
+  return {
+    engagementId: requestEngagementId || targetEngagementId,
+    identityMismatch: Boolean(targetEngagementId && requestEngagementId && targetEngagementId !== requestEngagementId)
+  };
+}
+
+function selectSafeTargetIndex(
+  targets: Array<{ url: string; contextId: number }>,
+  boundIndex: number
+): number {
+  const selectedIndex = selectUniqueTargetIndex(targets.map((item) => item.url));
+  if (boundIndex < 0 || boundIndex >= targets.length) return selectedIndex;
+  if (selectedIndex < 0) return boundIndex;
+  if (selectedIndex === boundIndex) return selectedIndex;
+  const bound = targets[boundIndex]!;
+  const selected = targets[selectedIndex]!;
+  const safeHandoff = !parseEngagementId(bound.url)
+    && Boolean(parseEngagementId(selected.url))
+    && bound.contextId === selected.contextId;
+  if (!safeHandoff) {
+    throw new ConnectorOperationError('CONNECTOR.MULTIPLE_PACK_TARGETS', 'Omnia target 身份发生歧义，已拒绝切换。');
+  }
+  return selectedIndex;
+}
+
 function browserIdentityMatches(argumentsList: string[], profileDir: string, port: number): boolean {
   const expectedProfile = path.resolve(profileDir).toLowerCase();
   const profileArgument = argumentsList.find((value) => value.startsWith('--user-data-dir='));
@@ -180,9 +211,14 @@ function normalizeLightRead(
   };
 }
 
-export class LocalConnector {
+export class WorkstationOmniaSession {
   private browser: Browser | null = null;
-  private authByPage = new WeakMap<Page, { headers: Record<string, string>; apiOrigin: string }>();
+  private authByPage = new WeakMap<Page, {
+    headers: Record<string, string>;
+    apiOrigin: string;
+    engagementId: string;
+    identityMismatch: boolean;
+  }>();
   private riskAssessmentIdsByPage = new WeakMap<Page, Set<string>>();
   private port = 0;
   private readonly profileDir: string;
@@ -200,8 +236,8 @@ export class LocalConnector {
     dataRoot: string,
     private readonly fetchImpl: FetchLike = fetch,
     connectorIdentity: { id: string; name: string; version: string } = {
-      id: 'v5-local-connector',
-      name: 'Omnia Agent v5 Local Connector',
+      id: 'v5-workstation-omnia-session',
+      name: 'Omnia Agent v5 Workstation Omnia Session',
       version: CONNECTOR_VERSION
     }
   ) {
@@ -251,7 +287,7 @@ export class LocalConnector {
     if (live) {
       throw new ConnectorOperationError(
         'CONNECTOR.INSTANCE_LOCKED',
-        '已有 v5 Local Connector 正在使用该数据实例。'
+        '已有 v5 Remote Connector Session Core 正在使用该数据实例。'
       );
     }
     fs.rmSync(this.lockPath, { force: true });
@@ -360,7 +396,10 @@ export class LocalConnector {
     (page as any).__omniaV5Observed = true;
     page.on('request', (request) => { void this.captureHeaders(page, request); });
     page.on('framenavigated', (frame) => {
-      if (frame === page.mainFrame()) this.riskAssessmentIdsByPage.set(page, new Set());
+      if (frame === page.mainFrame()) {
+        this.riskAssessmentIdsByPage.set(page, new Set());
+        this.authByPage.delete(page);
+      }
     });
   }
 
@@ -382,9 +421,12 @@ export class LocalConnector {
     const previous = this.authByPage.get(page);
     const requestUrl = new URL(request.url());
     const authoritativeApiRequest = /^\/(?:rapr|work\/v1|engagements\/v1)\//i.test(requestUrl.pathname);
+    const authIdentity = authorizationEngagementId(request.url(), page.url());
     this.authByPage.set(page, {
       headers: allowlisted,
-      apiOrigin: authoritativeApiRequest ? requestUrl.origin : (previous?.apiOrigin || requestUrl.origin)
+      apiOrigin: authoritativeApiRequest ? requestUrl.origin : (previous?.apiOrigin || requestUrl.origin),
+      engagementId: authIdentity.engagementId,
+      identityMismatch: authIdentity.identityMismatch
     });
   }
 
@@ -395,13 +437,26 @@ export class LocalConnector {
   }
 
   private async currentPage(bindIfUnique = false): Promise<Page | null> {
-    if (this.boundPage && !this.boundPage.isClosed() && isAllowedOmniaUrl(this.boundPage.url())) {
-      return this.boundPage;
-    }
-    this.boundPage = null;
-    const pages = await this.omniaPages();
-    const selectedIndex = selectUniqueTargetIndex(pages.map((page) => page.url()));
+    const omniaPages = await this.omniaPages();
+    const liveBound = this.boundPage && !this.boundPage.isClosed() ? this.boundPage : null;
+    // A bound page may temporarily navigate to an external enterprise IdP.
+    // Keep it only as an untrusted waiting-login target; it never supplies
+    // Authorization or Pack identity. A unique Omnia Pack in the same browser
+    // context may later take over through the normal safe-handoff rule.
+    const pages = liveBound && !isAllowedOmniaUrl(liveBound.url())
+      ? [liveBound, ...omniaPages.filter((page) => page !== liveBound)]
+      : omniaPages;
+    const bound = liveBound;
+    const contexts: object[] = [];
+    const targets = pages.map((page) => {
+      const context = page.context();
+      let contextId = contexts.indexOf(context);
+      if (contextId < 0) { contexts.push(context); contextId = contexts.length - 1; }
+      return { url: page.url(), contextId };
+    });
+    const selectedIndex = selectSafeTargetIndex(targets, bound ? pages.indexOf(bound) : -1);
     const selected = selectedIndex >= 0 ? pages[selectedIndex] || null : null;
+    if (!bound) this.boundPage = null;
     if (selected && bindIfUnique) this.boundPage = selected;
     return selected;
   }
@@ -409,17 +464,20 @@ export class LocalConnector {
   private async session(requireAuth = true): Promise<Session> {
     const page = await this.currentPage(true);
     if (!page) throw new ConnectorOperationError('CONNECTOR.TARGET_UNAVAILABLE', '没有找到受控 Omnia 页面。');
+    if (!isAllowedOmniaUrl(page.url())) {
+      throw new ConnectorOperationError('CONNECTOR.PACK_NOT_OPEN', '受控页面正在完成企业登录；请登录后打开目标 Pack。');
+    }
     const targetUrl = normalizeOmniaUrl(page.url());
     const engagementId = parseEngagementId(targetUrl.href);
     if (!isGuid(engagementId)) {
       throw new ConnectorOperationError('CONNECTOR.PACK_NOT_OPEN', '请在 Edge 中登录 Omnia 并打开目标 Pack。');
     }
-    let auth = this.authByPage.get(page) || { headers: {}, apiOrigin: targetUrl.origin };
+    let auth = this.authByPage.get(page) || { headers: {}, apiOrigin: targetUrl.origin, engagementId: '', identityMismatch: false };
     let headers = auth.headers;
     if (requireAuth && !headers.authorization) {
       await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => undefined);
       await page.waitForTimeout(1_500);
-      auth = this.authByPage.get(page) || { headers: {}, apiOrigin: targetUrl.origin };
+      auth = this.authByPage.get(page) || { headers: {}, apiOrigin: targetUrl.origin, engagementId: '', identityMismatch: false };
       headers = auth.headers;
     }
     if (requireAuth && !headers.authorization) {
@@ -427,6 +485,9 @@ export class LocalConnector {
         'CONNECTOR.AUTH_REQUIRED',
         '尚未捕获 Omnia API 授权；请保持目标 Pack 打开后重试刷新。'
       );
+    }
+    if (requireAuth && (auth.identityMismatch || auth.engagementId !== engagementId)) {
+      throw new ConnectorOperationError('CONNECTOR.PACK_IDENTITY_CHANGED', 'Authorization 与当前 Omnia target 的 Pack 身份不一致。');
     }
     return { page, targetUrl, apiOrigin: auth.apiOrigin, engagementId, headers };
   }
@@ -461,7 +522,10 @@ export class LocalConnector {
     const hierarchy = list(await this.api(session, `/engagements/v1/${session.engagementId}/headers/hierarchy`));
     const exact = hierarchy.find((item) =>
       explicitId(item?.engagementId || item?.id) === session.engagementId
-    ) || (hierarchy.length === 1 ? hierarchy[0] : null);
+    );
+    if (!exact) {
+      throw new ConnectorOperationError('CONNECTOR.PACK_IDENTITY_CHANGED', 'Omnia hierarchy 与当前 target 的 Pack 身份不一致。');
+    }
     const name = clean(exact?.name);
     if (!name) throw new Error('已识别 Pack ID，但 Omnia hierarchy 未返回可核验名称。');
     return { name, clientName: clean(exact?.clientName) };
@@ -470,16 +534,43 @@ export class LocalConnector {
   async status(): Promise<ConnectorConnection> {
     try {
       const knownPort = this.port || this.readSavedPort();
-      if (!await this.cdpReady(knownPort)) return this.snapshot('not_connected', '尚未启动受控 Omnia 浏览器。');
+      if (!await this.cdpReady(knownPort)) return this.snapshot('browser_starting', '尚未启动受控 Omnia 浏览器。');
       this.port = knownPort;
-      const session = await this.session(false);
-      if (!session.headers.authorization) {
-        return this.snapshot('waiting', '请在受控 Edge 中登录 Omnia 并打开目标 Pack。', session);
+      const page = await this.currentPage(true);
+      if (!page) return this.snapshot('target_closed', '受控 Edge 中没有可用的 Omnia target。');
+      if (!isAllowedOmniaUrl(page.url())) {
+        return this.snapshot('waiting_login', '受控页面正在完成企业登录；登录完成后会继续识别 Omnia Pack。');
       }
-      const pack = await this.identify(session);
-      return this.snapshot('connected', `当前 Pack 已连接：${pack.name}`, session, pack);
+      const targetUrl = normalizeOmniaUrl(page.url());
+      const engagementId = parseEngagementId(targetUrl.href);
+      const auth = this.authByPage.get(page) || { headers: {}, apiOrigin: targetUrl.origin, engagementId: '', identityMismatch: false };
+      if (!engagementId) {
+        return this.snapshot(
+          auth.headers.authorization ? 'waiting_pack' : 'waiting_login',
+          auth.headers.authorization ? '已登录 Omnia，请继续打开目标 Pack。' : '请在受控 Edge 中登录 Omnia。'
+        );
+      }
+      const session: Session = { page, targetUrl, apiOrigin: auth.apiOrigin, engagementId, headers: auth.headers };
+      if (!auth.headers.authorization) {
+        return this.snapshot('waiting_authorization', '已打开目标 Pack，正在等待同一 target 的 Authorization。', session);
+      }
+      if (auth.identityMismatch || auth.engagementId !== engagementId) {
+        return this.snapshot('identity_changed', 'Authorization 与当前 target 的 Pack 身份不一致，已拒绝连接。', session);
+      }
+      try {
+        const pack = await this.identify(session);
+        return this.snapshot('connected', `当前 Pack 已连接：${pack.name}`, session, pack);
+      } catch (error) {
+        if (error instanceof ConnectorOperationError && error.code === 'CONNECTOR.PACK_IDENTITY_CHANGED') {
+          return this.snapshot('identity_changed', error.message, session);
+        }
+        return this.snapshot('identifying_pack', error instanceof Error ? error.message : '正在读取当前 Pack hierarchy。', session);
+      }
     } catch (error) {
-      return this.snapshot('waiting', error instanceof Error ? error.message : '正在等待 Omnia Pack。');
+      if (error instanceof ConnectorOperationError && /MULTIPLE/.test(error.code)) {
+        return this.snapshot('multiple_targets', error.message);
+      }
+      return this.snapshot('error', error instanceof Error ? error.message : 'Omnia Session 状态读取失败。');
     }
   }
 
@@ -555,13 +646,13 @@ export class LocalConnector {
           route.method === 'PATCH'
             ? 'Omnia mutation connection ended before a response was received; the result is uncertain.'
             : 'Omnia Operation read timed out.',
-          true
+          route.method !== 'PATCH'
         );
       }
       const payload = response.status === 204 ? null : await response.json().catch(() => null);
       if (!response.ok) {
         if (route.method === 'PATCH' && response.status >= 500) {
-          throw new ConnectorOperationError('CONNECTOR.RESPONSE_LOST', `Omnia mutation returned HTTP ${response.status}; the result is uncertain.`, true);
+          throw new ConnectorOperationError('CONNECTOR.RESPONSE_LOST', `Omnia mutation returned HTTP ${response.status}; the result is uncertain.`, false);
         }
         throw new ConnectorOperationError(
           response.status === 401 || response.status === 403 ? 'CONNECTOR.AUTH_REQUIRED' : 'CONNECTOR.OPERATION_FAILED',
@@ -630,7 +721,10 @@ export class LocalConnector {
     return {
       status,
       connected: status === 'connected',
-      connecting: ['opening', 'waiting', 'checking'].includes(status),
+      connecting: [
+        'browser_starting', 'waiting_login', 'waiting_pack',
+        'waiting_authorization', 'identifying_pack'
+      ].includes(status),
       connectorId: this.connectorIdentity.id,
       connectorName: this.connectorIdentity.name,
       connectorVersion: this.connectorIdentity.version,
@@ -649,5 +743,7 @@ export const _test = {
   normalizeLightRead,
   findEdgeExecutable,
   selectUniqueTargetIndex,
+  authorizationEngagementId,
+  selectSafeTargetIndex,
   browserIdentityMatches
 };

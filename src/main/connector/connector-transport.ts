@@ -7,7 +7,7 @@ import type {
 import type { RecordingCommandRequest } from '../../connector/contracts.js';
 
 export interface ConnectorTransport {
-  readonly mode: 'local' | 'remote';
+  readonly mode: 'remote';
   start(): Promise<void>;
   stop(): Promise<void>;
   unavailableSnapshot(reason: string): ConnectionSnapshot;

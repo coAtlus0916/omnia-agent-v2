@@ -1,11 +1,14 @@
 import { createBridgeServer, type BridgeServerOptions } from './server.js';
+import path from 'node:path';
 
 const options: BridgeServerOptions = {
   host: process.env.OMNIA_V5_BRIDGE_HOST || '127.0.0.1',
   port: Number(process.env.OMNIA_V5_BRIDGE_PORT || 18785),
-  pairingCode: '',
   tokenSecret: String(process.env.OMNIA_V5_BRIDGE_TOKEN_SECRET || ''),
-  adminToken: String(process.env.OMNIA_V5_BRIDGE_ADMIN_TOKEN || '')
+  statePath: process.env.OMNIA_V5_BRIDGE_STATE_PATH || (process.platform === 'win32'
+    ? path.join(process.cwd(), 'data', 'bindings.json')
+    : '/var/lib/omnia-agent-v5-bridge/bindings.json'),
+  buildIdentity: process.env.OMNIA_V5_BRIDGE_BUILD_ID || 'bridge-0.4.1'
 };
 
 async function main(): Promise<void> {

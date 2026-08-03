@@ -21,13 +21,14 @@ test('homepage does not expose business feature entries', () => {
   }
 });
 
-test('paired Remote Connector state hides the one-time discovery action', () => {
+test('Connector settings and anonymous discovery are absent; pairing lives in the top Connect detail flow', () => {
   const renderer = fs.readFileSync(path.join(root, 'src', 'renderer', 'index.tsx'), 'utf8');
-  assert.match(renderer, /connection\.remotePaired \? <div className="pair-result paired-success">/);
-  assert.match(renderer, /已匹配 Remote Connector/);
-  assert.match(renderer, /关闭设置后点击顶部“连接”，无需再次查找/);
-  const pairedBranch = renderer.indexOf('connection.remotePaired ? <div className="pair-result paired-success">');
-  const unpairedBranch = renderer.indexOf('</div> : <>', pairedBranch);
-  const discoveryAction = renderer.indexOf('查找并匹配 Remote Connector', unpairedBranch);
-  assert.ok(pairedBranch >= 0 && unpairedBranch > pairedBranch && discoveryAction > unpairedBranch);
+  assert.doesNotMatch(renderer, /Connector 连接模式|Bridge URL|候选 Connector ID|查找并匹配|setConnectionMode|pairRemote/);
+  assert.match(renderer, /function RemoteConnectionDialog/);
+  assert.match(renderer, /remote-pairing-code/);
+  assert.match(renderer, /diagnoseRemoteConnection/);
+  assert.match(renderer, /beginRemotePairing\(\{ repair: true, confirmed: true/);
+  assert.match(renderer, /revokeRemoteBinding\(\{ confirmed: true/);
+  assert.match(renderer, /window\.confirm\(/);
+  assert.match(renderer, /pollRemotePairing/);
 });

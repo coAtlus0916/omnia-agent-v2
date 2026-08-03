@@ -1,0 +1,43 @@
+{
+  "ok": true,
+  "productRoot": "C:\\Users\\zpyoung\\AppData\\Local\\Temp\\omnia-agent-v5-upgrade-L2lxVq",
+  "beforeSnapshot": {
+    "productVersion": "0.4.0",
+    "leaves": [
+      "omnia.delete-elements@0.1.2",
+      "omnia.recording@0.1.0"
+    ],
+    "groups": [
+      "other:其他",
+      "features:Feature"
+    ],
+    "deleteAvailability": "available",
+    "deleteSurfaceStatus": "blocked",
+    "deleteSurfaceMessage": "请先连接 Omnia Pack。"
+  },
+  "afterSnapshot": {
+    "productVersion": "0.4.1",
+    "leaves": [
+      "omnia.delete-elements@0.1.2",
+      "omnia.recording@0.1.1"
+    ],
+    "groups": [
+      "other:其他"
+    ],
+    "deleteAvailability": "available",
+    "deleteSurfaceStatus": "blocked",
+    "deleteSurfaceMessage": "请先连接 Omnia Pack。"
+  },
+  "before": {
+    "probe": "sha256:ee7108414248df5d02611c583548468dfe5dd3dfc002dc6644c0a4ebd241ccab",
+    "deletePackage": "sha256:80ddf7553f65ba4bf1728191f56433f1a0d7f71220056b9b6f0d04b9211841cd",
+    "deleteStore": "sha256:964b15712184b18046ab2acc87849adf384b9922d5fceebe68a12f3170d4d87e"
+  },
+  "after": {
+    "probe": "sha256:ee7108414248df5d02611c583548468dfe5dd3dfc002dc6644c0a4ebd241ccab",
+    "deletePackage": "sha256:80ddf7553f65ba4bf1728191f56433f1a0d7f71220056b9b6f0d04b9211841cd",
+    "deleteStore": "sha256:964b15712184b18046ab2acc87849adf384b9922d5fceebe68a12f3170d4d87e"
+  },
+  "oldReleasePreserved": true,
+  "newRelease": "C:\\Users\\zpyoung\\AppData\\Local\\Temp\\omnia-agent-v5-upgrade-L2lxVq\\releases\\0.4.1"
+}

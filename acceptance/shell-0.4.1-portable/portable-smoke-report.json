@@ -1,0 +1,12 @@
+{
+  "ok": true,
+  "productVersion": "0.4.1",
+  "cleanDataRoot": true,
+  "sourceArtifact": "artifacts/omnia-agent-v5-portable-0.4.1",
+  "navigation": [
+    "omnia.recording@0.1.1"
+  ],
+  "dataOutsideRelease": true,
+  "immutableRelease": true,
+  "screenshot": "acceptance/shell-0.4.1-portable/clean-data-root.png"
+}

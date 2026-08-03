@@ -1,0 +1,283 @@
+export type ConnectionStatus =
+  | 'not_configured'
+  | 'not_connected'
+  | 'opening'
+  | 'waiting'
+  | 'checking'
+  | 'connected'
+  | 'connector_offline'
+  | 'error';
+
+export interface ConnectionSnapshot {
+  transport: 'local' | 'remote';
+  adapter: 'v5_local_connector' | 'v5_remote_connector';
+  adapterAvailable: boolean;
+  adapterReason: string;
+  remoteAvailable: boolean;
+  remoteReason: string;
+  status: ConnectionStatus;
+  connected: boolean;
+  connecting: boolean;
+  connectorId: string;
+  connectorName: string;
+  connectorVersion: string;
+  sessionGeneration?: number;
+  engagementId: string;
+  engagementName: string;
+  clientName: string;
+  checkedAt: string;
+  message: string;
+}
+
+export interface KeepaliveSnapshot {
+  enabled: boolean;
+  running: boolean;
+  intervalSeconds: number;
+  enabledAt: string;
+  lastAttemptAt: string;
+  lastSuccessAt: string;
+  lastError: string;
+  nextAttemptAt: string;
+}
+
+export interface WorkspaceSection {
+  id: string;
+  name: string;
+  order: number;
+}
+
+export interface WorkspaceItem {
+  id: string;
+  parentSectionId: string;
+  name: string;
+  status: string;
+}
+
+export interface WorkspaceObservation {
+  observationId: string;
+  profile: 'workspace_light_read';
+  authorityId: string;
+  engagementId: string;
+  capturedAt: string;
+  source: string;
+  coverage: 'full';
+  sections: WorkspaceSection[];
+  workspaces: WorkspaceItem[];
+}
+
+export interface WorkspaceDirectorySnapshot {
+  available: boolean;
+  reasonCode: '' | 'not_connected' | 'authority_hierarchy_unavailable' | 'dependency_unavailable' | 'read_failed';
+  reason: string;
+  observation: WorkspaceObservation | null;
+}
+
+export interface WorkspaceSafetySnapshot {
+  enabled: boolean;
+  engagementId: string;
+  workspaceIds: string[];
+  authorityObservationId: string;
+  stateVersion: number;
+  updatedAt: string;
+  validForCurrentConnection: boolean;
+  invalidReason: string;
+}
+
+export type MessageRole = 'user' | 'assistant';
+export type MessageStatus = 'sending' | 'stored' | 'provider_unavailable' | 'failed' | 'delivered';
+
+export interface ChatMessage {
+  id: string;
+  sessionId: string;
+  role: MessageRole;
+  content: string;
+  status: MessageStatus;
+  error: string;
+  createdAt: string;
+  attachments: ChatAttachment[];
+}
+
+export type AttachmentStatus = 'staged' | 'attached' | 'removed' | 'failed';
+export interface ChatAttachment {
+  id: string;
+  messageId: string;
+  name: string;
+  mediaType: string;
+  size: number;
+  sha256: string;
+  status: AttachmentStatus;
+  modelDelivery: 'not_attempted' | 'sent' | 'blocked' | 'unconfirmed';
+  error: string;
+  previewable: boolean;
+  createdAt: string;
+}
+
+export interface ChatSnapshot {
+  sessionId: string;
+  providerStatus: 'ready' | 'unconfigured' | 'invalid';
+  providerReason: string;
+  messages: ChatMessage[];
+  stagedAttachments: ChatAttachment[];
+  composerHeightPx: number;
+}
+
+export type AiProviderKind = 'deepseek' | 'custom';
+export type AiAttachmentCapability = 'text_only' | 'images' | 'images_and_text';
+export interface AiSettingsSnapshot {
+  provider: AiProviderKind;
+  baseUrl: string;
+  model: string;
+  attachmentCapability: AiAttachmentCapability;
+  hasApiKey: boolean;
+  stateVersion: number;
+  updatedAt: string;
+  testStatus: 'untested' | 'testing' | 'success' | 'failed';
+  testMessage: string;
+  testedAt: string;
+}
+
+export interface ConnectionSettingsSnapshot {
+  mode: 'local' | 'remote';
+  remoteBridgeUrl: string;
+  remotePairId: string;
+  remotePaired: boolean;
+  stateVersion: number;
+  updatedAt: string;
+}
+
+export interface SettingsSnapshot {
+  ai: AiSettingsSnapshot;
+  connection: ConnectionSettingsSnapshot;
+}
+
+export interface UserViewPreference {
+  uiScalePercent: number;
+  stateVersion: number;
+  updatedAt: string;
+}
+
+export interface LayoutPreference {
+  schemaVersion: 'omnia.layout-preference/v1';
+  surfaceId: 'shell.main';
+  /** v3 is the fixed-Rail shell contract. Rail width is intentionally absent. */
+  layoutVersion: 3;
+  splitters: { 'feature-menu-host': number };
+  collapsedPanels: { 'feature-menu': boolean };
+  featureNavigationBasisPoints: number;
+  /** Read-only aliases for v1 callers during migration; never accepted by v3 actions. */
+  readonly railBasisPoints?: number;
+  readonly middleBasisPoints?: number;
+  readonly featureNavigationCollapsed?: boolean;
+  stateVersion: number;
+  updatedAt: string;
+}
+
+export interface SettingsLayoutPreference {
+  schemaVersion: 'omnia.layout-preference/v1';
+  surfaceId: 'settings.main';
+  layoutVersion: 1;
+  splitters: { 'settings-navigation-content': number };
+  settingsNavigationBasisPoints: number;
+  stateVersion: number;
+  updatedAt: string;
+}
+
+export interface DockedSurfaceVisibilityInput {
+  activeInstanceId: string | null;
+  overlayActive: boolean;
+}
+
+export interface DockedSurfaceManagerSnapshot {
+  activeInstanceId: string | null;
+  overlayActive: boolean;
+  attachedInstanceIds: string[];
+  dockedInstanceIds: string[];
+  detachedInstanceIds: string[];
+  authorizedSenderInstanceIds: string[];
+  hostBoundsByInstance: Record<string, { x: number; y: number; width: number; height: number }>;
+  zoomFactor: number;
+}
+
+export interface ShellSnapshot {
+  schemaVersion: 'omnia.shell-home/v1';
+  generatedAt: string;
+  productVersion: string;
+  featureCount: number;
+  features: import('./feature-contracts.js').FeatureRuntimeSnapshot;
+  connection: ConnectionSnapshot;
+  keepalive: KeepaliveSnapshot;
+  workspaceDirectory: WorkspaceDirectorySnapshot;
+  safety: WorkspaceSafetySnapshot;
+  chat: ChatSnapshot;
+  preference: UserViewPreference;
+  layout: LayoutPreference;
+  settingsLayout: SettingsLayoutPreference;
+  settings: SettingsSnapshot;
+}
+
+export interface ShellApi {
+  getSnapshot(): Promise<ShellSnapshot>;
+  connect(): Promise<ShellSnapshot>;
+  cancelConnect(): Promise<ShellSnapshot>;
+  refresh(): Promise<ShellSnapshot>;
+  setKeepalive(enabled: boolean): Promise<ShellSnapshot>;
+  refreshWorkspaceDirectory(): Promise<ShellSnapshot>;
+  saveSafety(input: {
+    enabled: boolean;
+    workspaceIds: string[];
+    expectedStateVersion: number;
+  }): Promise<ShellSnapshot>;
+  sendMessage(input: { content: string; attachmentIds: string[] }): Promise<ShellSnapshot>;
+  chooseAttachments(): Promise<ShellSnapshot>;
+  removeAttachment(id: string): Promise<ShellSnapshot>;
+  previewAttachment(id: string): Promise<void>;
+  saveComposerHeight(input: { heightPx: number }): Promise<ShellSnapshot>;
+  saveAiSettings(input: {
+    provider: AiProviderKind;
+    baseUrl: string;
+    model: string;
+    attachmentCapability: AiAttachmentCapability;
+    apiKey?: string;
+    clearApiKey?: boolean;
+    expectedStateVersion: number;
+  }): Promise<ShellSnapshot>;
+  testAiProvider(): Promise<ShellSnapshot>;
+  pairRemote(input: {
+    bridgeUrl: string;
+    pairingCode: string;
+    connectorId?: string;
+    expectedStateVersion: number;
+  }): Promise<ShellSnapshot>;
+  setConnectionMode(input: {
+    mode: 'local' | 'remote';
+    expectedStateVersion: number;
+  }): Promise<ShellSnapshot>;
+  saveScale(input: { percent: number; expectedStateVersion: number }): Promise<ShellSnapshot>;
+  saveLayout(input: {
+    featureNavigationBasisPoints: number;
+    featureNavigationCollapsed: boolean;
+    expectedStateVersion: number;
+  }): Promise<ShellSnapshot>;
+  saveSettingsLayout(input: {
+    settingsNavigationBasisPoints: number;
+    expectedStateVersion: number;
+  }): Promise<ShellSnapshot>;
+  selectFeature(input: { featureId: string }): Promise<ShellSnapshot>;
+  featureAction(input: import('./feature-contracts.js').FeatureActionRequest): Promise<ShellSnapshot>;
+  openFeatureSurface?(input: {
+    instanceId: string;
+    featureId: string;
+    featureVersion: string;
+    surfaceId: string;
+    placement: 'docked' | 'detached' | 'minimized';
+    bounds?: { x: number; y: number; width: number; height: number };
+  }): Promise<{ instanceId: string; placement: 'docked' | 'detached' | 'minimized' | 'closed'; attached: boolean; reason: string }>;
+  resizeFeatureSurface?(input: { instanceId: string; bounds: { x: number; y: number; width: number; height: number } }): Promise<void>;
+  closeFeatureSurface?(instanceId: string): Promise<void>;
+  minimizeFeatureSurface?(instanceId: string): Promise<void>;
+  restoreFeatureSurface?(instanceId: string): Promise<void>;
+  setDockedSurfaceVisibility?(input: DockedSurfaceVisibilityInput): Promise<DockedSurfaceManagerSnapshot>;
+  getSurfaceManagerSnapshot?(): Promise<DockedSurfaceManagerSnapshot>;
+  onFeatureBootstrap?(listener: (surface: import('./feature-contracts.js').DeclarativeFeatureSurface) => void): () => void;
+  onChanged(listener: (snapshot: ShellSnapshot) => void): () => void;
+}

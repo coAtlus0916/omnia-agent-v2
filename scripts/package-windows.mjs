@@ -82,10 +82,12 @@ await mkdir(path.join(appRoot, 'dist'), { recursive: true });
 await cp(path.join(root, 'dist', 'main'), path.join(appRoot, 'dist', 'main'), { recursive: true });
 await cp(path.join(root, 'dist', 'renderer'), path.join(appRoot, 'dist', 'renderer'), { recursive: true });
 await cp(path.join(root, 'dist', 'tools'), path.join(appRoot, 'dist', 'tools'), { recursive: true });
+await cp(path.join(root, 'scripts', 'hot-shell-bootstrap.cjs'), path.join(appRoot, 'hot-shell-bootstrap.cjs'));
 await mkdir(path.join(appRoot, 'builtins'), { recursive: true });
 const builtins = [
   ['recording', 'recording-0.3.0.ofp'],
-  ['create-associate', 'create-associate-0.2.3.ofp']
+  ['create-associate', 'create-associate-0.2.5.ofp'],
+  ['delete-elements', 'delete-elements-0.1.5.ofp']
 ];
 for (const [sourceDirectory, filename] of builtins) {
   await cp(
@@ -98,16 +100,18 @@ await writeFile(path.join(appRoot, 'package.json'), JSON.stringify({
   name: 'omnia-agent-v5-shell-release',
   version,
   private: true,
-  main: 'dist/main/main.cjs'
+  main: 'hot-shell-bootstrap.cjs'
 }, null, 2));
 const releaseFiles = [
   'Omnia Agent v5.exe',
+  'resources/app/hot-shell-bootstrap.cjs',
   'resources/app/dist/main/main.cjs',
   'resources/app/dist/main/preload.cjs',
   'resources/app/dist/main/feature-worker-host.cjs',
   'resources/app/dist/tools/feature-installer.cjs',
   'resources/app/builtins/recording-0.3.0.ofp',
-  'resources/app/builtins/create-associate-0.2.3.ofp',
+  'resources/app/builtins/create-associate-0.2.5.ofp',
+  'resources/app/builtins/delete-elements-0.1.5.ofp',
   'resources/app/dist/renderer/app.js',
   'resources/app/dist/renderer/index.html',
   'resources/app/dist/renderer/styles.css'

@@ -1,6 +1,6 @@
 # 删除元素 Feature __FEATURE_VERSION__
 
-状态：官方签名独立 Feature。Shell 0.4.0 的 Local 运行时可自动加载；Remote Operation host 暂未发布。
+状态：官方签名独立 Feature，随 Shell 0.4.12 内置并自动安装/升级；Connector 只执行包内签名 Operation。
 
 ## 用户交互
 
@@ -9,6 +9,7 @@
 ## 安全不变量
 
 - 只接受 Connector 权威重抓取返回的对象身份；名称仅用于展示。
+- 删除目标必须命中显式 Workspace 锁；全局锁只把 Omnia 返回的真实 Section GUID 展开为关联 Workspace 范围，不允许名称分类或伪造 Section。
 - 计划冻结 Connector ID、会话 generation、Pack ID、安全锁完整快照、Workspace IDs、对象类型/ID、WorkItem ID、并发时间戳、blocker signature 和 plan digest。
 - 用户确认后，在每个写操作前再次执行 scope read 与 preflight；任何身份、关系、Workspace、并发信息或安全锁变化都会阻止提交。
 - `commit_attempted` 只在实际调用 mutation 前持久化。
@@ -21,7 +22,7 @@
 
 ## 验证边界
 
-安装后首次启动 Shell 会验证 Worker 健康与嵌套 Operation 签名，再将 0.1.2 切为 active。只有 Local、当前 Pack 已连接且安全锁有效时才开放 action；最终确认会取得并消费一次性 mutation permit。Remote 模式明确禁用且不回退 Local。本轮未使用用户 Omnia 登录，HTTP fixture/合同测试通过不等同于目标 Pack 实机删除已完成；最终现场步骤仍需在授权 Pack 删除一个零 blocker Information。
+安装后首次启动 Shell 会验证 Worker 健康与嵌套 Operation 签名，再将当前版本切为 active。只有 Remote Connector、当前 Pack 和安全锁都有效时才开放 action；最终确认会取得并消费一次性 mutation permit。不存在 Local fallback。本轮未使用用户 Omnia 登录，源码构建与签名包生成不等同于目标 Pack 实机删除已完成；最终现场步骤仍需在授权 Pack 删除一个零 blocker Information。
 
 ## 版本说明
 

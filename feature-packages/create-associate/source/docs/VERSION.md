@@ -1,6 +1,6 @@
-# 0.2.3 / sequence 5
+# 0.2.5 / sequence 7
 
-Shell 0.4.9 compatibility release. It preserves the real `返回上传` and `重新开始` Core-backed state transitions and corrects the authority Workspace read to the v4-verified Workspace Facet Type. Connector interaction remains fixed-route transport; Feature/Core own validation and state. Minimum Shell is 0.4.9. No real Omnia canary has been performed.
+Shell 0.4.12 builtin release. It preserves the real `返回上传` and `重新开始` Core-backed state transitions and the v4-verified Workspace Facet Type. The Factors Considered check states the missing Provider/evaluation condition directly. Connector interaction remains fixed-route transport; Feature/Core own validation and state. Minimum Shell remains 0.4.9. Real Omnia canary is pending.
 
 # 0.2.1 history / sequence 3
 

@@ -45,6 +45,22 @@ function rendererPath(filename: string): string {
   return path.resolve(__dirname, '..', 'renderer', filename);
 }
 
+function resolveHotApplicationRoot(): string | null {
+  const configuredRoot = String(process.env.OMNIA_AGENT_HOT_ROOT || '').trim();
+  if (!configuredRoot) return null;
+  const root = path.resolve(configuredRoot);
+  const packagePath = path.join(root, 'package.json');
+  const featurePackagesPath = path.join(root, 'feature-packages');
+  if (!fs.existsSync(packagePath) || !fs.existsSync(featurePackagesPath)) {
+    throw new Error(`Omnia hot workspace is incomplete: ${root}`);
+  }
+  const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8')) as { name?: unknown };
+  if (packageJson.name !== 'omnia-agent-v5-shell') {
+    throw new Error(`Omnia hot workspace identity is invalid: ${root}`);
+  }
+  return root;
+}
+
 async function createWindow(): Promise<void> {
   const initialZoomFactor = shell!.snapshot().preference.uiScalePercent / 100;
   mainWindow = new BrowserWindow({
@@ -149,7 +165,7 @@ function registerIpc(service: ShellService, packages: FeaturePackageManager, log
   handle('shell:refresh', () => service.refresh());
   handle('shell:set-keepalive', (enabled: boolean) => service.setKeepalive(enabled));
   handle('shell:refresh-workspaces', () => service.refreshWorkspaceDirectory());
-  handle('shell:save-safety', (input: { enabled: boolean; workspaceIds: string[]; expectedStateVersion: number }) =>
+  handle('shell:save-safety', (input: { enabled: boolean; globalEnabled?: boolean; globalSectionIds?: string[]; workspaceIds: string[]; expectedStateVersion: number }) =>
     service.saveSafety(input));
   handle('shell:send-message', (input: { content: string; attachmentIds: string[] }) => service.sendMessage(input));
   handle('shell:choose-attachments', async () => {
@@ -306,7 +322,12 @@ app.whenReady().then(async () => {
     connector,
     workerHostEntrypoint: path.resolve(__dirname, 'feature-worker-host.cjs')
   }, interactionLogs);
-  installBuiltinFeaturePackages(featurePackages, app.getAppPath(), app.isPackaged);
+  const hotApplicationRoot = resolveHotApplicationRoot();
+  installBuiltinFeaturePackages(
+    featurePackages,
+    hotApplicationRoot || app.getAppPath(),
+    hotApplicationRoot ? false : app.isPackaged
+  );
   await featurePackages.initializeRuntime();
   shell = new ShellService(database, connector, chat, attachments, featurePackages, {}, {}, interactionLogs);
   registerIpc(shell, featurePackages, interactionLogs);

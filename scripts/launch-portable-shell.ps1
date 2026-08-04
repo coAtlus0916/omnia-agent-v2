@@ -49,6 +49,40 @@ try {
     throw "The active Omnia Agent executable is missing: $executable"
   }
 
+  # Development/product hot path: the launcher is stable while the current
+  # workspace dist and builtin Feature packages are rebuilt in place. The
+  # active packaged runtime keeps the same Windows data-protection identity.
+  $sourceRoot = [System.IO.Path]::GetFullPath((Join-Path $root '..'))
+  $sourcePackagePath = Join-Path $sourceRoot 'package.json'
+  $buildScript = Join-Path $sourceRoot 'scripts\build.mjs'
+  $hotSourceAvailable = $false
+  if (
+    (Test-Path -LiteralPath $sourcePackagePath -PathType Leaf) -and
+    (Test-Path -LiteralPath $buildScript -PathType Leaf)
+  ) {
+    $sourcePackage = Get-Content -Raw -LiteralPath $sourcePackagePath | ConvertFrom-Json
+    $hotSourceAvailable = [string]$sourcePackage.name -eq 'omnia-agent-v5-shell'
+  }
+
+  if ($hotSourceAvailable) {
+    if ($ResolveOnly) {
+      Write-Output $executable
+      exit 0
+    }
+    $node = Get-Command node.exe -ErrorAction Stop
+    Push-Location $sourceRoot
+    try {
+      & $node.Source $buildScript
+      if ($LASTEXITCODE -ne 0) { throw "Current workspace build failed with exit code $LASTEXITCODE." }
+    } finally {
+      Pop-Location
+    }
+    $env:OMNIA_AGENT_PRODUCT_ROOT = $root
+    $env:OMNIA_AGENT_HOT_ROOT = $sourceRoot
+    Start-Process -FilePath $executable -WorkingDirectory $root | Out-Null
+    exit 0
+  }
+
   if ($ResolveOnly) {
     Write-Output $executable
     exit 0

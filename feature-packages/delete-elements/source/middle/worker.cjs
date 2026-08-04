@@ -58,12 +58,29 @@ function freezeSafety(value, engagementId) {
   if (!Array.isArray(value.workspaceIds) || value.workspaceIds.length < 1) fail('SAFETY.EMPTY_SCOPE', 'Safety lock has no Workspace.');
   const workspaceIds = [...new Set(value.workspaceIds.map((id) => nonEmpty(id, 'workspaceId')))].sort();
   if (workspaceIds.length !== value.workspaceIds.length) fail('SAFETY.DUPLICATE_SCOPE', 'Safety lock contains duplicate Workspace identity.');
+  const globalEnabled = value.globalEnabled === true;
+  if (!Array.isArray(value.globalSectionIds) || !Array.isArray(value.globalWorkspaceIds)) {
+    fail('SAFETY.INVALID_GLOBAL_SCOPE', 'Global safety lock scope is unavailable.');
+  }
+  const globalSectionIds = [...new Set(value.globalSectionIds.map((id) => nonEmpty(id, 'globalSectionId')))].sort();
+  const globalWorkspaceIds = [...new Set(value.globalWorkspaceIds.map((id) => nonEmpty(id, 'globalWorkspaceId')))].sort();
+  if (globalEnabled && (globalSectionIds.length < 1 || globalWorkspaceIds.length < 1)) {
+    fail('SAFETY.EMPTY_GLOBAL_SCOPE', 'Enabled global safety lock has no authoritative Section membership.');
+  }
+  if (!globalEnabled && globalWorkspaceIds.length > 0) {
+    fail('SAFETY.STALE_GLOBAL_SCOPE', 'Disabled global safety lock retained an active scope.');
+  }
+  const allowedWorkspaceIds = [...new Set([...workspaceIds, ...(globalEnabled ? globalWorkspaceIds : [])])].sort();
   return Object.freeze({
     enabled: true,
+    globalEnabled,
     engagementId,
     stateVersion: value.stateVersion,
     authorityObservationId: nonEmpty(value.authorityObservationId, 'authorityObservationId'),
-    workspaceIds: Object.freeze(workspaceIds)
+    workspaceIds: Object.freeze(workspaceIds),
+    globalSectionIds: Object.freeze(globalSectionIds),
+    globalWorkspaceIds: Object.freeze(globalWorkspaceIds),
+    allowedWorkspaceIds: Object.freeze(allowedWorkspaceIds)
   });
 }
 
@@ -135,7 +152,7 @@ function createDeleteElementsWorker(dependencies) {
     if (scope.connectorId !== binding.connectorId || scope.sessionGeneration !== binding.sessionGeneration) {
       fail('SCOPE.CONNECTOR_CHANGED', 'Connector identity or lease generation changed.');
     }
-    if (!Array.isArray(scope.workspaceIds) || safety.workspaceIds.some((id) => !scope.workspaceIds.includes(id))) {
+    if (!Array.isArray(scope.workspaceIds) || safety.allowedWorkspaceIds.some((id) => !scope.workspaceIds.includes(id))) {
       fail('SCOPE.WORKSPACE_CHANGED', 'A safety-locked Workspace is absent from the current authoritative scope.');
     }
   }
@@ -143,7 +160,9 @@ function createDeleteElementsWorker(dependencies) {
   function freezeTarget(item, safety) {
     if (!item || item.objectType !== 'Information') fail('TARGET.TYPE_MISMATCH', 'Only explicitly typed Information targets are accepted in this candidate.');
     const workspaceIds = [...new Set((item.workspaceIds || []).map((id) => nonEmpty(id, 'targetWorkspaceId')))].sort();
-    if (workspaceIds.length < 1 || workspaceIds.some((id) => !safety.workspaceIds.includes(id))) {
+    if (workspaceIds.length < 1
+      || !workspaceIds.some((id) => safety.workspaceIds.includes(id))
+      || workspaceIds.some((id) => !safety.allowedWorkspaceIds.includes(id))) {
       fail('SAFETY.WORKSPACE_BLOCKED', 'Target impact extends outside the safety lock.');
     }
     return Object.freeze({
@@ -161,7 +180,9 @@ function createDeleteElementsWorker(dependencies) {
       fail('PREFLIGHT.IDENTITY_CHANGED', 'Preflight returned another object identity.');
     }
     const workspaceIds = [...new Set((preflight.workspaceIds || []).map((id) => nonEmpty(id, 'preflightWorkspaceId')))].sort();
-    if (workspaceIds.length < 1 || workspaceIds.some((id) => !safety.workspaceIds.includes(id))) {
+    if (workspaceIds.length < 1
+      || !workspaceIds.some((id) => safety.workspaceIds.includes(id))
+      || workspaceIds.some((id) => !safety.allowedWorkspaceIds.includes(id))) {
       fail('PREFLIGHT.SAFETY_CHANGED', 'Current target impact extends outside the safety lock.');
     }
     if (!Array.isArray(preflight.blockers)) fail('PREFLIGHT.INVALID_BLOCKERS', 'Preflight blockers are not authoritative.');
@@ -188,7 +209,7 @@ function createDeleteElementsWorker(dependencies) {
     const catalog = await invoke(OPERATIONS.catalogRead, {
       connectorBinding: binding,
       engagementId: binding.engagementId,
-      workspaceIds: safety.workspaceIds
+      workspaceIds: safety.allowedWorkspaceIds
     });
     if (!catalog || !Array.isArray(catalog.items)) fail('CATALOG.INVALID', 'Authoritative heavy catalog is unavailable.');
     const items = new Map(catalog.items.map((item) => [item.objectId, item]));
@@ -431,7 +452,7 @@ function createDeleteElementsWorker(dependencies) {
     const catalog = await invoke(OPERATIONS.catalogRead, {
       connectorBinding: binding,
       engagementId: binding.engagementId,
-      workspaceIds: safety.workspaceIds
+      workspaceIds: safety.allowedWorkspaceIds
     });
     if (!catalog || !Array.isArray(catalog.items)) fail('CATALOG.INVALID', 'Authoritative heavy catalog is unavailable.');
     const items = catalog.items.map((item) => {

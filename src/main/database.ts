@@ -852,6 +852,11 @@ export class CoreDatabase {
             connector_id='', session_generation=0, authority_instance_id='', tenant_or_org_id='', pack_id='',
             state_version=state_version+1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
         WHERE singleton=1;
+      `],
+      [21, `
+        ALTER TABLE workspace_safety ADD COLUMN global_enabled INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE workspace_safety ADD COLUMN global_section_ids_json TEXT NOT NULL DEFAULT '[]';
+        ALTER TABLE workspace_safety ADD COLUMN global_workspace_ids_json TEXT NOT NULL DEFAULT '[]';
       `]
     ];
     for (const [version, sql] of migrations) {
@@ -1158,6 +1163,9 @@ export class CoreDatabase {
     const row = this.db.prepare('SELECT * FROM workspace_safety WHERE singleton=1').get() as Record<string, any>;
     return {
       enabled: row.enabled === 1,
+      globalEnabled: row.global_enabled === 1,
+      globalSectionIds: JSON.parse(String(row.global_section_ids_json)) as string[],
+      globalWorkspaceIds: JSON.parse(String(row.global_workspace_ids_json)) as string[],
       connectorId: String(row.connector_id),
       sessionGeneration: Number(row.session_generation),
       authorityInstanceId: String(row.authority_instance_id),
@@ -1175,6 +1183,9 @@ export class CoreDatabase {
 
   saveSafety(input: {
     enabled: boolean;
+    globalEnabled: boolean;
+    globalSectionIds: string[];
+    globalWorkspaceIds: string[];
     connectorId: string;
     sessionGeneration: number;
     authorityInstanceId: string;
@@ -1188,12 +1199,15 @@ export class CoreDatabase {
     const now = utcNow();
     const result = this.db.prepare(`
       UPDATE workspace_safety SET
-        enabled=?, connector_id=?, session_generation=?, authority_instance_id=?, tenant_or_org_id=?, pack_id=?,
+        enabled=?, global_enabled=?, global_section_ids_json=?, global_workspace_ids_json=?, connector_id=?, session_generation=?, authority_instance_id=?, tenant_or_org_id=?, pack_id=?,
         engagement_id=?, workspace_ids_json=?, authority_observation_id=?,
         state_version=state_version+1, updated_at=?
       WHERE singleton=1 AND state_version=?
     `).run(
       input.enabled ? 1 : 0,
+      input.globalEnabled ? 1 : 0,
+      JSON.stringify(input.globalSectionIds),
+      JSON.stringify(input.globalWorkspaceIds),
       input.connectorId,
       input.sessionGeneration,
       input.authorityInstanceId,

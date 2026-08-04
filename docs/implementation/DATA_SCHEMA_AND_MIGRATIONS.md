@@ -14,7 +14,7 @@ Owner：Control & Data Plane
 | `connection_state` | 最近一次真实 Connector 快照；不是 Omnia 授权 |
 | `keepalive_state` | 启停、周期、最近尝试/成功/失败、下次执行 |
 | `workspace_observations` | 不可变权威轻抓取 observation |
-| `workspace_safety` | 当前安全锁 Pack/Workspace identity、observation 与 CAS |
+| `workspace_safety` | 当前安全锁 Pack/Workspace identity、真实 Section GUID、冻结成员 observation 与 CAS |
 | `chat_sessions` | 本地持久会话 |
 | `chat_messages` | user/assistant 正文、传输状态和脱敏错误 |
 
@@ -33,6 +33,7 @@ Owner：Control & Data Plane
 - 消息创建与会话更新时间在同一 SQLite transaction。
 - Workspace observation 追加写；失败的读取不会覆盖最近成功 observation。
 - UI 只有在当前 Session/Pack 已核验且本次目录 `available=true` 时展示 Workspace 名称并允许保存安全锁。
+- Migration 21 为 `workspace_safety` 增加 `global_enabled`、`global_section_ids_json` 与 `global_workspace_ids_json`；三者和显式 Workspace 锁在同一 CAS UPDATE 中保存。全局成员只由同一权威 observation 的真实 `parentSectionId` 展开，后续成员变化会使锁失效并要求重存。
 - Connection snapshot 只用于恢复说明；启动后由 Connector 实时重读。
 
 ## Secret 与正文

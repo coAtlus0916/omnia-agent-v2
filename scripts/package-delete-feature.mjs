@@ -254,8 +254,10 @@ async function buildVersion(version, sequence) {
       }, null, 2))
     ]
   });
-  const versionNote = version === '0.1.3'
-    ? '0.1.3 修正 Workspace Facet 权威类型为 v4 已验证值；其余删除范围与 0.1.2 相同。'
+  const versionNote = version === '0.1.5'
+    ? '0.1.5 将 0.1.4 的 Omnia 权威 Section 全局关联安全范围纳入 Shell builtin 自动升级；删除目标仍必须命中显式 Workspace 锁，Section 展开结果随安全快照冻结。'
+    : version === '0.1.3'
+      ? '0.1.3 修正 Workspace Facet 权威类型为 v4 已验证值；其余删除范围与 0.1.2 相同。'
     : '0.1.2 接通 Shell 0.4.0 Local 运行时、签名 Operation handler、真实重抓取/单选/右侧确认、一次性 permit、持久证据与写后读回；对象范围仍仅为单个零 blocker Information。';
   const featureDocs = (await readFile(path.join(source, 'docs', 'FEATURE.md'), 'utf8'))
     .replaceAll('__FEATURE_VERSION__', version)
@@ -282,7 +284,7 @@ async function buildVersion(version, sequence) {
     version,
     sequence,
     displayName: '删除元素',
-    minimumShellVersion: '0.4.0',
+    minimumShellVersion: version === '0.1.5' ? '0.4.10' : '0.4.0',
     requiredIsolation: 'process',
     storeNamespace: 'delete_elements',
     migrationPath: 'backend/migrations/001.json',
@@ -435,5 +437,5 @@ async function buildVersion(version, sequence) {
 }
 
 const results = [];
-results.push(await buildVersion('0.1.3', 4));
+results.push(await buildVersion('0.1.5', 6));
 for (const result of results) console.log(`${path.relative(root, result.filename)} ${result.digest}`);

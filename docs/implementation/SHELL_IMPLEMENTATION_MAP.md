@@ -1,11 +1,11 @@
 # Shell Baseline 实现映射
 
-版本：`0.4.9`
-状态：Remote-only 发布源码；内置 recording 0.3.0 与 create-associate 0.2.3。0.4.9 基于 0.4.8 修复安全锁错误 Workspace Facet Type，并恢复 v4 的实时权威复核语义：Connector 只执行固定读取并返回原始响应，Core 解析、持久化和校验完整 Connector/authority/tenant/Pack/engagement/Workspace 身份。功能栏直接显示 Feature；`releases/` 仍是唯一产品根。真实 Remote Pack canary 待完成。
+版本：`0.4.12`
+状态：Remote-only 发布源码；内置 recording 0.3.0、create-associate 0.2.5 与 delete-elements 0.1.5，均由 builtin bootstrap 自动安装/升级。0.4.12 保留 0.4.10 的真实 Section 安全锁和 authority 单飞修复，取消删除 Feature 的用户单独安装步骤，并以固定发布宿主加载启动器构建的工作区代码。Connector 仍只执行固定读取和签名 Operation；Core/Worker 处理规则与持久化。真实 Remote Pack canary 待完成。
 
 ## 范围
 
-Shell 原装平台包含 Core Store、Feature/Documentation Registry、通用 Worker/Store/Event/Managed Content ports 和唯一 RemoteConnectorTransport。Shell 不包含 Local Connector、Transport router 或 fallback。业务不硬编码进 Shell：recording、删除元素与 `omnia.create-associate@0.2.3` 均是独立签名 Feature；新建与关联首次真实回传必须经过确认、逐命令权威读回，只在完整成功后记录精确 scope 的限时 capability evidence。删除聊天记录仍未交付。
+Shell 原装平台包含 Core Store、Feature/Documentation Registry、通用 Worker/Store/Event/Managed Content ports 和唯一 RemoteConnectorTransport。Shell 不包含 Local Connector、Transport router 或 fallback。业务不硬编码进 Shell：recording、delete-elements 与 `omnia.create-associate@0.2.4` 都保持独立签名 Feature，但随同一个 Shell 包内置并自动升级；新建与关联首次真实回传必须经过确认、逐命令权威读回，只在完整成功后记录精确 scope 的限时 capability evidence。删除聊天记录仍未交付。
 
 | 能力 | Delivery | Control & Data | Integration | 真实状态 |
 |---|---|---|---|---|
@@ -13,7 +13,7 @@ Shell 原装平台包含 Core Store、Feature/Documentation Registry、通用 Wo
 | 连接 | 顶部 Connect/Cancel 与分阶段状态 | `ShellService` 持久 Remote-only connect state，最长 10 分钟只读 polling | Remote transport → Bridge → Remote Worker → `WorkstationOmniaSession` | 自动化收口中；真实 Omnia canary 待执行 |
 | 刷新 | 顶部刷新按钮与错误提示 | `ShellService.refresh` 更新 Core 状态 | Remote Worker 的 Session Core 重新加载页面、识别 Pack，并触发轻抓取 | 失败不覆盖成功 observation；真实 Pack 待 canary |
 | 保活 | 启停、运行/下次/错误状态 | Core DB `keepalive_state` + 后台 5 秒调度扫描 | 到期调用真实只读 refresh | 已实现；重启恢复 |
-| 安全锁 | 当前 Pack 的精确 Workspace Facet 列表；Section 仅用于可选分组展示 | Core 解析权威原始响应；`workspace_observations`、`workspace_safety`、CAS 与完整连接身份校验 | Connector 固定 `workspace_authority_read`，保存及每次 Feature action 前重新读取 | 源码已实现；零 Workspace 或身份漂移失败关闭，真实 Pack 待 canary |
+| 安全锁 | 大弹窗、搜索、真实 Section 折叠、组内全选、右侧完整已选列表、全局 Section 关联锁 | Core 解析权威原始响应；`workspace_safety` 单事务 CAS 保存显式 IDs、Section GUID 与冻结成员；成员漂移失败关闭 | Connector 固定 `workspace_authority_read`；打开/保存重叠读取按完整 authority identity 单飞合并 | 源码已实现；缺真实 parentSectionId 时明确未归属且不能冒充全局授权，真实 Pack 待 canary |
 | 对话 | 第三列消息列表与输入区 | `chat_sessions/chat_messages` 持久化状态 | Provider 只由 Main 受控调用；未配置则不调用 | 已实现；无假回复 |
 | 缩放 | 右上角/设置 `− 百分比 +`、快捷键 | `user_preferences` CAS；Main 对所有当前/新建 WebContents `setZoomFactor` | Feature view/window 继承同一值 | 0.4.1 已按实际 DPR/viewport/bounds 验证；重启恢复、无 CSS 双缩放 |
 | Splitter | Feature 菜单/Tabbed Host、Comments 内容/composer、设置导航/内容 | `layout_preferences` 与 `settings.main` CAS | 不适用 | 已实现；pointer/键盘；Rail 固定且无 splitter |

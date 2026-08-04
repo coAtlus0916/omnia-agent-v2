@@ -6,13 +6,13 @@
 
 | 项目 | 当前状态 | 仍待完成 |
 |---|---|---|
-| Shell | `0.4.9` Remote-only：Connector 固定读取并回传 Workspace authority 原始响应，Core 解析、持久化并在保存/Feature action 前实时复核完整连接身份；内置 recording 0.3.0 与 create-associate 0.2.3 | 真实 Pack canary 待完成 |
+| Shell | `0.4.12` Remote-only：安全锁支持搜索、真实 Section 折叠、右侧已选与全局关联锁；Core 单飞读取、CAS 持久化并冻结精确成员；固定宿主由启动器加载工作区热构建；内置 recording 0.3.0、create-associate 0.2.5 与 delete-elements 0.1.5 | 真实 Pack canary 待完成 |
 | 录制 | 官方签名独立 Feature `omnia.recording 0.3.0 / sequence 4`，播放器式真实 start/pause/resume/stop/export 并自动采集当前页 Risk/Control | 真实 Pack/Remote 现场 canary |
-| 删除元素 | 独立后装 Feature `0.1.2`；Remote-only 前的 Local 自动化仅保留为历史合同证据 | 目标 Pack 的真实 Remote mutation 待公司电脑 canary；不允许 fallback Local |
+| 删除元素 | 独立签名 Feature `0.1.5 / sequence 6`，随 Shell 内置自动安装/升级；目标显式 Workspace + 真实 Section 全局关联范围 | 目标 Pack 的真实 Remote mutation 待公司电脑 canary；不允许 fallback Local |
 | 删除聊天记录 | 未交付 | 仍处于产品设计阶段 |
-| 新建与关联 | `omnia.create-associate@0.2.3 / sequence 5`；保留上传、校验、回传三步和真实重置动作；authority Operation 修正为 v4 已验证 Workspace Facet Type | 真实 SAP ECC mutation/readback canary 待完成；AI review 暂为 `not_evaluable` warning，不冒充已执行 |
+| 新建与关联 | `omnia.create-associate@0.2.5 / sequence 7`；保留上传、校验、回传三步和真实重置动作；AI 未执行时直接显示 Provider/评估条件 | 真实 SAP ECC mutation/readback canary 待完成；AI review port 待接通 |
 | Phase 1 母版 | 已冻结 V8 治理输入：9 sheets、187 字段、68 条关系、21 条 v4 证据、180/180 源字段追溯；运行时使用独立签名 base/TemplateInstance，不把 V8 当用户模板 | 真实 Omnia/目标 Pack canary 未通过；待发布首个获批 TemplateVersion |
-| Remote | Remote-only：Bridge `0.4.4` 使用 4 位、2 分钟、一次性链接码；Connector `0.3.10 / sequence 13` 已发布 v5 stable 并修复安全锁目录解析，已有长期 protected binding 后不再输入链接码；无 Local fallback | 公司电脑自动激活和真实 Pack canary 待现场读回 |
+| Remote | Remote-only：Bridge `0.4.5` 下发在线更新；Connector `0.3.13 / sequence 16` 已发布 stable，恢复托管启动并只回传 authority 原始响应；无 Local fallback | 公司电脑自动激活和真实 Pack canary 待现场读回 |
 | Nova | 仅保留 OpenAI-compatible 配置路径 | Nova 专有协议尚未校验 |
 
 Feature 的原装/内置/后装/Operation/额外部署边界以 [Feature 包总览](implementation/FEATURE_PACKAGE_CATALOG.md) 为准；Shell 的实际代码映射以 [Shell 实现映射](implementation/SHELL_IMPLEMENTATION_MAP.md) 为准。

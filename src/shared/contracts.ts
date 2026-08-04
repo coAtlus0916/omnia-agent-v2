@@ -98,6 +98,10 @@ export interface WorkspaceDirectorySnapshot {
 
 export interface WorkspaceSafetySnapshot {
   enabled: boolean;
+  globalEnabled: boolean;
+  globalSectionIds: string[];
+  /** Live Core projection from the latest authority observation; never persisted as authority. */
+  globalWorkspaceIds: string[];
   connectorId: string;
   sessionGeneration: number;
   authorityInstanceId: string;
@@ -265,6 +269,8 @@ export interface ShellApi {
   refreshWorkspaceDirectory(): Promise<ShellSnapshot>;
   saveSafety(input: {
     enabled: boolean;
+    globalEnabled?: boolean;
+    globalSectionIds?: string[];
     workspaceIds: string[];
     expectedStateVersion: number;
   }): Promise<ShellSnapshot>;

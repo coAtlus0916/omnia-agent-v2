@@ -86,6 +86,7 @@ export class ShellService {
   private transportReconcileRunning = false;
   private transportReconcilePending = false;
   private lifecycleMutationRunning = false;
+  private workspaceRefreshRunning: { key: string; promise: Promise<ShellSnapshot> } | null = null;
 
   constructor(
     private readonly database: CoreDatabase,
@@ -219,12 +220,18 @@ export class ShellService {
 
   private safetySnapshot(): WorkspaceSafetySnapshot {
     const safety = this.database.getSafety();
+    const current = this.workspaceDirectory.available ? this.workspaceDirectory.observation : null;
+    const globalSectionIds = new Set(safety.globalSectionIds);
+    const currentGlobalWorkspaceIds = current && safety.globalEnabled
+      ? current.workspaces.filter((workspace) => workspace.parentSectionId && globalSectionIds.has(workspace.parentSectionId)).map((workspace) => workspace.id).sort()
+      : [];
+    const projected = safety;
     if (!safety.enabled) {
-      return { ...safety, validForCurrentConnection: true, invalidReason: '' };
+      return { ...projected, validForCurrentConnection: true, invalidReason: '' };
     }
     if (!this.connection.connected || safety.engagementId !== this.connection.engagementId) {
       return {
-        ...safety,
+        ...projected,
         validForCurrentConnection: false,
         invalidReason: '安全锁绑定的 Pack 与当前连接不一致。'
       };
@@ -235,15 +242,14 @@ export class ShellService {
       || safety.tenantOrOrgId !== String(this.connection.tenantOrOrgId || '')
       || safety.packId !== String(this.connection.packId || '')) {
       return {
-        ...safety,
+        ...projected,
         validForCurrentConnection: false,
         invalidReason: '安全锁绑定的 Connector 或权威 Pack 身份与当前连接不一致。'
       };
     }
-    const current = this.workspaceDirectory.available ? this.workspaceDirectory.observation : null;
     if (!current) {
       return {
-        ...safety,
+        ...projected,
         validForCurrentConnection: false,
         invalidReason: '当前没有可核验的权威 Workspace 层级。'
       };
@@ -252,12 +258,29 @@ export class ShellService {
     const missing = safety.workspaceIds.filter((id) => !availableIds.has(id));
     if (missing.length > 0) {
       return {
-        ...safety,
+        ...projected,
         validForCurrentConnection: false,
         invalidReason: '安全锁中的 Workspace 已不在当前权威目录内，请重新配置。'
       };
     }
-    return { ...safety, validForCurrentConnection: true, invalidReason: '' };
+    const availableSectionIds = new Set(current.sections.map((section) => section.id));
+    if (safety.globalEnabled && (safety.globalSectionIds.length === 0
+      || safety.globalSectionIds.some((id) => !availableSectionIds.has(id)))) {
+      return {
+        ...projected,
+        validForCurrentConnection: false,
+        invalidReason: '全局安全锁中的所在部分已不属于当前权威目录，请重新配置。'
+      };
+    }
+    if (safety.globalEnabled && (currentGlobalWorkspaceIds.length !== safety.globalWorkspaceIds.length
+      || currentGlobalWorkspaceIds.some((id, index) => id !== [...safety.globalWorkspaceIds].sort()[index]))) {
+      return {
+        ...projected,
+        validForCurrentConnection: false,
+        invalidReason: '全局安全锁所在部分的 Workspace 成员已经变化，请重新保存后再执行删除。'
+      };
+    }
+    return { ...projected, validForCurrentConnection: true, invalidReason: '' };
   }
 
   snapshot(): ShellSnapshot {
@@ -278,7 +301,7 @@ export class ShellService {
     return {
       schemaVersion: 'omnia.shell-home/v1',
       generatedAt: utcNow(),
-      productVersion: '0.4.9',
+      productVersion: '0.4.12',
       featureCount: this.database.activeFeatureCount(),
       features: featureRuntime,
       connection: this.connection,
@@ -586,6 +609,30 @@ export class ShellService {
   }
 
   async refreshWorkspaceDirectory(): Promise<ShellSnapshot> {
+    const key = [
+      this.connection.connectorId,
+      this.connection.sessionGeneration,
+      this.connection.authorityInstanceId,
+      this.connection.tenantOrOrgId,
+      this.connection.packId,
+      this.connection.engagementId
+    ].join('|');
+    if (this.workspaceRefreshRunning?.key === key) return this.workspaceRefreshRunning.promise;
+    if (this.workspaceRefreshRunning) {
+      try { await this.workspaceRefreshRunning.promise; } catch { /* the current identity still requires its own fresh read */ }
+      return this.refreshWorkspaceDirectory();
+    }
+    const refresh = this.refreshWorkspaceDirectoryNow();
+    const flight = { key, promise: refresh };
+    this.workspaceRefreshRunning = flight;
+    try {
+      return await refresh;
+    } finally {
+      if (this.workspaceRefreshRunning === flight) this.workspaceRefreshRunning = null;
+    }
+  }
+
+  private async refreshWorkspaceDirectoryNow(): Promise<ShellSnapshot> {
     if (!this.connection.connected || !this.connection.engagementId) {
       this.workspaceDirectory = {
         available: false,
@@ -598,7 +645,7 @@ export class ShellService {
     }
     const expectedAuthority = {
       connectorId: this.connection.connectorId,
-      sessionGeneration: this.connection.sessionGeneration,
+      sessionGeneration: Number(this.connection.sessionGeneration || 0),
       authorityInstanceId: String(this.connection.authorityInstanceId || ''),
       tenantOrOrgId: String(this.connection.tenantOrOrgId || ''),
       packId: String(this.connection.packId || ''),
@@ -641,6 +688,8 @@ export class ShellService {
 
   async saveSafety(input: {
     enabled: boolean;
+    globalEnabled?: boolean;
+    globalSectionIds?: string[];
     workspaceIds: string[];
     expectedStateVersion: number;
   }): Promise<ShellSnapshot> {
@@ -678,7 +727,14 @@ export class ShellService {
         this.workspaceDirectory.reason || '当前无法取得权威 Section/Workspace 层级，安全锁失败关闭。'
       );
     }
-    const uniqueIds = [...new Set(input.workspaceIds.map((value) => value.trim()).filter(Boolean))];
+    if (!Array.isArray(input.workspaceIds) || (input.globalSectionIds !== undefined && !Array.isArray(input.globalSectionIds))) {
+      throw new AppError('SAFETY.INVALID_INPUT', '安全锁范围格式无效。');
+    }
+    const uniqueIds = [...new Set(input.workspaceIds.map((value) => String(value).trim()).filter(Boolean))].sort();
+    const globalEnabled = input.globalEnabled === true;
+    const globalSectionIds = globalEnabled
+      ? [...new Set((input.globalSectionIds || []).map((value) => String(value).trim()).filter(Boolean))].sort()
+      : [];
     if (input.enabled && uniqueIds.length === 0) {
       throw new AppError('SAFETY.EMPTY_SCOPE', '启用安全锁前至少选择一个 Workspace。');
     }
@@ -686,8 +742,25 @@ export class ShellService {
     if (uniqueIds.some((id) => !validIds.has(id))) {
       throw new AppError('SAFETY.INVALID_WORKSPACE', '安全锁包含不属于当前权威目录的 Workspace。');
     }
+    const validSectionIds = new Set(observation.sections.map((section) => section.id));
+    if (globalEnabled && globalSectionIds.length === 0) {
+      throw new AppError('SAFETY.EMPTY_GLOBAL_SCOPE', '启用全局安全锁前至少选择一个所在部分。');
+    }
+    if (globalSectionIds.some((id) => !validSectionIds.has(id))) {
+      throw new AppError('SAFETY.INVALID_GLOBAL_SECTION', '全局安全锁包含不属于当前权威目录的所在部分。');
+    }
+    const selectedSections = new Set(globalSectionIds);
+    const globalWorkspaceIds = globalEnabled
+      ? observation.workspaces.filter((workspace) => workspace.parentSectionId && selectedSections.has(workspace.parentSectionId)).map((workspace) => workspace.id).sort()
+      : [];
+    if (globalEnabled && globalWorkspaceIds.length === 0) {
+      throw new AppError('SAFETY.EMPTY_GLOBAL_MEMBERSHIP', '所选所在部分没有 Omnia 返回的可核验 Workspace 成员，不能启用全局安全锁。');
+    }
     this.database.saveSafety({
       enabled: input.enabled,
+      globalEnabled,
+      globalSectionIds,
+      globalWorkspaceIds,
       connectorId: observation.connectorId,
       sessionGeneration: observation.sessionGeneration,
       authorityInstanceId: observation.authorityInstanceId,

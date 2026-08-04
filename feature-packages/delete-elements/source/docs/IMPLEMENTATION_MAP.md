@@ -13,7 +13,7 @@
 
 `uncertain → reconcile(read-only) → completed|uncertain`
 
-状态机冻结身份与安全锁，对第二次 preflight 做 digest 比较，在提交前保存 checkpoint。成功读回后写 managed-content tombstone 并发出 `workspace.authoritative_refresh_requested`。
+状态机冻结身份、安全锁、真实 Section GUID 及其精确 Workspace 成员展开，对第二次 preflight 做 digest 比较，在提交前保存 checkpoint。目标必须命中显式 Workspace 锁，所有关联必须位于显式或全局展开范围；成功读回后写 managed-content tombstone 并发出 `workspace.authoritative_refresh_requested`。
 
 ## 安装与文档
 

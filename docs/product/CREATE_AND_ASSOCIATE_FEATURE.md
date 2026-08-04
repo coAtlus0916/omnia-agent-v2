@@ -1,6 +1,6 @@
 # Feature 详细设计：新建与关联
 
-> 2026-08-04 current implementation: `omnia.create-associate@0.2.3` / sequence 5 on Shell 0.4.9 uses a two-column, three-step Surface—“上传资料 → 校验 → 回传”。It preserves the real Core-backed 返回上传 and 重新开始 transitions, APP/DB/OS/Tool review, 11 canonical checks and controlled Return loop. The authority Operation now uses the v4-verified Workspace Facet Type. Connector only executes the fixed Operation; Feature/Core own business validation and durable state. The real SAP ECC Omnia canary remains pending and is not claimed here.
+> 2026-08-04 current implementation: `omnia.create-associate@0.2.5` / sequence 7 is built into Shell 0.4.12 and uses a two-column, three-step Surface—“上传资料 → 校验 → 回传”。It preserves the Core-backed 返回上传 and 重新开始 transitions, APP/DB/OS/Tool review, 11 canonical checks and controlled Return loop. The authority Operation uses the v4-verified Workspace Facet Type. Connector only executes the fixed Operation; Feature/Core own business validation and durable state. The SAP ECC Omnia canary remains pending.
 
 > 2026-08-03 implementation update: `omnia.create-associate@0.1.0` sequence 1 now implements the four-stage Remote control loop and is bundled as an auto-installed signed Feature in Shell 0.4.3. Production mutation remains disabled because a real target Omnia/Pack canary has not been executed; automated Connector-harness evidence is not a canary. The product is Remote-only and never falls back to Local transport.
 
@@ -9,7 +9,7 @@
 状态：Accepted Product Scope / Detailed Design Draft  
 用户可见名称：新建与关联  
 首批定位：第四开发切片；首批四 Plane 综合验收  
-DoR 状态：0.2.3 源码与 Operation 已完成；候选打包与 Shell 0.4.9 发布在本轮执行，真实 SAP ECC Pack canary 待完成；0.2.1 历史证据见[0.2.1 验收记录](../reviews/CREATE_ASSOCIATE_0_2_1_ACCEPTANCE.md)
+DoR 状态：0.2.5 源码与 Operation 已完成并随 Shell 0.4.12 内置，真实 SAP ECC Pack canary 待完成；0.2.1 历史证据见[0.2.1 验收记录](../reviews/CREATE_ASSOCIATE_0_2_1_ACCEPTANCE.md)
 v4 对应能力：ITGC Toolbox 的 Phase 1
 
 ## 1. 用户目标

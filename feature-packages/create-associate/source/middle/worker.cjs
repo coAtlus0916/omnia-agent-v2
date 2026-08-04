@@ -625,7 +625,7 @@ function validationPresentation(parsed,live={}){
     ['infrastructure_rait','多系统关联的 RAIT 一致',checkFailed('infrastructure_rait')?'failed':'passed',checkFailed('infrastructure_rait')?'继承 RAIT 不唯一。':'DB/OS RAIT 为只读一致继承值。'],
     ['relationship_targets','关联目标存在且类型正确',liveState('relationship_targets'),checkFailed('relationship_targets')?'存在 0.2.1 不支持的批外 APP 或不精确目标。':liveCheck('relationship_targets').reason],
     ['workspace_presence','Omnia 工作区已填写',workspaceMissing?'failed':'passed',workspaceMissing?'存在缺失工作区。':'所有非排除行已填写工作区。'],
-    ['factors_considered_ai_review','Factors Considered 智能复核',activeRows(parsed).some((row)=>row.kind==='APP')?'warning':'skipped',activeRows(parsed).some((row)=>row.kind==='APP')?'AI 复核 unavailable/not_evaluable；未伪装已执行，该 warning 不阻断。':'本批无 APP，该项不适用。'],
+    ['factors_considered_ai_review','Factors Considered 智能复核',activeRows(parsed).some((row)=>row.kind==='APP')?'warning':'skipped',activeRows(parsed).some((row)=>row.kind==='APP')?'AI 复核未执行：当前 Provider 不可用或输入不满足评估条件；此项不参与阻断。':'本批无 APP，该项不适用。'],
     ['workspace_live','Omnia 工作区名称实时有效',liveCheck('workspace_live').state,liveCheck('workspace_live').reason]
   ];
   const pending=checks.filter((item)=>item[2]==='pending').length,failed=checks.filter((item)=>item[2]==='failed').length,completed=checks.length-pending;

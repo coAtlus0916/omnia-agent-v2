@@ -1,6 +1,6 @@
 {
   "name": "omnia-agent-v5-shell",
-  "version": "0.4.9",
+  "version": "0.4.12",
   "description": "Omnia Agent v5 Remote-only shell",
   "private": true,
   "type": "module",
@@ -14,7 +14,6 @@
     "package:delete-feature": "npm run build && node scripts/package-delete-feature.mjs",
     "package:recording-feature": "npm run build && node scripts/package-recording-feature.mjs",
     "package:create-associate-feature": "npm run build && node scripts/package-create-associate-feature.mjs",
-    "package:delete-feature-installer": "node scripts/package-delete-feature-installer.mjs",
     "feature:install": "node dist/tools/feature-installer.cjs install",
     "feature:list": "node dist/tools/feature-installer.cjs list",
     "feature:rollback": "node dist/tools/feature-installer.cjs rollback",

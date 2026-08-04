@@ -5,8 +5,8 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const root = path.resolve(import.meta.dirname, '..');
-const previousVersion = '0.3.7';
-const currentVersion = '0.3.13';
+const previousVersion = '0.3.13';
+const currentVersion = '0.3.14';
 const previousPackage = path.join(root, 'remote-connector', 'releases', previousVersion, `Omnia-Agent-v5-Remote-Connector-v${previousVersion}-Portable`);
 const currentPackage = path.join(root, 'remote-connector', 'releases', currentVersion, `Omnia-Agent-v5-Remote-Connector-v${currentVersion}-Portable`);
 const smokeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-remote-connector-upgrade-'));
@@ -38,7 +38,7 @@ try {
   assert.equal(result.status, 0, result.stderr || result.stdout);
   let state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
   assert.equal(state.current, previousVersion);
-  assert.equal(state.highestSequence, 10);
+  assert.equal(state.highestSequence, 16);
 
   fs.writeFileSync(credentialProbe, 'protected-binding-bytes-must-be-preserved\n');
   fs.writeFileSync(statusPath, `${JSON.stringify({ activeOperations: 1, uncertainOperations: 0 }, null, 2)}\n`);
@@ -53,7 +53,7 @@ try {
   state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
   assert.equal(state.current, currentVersion);
   assert.equal(state.previous, previousVersion);
-  assert.equal(state.highestSequence, 11);
+  assert.equal(state.highestSequence, 17);
   assert.equal(fs.readFileSync(credentialProbe, 'utf8'), 'protected-binding-bytes-must-be-preserved\n');
 
   const installed = path.join(installRoot, 'versions', `v${currentVersion}`);

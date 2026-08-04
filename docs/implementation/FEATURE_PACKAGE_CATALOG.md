@@ -1,6 +1,6 @@
 # v5 Shell 与 Feature 包总览
 
-状态日期：2026-08-04
+状态日期：2026-08-05
 用途：说明功能层级、当前真实状态、交付形态和额外部署要求。这里是状态索引，不替代 Feature 的四 Plane 实现文档、合同测试或真实 Omnia canary。
 
 ## 1. 交付层级
@@ -14,14 +14,13 @@ v5 便携产品根
 │  └─ RemoteConnectorTransport、Remote binding 与 Gate 基础设施（无 Local）
 ├─ 内置独立 Feature（官方签名 .ofp，随 Shell 携带并自动安装）
 │  ├─ omnia.recording 0.3.0
-│  └─ omnia.create-associate 0.2.6
-├─ 后装独立 Feature（官方签名 .ofp，按需安装）
-│  └─ 删除元素 0.1.2
+│  ├─ omnia.create-associate 0.2.6
+│  └─ omnia.delete-elements 0.1.5
 ├─ Connector Operation 包（官方签名 .ofop，按 Feature/capability 装载）
 │  └─ 通过公司电脑 Remote Operation host 执行固定 step gate
 └─ 必需的 Remote 额外部署
-   ├─ v5 Bridge 0.4.4
-   └─ v5 Remote Connector 0.3.10 / sequence 13（已发布 v5 stable；公司端激活待读回）
+   ├─ v5 Bridge 0.4.5
+   └─ v5 Remote Connector 0.3.14 / sequence 17（stable 自动升级）
 ```
 
 “Shell 原装”是平台能力，不等于把业务写死在 Shell；录制虽然随 Shell 携带，仍是独立签名、独立 Worker、可独立升级的 Feature。“后装”表示干净 Shell 不带该业务，安装 .ofp 后才登记和启用。“Operation 包”只承载经过签名的具体 Omnia 能力，不允许把任意 URL/method/body 交给 Connector。“额外部署”表示仅安装 Feature 仍不够，还需 Remote Connector、Bridge 或对应 Operation 能力。
@@ -30,7 +29,7 @@ v5 便携产品根
 
 | 能力 | 真实状态 | Remote-only 实现 | 额外配置/边界 |
 |---|---|---|---|
-| 连接、刷新、保活、安全锁 | Shell 0.4.12：显式 Workspace 锁与真实 Section 全局关联锁，同一读取单飞、单事务 CAS 保存、成员漂移失败关闭 | 顶部 Connect → Bridge 0.4.5 → Remote Worker 0.3.13 固定读取 → Core 解析/冻结 | 公司电脑真实 Pack 授权 canary 仍待执行；缺 Section 不阻断精确 Workspace 锁但禁用相应全局授权 |
+| 连接、刷新、保活、安全锁 | Shell 0.4.12：显式 Workspace 锁与 Omnia 真实所在部分全局关联锁，同一读取单飞、单事务 CAS 保存、成员漂移失败关闭 | 顶部 Connect → Bridge 0.4.5 → Remote Worker 0.3.14 固定 `facets/byEngagementIds` 读取 → Core 验证 `CustomWorkspace.parentId`/冻结 | 真实端点与 17 Group/193 Workspace 关系已只读采样；缺真实 Group 不阻断精确 Workspace 锁，但禁用相应全局授权 |
 | 三列聊天、附件、输入区 | 已实现 | 不依赖 Connector | Provider 未配置时只保存，不造假回复 |
 | DeepSeek / OpenAI-compatible Custom | 已实现 | 不依赖 Connector | Nova 专有协议未校验 |
 | 全局缩放、可拖动分隔线 | Shell 0.4.1 已验证并由 0.4.2 回归 | 不适用 | Shell/Settings/docked/detached/新建窗口一致；偏好写入 Core 数据库 |

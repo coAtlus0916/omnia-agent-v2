@@ -282,28 +282,6 @@ function TabStrip({ snapshot, host, activeTab, setActiveTab, run, onChange }: {
   </nav>;
 }
 
-const WORKSPACE_RULE_GROUPS = [
-  { id: 'it_audit', label: 'IT 审计' },
-  { id: 'financial_audit', label: '财务审计' },
-  { id: 'business_process', label: '业务流程' },
-  { id: 'other', label: '其他' }
-] as const;
-const WORKSPACE_IT_PATTERN = /(?:^|[\s_\-/])(it|gitc|ipe|dcno|db|os)(?:$|[\s_\-/])|信息技术|信息系统|应用系统|数据库|操作系统|网络|接口|权限|访问管理|变更管理|cyber|application|database|operating\s+system|interface|it\s*memos?/i;
-const WORKSPACE_FINANCIAL_PATTERN = /财务报告|财务结账|会计|总账|合并报表|试算平衡|financial\s+statements?|financial\s+reporting|accounting|general\s+ledger|consolidation|trial\s+balance|journal\s+entr/i;
-const WORKSPACE_BUSINESS_PATTERN = /业务流程|循环|收入|销售|采购|存货|库存|薪酬|工资|资金|固定资产|税务|revenue|sales|procurement|purchas|inventory|payroll|treasury|fixed\s+assets?|tax|business\s+process|cycle/i;
-
-/**
- * v4-compatible display grouping only. The result is never written back as an
- * Omnia Section relationship; safety persistence still receives exact Facet IDs.
- */
-function workspaceRuleGroup(name: string): typeof WORKSPACE_RULE_GROUPS[number]['id'] {
-  const value = String(name || '').trim();
-  if (/^test$/i.test(value) || /^20\d{3}(?:\D|$)/.test(value) || WORKSPACE_IT_PATTERN.test(value)) return 'it_audit';
-  if (WORKSPACE_FINANCIAL_PATTERN.test(value)) return 'financial_audit';
-  if (WORKSPACE_BUSINESS_PATTERN.test(value)) return 'business_process';
-  return 'other';
-}
-
 function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
   const [selected, setSelected] = useState<Set<string>>(new Set(snapshot.safety.workspaceIds));
   const [globalEnabled, setGlobalEnabled] = useState(snapshot.safety.globalEnabled);
@@ -366,16 +344,15 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
       workspaces: directory.workspaces.filter((item) => item.parentSectionId === section.id)
     })).filter((group) => group.workspaces.length > 0) : [];
   const ungroupedWorkspaces = directory?.workspaces.filter((item) => !item.parentSectionId || !knownSectionIds.has(item.parentSectionId)) || [];
-  const ruleGroups = WORKSPACE_RULE_GROUPS.map((rule) => ({
-    id: `rule:${rule.id}`,
-    label: `规则分组 · ${rule.label}`,
+  const ungrouped = ungroupedWorkspaces.length ? [{
+    id: 'unclassified',
+    label: '未返回所在部分',
     authoritative: false,
-    workspaces: ungroupedWorkspaces.filter((workspace) => workspaceRuleGroup(workspace.name) === rule.id)
-  })).filter((group) => group.workspaces.length > 0);
-  const groups = [...authoritativeGroups, ...ruleGroups];
+    workspaces: ungroupedWorkspaces
+  }] : [];
+  const groups = [...authoritativeGroups, ...ungrouped];
   const selectedWorkspaces = directory?.workspaces.filter((workspace) => selected.has(workspace.id)) || [];
   const workspaceSectionNames = new Map(directory?.sections.map((section) => [section.id, section.name]) || []);
-  const workspaceRuleNames = new Map(WORKSPACE_RULE_GROUPS.map((group) => [group.id, group.label]));
   const globalMembershipCount = directory?.workspaces.filter((workspace) => globalSections.has(workspace.parentSectionId)).length || 0;
   const authoritativeMembershipAvailable = Boolean(directory?.workspaces.some((workspace) => workspace.parentSectionId && knownSectionIds.has(workspace.parentSectionId)));
   return <section className="safety-workbench" aria-label="安全锁设置">
@@ -395,7 +372,7 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
         })}
         {directory && !directory.sections.length ? <p className="reason">Omnia 当前没有返回可核验的所在部分。</p> : null}
       </div>
-      {!authoritativeMembershipAvailable ? <p className="reason">Omnia 当前未返回 Workspace 与 Section 的权威成员关系，全局安全锁不可启用。下方规则分组只用于批量选择精确 Workspace Facet ID。</p> : null}
+      {!authoritativeMembershipAvailable ? <p className="reason">Omnia 当前未返回 Workspace 与所在部分的真实成员关系，全局安全锁不可启用。</p> : null}
       {globalEnabled ? <p className="global-safety-summary">已锁定 {globalSections.size} 个所在部分，冻结 {globalMembershipCount} 个关联 Workspace。</p> : null}
     </div>
     <div className="safety-toolbar">
@@ -418,8 +395,8 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
             <div className="safety-group-header">
               <button type="button" className="safety-collapse" aria-expanded={!isCollapsed} onClick={() => setCollapsed((current) => {
                 const next = new Set(current); next.has(group.id) ? next.delete(group.id) : next.add(group.id); return next;
-              })}><span>{isCollapsed ? '›' : '⌄'}</span><strong>{group.label}</strong>{!group.authoritative ? <small>仅批量选择</small> : null}</button>
-              <label title={group.authoritative ? '选择或取消此部分中的全部 Workspace' : '按规则批量选择或取消精确 Workspace Facet ID；不会把规则写成所在部分'}><input type="checkbox" checked={selectedCount === group.workspaces.length} onChange={(event) => {
+              })}><span>{isCollapsed ? '›' : '⌄'}</span><strong>{group.label}</strong></button>
+              <label title={group.authoritative ? '选择或取消此 Omnia 所在部分中的全部 Workspace' : '仅批量选择 Omnia 未返回归属的精确 Workspace Facet ID'}><input type="checkbox" checked={selectedCount === group.workspaces.length} onChange={(event) => {
                 const next = new Set(selected); for (const workspace of group.workspaces) event.target.checked ? next.add(workspace.id) : next.delete(workspace.id); setSelected(next);
               }} /><span>{selectedCount}/{group.workspaces.length}</span></label>
             </div>
@@ -430,7 +407,7 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
         })}</div>
       </section>
       <aside className="safety-selected-pane" aria-label="已选 Workspace"><div className="safety-pane-title"><strong>已选的工作区</strong><button type="button" disabled={!selected.size} onClick={() => setSelected(new Set())}>清空</button></div>
-        <div className="safety-selected-list">{selectedWorkspaces.map((workspace) => <div key={workspace.id} title={workspace.id}><span><strong>{workspace.name}</strong><small>{workspaceSectionNames.get(workspace.parentSectionId) || `规则分组 · ${workspaceRuleNames.get(workspaceRuleGroup(workspace.name)) || '其他'}（仅批量选择）`}</small></span><button type="button" aria-label={`移除 ${workspace.name}`} onClick={() => toggle(workspace.id)}>×</button></div>)}
+        <div className="safety-selected-list">{selectedWorkspaces.map((workspace) => <div key={workspace.id} title={workspace.id}><span><strong>{workspace.name}</strong><small>{workspaceSectionNames.get(workspace.parentSectionId) || '未返回所在部分'}</small></span><button type="button" aria-label={`移除 ${workspace.name}`} onClick={() => toggle(workspace.id)}>×</button></div>)}
           {!selectedWorkspaces.length ? <p>尚未选择 Workspace。</p> : null}</div>
       </aside>
     </div>}

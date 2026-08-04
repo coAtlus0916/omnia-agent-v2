@@ -1,7 +1,7 @@
 # Shell Baseline 实现映射
 
 版本：`0.4.12`
-状态：Remote-only 发布源码；内置 recording 0.3.0、create-associate 0.2.6 与 delete-elements 0.1.5，均由 builtin bootstrap 自动安装/升级。0.4.12 保留 0.4.10 的真实 Section 安全锁和 authority 单飞修复，取消删除 Feature 的用户单独安装步骤，并以固定发布宿主加载启动器构建的工作区代码。Connector 仍只执行固定读取和签名 Operation；Core/Worker 处理规则与持久化。真实 Remote Pack canary 待完成。
+状态：Remote-only 发布源码；内置 recording 0.3.0、create-associate 0.2.6 与 delete-elements 0.1.5，均由 builtin bootstrap 自动安装/升级。0.4.12 固定宿主加载启动器构建的工作区代码；安全锁展示与全局范围只使用 Omnia 真实 `CustomWorkspaceGroup → CustomWorkspace.parentId`。Connector 仅执行固定读取和签名 Operation；Core/Worker 处理校验、规则与持久化。
 
 SurfaceWindowManager 在 Feature action 成功或失败后向所有同 Feature/版本/Surface 实例广播 Core 最新投影。Artifact 输入授权在打开文件选择器前复核当前 workflow，仅上传步骤接受 `open_file`；旧 WebContents 不能在后台已进入校验后继续导入。
 
@@ -15,7 +15,7 @@ Shell 原装平台包含 Core Store、Feature/Documentation Registry、通用 Wo
 | 连接 | 顶部 Connect/Cancel 与分阶段状态 | `ShellService` 持久 Remote-only connect state，最长 10 分钟只读 polling | Remote transport → Bridge → Remote Worker → `WorkstationOmniaSession` | 自动化收口中；真实 Omnia canary 待执行 |
 | 刷新 | 顶部刷新按钮与错误提示 | `ShellService.refresh` 更新 Core 状态 | Remote Worker 的 Session Core 重新加载页面、识别 Pack，并触发轻抓取 | 失败不覆盖成功 observation；真实 Pack 待 canary |
 | 保活 | 启停、运行/下次/错误状态 | Core DB `keepalive_state` + 后台 5 秒调度扫描 | 到期调用真实只读 refresh | 已实现；重启恢复 |
-| 安全锁 | 大弹窗、搜索、真实 Section 折叠、组内全选、右侧完整已选列表、全局 Section 关联锁 | Core 解析权威原始响应；`workspace_safety` 单事务 CAS 保存显式 IDs、Section GUID 与冻结成员；成员漂移失败关闭 | Connector 固定 `workspace_authority_read`；打开/保存重叠读取按完整 authority identity 单飞合并 | 源码已实现；缺真实 parentSectionId 时明确未归属且不能冒充全局授权，真实 Pack 待 canary |
+| 安全锁 | 大弹窗、搜索、Omnia 真实所在部分折叠、组内全选、右侧完整已选列表、全局所在部分关联锁 | Core 解析 v2 原始 Facet 目录；`workspace_safety` 单事务 CAS 保存显式 Workspace IDs、Group GUID 与冻结成员；成员漂移失败关闭 | Connector 0.3.14 固定 POST `facets/byEngagementIds`；打开/保存重叠读取按完整 authority identity 单飞合并 | 真实端点与 17 Group/193 Workspace 层级已现场只读采样；缺真实 parentId 时明确未归属且不冒充全局授权 |
 | 对话 | 第三列消息列表与输入区 | `chat_sessions/chat_messages` 持久化状态 | Provider 只由 Main 受控调用；未配置则不调用 | 已实现；无假回复 |
 | 缩放 | 右上角/设置 `− 百分比 +`、快捷键 | `user_preferences` CAS；Main 对所有当前/新建 WebContents `setZoomFactor` | Feature view/window 继承同一值 | 0.4.1 已按实际 DPR/viewport/bounds 验证；重启恢复、无 CSS 双缩放 |
 | Splitter | Feature 菜单/Tabbed Host、Comments 内容/composer、设置导航/内容 | `layout_preferences` 与 `settings.main` CAS | 不适用 | 已实现；pointer/键盘；Rail 固定且无 splitter |
@@ -32,7 +32,7 @@ Electron Renderer（无 Node）
 Electron Main / Core（SQLite owner、AI broker、Remote binding owner）
   → authenticated RemoteConnectorTransport
 v5 Bridge 0.4.5（binding/generation/relay/heartbeat/update_check）
-  → v5 Remote Connector Worker 0.3.13 / sequence 16
+  → v5 Remote Connector Worker 0.3.14 / sequence 17
   → WorkstationOmniaSession（Omnia credential/session owner）
   → verified dedicated Edge CDP + signed OperationHost
 ```
@@ -48,7 +48,7 @@ v5 Bridge 0.4.5（binding/generation/relay/heartbeat/update_check）
 
 ## Remote
 
-`0.3.4` 至 `0.3.12` Remote Connector 和 Bridge `0.4.0` 至 `0.4.4` 均为不可变 historical previous。当前配套为 Remote Connector `0.3.13 / sequence 16` 与 Bridge `0.4.5`：0.3.13 保留 0.3.12 的安全锁 authority 修复，并恢复 v4 的版本无关托管启动器、登录自启动和“旧便携包不覆盖较新 current”语义。Bridge 连接时及每 60 秒下发 `update_check`，Supervisor 另以五分钟固定 stable 轮询兜底；正常升级不要求用户搬包或运行安装器。具体真实 Pack、录制与 mutation 仍待公司电脑 canary。
+`0.3.4` 至 `0.3.13` Remote Connector 和 Bridge `0.4.0` 至 `0.4.4` 均为不可变 historical previous。当前配套为 Remote Connector `0.3.14 / sequence 17` 与 Bridge `0.4.5`：0.3.14 保留 0.3.13 的版本无关托管启动与登录自启动，并将 Workspace authority 切换到 Omnia 页面实际使用的 `facets/byEngagementIds`。Bridge 连接时及每 60 秒下发 `update_check`，Supervisor 另以五分钟固定 stable 轮询兜底；正常升级不要求用户搬包或运行安装器。
 
 ## AI
 
@@ -62,7 +62,7 @@ Windows 当前用户保护；Renderer 只看到 `hasApiKey`。连通性测试真
 真实 canary 前仍需验证：
 
 1. 目标 Omnia 版本的真实 hierarchy 与授权请求捕获；
-2. `liveindex/menu/sections` 在目标 Pack 上是否提供完整的可选展示分组；无分组时仍须验证 Workspace Facet 精确 ID 与安全锁保存；
+2. `facets/byEngagementIds` 在安全锁保存时的第二次实时读取与成员冻结读回；
 3. Windows 10/11 代表性 ThinkPad 的 Edge、杀软、系统缩放与资源表现；
 4. 用户真实 Provider Key 下的模型清单、附件能力、超时、错误分类和数据处理边界。
 

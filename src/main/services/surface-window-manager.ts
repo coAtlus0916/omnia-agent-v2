@@ -219,6 +219,11 @@ export class SurfaceWindowManager {
       state.featureVersion !== request.featureVersion || state.surfaceId !== request.surfaceId) {
       throw new Error('Feature Surface context is not authorized or has drifted.');
     }
+    const authoritative = this.selectedSurface(state);
+    if (!authoritative) {
+      throw new Error('Feature Surface is not the current Core-selected instance; focus it before running an action.');
+    }
+    state.authorizedSurface = authoritative;
     try {
       const snapshot = await this.invokeFeatureAction(request);
       const next = snapshot.features.surface;

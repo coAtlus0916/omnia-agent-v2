@@ -1,17 +1,25 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import fs from 'node:fs';
+import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { WebSocket } from 'ws';
 import { createBridgeServer, _test as bridgeTest } from '../src/bridge/server.ts';
 import { BridgeBindingStore } from '../src/bridge/binding-store.ts';
-import { BRIDGE_PROTOCOL, BRIDGE_SCHEMA, type BridgeEnvelope } from '../src/shared/bridge-contracts.ts';
+import {
+  BRIDGE_PAIRING_SESSION_CONTRACT,
+  BRIDGE_PROTOCOL,
+  BRIDGE_SCHEMA,
+  BRIDGE_VERSION,
+  type BridgeEnvelope
+} from '../src/shared/bridge-contracts.ts';
 import {
   beginPairingSession,
   cancelPairingSession,
   commitPairingSession,
+  inspectBridgePairingCapability,
   pollPairingSession,
   RemoteConnectorTransport
 } from '../src/main/connector/remote-connector-transport.ts';
@@ -25,9 +33,116 @@ const secret = 'remote-only-bridge-test-secret-at-least-32-bytes';
 test('Bridge compatibility accepts only supported 0.3.x Remote Connector patches', () => {
   assert.equal(bridgeTest.connectorVersionCompatible('0.3.4'), true);
   assert.equal(bridgeTest.connectorVersionCompatible('0.3.5'), true);
+  assert.equal(bridgeTest.connectorVersionCompatible('0.3.6'), true);
+  assert.equal(bridgeTest.connectorVersionCompatible('0.3.7'), true);
   assert.equal(bridgeTest.connectorVersionCompatible('0.3.3'), false);
   assert.equal(bridgeTest.connectorVersionCompatible('0.4.0'), false);
   assert.equal(bridgeTest.connectorVersionCompatible('malformed'), false);
+});
+
+test('Bridge creates unique zero-padded four-digit codes with a two-minute one-time window and stores only hashes', () => {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'omnia-v5-four-digit-')); const statePath=path.join(root,'bindings.json');
+  try {
+    const store=new BridgeBindingStore(statePath); const sessions=Array.from({length:100},()=>store.createSession());
+    assert.equal(new Set(sessions.map((item)=>item.pairingCode)).size,100);
+    for(const session of sessions){assert.match(session.pairingCode,/^\d{4}$/u);const ttl=Date.parse(session.expiresAt)-Date.now();assert.ok(ttl>110_000&&ttl<=120_000);}
+    const stored=fs.readFileSync(statePath,'utf8'); for(const session of sessions)assert.equal(stored.includes(`"${session.pairingCode}"`),false);
+    const first=sessions[0]!; const binding=store.consumeCode({pairingCode:first.pairingCode,connectorId:'connector-four-digit',connectorName:'Four digit',connectorVersion:'0.3.7',platform:'win32-x64',protocol:BRIDGE_PROTOCOL}); assert.equal(binding.lifecycle,'candidate');
+    assert.throws(()=>store.consumeCode({pairingCode:first.pairingCode,connectorId:'connector-replay',connectorName:'Replay',connectorVersion:'0.3.7',platform:'win32-x64',protocol:BRIDGE_PROTOCOL}),/invalid|used/i);
+  } finally { fs.rmSync(root,{recursive:true,force:true}); }
+});
+
+test('POST /v1/pair applies per-IP+connector and global failed-code budgets and clears a successful scope', async (t) => {
+  const limited=await fixture(t,{pairingFailureWindowMs:60_000,pairingFailurePerScope:2,pairingFailureGlobal:4});
+  const attempt=(baseUrl:string,connectorId:string,pairingCode:string)=>fetch(`${baseUrl}v1/pair`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({schemaVersion:BRIDGE_SCHEMA,role:'connector',pairingCode,name:'Rate test',connectorId,connectorVersion:'0.3.7',platform:'win32-x64',product:'omnia-agent-v5',protocol:BRIDGE_PROTOCOL})});
+  assert.equal((await attempt(limited.baseUrl,'rate-scope-a','9999')).status,401);
+  assert.equal((await attempt(limited.baseUrl,'rate-scope-a','9999')).status,429);
+  assert.equal((await attempt(limited.baseUrl,'rate-scope-b','9999')).status,401);
+  assert.equal((await attempt(limited.baseUrl,'rate-scope-c','9999')).status,429,'global budget must not reveal whether a code exists');
+  const clearing=await fixture(t,{pairingFailureWindowMs:60_000,pairingFailurePerScope:2,pairingFailureGlobal:20}); const session=await beginPairingSession({bridgeUrl:clearing.baseUrl});
+  assert.equal((await attempt(clearing.baseUrl,'clear-scope','9999')).status,401);
+  assert.equal((await attempt(clearing.baseUrl,'clear-scope',session.pairingCode)).status,200);
+  assert.equal((await attempt(clearing.baseUrl,'clear-scope','9999')).status,401,'success clears the matching IP+connector failure counter');
+});
+
+async function healthFixture(t: test.TestContext, health: Record<string, unknown>) {
+  let pairingPosts = 0;
+  const server = createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/v1/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(health));
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/v1/pairing/sessions') pairingPosts += 1;
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ code: 'BRIDGE.NOT_FOUND', message: '路由不存在。' }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('fixture did not bind');
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}/`,
+    pairingPosts: () => pairingPosts,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve()))
+  };
+}
+
+const currentHealth = (overrides: Record<string, unknown> = {}) => ({
+  schemaVersion: BRIDGE_SCHEMA,
+  ok: true,
+  product: 'omnia-agent-v5-bridge',
+  version: BRIDGE_VERSION,
+  buildIdentity: 'bridge-local-http-fixture',
+  protocol: BRIDGE_PROTOCOL,
+  startedAt: new Date().toISOString(),
+  onlineConnectors: 0,
+  capabilities: {
+    pairingSessions: { contractVersion: BRIDGE_PAIRING_SESSION_CONTRACT, create: true }
+  },
+  ...overrides
+});
+
+test('pairing capability preflight accepts current Bridge health and rejects the legacy shape without probing the missing POST route', async (t) => {
+  const previous = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'test';
+  t.after(() => { if (previous === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previous; });
+  const current = await healthFixture(t, currentHealth());
+  const supported = await inspectBridgePairingCapability({ bridgeUrl: current.baseUrl });
+  assert.equal(supported.status, 'supported');
+  assert.equal(supported.canCreateSession, true);
+  assert.equal(supported.buildIdentity, 'bridge-local-http-fixture');
+
+  const legacy = await healthFixture(t, {
+    schemaVersion: BRIDGE_SCHEMA, ok: true, product: 'omnia-agent-v5-bridge', onlineConnectors: 0
+  });
+  const unsupported = await inspectBridgePairingCapability({ bridgeUrl: legacy.baseUrl });
+  assert.equal(unsupported.status, 'upgrade_required');
+  assert.equal(unsupported.reasonCode, 'REMOTE.BRIDGE_UPGRADE_REQUIRED');
+  assert.doesNotMatch(unsupported.reason, /路由不存在/);
+  assert.equal(legacy.pairingPosts(), 0);
+});
+
+test('pairing capability preflight separates network, protocol and Bridge version failures', async (t) => {
+  const previous = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'test';
+  t.after(() => { if (previous === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previous; });
+  const protocol = await healthFixture(t, currentHealth({ protocol: 'omnia.v5.remote-connector/v1' }));
+  assert.equal(
+    (await inspectBridgePairingCapability({ bridgeUrl: protocol.baseUrl })).reasonCode,
+    'REMOTE.BRIDGE_PROTOCOL_INCOMPATIBLE'
+  );
+  const version = await healthFixture(t, currentHealth({ version: '0.3.99' }));
+  assert.equal(
+    (await inspectBridgePairingCapability({ bridgeUrl: version.baseUrl })).reasonCode,
+    'REMOTE.BRIDGE_UPGRADE_REQUIRED'
+  );
+  const offline = await healthFixture(t, currentHealth());
+  await offline.close();
+  assert.equal(
+    (await inspectBridgePairingCapability({ bridgeUrl: offline.baseUrl })).reasonCode,
+    'REMOTE.BRIDGE_UNREACHABLE'
+  );
 });
 
 test('expired candidate cannot activate after consuming its one-time link code', () => {
@@ -124,7 +239,7 @@ test('Bridge restart and candidate reconnect after code expiry preserve the reco
     const device = JSON.parse(fs.readFileSync(path.join(dataRoot, 'device-identity.json'), 'utf8'));
     const firstSocket = new WebSocket(new URL('v1/connect', baseUrl).href.replace(/^http/, 'ws'), { headers: {
       Authorization: `Bearer ${credential.token}`, 'X-Omnia-Protocol': BRIDGE_PROTOCOL,
-      'X-Omnia-Connector-Id': device.connectorId, 'X-Omnia-Connector-Version': '0.3.5'
+      'X-Omnia-Connector-Id': device.connectorId, 'X-Omnia-Connector-Version': '0.3.7'
     }});
     await once(firstSocket, 'open');
     assert.equal((await pollPairingSession({ bridgeUrl: baseUrl, sessionId: session.sessionId, pollSecret: session.pollSecret })).state, 'candidate');
@@ -141,7 +256,7 @@ test('Bridge restart and candidate reconnect after code expiry preserve the reco
     baseUrl = `http://127.0.0.1:${address.port}/`;
     const reconnected = new WebSocket(new URL('v1/connect', baseUrl).href.replace(/^http/, 'ws'), { headers: {
       Authorization: `Bearer ${credential.token}`, 'X-Omnia-Protocol': BRIDGE_PROTOCOL,
-      'X-Omnia-Connector-Id': device.connectorId, 'X-Omnia-Connector-Version': '0.3.5'
+      'X-Omnia-Connector-Id': device.connectorId, 'X-Omnia-Connector-Version': '0.3.7'
     }});
     await once(reconnected, 'open');
     assert.equal((await pollPairingSession({ bridgeUrl: baseUrl, sessionId: session.sessionId, pollSecret: session.pollSecret })).state, 'candidate');
@@ -155,7 +270,7 @@ test('Bridge restart and candidate reconnect after code expiry preserve the reco
   }
 });
 
-async function fixture(t: test.TestContext, timing: { heartbeatIntervalMs?: number; staleSocketTimeoutMs?: number } = {}) {
+async function fixture(t: test.TestContext, timing: { heartbeatIntervalMs?: number; staleSocketTimeoutMs?: number; pairingFailureWindowMs?: number; pairingFailurePerScope?: number; pairingFailureGlobal?: number } = {}) {
   const previous = process.env.NODE_ENV;
   process.env.NODE_ENV = 'test';
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-link-code-'));
@@ -180,7 +295,7 @@ test('heartbeat removes a half-open Connector and projects offline state without
     autoPong: false,
     headers: {
       Authorization: `Bearer ${credential.token}`, 'X-Omnia-Protocol': BRIDGE_PROTOCOL,
-      'X-Omnia-Connector-Id': device.connectorId, 'X-Omnia-Connector-Version': '0.3.5'
+      'X-Omnia-Connector-Id': device.connectorId, 'X-Omnia-Connector-Version': '0.3.7'
     }
   });
   await once(connector, 'open');
@@ -204,6 +319,10 @@ test('heartbeat removes a half-open Connector and projects offline state without
   assert.equal(state.kind, 'state');
   const health = await (await fetch(`${baseUrl}v1/health`)).json() as any;
   assert.equal(health.onlineConnectors, 0);
+  assert.equal(health.version, BRIDGE_VERSION);
+  assert.equal(health.protocol, BRIDGE_PROTOCOL);
+  assert.equal(health.capabilities.pairingSessions.contractVersion, BRIDGE_PAIRING_SESSION_CONTRACT);
+  assert.equal(health.capabilities.pairingSessions.create, true);
   connector.close();
   shell.close();
 });
@@ -239,7 +358,7 @@ test('one-time Shell link code is role-bound, private and activated only by veri
   const { root, baseUrl } = await fixture(t);
   const dataRoot = path.join(root, 'connector');
   const session = await beginPairingSession({ bridgeUrl: baseUrl });
-  assert.match(session.pairingCode, /^[A-Za-z0-9_-]+(?:-[A-Za-z0-9_-]+)+$/);
+  assert.match(session.pairingCode, /^\d{4}$/u);
   const discovery = await fetch(`${baseUrl}v1/waiting-connectors`);
   assert.equal(discovery.status, 404);
   assert.equal((await discovery.text()).includes('connectorId'), false);
@@ -265,7 +384,7 @@ test('one-time Shell link code is role-bound, private and activated only by veri
       Authorization: `Bearer ${credential.token}`,
       'X-Omnia-Protocol': BRIDGE_PROTOCOL,
       'X-Omnia-Connector-Id': device.connectorId,
-      'X-Omnia-Connector-Version': '0.3.5'
+      'X-Omnia-Connector-Version': '0.3.7'
     }
   });
   await once(connector, 'open');
@@ -291,7 +410,7 @@ test('pairing cancel is proof-bound for waiting/candidate and loses safely to ac
   const candidateDevice = JSON.parse(fs.readFileSync(path.join(root, 'candidate-cancel', 'device-identity.json'), 'utf8'));
   const rejected = new WebSocket(new URL('v1/connect', baseUrl).href.replace(/^http/, 'ws'), { headers: {
     Authorization: `Bearer ${candidate.credential.token}`, 'X-Omnia-Protocol': BRIDGE_PROTOCOL,
-    'X-Omnia-Connector-Id': candidateDevice.connectorId, 'X-Omnia-Connector-Version': '0.3.5'
+    'X-Omnia-Connector-Id': candidateDevice.connectorId, 'X-Omnia-Connector-Version': '0.3.7'
   }});
   await once(rejected, 'error');
 
@@ -299,7 +418,7 @@ test('pairing cancel is proof-bound for waiting/candidate and loses safely to ac
   const activeDevice = JSON.parse(fs.readFileSync(path.join(root, 'active-race', 'device-identity.json'), 'utf8'));
   const connector = new WebSocket(new URL('v1/connect', baseUrl).href.replace(/^http/, 'ws'), { headers: {
     Authorization: `Bearer ${active.credential.token}`, 'X-Omnia-Protocol': BRIDGE_PROTOCOL,
-    'X-Omnia-Connector-Id': activeDevice.connectorId, 'X-Omnia-Connector-Version': '0.3.5'
+    'X-Omnia-Connector-Id': activeDevice.connectorId, 'X-Omnia-Connector-Version': '0.3.7'
   }});
   await once(connector, 'open');
   assert.equal((await pollPairingSession({ bridgeUrl: baseUrl, sessionId: active.session.sessionId, pollSecret: active.session.pollSecret })).state, 'candidate');
@@ -315,7 +434,7 @@ test('state envelope distinguishes Bridge from Connector and in-flight disconnec
   const device = JSON.parse(fs.readFileSync(path.join(root, 'connector', 'device-identity.json'), 'utf8'));
   const connector = new WebSocket(new URL('v1/connect', baseUrl).href.replace(/^http/, 'ws'), { headers: {
     Authorization: `Bearer ${credential.token}`, 'X-Omnia-Protocol': BRIDGE_PROTOCOL,
-    'X-Omnia-Connector-Id': device.connectorId, 'X-Omnia-Connector-Version': '0.3.5'
+    'X-Omnia-Connector-Id': device.connectorId, 'X-Omnia-Connector-Version': '0.3.7'
   }});
   await once(connector, 'open');
   const matched = await commitReadyCandidate(baseUrl, session);
@@ -327,7 +446,7 @@ test('state envelope distinguishes Bridge from Connector and in-flight disconnec
     if (envelope.request.operation === 'status') connector.send(JSON.stringify({ schemaVersion: BRIDGE_SCHEMA, kind: 'result', response: {
       schemaVersion: 'omnia.connector-ipc/v1', id: envelope.request.id, ok: true, value: {
         status: 'waiting_login', connected: false, connecting: true, connectorId: device.connectorId,
-        connectorName: 'Company workstation', connectorVersion: '0.3.5', sessionGeneration: 9,
+        connectorName: 'Company workstation', connectorVersion: '0.3.7', sessionGeneration: 9,
         engagementId: '', engagementName: '', clientName: '', checkedAt: new Date().toISOString(), message: 'waiting login'
       }
     }}));
@@ -336,12 +455,17 @@ test('state envelope distinguishes Bridge from Connector and in-flight disconnec
   assert.equal(waiting.bridgeOnline, true);
   assert.equal(waiting.connectorOnline, true);
   assert.equal(waiting.status, 'waiting_login');
-  const mutation = (transport as any).call('operation_invoke', { effect: 'omnia_mutation' }, 30_000);
+  const readOnly = (transport as any).call('operation_invoke', { mutationAuthorized: false }, 30_000);
+  const mutation = (transport as any).call('operation_invoke', { mutationAuthorized: true }, 30_000);
   await new Promise((resolve) => setTimeout(resolve, 20));
   connector.close();
   await assert.rejects(mutation, (error: any) =>
-    ['REMOTE.CONNECTOR_DISCONNECTED', 'REMOTE.IN_FLIGHT_DISCONNECTED'].includes(error.code)
+    error.code === 'REMOTE.MUTATION_UNCERTAIN'
     && error.retryable === false
+  );
+  await assert.rejects(readOnly, (error: any) =>
+    ['REMOTE.CONNECTOR_DISCONNECTED', 'REMOTE.IN_FLIGHT_DISCONNECTED'].includes(error.code)
+    && error.retryable === true
   );
   await new Promise((resolve) => setTimeout(resolve, 20));
   const offline = await transport.load();
@@ -355,7 +479,7 @@ test('failed replacement preserves old binding; verified candidate atomically re
   const firstDevice = JSON.parse(fs.readFileSync(path.join(root, 'first', 'device-identity.json'), 'utf8'));
   const oldConnector = new WebSocket(new URL('v1/connect', baseUrl).href.replace(/^http/, 'ws'), { headers: {
     Authorization: `Bearer ${first.credential.token}`, 'X-Omnia-Protocol': BRIDGE_PROTOCOL,
-    'X-Omnia-Connector-Id': firstDevice.connectorId, 'X-Omnia-Connector-Version': '0.3.5'
+    'X-Omnia-Connector-Id': firstDevice.connectorId, 'X-Omnia-Connector-Version': '0.3.7'
   }});
   await once(oldConnector, 'open');
   const active = await commitReadyCandidate(baseUrl, first.session);
@@ -368,7 +492,7 @@ test('failed replacement preserves old binding; verified candidate atomically re
   const nextDevice = JSON.parse(fs.readFileSync(path.join(root, 'candidate', 'device-identity.json'), 'utf8'));
   const nextConnector = new WebSocket(new URL('v1/connect', baseUrl).href.replace(/^http/, 'ws'), { headers: {
     Authorization: `Bearer ${nextCredential.token}`, 'X-Omnia-Protocol': BRIDGE_PROTOCOL,
-    'X-Omnia-Connector-Id': nextDevice.connectorId, 'X-Omnia-Connector-Version': '0.3.5'
+    'X-Omnia-Connector-Id': nextDevice.connectorId, 'X-Omnia-Connector-Version': '0.3.7'
   }});
   await once(nextConnector, 'open');
   assert.equal(oldConnector.readyState, WebSocket.OPEN);
@@ -390,7 +514,7 @@ test('candidate disconnect before commit is rejected and leaves old binding acti
   const oldDevice = JSON.parse(fs.readFileSync(path.join(root, 'disconnect-old', 'device-identity.json'), 'utf8'));
   const oldConnector = new WebSocket(new URL('v1/connect', baseUrl).href.replace(/^http/, 'ws'), { headers: {
     Authorization: `Bearer ${first.credential.token}`, 'X-Omnia-Protocol': BRIDGE_PROTOCOL,
-    'X-Omnia-Connector-Id': oldDevice.connectorId, 'X-Omnia-Connector-Version': '0.3.5'
+    'X-Omnia-Connector-Id': oldDevice.connectorId, 'X-Omnia-Connector-Version': '0.3.7'
   }});
   await once(oldConnector, 'open');
   const old = await commitReadyCandidate(baseUrl, first.session);
@@ -399,7 +523,7 @@ test('candidate disconnect before commit is rejected and leaves old binding acti
   const nextDevice = JSON.parse(fs.readFileSync(path.join(root, 'disconnect-new', 'device-identity.json'), 'utf8'));
   const candidateSocket = new WebSocket(new URL('v1/connect', baseUrl).href.replace(/^http/, 'ws'), { headers: {
     Authorization: `Bearer ${next.token}`, 'X-Omnia-Protocol': BRIDGE_PROTOCOL,
-    'X-Omnia-Connector-Id': nextDevice.connectorId, 'X-Omnia-Connector-Version': '0.3.5'
+    'X-Omnia-Connector-Id': nextDevice.connectorId, 'X-Omnia-Connector-Version': '0.3.7'
   }});
   await once(candidateSocket, 'open');
   const closed = once(candidateSocket, 'close');
@@ -426,14 +550,14 @@ test('transport resets terminal repair only for a new binding identity and auto-
     socket.send(JSON.stringify({ schemaVersion: BRIDGE_SCHEMA, kind: 'result', response: {
       schemaVersion: 'omnia.connector-ipc/v1', id: envelope.request.id, ok: true, value: {
         status: 'waiting_pack', connected: false, connecting: true, connectorId,
-        connectorName: 'E2E workstation', connectorVersion: '0.3.5', sessionGeneration: 11,
+        connectorName: 'E2E workstation', connectorVersion: '0.3.7', sessionGeneration: 11,
         engagementId: '', engagementName: '', clientName: '', checkedAt: new Date().toISOString(), message: 'waiting pack'
       }
     }}));
   });
   const oldConnector = new WebSocket(new URL('v1/connect', baseUrl).href.replace(/^http/, 'ws'), { headers: {
     Authorization: `Bearer ${first.credential.token}`, 'X-Omnia-Protocol': BRIDGE_PROTOCOL,
-    'X-Omnia-Connector-Id': oldDevice.connectorId, 'X-Omnia-Connector-Version': '0.3.5'
+    'X-Omnia-Connector-Id': oldDevice.connectorId, 'X-Omnia-Connector-Version': '0.3.7'
   }});
   respondStatus(oldConnector, oldDevice.connectorId);
   await once(oldConnector, 'open');
@@ -449,7 +573,7 @@ test('transport resets terminal repair only for a new binding identity and auto-
   const newDevice = JSON.parse(fs.readFileSync(path.join(root, 'new', 'device-identity.json'), 'utf8'));
   const newConnector = new WebSocket(new URL('v1/connect', baseUrl).href.replace(/^http/, 'ws'), { headers: {
     Authorization: `Bearer ${newCredential.token}`, 'X-Omnia-Protocol': BRIDGE_PROTOCOL,
-    'X-Omnia-Connector-Id': newDevice.connectorId, 'X-Omnia-Connector-Version': '0.3.5'
+    'X-Omnia-Connector-Id': newDevice.connectorId, 'X-Omnia-Connector-Version': '0.3.7'
   }});
   respondStatus(newConnector, newDevice.connectorId);
   await once(newConnector, 'open');
@@ -501,7 +625,7 @@ test('Bridge, Shell transport and Connector restart from persistent credentials 
   const device = JSON.parse(fs.readFileSync(path.join(root, 'connector', 'device-identity.json'), 'utf8'));
   let connector = new WebSocket(new URL('v1/connect', baseUrl).href.replace(/^http/, 'ws'), { headers: {
     Authorization: `Bearer ${candidate.credential.token}`, 'X-Omnia-Protocol': BRIDGE_PROTOCOL,
-    'X-Omnia-Connector-Id': device.connectorId, 'X-Omnia-Connector-Version': '0.3.5'
+    'X-Omnia-Connector-Id': device.connectorId, 'X-Omnia-Connector-Version': '0.3.7'
   }});
   await once(connector, 'open');
   const shell = await commitReadyCandidate(baseUrl, candidate.session);
@@ -512,7 +636,7 @@ test('Bridge, Shell transport and Connector restart from persistent credentials 
   baseUrl = `http://127.0.0.1:${address.port}/`;
   connector = new WebSocket(new URL('v1/connect', baseUrl).href.replace(/^http/, 'ws'), { headers: {
     Authorization: `Bearer ${candidate.credential.token}`, 'X-Omnia-Protocol': BRIDGE_PROTOCOL,
-    'X-Omnia-Connector-Id': device.connectorId, 'X-Omnia-Connector-Version': '0.3.5'
+    'X-Omnia-Connector-Id': device.connectorId, 'X-Omnia-Connector-Version': '0.3.7'
   }});
   await once(connector, 'open');
   connector.on('message', (data) => {
@@ -521,7 +645,7 @@ test('Bridge, Shell transport and Connector restart from persistent credentials 
     connector.send(JSON.stringify({ schemaVersion: BRIDGE_SCHEMA, kind: 'result', response: {
       schemaVersion: 'omnia.connector-ipc/v1', id: envelope.request.id, ok: true, value: {
         status: 'waiting_pack', connected: false, connecting: true, connectorId: device.connectorId,
-        connectorName: 'E2E workstation', connectorVersion: '0.3.5', sessionGeneration: 1,
+        connectorName: 'E2E workstation', connectorVersion: '0.3.7', sessionGeneration: 1,
         engagementId: '', engagementName: '', clientName: '', checkedAt: new Date().toISOString(), message: 'waiting pack'
       }
     }}));

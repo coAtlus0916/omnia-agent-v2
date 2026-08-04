@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, shell as electronShell } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { RemoteConnectorTransport } from './connector/remote-connector-transport.js';
@@ -11,14 +12,18 @@ import { ShellService } from './services/shell-service.js';
 import { publicError } from '../shared/errors.js';
 import { FeaturePackageManager } from './features/package-manager.js';
 import { installBuiltinFeaturePackages } from './features/builtin-features.js';
-import type { FeatureActionRequest } from '../shared/feature-contracts.js';
+import type { FeatureActionRequest, FeatureArtifactBytesInputRequest, FeatureArtifactInputRequest } from '../shared/feature-contracts.js';
 import { SurfaceWindowManager } from './services/surface-window-manager.js';
+import { InteractionLogService, type InteractionDescriptor } from './services/interaction-log-service.js';
+import type { InteractionLogQuery } from '../shared/interaction-log-contracts.js';
 
 let mainWindow: BrowserWindow | null = null;
 let database: CoreDatabase | null = null;
 let shell: ShellService | null = null;
 let connector: RemoteConnectorTransport | null = null;
 let surfaceWindows: SurfaceWindowManager | null = null;
+let featurePackages: FeaturePackageManager | null = null;
+let interactionLogs: InteractionLogService | null = null;
 
 function rendererPath(filename: string): string {
   return path.resolve(__dirname, '..', 'renderer', filename);
@@ -58,11 +63,16 @@ async function createWindow(): Promise<void> {
   mainWindow.webContents.on('render-process-gone', () => {
     surfaceWindows?.setDockedVisibility({ activeInstanceId: null, overlayActive: true });
   });
+  const windowToShow = mainWindow;
+  windowToShow.once('ready-to-show', () => {
+    if (!windowToShow.isDestroyed()) windowToShow.show();
+  });
   await mainWindow.loadFile(rendererPath('index.html'));
   // Chromium can restore a previously persisted origin zoom during load.
   // Re-assert the Core-owned preference before the first frame is shown.
   mainWindow.webContents.setZoomFactor(initialZoomFactor);
-  mainWindow.once('ready-to-show', () => mainWindow?.show());
+  // Keep a post-load fallback for platforms where ready-to-show is suppressed.
+  if (!windowToShow.isDestroyed() && !windowToShow.isVisible()) windowToShow.show();
   mainWindow.on('closed', () => {
     surfaceWindows?.dispose();
     surfaceWindows = null;
@@ -70,16 +80,53 @@ async function createWindow(): Promise<void> {
   });
 }
 
-function registerIpc(service: ShellService): void {
-  const handle = <T extends unknown[]>(channel: string, action: (...args: T) => unknown | Promise<unknown>): void => {
-    ipcMain.handle(channel, async (_event, ...args: T) => {
+function registerIpc(service: ShellService, packages: FeaturePackageManager, logs: InteractionLogService): void {
+  const descriptor = (channel: string, args: unknown[]): InteractionDescriptor => {
+    const input = args[0] as Record<string, unknown> | undefined;
+    const feature = channel.includes('feature') && input && typeof input === 'object' ? input : undefined;
+    return {
+      plane: 'surface',
+      component: channel.startsWith('surface:') ? 'feature-surface-ipc' : 'shell-ipc',
+      surface: channel.startsWith('surface:') ? String(feature?.surfaceId || 'feature.surface') : 'shell.main',
+      action: channel,
+      failurePoint: `main.ipc.${channel}`,
+      details: feature ? {
+        featureId: feature.featureId,
+        featureVersion: feature.featureVersion,
+        surfaceId: feature.surfaceId,
+        actionId: feature.actionId,
+        expectedStateVersion: feature.expectedStateVersion,
+        runId: (feature.payload as Record<string, unknown> | undefined)?.runId,
+        commandId: (feature.payload as Record<string, unknown> | undefined)?.commandId,
+        artifactId: feature.artifactId,
+        basename: feature.name,
+        sizeBytes: feature.bytes instanceof Uint8Array ? feature.bytes.byteLength : undefined
+      } : channel === 'shell:send-message' ? { count: Array.isArray(input?.attachmentIds) ? input!.attachmentIds.length : 0 }
+        : channel === 'shell:save-ai-settings' ? { hasApiKeyChange: Boolean(input?.apiKey || input?.clearApiKey) }
+          : channel.includes('remote-pairing') ? { repair: Boolean(input?.repair), expectedStateVersion: input?.expectedStateVersion }
+            : {}
+    };
+  };
+  const register = <T extends unknown[]>(
+    channel: string,
+    action: (event: Electron.IpcMainInvokeEvent, ...args: T) => unknown | Promise<unknown>
+  ): void => {
+    ipcMain.handle(channel, async (event, ...args: T) => {
       try {
-        return { ok: true, value: await action(...args) };
+        if (channel === 'shell:poll-remote-pairing') {
+          try { return { ok: true, value: await action(event, ...args) }; }
+          catch (pollError) {
+            await logs.run(descriptor(channel, args), () => { throw pollError; });
+          }
+        }
+        return { ok: true, value: await logs.run(descriptor(channel, args), () => action(event, ...args)) };
       } catch (error) {
         return { ok: false, error: publicError(error) };
       }
     });
   };
+  const handle = <T extends unknown[]>(channel: string, action: (...args: T) => unknown | Promise<unknown>): void =>
+    register<T>(channel, (_event, ...args: T) => action(...args));
   handle('shell:get-snapshot', () => service.snapshot());
   handle('shell:connect', () => service.connect());
   handle('shell:cancel-connect', () => service.cancelConnect());
@@ -131,6 +178,8 @@ function registerIpc(service: ShellService): void {
   }) => service.saveSettingsLayout(input.settingsNavigationBasisPoints, input.expectedStateVersion));
   handle('shell:select-feature', (input: { featureId: string }) => service.selectFeature(input.featureId));
   handle('shell:feature-action', (input: FeatureActionRequest) => service.featureAction(input));
+  handle('shell:query-interaction-logs', (input: InteractionLogQuery) => logs.query(input));
+  handle('shell:get-interaction-trace', (traceId: string) => logs.trace(traceId));
   handle('surface:open', (input: Parameters<SurfaceWindowManager['open']>[0]) => {
     if (!surfaceWindows) throw new Error('Feature Surface host is not ready.');
     return surfaceWindows.open(input);
@@ -150,13 +199,52 @@ function registerIpc(service: ShellService): void {
     if (!surfaceWindows) throw new Error('Feature Surface host is not ready.');
     return surfaceWindows.snapshot();
   });
-  ipcMain.handle('surface:feature-action', async (event, input: FeatureActionRequest) => {
-    try {
+  register('surface:get-self-context', (event) => {
+    if (!surfaceWindows) throw new Error('Feature Surface host is not ready.');
+    return surfaceWindows.selfContext(event.sender.id);
+  });
+  register('surface:dock-self', (event) => {
+    if (!surfaceWindows) throw new Error('Feature Surface host is not ready.');
+    return surfaceWindows.dockFromSender(event.sender.id);
+  });
+  register('surface:feature-action', async (event, input: FeatureActionRequest) => {
       if (!surfaceWindows) throw new Error('Feature Surface host is not ready.');
-      return { ok: true, value: await surfaceWindows.featureAction(event.sender.id, input) };
-    } catch (error) {
-      return { ok: false, error: publicError(error) };
-    }
+      return surfaceWindows.featureAction(event.sender.id, input);
+  });
+  register('surface:choose-feature-input', async (event, input: FeatureArtifactInputRequest) => {
+      if (!surfaceWindows) throw new Error('Feature Surface host is not ready.');
+      surfaceWindows.authorizeArtifactInput(event.sender.id, input);
+      const selected = await dialog.showOpenDialog({
+        title: '选择 Feature 输入文件',
+        properties: ['openFile'],
+        filters: [{ name: 'Feature input', extensions: input.accept.map((value) => value.slice(1)) }]
+      });
+      if (selected.canceled || selected.filePaths.length !== 1) return null;
+      return packages.importArtifact(input, selected.filePaths[0]!);
+  });
+  register('surface:import-feature-input-bytes', async (event, input: FeatureArtifactBytesInputRequest) => {
+      if (!surfaceWindows) throw new Error('Feature Surface host is not ready.');
+      surfaceWindows.authorizeArtifactInput(event.sender.id, input);
+      const bytes = input.bytes instanceof Uint8Array ? input.bytes : new Uint8Array(input.bytes as ArrayBuffer);
+      return packages.importArtifactBytes(input, input.name, bytes);
+  });
+  register('surface:save-feature-managed-asset', async (event, input: { featureId: string; featureVersion: string; actionId: string; memberPath: string }) => {
+      if (!surfaceWindows) throw new Error('Feature Surface host is not ready.');
+      surfaceWindows.authorizeArtifactExport(event.sender.id, input.featureId);
+      const asset = packages.exportManagedAsset(input.featureId, input.featureVersion, input.actionId, input.memberPath);
+      const selected = await dialog.showSaveDialog({ title: '保存 Feature 模板', defaultPath: asset.suggestedName });
+      if (selected.canceled || !selected.filePath) return { saved: false };
+      fs.copyFileSync(asset.source, selected.filePath);
+      return { saved: true };
+  });
+  register('surface:save-feature-artifact', async (event, input: { featureId: string; artifactId: string }) => {
+      if (!surfaceWindows) throw new Error('Feature Surface host is not ready.');
+      surfaceWindows.authorizeArtifactExport(event.sender.id, input.featureId);
+      const artifact = packages.exportArtifact(input.featureId, input.artifactId);
+      const selected = await dialog.showSaveDialog({ title: '保存 Feature 产物', defaultPath: artifact.suggestedName });
+      if (selected.canceled || !selected.filePath) return { saved: false };
+      fs.copyFileSync(artifact.source, selected.filePath);
+      return { saved: true };
   });
   service.onChanged((snapshot) => {
     const factor = snapshot.preference.uiScalePercent / 100;
@@ -174,6 +262,7 @@ app.whenReady().then(async () => {
   const paths = resolveProductPaths(productRoot);
   const contentCipher = createWindowsProtectedContentCipher(paths.stores);
   database = new CoreDatabase(paths.database, contentCipher);
+  interactionLogs = new InteractionLogService(database.db);
   connector = new RemoteConnectorTransport(() => {
     const binding = database!.getRemoteBinding();
     const lifecycleRecoveryPending = database!.hasPendingRemoteLifecycleWork();
@@ -186,16 +275,16 @@ app.whenReady().then(async () => {
     };
   });
   await connector.start();
-  const chat = new ChatService(database);
-  const attachments = new AttachmentService(database, path.join(paths.data, 'artifacts'));
-  const featurePackages = new FeaturePackageManager(database.db, paths, undefined, {
+  const chat = new ChatService(database, undefined, interactionLogs);
+  const attachments = new AttachmentService(database, path.join(paths.data, 'artifacts'), interactionLogs);
+  featurePackages = new FeaturePackageManager(database.db, paths, undefined, {
     connector,
     workerHostEntrypoint: path.resolve(__dirname, 'feature-worker-host.cjs')
-  });
+  }, interactionLogs);
   installBuiltinFeaturePackages(featurePackages, app.getAppPath(), app.isPackaged);
   await featurePackages.initializeRuntime();
-  shell = new ShellService(database, connector, chat, attachments, featurePackages);
-  registerIpc(shell);
+  shell = new ShellService(database, connector, chat, attachments, featurePackages, {}, {}, interactionLogs);
+  registerIpc(shell, featurePackages, interactionLogs);
   await shell.initialize();
   await createWindow();
   app.on('activate', () => {
@@ -219,5 +308,7 @@ app.on('before-quit', () => {
   shell = null;
   surfaceWindows = null;
   connector = null;
+  featurePackages = null;
+  interactionLogs = null;
   database = null;
 });

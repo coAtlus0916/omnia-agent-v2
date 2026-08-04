@@ -52,7 +52,170 @@ export interface DeclarativeFeatureAction {
   effect: 'read_only' | 'local_state_write' | 'omnia_mutation';
   enabled: boolean;
   reason: string;
+  presentation?: 'default' | 'record' | 'pause' | 'stop' | 'export' | 'refresh';
   selectionMode?: 'none' | 'single' | 'multiple';
+  dependencies?: Array<'remote_connector' | 'safety_lock' | 'verified_canary'>;
+  canaryCapability?: {
+    scenarioId: string;
+    capabilityId: string;
+  };
+  input?: {
+    kind: 'open_file';
+    accept: string[];
+    label: string;
+  };
+  output?: {
+    kind: 'save_managed_asset';
+    memberPath: string;
+    suggestedName: string;
+  };
+}
+
+export interface DeclarativeRecorder {
+  state: 'idle' | 'recording' | 'paused' | 'stopped' | 'exported' | 'cancelled' | 'error';
+  recordingId: string;
+  startedAt: string;
+  updatedAt: string;
+  elapsedMs: number;
+  eventCount: number;
+  interactionCount: number;
+  networkRequestCount: number;
+  riskCount: number;
+  controlCount: number;
+  captureState: 'idle' | 'pending' | 'complete' | 'incomplete';
+  captureMessage: string;
+  exportAvailable: boolean;
+}
+
+export type DeclarativeWorkflowStepState = 'pending' | 'current' | 'completed' | 'warning' | 'failed';
+
+export interface DeclarativeWorkflowStep {
+  stepId: string;
+  label: string;
+  state: DeclarativeWorkflowStepState;
+  detail: string;
+}
+
+export interface DeclarativeWorkflow {
+  /** Monotonic durable Run/Event revision used to produce this projection. */
+  revision: number;
+  currentStepId: string;
+  steps: DeclarativeWorkflowStep[];
+}
+
+export type DeclarativeProgressState = 'pending' | 'running' | 'passed' | 'warning' | 'failed' | 'skipped' | 'uncertain';
+
+export interface DeclarativeProgressItem {
+  itemId: string;
+  label: string;
+  state: DeclarativeProgressState;
+  detail: string;
+}
+
+export interface DeclarativeProgress {
+  label: string;
+  completed: number;
+  total: number;
+  percent: number;
+  state: DeclarativeProgressState;
+  message: string;
+  items: DeclarativeProgressItem[];
+}
+
+export interface DeclarativeIssue {
+  issueId: string;
+  scope: 'global' | 'element' | 'field';
+  severity: 'warning' | 'error';
+  elementId: string;
+  fieldKey: string;
+  message: string;
+}
+
+export type DeclarativeReviewElementKind = 'APP' | 'DB' | 'OS' | 'TOOL';
+
+export interface DeclarativeReviewField {
+  rowKey: string;
+  kind: DeclarativeReviewElementKind;
+  fieldKey: string;
+  rawFieldKey: string;
+  label: string;
+  expectedRevision: number;
+  inputKind: 'text' | 'enum' | 'textarea' | 'readonly';
+  currentValue: string;
+  allowedValues: string[];
+  required: boolean;
+  maxLength: number;
+  editable: boolean;
+  message: string;
+  sourceSheet: string;
+  sourceRow: number;
+  derivation: string;
+}
+
+export interface DeclarativeFeatureReview {
+  selectedKind: DeclarativeReviewElementKind;
+  selectedRowKey: string;
+  elementTypes: Array<{ kind: DeclarativeReviewElementKind; label: string; count: number; issueCount: number; warningCount: number; disabled: boolean; reason: string }>;
+  elements: Array<{ rowKey: string; kind: DeclarativeReviewElementKind; elementId: string; label: string; sourceSheet: string; sourceRow: number; issueCount: number; warningCount: number; derivedDisplay: string; blocking: boolean; excluded: boolean }>;
+  fields: DeclarativeReviewField[];
+  issueOrder: Array<{ issueId: string; rowKey: string; fieldKey: string; severity: 'warning' | 'error'; message: string }>;
+}
+
+export interface FeatureReviewFieldRevision {
+  rowKey: string;
+  fieldKey: string;
+  expectedRevision: number;
+  value: string;
+}
+
+export interface FeatureReviewDerivedRevision {
+  fieldKey: string;
+  expectedRevision: number;
+  value: string;
+  dependencyFieldKey: string;
+  /** Revision of the dependency after the user revision in this same atomic commit. */
+  dependencyRevision: number;
+}
+
+export interface FeatureReviewValidationCommit {
+  runId: string;
+  expectedRunRevision: number;
+  revisions: FeatureReviewFieldRevision[];
+  derivedRevisions: FeatureReviewDerivedRevision[];
+  issues: Array<Record<string, unknown>>;
+  nextState: 'needs_input' | 'ready_for_review';
+  eventType: 'review.row_excluded' | 'review.revalidated' | 'review.saved_and_revalidated';
+  excludedRowKey: string;
+  templateInstanceId: string;
+}
+
+export interface FeatureArtifactDescriptor {
+  schemaVersion: 'omnia.feature-artifact/v1';
+  artifactId: string;
+  runId: string;
+  traceId: string;
+  featureId: string;
+  featureVersion: string;
+  surfaceId: string;
+  kind: 'source' | 'template_candidate' | 'template_instance' | 'result' | 'evidence';
+  originalName: string;
+  mediaType: string;
+  sizeBytes: number;
+  sha256: string;
+  importedAt: string;
+}
+
+export interface FeatureArtifactInputRequest {
+  featureId: string;
+  featureVersion: string;
+  surfaceId: string;
+  actionId: string;
+  accept: string[];
+}
+
+export interface FeatureArtifactBytesInputRequest extends FeatureArtifactInputRequest {
+  name: string;
+  bytes: Uint8Array;
 }
 
 export interface FeatureMessageCard {
@@ -86,6 +249,31 @@ export interface DeclarativeFeatureSurface {
   selectedItemIds: string[];
   search: string;
   actions: DeclarativeFeatureAction[];
+  recorder?: DeclarativeRecorder;
+  workflow?: DeclarativeWorkflow;
+  progress?: DeclarativeProgress;
+  issues?: DeclarativeIssue[];
+  review?: DeclarativeFeatureReview;
+  artifacts?: Array<{
+    artifactId: string;
+    kind: FeatureArtifactDescriptor['kind'];
+    name: string;
+    sha256: string;
+    sizeBytes: number;
+    available: boolean;
+    reason: string;
+  }>;
+  editors?: Array<{
+    issueId: string;
+    fieldKey: string;
+    expectedRevision: number;
+    inputKind: 'text' | 'enum';
+    label: string;
+    currentValue: string;
+    allowedValues: string[];
+    required: boolean;
+    maxLength: number;
+  }>;
 }
 
 export interface FeatureRuntimeSnapshot {

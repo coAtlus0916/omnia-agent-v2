@@ -90,6 +90,15 @@ export class SurfaceHost<T = unknown> {
     return instance;
   }
 
+  dock(instanceId: string): SurfaceInstance<T> | undefined {
+    const instance = this.instances.get(instanceId);
+    if (!instance || instance.placement === 'closed') return undefined;
+    instance.placement = 'docked';
+    instance.lastFocusedAt = now();
+    this.activeInstanceId = instanceId;
+    return instance;
+  }
+
   minimize(instanceId: string): SurfaceInstance<T> | undefined {
     const instance = this.instances.get(instanceId);
     if (!instance || instance.placement === 'closed') return undefined;

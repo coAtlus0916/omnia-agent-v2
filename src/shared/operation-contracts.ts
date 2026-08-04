@@ -2,6 +2,9 @@ export interface ConnectorBinding {
   connectorId: string;
   sessionGeneration: number;
   engagementId: string;
+  authorityInstanceId?: string;
+  tenantOrOrgId?: string;
+  packId?: string;
 }
 
 export interface OperationRegistrationRequest {

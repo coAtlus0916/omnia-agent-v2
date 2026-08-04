@@ -142,12 +142,16 @@ def validate_manifest(value: object) -> dict:
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
+    if len(sys.argv) not in (3, 4):
         raise SystemExit(
-            "usage: install_v5_remote_connector_release.py <archive.zip> <stable.json>"
+            "usage: install_v5_remote_connector_release.py [stage|activate|all] <archive.zip> <stable.json>"
         )
-    archive = pathlib.Path(sys.argv[1]).resolve(strict=True)
-    stable_source = pathlib.Path(sys.argv[2]).resolve(strict=True)
+    mode = "all" if len(sys.argv) == 3 else sys.argv[1]
+    if mode not in ("stage", "activate", "all"):
+        raise SystemExit("release install mode must be stage, activate, or all")
+    offset = 1 if len(sys.argv) == 3 else 2
+    archive = pathlib.Path(sys.argv[offset]).resolve(strict=True)
+    stable_source = pathlib.Path(sys.argv[offset + 1]).resolve(strict=True)
     manifest_bytes = stable_source.read_bytes()
     manifest = validate_manifest(json.loads(manifest_bytes))
     if archive.name != pathlib.Path(str(manifest["url"])).name:
@@ -178,6 +182,22 @@ def main() -> int:
     atomic_copy(archive, public_archive)
     atomic_text(manifest_bytes, control_release_manifest)
     atomic_text(manifest_bytes, public_release_manifest)
+
+    if mode == "stage":
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "staged": True,
+                    "product": PRODUCT,
+                    "version": version,
+                    "sequence": sequence,
+                    "sha256": manifest["sha256"],
+                    "publicArchive": str(public_archive),
+                }
+            )
+        )
+        return 0
 
     if existing is not None and existing != manifest:
         history = CONTROL_ROOT / "manifests"

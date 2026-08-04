@@ -1,9 +1,15 @@
 # Feature 详细设计：新建与关联
 
+> 2026-08-04 current implementation: `omnia.create-associate@0.2.1` / sequence 3 candidate source uses a two-column, three-step Surface—“上传资料 → 校验 → 回传”。It exports the exact signed `Phase1-用户填写模板V3.xlsx`, accepts picker/drop through one managed Artifact chain, shows APP/DB/OS/Tool review with 11 canonical checks, permits direct revision of official user fields, and reruns all local/live checks after a CAS save. `isDataAvailable` is not user input; new APPs freeze the signed `false` default and existing APPs may only preserve an authoritative live boolean. APP create/resume/reuse/recycle-bin disposition comes from a signed read-only identity Operation; only a second create-only preflight can grant the one-time object-create permit. AI review remains an honest `not_evaluable` warning until a typed Feature AI port is released. Packaging, portable user testing and the real SAP ECC Omnia canary remain pending and are not claimed here.
+
+> 2026-08-03 implementation update: `omnia.create-associate@0.1.0` sequence 1 now implements the four-stage Remote control loop and is bundled as an auto-installed signed Feature in Shell 0.4.3. Production mutation remains disabled because a real target Omnia/Pack canary has not been executed; automated Connector-harness evidence is not a canary. The product is Remote-only and never falls back to Local transport.
+
+> 2026-08-03 supersession：Connector 产品链现为 Remote-only，以下历史 “Local/Remote 等价” 表述仅保留为设计沿革；当前实现与验收以 ADR-0035 为准，不提供 Local Transport 或 fallback。
+
 状态：Accepted Product Scope / Detailed Design Draft  
 用户可见名称：新建与关联  
 首批定位：第四开发切片；首批四 Plane 综合验收  
-DoR 状态：Blocked——v5 默认文档尚未准备和发布，见[待处理项目](../planning/CREATE_ASSOCIATE_DEFAULT_DOCUMENT_PROJECT.md)  
+DoR 状态：0.2.1 源码与签名 Operation 已完成定向自动化；候选打包、0.4.6 便携用户测试和真实 SAP ECC Pack canary 待完成，见[0.2.1 验收记录](../reviews/CREATE_ASSOCIATE_0_2_1_ACCEPTANCE.md)
 v4 对应能力：ITGC Toolbox 的 Phase 1
 
 ## 1. 用户目标
@@ -56,8 +62,8 @@ Delivery：接收资料、展示计划和交付结果
 1. 在用户批准的非生产 Engagement/Workspace 中；
 2. 使用一份只含一个全新 `Generic Application` 和一个全新 `Generic Database` 的官方模板；
 3. DB 与 APP 位于同一批次、同一 Workspace，DB 只关联这一个 APP；
-4. 用户明确填写两个唯一业务 ID、Workspace、APP 的 `Higher|Lower` 和 Factors Considered，两个 GRA 名称按发布合同确定性派生；
-5. 创建并精确读回 APP IT Element/GRA core 和 DB IT Element；
+4. 用户明确填写两个唯一业务 ID、Workspace、APP 的 `Higher|Lower`、Factors Considered 和 Application 的 risk consideration，两个 GRA 名称按发布合同确定性派生；DB 不要求 risk consideration；
+5. 创建并精确读回 APP IT Element/GRA core 和 DB IT Element；risk consideration 只通过 GRA `/documentation` 写入“在此记录”文字并读回；
 6. 建立唯一的 Infrastructure–Application 关系，从关系双方读回并验证 DB 继承 RAIT；
 7. 创建并精确读回 DB GRA core；
 8. 保存四 Plane trace、命令、事件、对象 ID、关系端点和读回 Evidence；
@@ -77,6 +83,8 @@ Delivery：接收资料、展示计划和交付结果
 
 每一类都必须重新证明解析、计划、实时身份、写入、双边读回和失败恢复，不能因 Generic APP/DB 通过而自动开放。
 
+无论后续开放何种 DB、OS 或 Tool，它们都不复用 Application 的评分体系或“在此记录”：不生成评分项，不调用 `/riskLevel`，也不写 risk consideration `/documentation`。它们仍可按各自已发布合同处理 RAIT 继承、GRA core、提交和关系。
+
 ## 4. 明确非目标
 
 - 通用对象创建器、任意字段编辑器或任意关系管理器；
@@ -87,6 +95,8 @@ Delivery：接收资料、展示计划和交付结果
 - 自动删除或补偿已经成功创建的 Omnia 对象；
 - 自动重试提交点之后结果未知的 mutation；
 - 用本地 fixture、历史响应或录制内容冒充实时 Omnia 验收；
+- 把 Omnia 的“+文件记录”解释为真实附件：本 Feature 不创建、不上传、不绑定附件；只有 Application 写“在此记录”的 GRA 主文档文字；
+- 为 DB、OS、Tool 生成 Application 评分项、开启评分分类或写“在此记录”；
 - 把尚未通过真实 canary 的 APP/DB/OS/Tool 类型显示为可点击能力。
 
 ## 5. 四 Plane 职责
@@ -250,15 +260,13 @@ Operation ID 在合同冻结阶段确定，语义必须拆成类似以下小型�
 
 禁止提供 `executePhase1(plan)`、`executeCreateAndAssociate(workbook)`、任意 HTTP 或任意脚本入口。新对象类型通过新的签名 Operation Module/版本加入，不修改 Connector Core 的 Transport、Session 和 Gate 结构。
 
-## 11. Local/Remote 等价
+## 11. Remote-only（取代历史 Local/Remote 等价设计）
 
-- Feature、计划、确认、Command、幂等键、状态和 Evidence 合同完全相同；
-- Local/Remote 只改变 `ConnectorTransport`，不改变业务计划；
-- 同一时刻仅一个 active lease；
-- Run 冻结创建时的 Transport/Connector/Session/Engagement；
-- 在途 mutation 或 `uncertain` 阻断模式切换；
-- Remote 断线不自动 fallback 到 Local；
-- 两条路径必须运行同一套合同测试和各自真实 canary，不能用 Local 通过替代 Remote 通过。
+- Feature、计划、确认、Command、幂等键、状态和 Evidence 均绑定唯一 `RemoteConnectorTransport`；
+- 不提供 Local Transport、router 或 fallback；Remote 不可用时明确失败；
+- Run 冻结 Connector/Session/authority instance/tenant-or-org/Pack/Engagement/Workspace；任一 canonical identity 缺失或漂移即 fail-closed；
+- 在途 mutation 或 `uncertain` 阻断升级/切换，且禁止自动重放；
+- 自动化 Connector harness 证据不是真实 Omnia canary。
 - 新增对象/关系能力优先在线升级独立 Operation Module，不因本 Feature 扩展而升级 Connector Core；
 - 若基础 Session/Gate/受控 SDK 合同确需 Core 更新，活动 Run 继续固定旧版本，Core 按 Remote A/B 安全窗口完成在线升级后才向新 Run 宣告新 capability。
 
@@ -295,7 +303,7 @@ Operation ID 在合同冻结阶段确定，语义必须拆成类似以下小型�
 | Integration | 当前 Connector/Session/Engagement 执行 allowlisted Operation，并返回真实读回 |
 | 跨 Plane | 单一 `traceId` 可串起输入 Artifact → 计划 → 确认 → Commands → Omnia Evidence → 结果 |
 | 隔离 | 本 Feature Worker 崩溃、升级、回滚或禁用不影响删除元素、删除聊天记录和录制 |
-| Transport | Local 与 Remote 合同等价，且任一时刻只有一个 active |
+| Transport | Remote-only；无 Local fallback，不可用时 fail-closed |
 | 真实性 | 没有 mock/sample/hardcoded 数据参与发布验收；真实 canary 的来源和环境可审计 |
 
 本 Feature 首个 canary 的通过条件：
@@ -322,6 +330,11 @@ Operation ID 在合同冻结阶段确定，语义必须拆成类似以下小型�
 3. canary 测试对象的命名规则、保留时间和清理责任人；
 4. 模板与 APP/DB 创建和关联规则的业务 owner/审批人；
 5. APP 和 DB 测试对象的精确命名、APP RAIT 和 Factors Considered；
-6. Local 与 Remote 的真实 canary 是否使用同一测试 Workspace 还是隔离 Workspace。
+6. Remote 真实 canary 使用哪个隔离的非生产 Pack/Workspace，以及如何获得并复核 canonical authority identity。
 
-这些问题的意思和推荐决策将合并到[剩余评审项说明](../reviews/OPEN_DECISIONS_GUIDE.md)，在用户批准开发前逐项确认。
+这些问题的意思和推荐决策已合并到[剩余评审项说明](../reviews/OPEN_DECISIONS_GUIDE.md)；其中仍影响生产能力边界的项目必须在真实 canary 授权和正式发布前逐项确认。
+# 0.1.0 implementation status (2026-08-03)
+
+The signed Feature candidate implements real XLSX intake, persistent Run/artifact/issue/revision state, V8-derived managed governance, a separate signed runtime-template base, and a newly generated auditable workbook per Run. V8 is not a user template and its bytes are never returned as a Run result.
+
+The complete Return control loop is implemented and covered by automated tests: structured intent freeze, actionable Comments confirmation, exact Remote authority preflight, durable command/evidence checkpoints, mutation readback, response-loss `uncertain` handling, read-only reconcile, and verified-current projection. The real mutation action nevertheless remains disabled in production because scoped capability evidence and a real Omnia canary for the exact authority/tenant/Pack/engagement/Workspace binding are still missing; this is an independent release gate on implemented code.

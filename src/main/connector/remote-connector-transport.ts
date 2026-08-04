@@ -8,10 +8,17 @@ import type {
   ConnectorWorkspaceLightRead
 } from '../../connector/contracts.js';
 import {
+  BRIDGE_HEALTH_PRODUCT,
+  BRIDGE_PAIRING_SESSION_CONTRACT,
+  BRIDGE_PAIRING_CODE_PATTERN,
+  BRIDGE_PAIRING_CODE_TTL_MS,
   BRIDGE_PRODUCT,
   BRIDGE_PROTOCOL,
   BRIDGE_SCHEMA,
+  BRIDGE_VERSION,
   type BridgeEnvelope,
+  type BridgeHealthResponse,
+  type BridgePairingCapabilityInspection,
   type BridgePairingPollResponse,
   type BridgePairingSessionResponse
 } from '../../shared/bridge-contracts.js';
@@ -59,6 +66,145 @@ function wsEndpoint(base: URL): URL {
   return url;
 }
 
+const bridgeVersionCompatible = (value: string): boolean => {
+  const current = BRIDGE_VERSION.match(/^(\d+)\.(\d+)\.(\d+)$/);
+  const candidate = value.match(/^(\d+)\.(\d+)\.(\d+)$/);
+  return Boolean(
+    current
+    && candidate
+    && Number(candidate[1]) === Number(current[1])
+    && Number(candidate[2]) === Number(current[2])
+    && Number(candidate[3]) >= Number(current[3])
+  );
+};
+
+const bridgeInspection = (
+  status: BridgePairingCapabilityInspection['status'],
+  reasonCode: string,
+  reason: string,
+  health: Partial<BridgeHealthResponse> = {}
+): BridgePairingCapabilityInspection => ({
+  status,
+  canCreateSession: status === 'supported',
+  reasonCode,
+  reason,
+  bridgeVersion: typeof health.version === 'string' ? health.version : '',
+  bridgeProtocol: typeof health.protocol === 'string' ? health.protocol : '',
+  buildIdentity: typeof health.buildIdentity === 'string' ? health.buildIdentity : '',
+  checkedAt: new Date().toISOString()
+});
+
+export async function inspectBridgePairingCapability(input: {
+  bridgeUrl: string;
+}, fetchImpl: typeof fetch = fetch): Promise<BridgePairingCapabilityInspection> {
+  let base: URL;
+  try {
+    base = bridgeUrl(input.bridgeUrl);
+  } catch {
+    return bridgeInspection(
+      'incompatible',
+      'REMOTE.BRIDGE_CONFIGURATION_INVALID',
+      'Remote Bridge 地址配置无效；请修复安装配置后重试。'
+    );
+  }
+  let response: Response;
+  try {
+    response = await fetchImpl(endpoint(base, 'v1/health'), {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(15_000)
+    });
+  } catch {
+    return bridgeInspection(
+      'unreachable',
+      'REMOTE.BRIDGE_UNREACHABLE',
+      '无法访问 Remote Bridge 健康检查；请检查网络或联系管理员确认 Bridge 服务在线。'
+    );
+  }
+  const payload = await response.json().catch(() => ({})) as Partial<BridgeHealthResponse>;
+  if (!response.ok) {
+    return bridgeInspection(
+      'unreachable',
+      'REMOTE.BRIDGE_UNREACHABLE',
+      `Remote Bridge 健康检查不可用（HTTP ${response.status}）；请检查部署或反向代理。`,
+      payload
+    );
+  }
+  if (
+    payload.schemaVersion !== BRIDGE_SCHEMA
+    || payload.ok !== true
+  ) {
+    return bridgeInspection(
+      'incompatible',
+      'REMOTE.BRIDGE_IDENTITY_INCOMPATIBLE',
+      'Remote Bridge 身份或健康合同不兼容；请部署 Omnia Agent v5 Bridge。',
+      payload
+    );
+  }
+  if (
+    !payload.version
+    || !payload.buildIdentity
+    || !payload.protocol
+    || !payload.startedAt
+    || !payload.capabilities?.pairingSessions
+  ) {
+    return bridgeInspection(
+      'upgrade_required',
+      'REMOTE.BRIDGE_UPGRADE_REQUIRED',
+      'Remote Bridge 版本过旧，未声明一次性链接会话能力；请先升级 Bridge。',
+      payload
+    );
+  }
+  if (payload.product !== BRIDGE_HEALTH_PRODUCT) {
+    return bridgeInspection(
+      'incompatible',
+      'REMOTE.BRIDGE_IDENTITY_INCOMPATIBLE',
+      'Remote Bridge 身份不兼容；请部署 Omnia Agent v5 Bridge。',
+      payload
+    );
+  }
+  if (payload.protocol !== BRIDGE_PROTOCOL) {
+    return bridgeInspection(
+      'incompatible',
+      'REMOTE.BRIDGE_PROTOCOL_INCOMPATIBLE',
+      `Remote Bridge 协议不兼容（当前 ${payload.protocol}，需要 ${BRIDGE_PROTOCOL}）；请先升级 Bridge。`,
+      payload
+    );
+  }
+  if (!bridgeVersionCompatible(payload.version)) {
+    return bridgeInspection(
+      'upgrade_required',
+      'REMOTE.BRIDGE_UPGRADE_REQUIRED',
+      `Remote Bridge 版本 ${payload.version} 不支持当前 Shell pairing contract；请先升级 Bridge。`,
+      payload
+    );
+  }
+  if (
+    payload.capabilities.pairingSessions.contractVersion !== BRIDGE_PAIRING_SESSION_CONTRACT
+    || payload.capabilities.pairingSessions.create !== true
+  ) {
+    return bridgeInspection(
+      'upgrade_required',
+      'REMOTE.BRIDGE_UPGRADE_REQUIRED',
+      'Remote Bridge 未启用当前一次性链接会话合同；请先完成 Bridge 升级与 pairing canary。',
+      payload
+    );
+  }
+  if (Number.isNaN(Date.parse(payload.startedAt))) {
+    return bridgeInspection(
+      'incompatible',
+      'REMOTE.BRIDGE_HEALTH_INCOMPATIBLE',
+      'Remote Bridge 健康响应缺少有效启动身份；请检查 Bridge 部署。',
+      payload
+    );
+  }
+  return bridgeInspection(
+    'supported',
+    '',
+    'Remote Bridge 支持当前一次性链接会话合同。',
+    payload
+  );
+}
+
 export async function beginPairingSession(input: {
   bridgeUrl: string;
   replacementPairId?: string;
@@ -83,7 +229,9 @@ export async function beginPairingSession(input: {
     signal: AbortSignal.timeout(20_000)
   });
   const payload = await response.json().catch(() => ({})) as BridgePairingSessionResponse & { message?: string };
-  if (!response.ok || payload.schemaVersion !== BRIDGE_SCHEMA || !payload.sessionId || !payload.pairingCode || !payload.pollSecret) {
+  const expiresIn = Date.parse(String(payload.expiresAt || '')) - Date.now();
+  if (!response.ok || payload.schemaVersion !== BRIDGE_SCHEMA || !payload.sessionId || !BRIDGE_PAIRING_CODE_PATTERN.test(String(payload.pairingCode || '')) || !payload.pollSecret
+    || !Number.isFinite(expiresIn) || expiresIn < 1 || expiresIn > BRIDGE_PAIRING_CODE_TTL_MS + 5_000) {
     throw new AppError('REMOTE.PAIRING_SESSION_FAILED', payload.message || `Bridge HTTP ${response.status}`, true);
   }
   return payload;
@@ -167,6 +315,7 @@ interface Pending {
   reject(error: Error): void;
   timer: NodeJS.Timeout;
   operation: ConnectorRequest['operation'];
+  mutationAuthorized: boolean;
 }
 
 const connectorVersionCompatible = (value: string): boolean => {
@@ -227,7 +376,12 @@ export class RemoteConnectorTransport implements ConnectorTransport {
   private rejectPending(code: string, message: string): void {
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timer);
-      pending.reject(new AppError(code, message, false));
+      const uncertain = pending.mutationAuthorized && ['REMOTE.IN_FLIGHT_DISCONNECTED', 'REMOTE.CONNECTOR_DISCONNECTED'].includes(code);
+      pending.reject(new AppError(
+        uncertain ? 'REMOTE.MUTATION_UNCERTAIN' : code,
+        uncertain ? '已授权 mutation 在返回前失联；effect 未知，只允许只读 reconcile。' : message,
+        !uncertain
+      ));
       this.pending.delete(id);
     }
   }
@@ -338,7 +492,7 @@ export class RemoteConnectorTransport implements ConnectorTransport {
         if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify({
           schemaVersion: BRIDGE_SCHEMA, kind: 'cancel', requestId: id, reason: 'shell_timeout'
         }));
-        const mutationUncertain = operation === 'operation_invoke';
+        const mutationUncertain = operation === 'operation_invoke' && payload.mutationAuthorized === true;
         reject(new AppError(
           mutationUncertain ? 'REMOTE.MUTATION_UNCERTAIN' : 'REMOTE.TIMEOUT',
           mutationUncertain
@@ -347,7 +501,7 @@ export class RemoteConnectorTransport implements ConnectorTransport {
           !mutationUncertain
         ));
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer, operation });
+      this.pending.set(id, { resolve, reject, timer, operation, mutationAuthorized: operation === 'operation_invoke' && payload.mutationAuthorized === true });
       this.socket!.send(JSON.stringify({
         schemaVersion: BRIDGE_SCHEMA,
         kind: 'command',
@@ -357,7 +511,7 @@ export class RemoteConnectorTransport implements ConnectorTransport {
         if (!error) return;
         clearTimeout(timer);
         this.pending.delete(id);
-        const mutationUncertain = operation === 'operation_invoke';
+        const mutationUncertain = operation === 'operation_invoke' && payload.mutationAuthorized === true;
         reject(new AppError(
           mutationUncertain ? 'REMOTE.MUTATION_UNCERTAIN' : 'REMOTE.SEND_FAILED',
           mutationUncertain

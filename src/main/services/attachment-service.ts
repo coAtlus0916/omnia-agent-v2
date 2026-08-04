@@ -3,6 +3,7 @@ import { copyFile, mkdir, readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { AppError } from '../../shared/errors.js';
 import type { CoreDatabase } from '../database.js';
+import type { InteractionLogService } from './interaction-log-service.js';
 
 const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 const mediaTypes: Record<string, string> = {
@@ -37,7 +38,8 @@ function previewableMediaType(mediaType: string): boolean {
 export class AttachmentService {
   constructor(
     private readonly database: CoreDatabase,
-    private readonly artifactsRoot: string
+    private readonly artifactsRoot: string,
+    private readonly interactionLogs?: InteractionLogService
   ) {}
 
   async importFiles(filenames: string[]): Promise<void> {
@@ -47,6 +49,7 @@ export class AttachmentService {
       const name = cleanFilename(source);
       const mediaType = mediaTypes[path.extname(name).toLowerCase()] || 'application/octet-stream';
       try {
+        const importOne = async () => {
         const sourceStat = await stat(source);
         if (!sourceStat.isFile()) throw new Error('所选项目不是文件。');
         if (sourceStat.size > MAX_ATTACHMENT_BYTES) throw new Error('附件超过 50 MB 限制。');
@@ -65,6 +68,13 @@ export class AttachmentService {
           sha256,
           storedPath: target
         });
+        };
+        if (this.interactionLogs) {
+          await this.interactionLogs.run({
+            plane: 'core', component: 'attachment-service', surface: 'shell.comments', action: 'import-file',
+            failurePoint: 'attachment.import', details: { basename: name, mediaType }
+          }, importOne);
+        } else await importOne();
       } catch (error) {
         this.database.createAttachment({
           sessionId,

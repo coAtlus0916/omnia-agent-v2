@@ -12,6 +12,7 @@ import type {
   FeatureNavigationLeaf
 } from '../shared/feature-contracts.js';
 import { SurfaceHost, type SurfaceInstance } from './surface-host.js';
+import type { InteractionLogEntry, InteractionLogPage, InteractionLogTrace, InteractionPlane, InteractionSeverity } from '../shared/interaction-log-contracts.js';
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const formatTime = (value: string) => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—';
@@ -37,11 +38,11 @@ function ScaleControl({ snapshot, fail }: { snapshot: ShellSnapshot; fail(messag
   </div>;
 }
 
-function GlobalSessionBar({ snapshot, run, fail, openSettings, openConnection, busy }: {
+function GlobalSessionBar({ snapshot, run, fail, openSafety, openConnection, busy }: {
   snapshot: ShellSnapshot;
   run: Run;
   fail(message: string): void;
-  openSettings(): void;
+  openSafety(): void;
   openConnection(): void;
   busy?: string;
 }) {
@@ -79,7 +80,7 @@ function GlobalSessionBar({ snapshot, run, fail, openSettings, openConnection, b
     </div>
     <button type="button" className={`safety-indicator ${snapshot.safety.enabled && snapshot.safety.validForCurrentConnection ? 'locked' : ''}`}
       aria-label="安全锁设置" title={snapshot.safety.enabled ? (snapshot.safety.invalidReason || '安全锁已启用') : '安全锁未启用'}
-      onClick={openSettings}>▣</button>
+      onClick={openSafety}>▣</button>
     {keepalive.lastError ? <span className="session-error" role="status" title={keepalive.lastError}>保活失败</span> : null}
     <span className="session-spacer" />
     <ScaleControl snapshot={snapshot} fail={fail} />
@@ -94,18 +95,10 @@ function FeatureNavigation({ snapshot, collapsed, run, openFeature }: {
 }) {
   return <aside id="feature-navigation" className={`feature-navigation ${collapsed ? 'collapsed' : ''}`} aria-label="FeatureNavigation">
     <div className="navigation-scroll">
-      {!snapshot.features.groups.length && !snapshot.features.navigation.length
+      {!snapshot.features.navigation.length
         ? <div className="navigation-empty"><strong>没有可用 Feature</strong><p>Registry 尚未返回已安装且兼容的功能。</p></div>
-        : snapshot.features.groups.filter((group) => group.level === 1).map((group) => <section className="navigation-group" key={group.id}>
-          <h2>{group.label}</h2>
-          {snapshot.features.navigation.filter((leaf) => leaf.parentId === group.id).map((leaf) =>
-            <NavigationLeaf key={leaf.id} leaf={leaf} selected={snapshot.features.selectedFeatureId === leaf.featureId} run={run} {...(openFeature ? { openFeature } : {})} />)}
-          {snapshot.features.groups.filter((child) => child.parentId === group.id).map((child) => <div className="navigation-subgroup" key={child.id}>
-            <h3>{child.label}</h3>
-            {snapshot.features.navigation.filter((leaf) => leaf.parentId === child.id).map((leaf) =>
-              <NavigationLeaf key={leaf.id} leaf={leaf} selected={snapshot.features.selectedFeatureId === leaf.featureId} run={run} {...(openFeature ? { openFeature } : {})} />)}
-          </div>)}
-        </section>)}
+        : [...snapshot.features.navigation].sort((left, right) => left.order - right.order || left.label.localeCompare(right.label, 'zh-CN')).map((leaf) =>
+          <NavigationLeaf key={`${leaf.featureId}:${leaf.id}`} leaf={leaf} selected={snapshot.features.selectedFeatureId === leaf.featureId} run={run} {...(openFeature ? { openFeature } : {})} />)}
     </div>
   </aside>;
 }
@@ -307,9 +300,82 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
   </section>;
 }
 
+function InteractionLogPanel() {
+  const [severity, setSeverity] = useState<'' | InteractionSeverity>('');
+  const [plane, setPlane] = useState<'' | InteractionPlane>('');
+  const [period, setPeriod] = useState('24');
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState<InteractionLogPage>({ entries: [], hasMore: false });
+  const [selected, setSelected] = useState<InteractionLogTrace | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const refresh = useCallback(() => {
+    setLoading(true); setError('');
+    const hours = Number(period);
+    void window.omnia.queryInteractionLogs({
+      severity, plane, interactionId: search.trim(), limit: 200,
+      ...(hours > 0 ? { since: new Date(Date.now() - hours * 3_600_000).toISOString() } : {})
+    }).then((next) => {
+      setPage(next);
+      if (selected && !next.entries.some((entry) => entry.traceId === selected.traceId)) setSelected(null);
+    }).catch((reason) => setError(reason instanceof Error ? reason.message : '日志查询失败。')).finally(() => setLoading(false));
+  }, [severity, plane, period, search, selected?.traceId]);
+  useEffect(refresh, [severity, plane, period]);
+  const openTrace = (entry: InteractionLogEntry) => {
+    setError('');
+    void window.omnia.getInteractionTrace(entry.traceId).then(setSelected)
+      .catch((reason) => setError(reason instanceof Error ? reason.message : '日志详情查询失败。'));
+  };
+  const active = selected?.entries.find((entry) => entry.phase === 'failure') || selected?.entries.at(-1) || null;
+  return <section className="interaction-log-panel" aria-label="交互日志">
+    <div className="log-toolbar">
+      <label>级别<select value={severity} onChange={(event) => setSeverity(event.target.value as '' | InteractionSeverity)}><option value="">全部</option><option value="error">错误</option><option value="info">信息</option></select></label>
+      <label>层<select value={plane} onChange={(event) => setPlane(event.target.value as '' | InteractionPlane)}><option value="">全部</option><option value="surface">Surface</option><option value="middle">Middle</option><option value="core">Core</option><option value="connector">Connector</option></select></label>
+      <label>时间<select value={period} onChange={(event) => setPeriod(event.target.value)}><option value="1">1 小时</option><option value="24">24 小时</option><option value="168">7 天</option><option value="336">14 天</option></select></label>
+      <label className="log-search">交互 ID<input value={search} maxLength={128} placeholder="interaction / trace / parent ID" onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') refresh(); }} /></label>
+      <button type="button" onClick={refresh} disabled={loading}>{loading ? '查询中…' : '查询'}</button>
+    </div>
+    {error ? <p className="reason error log-query-error">{error}</p> : null}
+    <div className="log-content">
+      <div className="log-list" role="list" aria-label="日志列表">
+        {page.entries.map((entry) => <button type="button" role="listitem" key={entry.eventId} className={selected?.traceId === entry.traceId ? 'active' : ''} onClick={() => openTrace(entry)}>
+          <time>{formatTime(entry.timestamp)}</time><span className={`log-result ${entry.phase}`}>{entry.phase === 'failure' ? '失败' : entry.phase === 'success' ? '成功' : '进行中'}</span>
+          <strong>{entry.plane} / {entry.component}</strong><span>{entry.action}</span>
+          <code>{entry.errorCode || entry.failurePoint || '—'}</code>
+        </button>)}
+        {!page.entries.length && !loading ? <p className="reason">当前筛选条件下没有日志。</p> : null}
+        {page.hasMore ? <p className="reason">结果超过 200 条，请缩小时间或 ID 范围。</p> : null}
+      </div>
+      <div className="log-detail" aria-label="日志详情">
+        {!active ? <p className="reason">选择一条日志查看同一 trace 的完整阶段。</p> : <>
+          <dl><dt>Trace ID</dt><dd><code>{active.traceId}</code></dd><dt>Interaction ID</dt><dd><code>{active.interactionId}</code></dd>
+            <dt>结果 / 耗时</dt><dd>{active.phase} / {active.durationMs} ms</dd><dt>层 / 组件</dt><dd>{active.plane} / {active.component}</dd>
+            <dt>操作</dt><dd>{active.surface} / {active.action}</dd><dt>错误码</dt><dd><code>{active.errorCode || '—'}</code></dd>
+            <dt>失败点</dt><dd><code>{active.failurePoint || '—'}</code></dd><dt>消息</dt><dd>{active.message || '—'}</dd>
+            <dt>业务关联</dt><dd><code>{[active.runId, active.commandId, active.requestId, active.operationId].filter(Boolean).join(' / ') || '—'}</code></dd></dl>
+          <h4>Trace 阶段</h4><ol>{selected!.entries.map((entry) => <li key={entry.eventId}><time>{formatTime(entry.timestamp)}</time> {entry.plane}/{entry.component} · {entry.action} · {entry.phase}{entry.failurePoint ? ` · ${entry.failurePoint}` : ''}</li>)}</ol>
+          <h4>脱敏详情</h4><pre>{JSON.stringify(active.details, null, 2)}</pre>
+        </>}
+      </div>
+    </div>
+  </section>;
+}
+
+function SafetyDialog({ snapshot, close, run }: { snapshot: ShellSnapshot; close(): void; run: Run }) {
+  useEffect(() => {
+    if (snapshot.connection.connected) run('workspaces', () => window.omnia.refreshWorkspaceDirectory());
+  }, [snapshot.connection.connected, snapshot.connection.engagementId, run]);
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
+    <section className="safety-dialog" role="dialog" aria-modal="true" aria-label="安全锁工作台" data-testid="safety-dialog">
+      <header><div><h2>安全锁</h2><p>选择当前 Pack 允许读写的权威 Workspace。</p></div><button type="button" onClick={close}>关闭</button></header>
+      <div className="safety-dialog-body"><SafetyPanel snapshot={snapshot} run={run} /></div>
+    </section>
+  </div>;
+}
+
 function SettingsDialog({ snapshot, close, run, fail }: { snapshot: ShellSnapshot; close(): void; run: Run; fail(message: string): void }) {
   const ai = snapshot.settings.ai;
-  const [section, setSection] = useState<'ai' | 'safety'>('ai');
+  const [section, setSection] = useState<'ai' | 'logs'>('ai');
   const [provider, setProvider] = useState<AiProviderKind>(ai.provider);
   const [baseUrl, setBaseUrl] = useState(ai.baseUrl);
   const [model, setModel] = useState(ai.model);
@@ -322,7 +388,7 @@ function SettingsDialog({ snapshot, close, run, fail }: { snapshot: ShellSnapsho
       <header><h2>设置</h2><div className="header-actions"><ScaleControl snapshot={snapshot} fail={fail} /><button type="button" onClick={close}>关闭</button></div></header>
       <div className="settings-columns" style={{ gridTemplateColumns: `${settingsBasis / 100}% 7px minmax(0, 1fr)` }}><nav className="settings-nav" aria-label="设置导航" data-testid="settings-nav-scroll">
         <button type="button" className={section === 'ai' ? 'active' : ''} onClick={() => setSection('ai')}>AI 设置</button>
-        <button type="button" className={section === 'safety' ? 'active' : ''} onClick={() => setSection('safety')}>安全锁</button>
+        <button type="button" className={section === 'logs' ? 'active' : ''} onClick={() => setSection('logs')}>日志</button>
       </nav><div className="settings-splitter" role="separator" aria-orientation="vertical" aria-label="调整设置导航宽度"
         aria-valuemin={1600} aria-valuemax={3600} aria-valuenow={settingsBasis} tabIndex={0}
         onDoubleClick={() => run('settings-layout-reset', () => window.omnia.saveSettingsLayout({ settingsNavigationBasisPoints: 2200, expectedStateVersion: snapshot.settingsLayout.stateVersion }))}
@@ -347,9 +413,9 @@ function SettingsDialog({ snapshot, close, run, fail }: { snapshot: ShellSnapsho
           };
           window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
         }} />
-      <div className="settings-main" data-testid="settings-main-scroll">
+      <div className={`settings-main ${section === 'logs' ? 'logs-active' : ''}`} data-testid="settings-main-scroll">
         {section === 'ai' ? <section className="settings-section"><h3>AI 设置</h3>
-          <label>Provider<select value={provider} onChange={(event) => { const next = event.target.value as AiProviderKind; setProvider(next); if (next === 'deepseek') { setBaseUrl('https://api.deepseek.com/v1/'); setModel('deepseek-chat'); setCapability('text_only'); } }}>
+          <label>Provider<select value={provider} onChange={(event) => { const next = event.target.value as AiProviderKind; setProvider(next); if (next === 'deepseek') { setBaseUrl('https://api.deepseek.com'); setModel('deepseek-v4-flash'); setCapability('text_only'); } }}>
             <option value="deepseek">DeepSeek</option><option value="custom">OpenAI-compatible Custom</option></select></label>
           <label>Base URL<input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} /></label>
           <label>Model<input value={model} onChange={(event) => setModel(event.target.value)} /></label>
@@ -360,7 +426,7 @@ function SettingsDialog({ snapshot, close, run, fail }: { snapshot: ShellSnapsho
           <div className="button-row no-border"><button type="button" className="primary" onClick={() => run('save-ai', () => window.omnia.saveAiSettings({ provider, baseUrl, model, attachmentCapability: capability, ...(apiKey ? { apiKey } : {}), expectedStateVersion: ai.stateVersion }))}>保存 AI 设置</button>
             <button type="button" disabled={!ai.hasApiKey && !apiKey} onClick={() => run('test-ai', () => window.omnia.testAiProvider())}>测试连接</button></div>
         </section> : null}
-        {section === 'safety' ? <SafetyPanel snapshot={snapshot} run={run} /> : null}
+        {section === 'logs' ? <InteractionLogPanel /> : null}
       </div></div>
     </section>
   </div>;
@@ -369,6 +435,7 @@ function SettingsDialog({ snapshot, close, run, fail }: { snapshot: ShellSnapsho
 function RemoteConnectionDialog({ snapshot, close, run }: { snapshot: ShellSnapshot; close(): void; run: Run }) {
   const binding = snapshot.settings.connection;
   const pairing = snapshot.remotePairing;
+  const pairingCapability = snapshot.bridgePairing;
   const pairingBusy = ['waiting', 'candidate'].includes(pairing.state);
   const repair = () => {
     if (!window.confirm('重新配对会在新设备验证成功后撤销旧绑定。是否继续？')) return;
@@ -383,18 +450,21 @@ function RemoteConnectionDialog({ snapshot, close, run }: { snapshot: ShellSnaps
       <header><div><h2>Remote Connector</h2><p>{snapshot.connection.message || '等待连接状态。'}</p></div><button type="button" onClick={close}>关闭</button></header>
       <div className="connection-dialog-body">
         {pairing.state === 'waiting' ? <section className="pairing-guide">
-          <h3>首次连接</h3><p>在公司电脑的 Remote Connector 中输入以下一次性链接码。链接码短期有效且仅可使用一次。</p>
+          <h3>首次连接</h3><p>在公司电脑的 Remote Connector 中输入以下 4 位数字链接码。链接码 2 分钟内有效且仅可使用一次。</p>
           <code data-testid="remote-pairing-code">{pairing.pairingCode}</code><small>有效期至 {formatTime(pairing.expiresAt)}</small>
         </section> : null}
         {pairing.state === 'candidate' ? <p className="reason">{pairing.message}</p> : null}
         {pairing.state === 'expired' || pairing.state === 'failed' ? <p className="reason error">{pairing.message}</p> : null}
+        {!pairingBusy && !pairingCapability.canCreateSession
+          ? <p className="reason error" data-testid="remote-pairing-capability-reason">{pairingCapability.reason}</p>
+          : null}
         {binding.remotePaired ? <dl className="connection-facts"><dt>状态</dt><dd>{binding.bindingState}</dd><dt>设备</dt><dd>{binding.connectorName || binding.connectorId}</dd><dt>Connector</dt><dd>{binding.connectorVersion || '未知'}</dd><dt>协议</dt><dd>{binding.protocolVersion || '未知'}</dd></dl> : null}
         <div className="button-row no-border">
           <button type="button" onClick={() => run('remote-diagnose', () => window.omnia.diagnoseRemoteConnection())}>诊断连接</button>
-          {!pairingBusy && (binding.remotePaired || binding.bindingState === 'repair_required') ? <button type="button" onClick={repair}>重新配对</button> : null}
+          {!pairingBusy && (binding.remotePaired || binding.bindingState === 'repair_required') ? <button type="button" disabled={!pairingCapability.canCreateSession} title={pairingCapability.reason} onClick={repair}>重新配对</button> : null}
           {!pairingBusy && binding.remotePaired ? <button type="button" className="danger" onClick={unbind}>解除当前设备绑定</button> : null}
           {pairingBusy ? <button type="button" onClick={() => run('remote-pair-cancel', () => window.omnia.cancelRemotePairing())}>取消当前链接码</button> : null}
-          {!binding.remotePaired && !pairingBusy ? <button type="button" className="primary" onClick={() => run('remote-pair', () => window.omnia.beginRemotePairing({ repair: false, expectedStateVersion: binding.stateVersion }))}>生成一次性链接码</button> : null}
+          {!binding.remotePaired && !pairingBusy ? <button type="button" className="primary" disabled={!pairingCapability.canCreateSession} title={pairingCapability.reason} onClick={() => run('remote-pair', () => window.omnia.beginRemotePairing({ repair: false, expectedStateVersion: binding.stateVersion }))}>生成一次性链接码</button> : null}
         </div>
       </div>
     </section>
@@ -407,6 +477,7 @@ function ShellApp() {
   const [busy, setBusy] = useState('');
   const [preview, setPreview] = useState<LayoutPreference | null>(null);
   const [settings, setSettings] = useState(false);
+  const [safety, setSafety] = useState(false);
   const [connectionDetails, setConnectionDetails] = useState(false);
   const [activeTab, setActiveTab] = useState('comments');
   const [hostVersion, setHostVersion] = useState(0);
@@ -424,7 +495,7 @@ function ShellApp() {
   }, []);
   useEffect(() => {
     void window.omnia.getSnapshot().then(setSnapshot).catch((reason) => setError(reason instanceof Error ? reason.message : '读取 Core 状态失败'));
-    return window.omnia.onChanged((next) => {
+    const offChanged = window.omnia.onChanged((next) => {
       setSnapshot(next);
       const surface = next.features.surface;
       if (surface) {
@@ -435,6 +506,12 @@ function ShellApp() {
       }
       if (next.features.messageCards.some((card) => card.state === 'pending_confirmation')) setActiveTab('comments');
     });
+    const offDocked = window.omnia.onFeatureDocked?.((instanceId) => {
+      if (!host.dock(instanceId)) return;
+      setActiveTab(instanceId);
+      setHostVersion((value) => value + 1);
+    });
+    return () => { offChanged(); offDocked?.(); };
   }, [host]);
   useEffect(() => {
     if (snapshot?.remotePairing.state === 'waiting') setConnectionDetails(true);
@@ -447,10 +524,10 @@ function ShellApp() {
   useEffect(() => {
     const active = activeTab === 'comments' ? null : host.get(activeTab);
     void window.omnia.setDockedSurfaceVisibility?.({
-      activeInstanceId: !settings && !connectionDetails && active?.placement === 'docked' ? active.instanceId : null,
-      overlayActive: settings || connectionDetails
+      activeInstanceId: !settings && !safety && !connectionDetails && active?.placement === 'docked' ? active.instanceId : null,
+      overlayActive: settings || safety || connectionDetails
     });
-  }, [activeTab, settings, connectionDetails, host, hostVersion]);
+  }, [activeTab, settings, safety, connectionDetails, host, hostVersion]);
   useEffect(() => {
     if (!snapshot) return;
     const keydown = (event: KeyboardEvent) => {
@@ -521,7 +598,7 @@ function ShellApp() {
   return <div className="app-frame" aria-busy={Boolean(busy)}>
     <aside className="rail"><div className="brand-mark" aria-label="Omnia Agent">OA</div><div className="rail-spacer" />
       <button type="button" className="rail-settings" aria-label="设置" title="设置" onClick={openSettings}>⚙</button></aside>
-    <section className="workspace-shell"><GlobalSessionBar snapshot={snapshot} run={run} fail={setError} busy={busy} openSettings={openSettings} openConnection={() => setConnectionDetails(true)} />
+    <section className="workspace-shell"><GlobalSessionBar snapshot={snapshot} run={run} fail={setError} busy={busy} openSafety={() => setSafety(true)} openConnection={() => setConnectionDetails(true)} />
       <div className="content-grid" style={{ gridTemplateColumns: snapshot.layout.collapsedPanels['feature-menu'] ? '0 minmax(0, 1fr)' : `${layout.featureNavigationBasisPoints / 100}% 7px minmax(0, 1fr)` }}>
         <FeatureNavigation snapshot={snapshot} collapsed={snapshot.layout.collapsedPanels['feature-menu']} run={run} openFeature={openFeature} />
         {!snapshot.layout.collapsedPanels['feature-menu'] ? <div className="navigation-splitter" role="separator" aria-label="调整 FeatureNavigation 宽度" onPointerDown={(event) => {
@@ -538,6 +615,7 @@ function ShellApp() {
       </div>
     </section>
     {settings ? <SettingsDialog snapshot={snapshot} close={closeSettings} run={run} fail={setError} /> : null}
+    {safety ? <SafetyDialog snapshot={snapshot} close={() => setSafety(false)} run={run} /> : null}
     {connectionDetails ? <RemoteConnectionDialog snapshot={snapshot} close={() => setConnectionDetails(false)} run={run} /> : null}
     {error ? <div className="toast" role="alert"><span>{error}</span><button type="button" onClick={() => setError('')} aria-label="关闭错误">×</button></div> : null}
   </div>;

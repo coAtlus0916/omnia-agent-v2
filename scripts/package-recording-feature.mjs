@@ -5,8 +5,8 @@ import path from 'node:path';
 const root = path.resolve(import.meta.dirname, '..');
 const source = path.join(root, 'feature-packages', 'recording', 'source');
 const output = path.join(root, 'feature-packages', 'recording', 'candidates');
-const version = '0.1.1';
-const sequence = 2;
+const version = '0.3.0';
+const sequence = 4;
 const signingRoot = process.env.OMNIA_V5_SIGNING_ROOT || path.join(process.env.USERPROFILE || '', '.omnia-agent-v5', 'signing');
 const featurePrivateKey = await readFile(path.join(signingRoot, 'feature-ed25519-private.pem'), 'utf8');
 const operationPrivateKey = await readFile(path.join(signingRoot, 'operation-ed25519-private.pem'), 'utf8');
@@ -51,22 +51,27 @@ const manifest = {
   migrationPath: 'backend/migrations/001.json', surfacePath: 'frontend/surface.json', workerPath: 'middle/worker.cjs',
   operationPackagePath: 'connector-capability/operation.ofop',
   navigation: {
-    groups: [{ id: 'other', parentId: null, level: 1, label: '其他', order: 10 }],
-    leaves: [{ id: 'recording', parentId: 'other', level: 2, label: '录制', order: 10, featureId: 'omnia.recording', featureVersion: version, route: 'feature:omnia.recording/workbench' }]
+    groups: [],
+    leaves: [{ id: 'recording', parentId: '', level: 2, label: '录制', order: 10, featureId: 'omnia.recording', featureVersion: version, route: 'feature:omnia.recording/workbench' }]
   }
 };
 const surface = {
   schemaVersion: 'omnia.declarative-feature-surface/v1', featureId: 'omnia.recording', featureVersion: version,
   surfaceId: 'recording.workbench', stateVersion: 1, title: '录制',
-  description: '记录当前 Pack 的真实浏览器交互和网络证据，并只读抓取当前 GRA 的完整 Risk/Control 目录。',
-  density: 'compact', status: 'idle', statusMessage: '连接 Pack 后可开始详细录制；完整目录抓取要求当前页面已加载唯一目标 GRA。',
+  description: '像播放器一样控制当前 Pack 的真实录制；当前页面中的 GRA、Risk 与 Control 会由 Connector 自动识别和采集。',
+  density: 'compact', status: 'idle', statusMessage: '连接 Pack 后开始录制；无需另点 Risk/Control 采集按钮。',
   scopes: [], items: [], selectedItemIds: [], search: '',
+  recorder: {
+    state: 'idle', recordingId: '', startedAt: '', updatedAt: '', elapsedMs: 0,
+    eventCount: 0, interactionCount: 0, networkRequestCount: 0, riskCount: 0, controlCount: 0,
+    captureState: 'idle', captureMessage: '开始录制后将自动采集当前页 Risk 与 Control。', exportAvailable: false
+  },
   actions: [
-    { actionId: 'refresh-status', label: '刷新真实状态', effect: 'read_only', enabled: true, reason: '', selectionMode: 'none' },
-    { actionId: 'start-recording', label: '开始详细录制', effect: 'local_state_write', enabled: true, reason: '', selectionMode: 'none' },
-    { actionId: 'stop-export', label: '停止并导出', effect: 'local_state_write', enabled: false, reason: '当前没有正在进行的录制。', selectionMode: 'none' },
-    { actionId: 'cancel-recording', label: '取消录制', effect: 'local_state_write', enabled: false, reason: '当前没有正在进行的录制。', selectionMode: 'none' },
-    { actionId: 'capture-current-gra-catalog', label: '抓取当前 GRA Risk/Control 完整目录', effect: 'read_only', enabled: true, reason: '', selectionMode: 'none' }
+    { actionId: 'refresh-status', label: '刷新真实状态', presentation: 'refresh', effect: 'read_only', enabled: true, reason: '', selectionMode: 'none' },
+    { actionId: 'start-recording', label: '开始录制', presentation: 'record', effect: 'local_state_write', enabled: true, reason: '', selectionMode: 'none' },
+    { actionId: 'pause-recording', label: '暂停', presentation: 'pause', effect: 'local_state_write', enabled: false, reason: '只有正在进行的录制可以暂停。', selectionMode: 'none' },
+    { actionId: 'stop-recording', label: '停止', presentation: 'stop', effect: 'local_state_write', enabled: false, reason: '当前没有可停止的录制。', selectionMode: 'none' },
+    { actionId: 'export-recording', label: '导出录制记录', presentation: 'export', effect: 'local_state_write', enabled: false, reason: '请先停止录制。', selectionMode: 'none' }
   ]
 };
 const migration = {

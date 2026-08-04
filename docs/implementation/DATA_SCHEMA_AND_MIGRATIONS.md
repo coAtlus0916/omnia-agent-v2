@@ -119,3 +119,18 @@ Migration 9 不修改聊天、附件、Feature/Documentation Registry、Feature 
 Migration 11 增加 `remote_pairing_pending`、`remote_revocation_pending` 与 append-only `remote_binding_events`。前者在任何 Bridge await 前先保存 `creating` reservation，Bridge 返回后再持久化 session ID、加密 poll secret、expiry、expected old binding CAS 身份以及两阶段 commit/cleanup 状态；绝不保存一次性链接码。Shell 崩溃或重启后可继续 poll ready/active candidate，并在 old pair/generation/lifecycle 仍匹配时完成本地 binding 持久化。若普通、尚未 stage 的 pairing poll proof 损坏，不能用本地 code expiry 推断 Bridge 一小时 recovery TTL 已结束，也不能删除 pending 解锁 transport；Core 将其转为无限期 `manual_reconcile_required` tombstone，只保留 session hash 等非敏感审计定位，等待 Bridge 管理员确认 candidate 已取消、recovery TTL 已过或已 revoke 后再清理。已知 candidate cleanup token 损坏使用 `manual_cleanup_required`；解绑 token 双份均不可恢复使用 `manual_revoke_required`，三者都持续阻断生命周期和 transport。事件表记录 pairing reservation/start、activation/replacement、repair、revoke pending/completed 和损坏 pending 的非敏感顺序证据，不保存 code、secret、token 或密文。
 
 解除绑定先以事务写入 `remote_revocation_pending` 并把 public lifecycle 置为 `repair_required`，同时保留受保护旧 credential 供后台重试。网络失败不得继续投影 `bound` 或 Connected；Bridge 返回成功，或对这次明确解除请求返回 401/403（旧凭据已不可用）后，Core 才原子清除身份并转为 `revoked`。普通 Transport 的 401/403 不等同于用户解除，仍进入 `repair_required`。
+# Migration 12 structured Feature state
+
+Migration 12 adds durable Runs/events, artifacts, immutable TemplateVersions and per-Run TemplateInstances, field revisions/provenance, issues, confirmations, intents, commands/evidence/reconcile obligations, managed object/relation revisions, repair state, restored Surface state, exact capability evidence, and managed package assets. State transitions and field revisions use compare-and-swap revisions.
+
+## Migrations 17–18 (Shell 0.4.5)
+
+- Migration 17 rebuilds `feature_managed_assets` with `source_template` as an allowed signed asset kind. Existing asset rows are copied transactionally. The export IPC resolves only a Surface-declared member and rechecks its installed package/member digest; it never accepts an arbitrary filesystem path from Renderer.
+- Migration 18 updates only DeepSeek profiles still equal to the former default Base URL/model pair to `https://api.deepseek.com` and `deepseek-v4-flash`. It does not rewrite user-customized profiles and leaves `api_key_ciphertext` byte-for-byte unchanged.
+- Both migrations are monotonic in-place upgrades. They preserve Remote binding, current Pack observations, safety state, historical Runs/artifacts/evidence, Feature install history and version-external `data/`.
+
+## Migration 19：Interaction diagnostics（Shell 0.4.5）
+
+Migration 19 在现有 `data/stores/core.sqlite` 原位新增 `interaction_logs` 和 timestamp/trace/failure/action 索引。表保存交互阶段、关联 ID、耗时、Plane/组件/Surface/action、稳定错误码与脱敏失败点；不保存 Secret、正文、文件内容或完整路径。
+
+启动时未完成的 `start` 行转为 `APP.PROCESS_INTERRUPTED`。普通诊断日志保留 14 天且最多 20,000 行，终态行按最早时间滚动删除；Run/Event、Command Evidence、binding audit 与未解决 effect 不受此清理影响。迁移单调、事务化，不改写已有业务表或 `data/` 中的 Artifact。

@@ -40,3 +40,6 @@ v4 源码只用于确认配对方向和行为证据：Agent/服务端生成短�
 - 构建和测试只使用当前 `package.json/package-lock.json`。
 
 文档中的历史名称仅用于审计说明，不是运行依赖。
+# Create-and-associate extraction
+
+Only evidence was reused from v4: route, method, request body, pagination, concurrency, response identity, and readback behavior. The v5 Feature/Worker/Operation packages are new code under the v5 namespace and have no runtime dependency on the v4 workspace.

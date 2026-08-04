@@ -289,3 +289,6 @@ ProvenanceManifest 至少记录：
 - [ ] 结构、业务、视觉任一必需验证失败都不交付。
 - [ ] 输出可从 provenance 追到输入 fragment、默认规则、Patch 和版本。
 - [ ] Omnia 写入重新预检并独立确认，不能继承“文档已验证”的隐式许可。
+# Create-and-associate pipeline binding
+
+`TemplateVersion` identifies the stable signed base/schema/governance contract. Run-specific semantic, patch, output, and governance digests belong to `TemplateInstance`. Different inputs therefore reuse one immutable TemplateVersion and create distinct instances. Governance source, runtime base, user source artifact, and output instance remain four separately digested objects.

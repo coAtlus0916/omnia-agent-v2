@@ -110,7 +110,7 @@ test('Custom image capability sends a real image payload and records model deliv
   const chat = new ChatService(database, async (_url, init) => {
     requestBody = String(init?.body || '');
     return new Response(JSON.stringify({
-      choices: [{ message: { content: '已收到图片。' } }]
+      choices: [{ finish_reason: 'stop', message: { content: '已收到图片。' } }]
     }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   });
   await chat.send({ content: '查看', attachmentIds: [attachment.id] });
@@ -118,4 +118,49 @@ test('Custom image capability sends a real image payload and records model deliv
   const messages = database.listMessages(database.getChatSessionId());
   assert.equal(messages[0]?.attachments[0]?.modelDelivery, 'sent');
   assert.equal(messages[1]?.content, '已收到图片。');
+});
+
+test('DeepSeek defaults, model discovery and ordinary chat fail closed on the exact V4 Flash contract', async (t) => {
+  const previous = process.env.NODE_ENV; process.env.NODE_ENV = 'test';
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-deepseek-v4-'));
+  const database = new CoreDatabase(path.join(root, 'core.sqlite'), createTestContentCipher());
+  t.after(() => { database.close(); fs.rmSync(root, { recursive: true, force: true }); if (previous === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previous; });
+  const defaults = database.getAiSettings();
+  assert.equal(defaults.baseUrl, 'https://api.deepseek.com');
+  assert.equal(defaults.model, 'deepseek-v4-flash');
+  database.saveAiSettings({ provider: 'deepseek', baseUrl: 'http://127.0.0.1:54321/', model: 'deepseek-v4-flash', attachmentCapability: 'text_only', apiKey: 'synthetic-test-key', expectedStateVersion: defaults.stateVersion });
+  const missing = new ChatService(database, async () => new Response(JSON.stringify({ data: [{ id: 'another-model' }] }), { status: 200 }));
+  await assert.rejects(missing.testProvider(), /未列出所选模型/);
+  assert.equal(database.getAiSettings().testStatus, 'failed');
+  let requestBody: any = null;
+  const chat = new ChatService(database, async (_url, init) => {
+    requestBody = JSON.parse(String(init?.body || '{}'));
+    return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: '真实回答' } }], usage: { prompt_tokens: 1, completion_tokens: 2 } }), { status: 200 });
+  });
+  await chat.send({ content: '你好', attachmentIds: [] });
+  assert.deepEqual(requestBody.thinking, { type: 'disabled' });
+  assert.equal(database.listMessages(database.getChatSessionId()).at(-1)?.content, '真实回答');
+});
+
+test('DeepSeek default-profile migration preserves existing API key ciphertext byte-for-byte', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-deepseek-migrate-')); const filename = path.join(root, 'core.sqlite');
+  let database = new CoreDatabase(filename, createTestContentCipher());
+  try {
+    const current = database.getAiSettings();
+    database.saveAiSettings({ provider: 'deepseek', baseUrl: 'https://api.deepseek.com/v1/', model: 'deepseek-chat', attachmentCapability: 'text_only', apiKey: 'synthetic-preserved-key', expectedStateVersion: current.stateVersion });
+    const before = (database.db.prepare('SELECT api_key_ciphertext FROM ai_provider_settings WHERE singleton=1').get() as any).api_key_ciphertext;
+    database.db.prepare('DELETE FROM schema_migrations WHERE version=18').run(); database.close();
+    database = new CoreDatabase(filename, createTestContentCipher());
+    const after = database.db.prepare('SELECT api_key_ciphertext,base_url,model FROM ai_provider_settings WHERE singleton=1').get() as any;
+    assert.equal(after.api_key_ciphertext, before); assert.equal(after.base_url, 'https://api.deepseek.com'); assert.equal(after.model, 'deepseek-v4-flash');
+  } finally { database.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('DeepSeek incomplete responses are not saved as successful assistant messages', async (t) => {
+  const previous = process.env.NODE_ENV; process.env.NODE_ENV = 'test'; const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-deepseek-finish-'));
+  const database = new CoreDatabase(path.join(root, 'core.sqlite'), createTestContentCipher());
+  t.after(() => { database.close(); fs.rmSync(root, { recursive: true, force: true }); if (previous === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previous; });
+  const settings=database.getAiSettings(); database.saveAiSettings({provider:'deepseek',baseUrl:'http://127.0.0.1:54321/',model:'deepseek-v4-flash',attachmentCapability:'text_only',apiKey:'synthetic-test-key',expectedStateVersion:settings.stateVersion});
+  const chat=new ChatService(database,async()=>new Response(JSON.stringify({choices:[{finish_reason:'length',message:{content:'截断内容'}}]}),{status:200}));
+  await chat.send({content:'测试截断',attachmentIds:[]}); const messages=database.listMessages(database.getChatSessionId()); assert.equal(messages.length,1); assert.equal(messages[0]?.status,'failed'); assert.match(messages[0]?.error||'',/finish_reason/);
 });

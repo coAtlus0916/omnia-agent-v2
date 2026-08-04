@@ -600,18 +600,33 @@ button.danger { color: var(--danger); border-color: #d8aaaa; }
 .feature-empty { display: grid; place-items: center; height: 100%; color: var(--muted); font-size: 11px; }
 .feature-surface-frame { position: relative; flex: 1; min-height: 0; overflow: hidden; background: #fff; }
 .settings-dialog {
-  width: clamp(680px, 78vw, 860px);
-  height: clamp(320px, 72vh, 680px);
+  width: 860px;
+  height: 680px;
   min-height: 0;
   max-width: calc(100vw - 32px);
   max-height: calc(100vh - 32px);
 }
+.safety-dialog {
+  width: min(720px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid #aeb8c1;
+  border-radius: 6px;
+  box-shadow: 0 18px 55px rgba(20,31,42,.28);
+}
+.safety-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 13px 15px; border-bottom: 1px solid var(--border); }
+.safety-dialog h2 { margin: 0; font-size: 15px; }
+.safety-dialog header p { margin: 4px 0 0; color: var(--muted); font-size: 10px; }
+.safety-dialog-body { min-height: 0; overflow: auto; padding: 15px; }
 .settings-dialog > header { min-height: 48px; }
 .settings-columns { display: grid; min-height: 0; flex: 1; overflow: hidden; }
 .settings-nav { overflow: auto; padding: 10px 6px; border-right: 1px solid var(--border); background: #f8fafb; }
 .settings-nav button { width: 100%; margin: 2px 0; border: 0; text-align: left; background: transparent; font-size: 11px; }
 .settings-nav button.active { color: #0f568e; background: #e4f0f8; }
 .settings-main { min-width: 0; min-height: 0; overflow: auto; padding: 12px; }
+.settings-main.logs-active { overflow: hidden; padding: 0; }
 .settings-splitter { width: 7px; cursor: col-resize; background: #e6eaee; border-left: 1px solid #d4d9de; border-right: 1px solid #f8f9fa; touch-action: none; }
 .settings-splitter:hover, .settings-splitter:focus-visible { background: #cfe2f2; outline: 2px solid #3b89c9; outline-offset: -2px; }
 .settings-section { margin: 0; padding: 0 0 12px; }
@@ -622,6 +637,29 @@ button.danger { color: var(--danger); border-color: #d8aaaa; }
 .settings-workspaces strong, .settings-workspaces label { display: block; margin: 4px 0; font-size: 10px; }
 .settings-workspaces label { padding-left: 12px; }
 .settings-workspaces input { min-height: 0; margin-right: 5px; }
+.interaction-log-panel { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+.log-toolbar { flex: 0 0 auto; display: grid; grid-template-columns: 104px 112px 112px minmax(190px, 1fr) auto; align-items: end; gap: 7px; padding: 10px; border-bottom: 1px solid var(--border); background: #f8fafb; }
+.log-toolbar label { display: grid; gap: 3px; margin: 0; font-size: 10px; color: var(--muted); }
+.log-toolbar select, .log-toolbar input { width: 100%; min-height: 28px; padding: 3px 6px; border: 1px solid #c8d1d9; border-radius: 3px; background: #fff; }
+.log-content { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(260px, 42%) minmax(0, 1fr); overflow: hidden; }
+.log-list, .log-detail { min-height: 0; overflow: auto; }
+.log-list { padding: 6px; border-right: 1px solid var(--border); background: #fbfcfd; }
+.log-list > button { width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 3px 8px; margin: 0 0 5px; padding: 8px; text-align: left; border: 1px solid #d8dee4; border-radius: 4px; background: #fff; font-size: 10px; }
+.log-list > button:hover, .log-list > button.active { border-color: #5a91ba; background: #edf6fc; }
+.log-list time, .log-list code { color: var(--muted); overflow-wrap: anywhere; }
+.log-list strong, .log-list > button > span:not(.log-result), .log-list code { grid-column: 1 / -1; }
+.log-result { font-weight: 700; }
+.log-result.failure { color: #a22626; }
+.log-result.success { color: #20703a; }
+.log-detail { padding: 11px; font-size: 10px; overflow-wrap: anywhere; }
+.log-detail dl { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 6px 9px; margin: 0; }
+.log-detail dt { color: var(--muted); }
+.log-detail dd { margin: 0; }
+.log-detail h4 { margin: 13px 0 6px; font-size: 11px; }
+.log-detail ol { margin: 0; padding-left: 20px; }
+.log-detail li { margin: 4px 0; }
+.log-detail pre { max-height: 160px; margin: 0; padding: 7px; overflow: auto; border: 1px solid var(--border); background: #f6f8fa; white-space: pre-wrap; }
+.log-query-error { flex: 0 0 auto; margin: 7px 10px 0; }
 .connection-dialog {
   width: clamp(440px, 54vw, 620px);
   max-width: calc(100vw - 32px);

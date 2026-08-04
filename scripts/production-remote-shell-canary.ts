@@ -1,5 +1,6 @@
 import {
   beginPairingSession,
+  inspectBridgePairingCapability,
   pollPairingSession,
   RemoteConnectorTransport
 } from '../src/main/connector/remote-connector-transport.ts';
@@ -10,6 +11,11 @@ const bridgeUrl = String(process.env.CANARY_BRIDGE || '');
 if (!bridgeUrl) throw new Error('Production Shell canary requires CANARY_BRIDGE.');
 if (!process.stderr.isTTY) {
   throw new Error('Production Shell canary is interactive: run it in a private TTY so the one-time link code is never captured by redirected logs.');
+}
+
+const bridgeCapability = await inspectBridgePairingCapability({ bridgeUrl });
+if (!bridgeCapability.canCreateSession) {
+  throw new Error(`${bridgeCapability.reasonCode}: ${bridgeCapability.reason}`);
 }
 
 const session = await beginPairingSession({ bridgeUrl });

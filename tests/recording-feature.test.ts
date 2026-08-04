@@ -13,7 +13,7 @@ import { resolveProductPaths } from '../src/main/paths.js';
 const repository = path.resolve(import.meta.dirname, '..');
 const engagementId = '11111111-1111-4111-8111-111111111111';
 
-test('built-in bootstrap upgrades 0.1.0 once and preserves an explicit rollback on restart', () => {
+test('built-in bootstrap upgrades 0.1.0 to 0.2.0 once and preserves an explicit rollback on restart', () => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-recording-rollback-'));
   const paths = resolveProductPaths(temporary);
   const database = new CoreDatabase(paths.database, { encrypt: (value) => value, decrypt: (value) => value });
@@ -22,7 +22,10 @@ test('built-in bootstrap upgrades 0.1.0 once and preserves an explicit rollback 
     manager.install(path.join(repository, 'feature-packages', 'recording', 'candidates', 'recording-0.1.0.ofp'));
     const upgrade = installBuiltinFeaturePackages(manager, repository, false);
     assert.equal(upgrade[0]?.action, 'installed');
-    assert.equal(manager.list().find((item) => item.featureId === 'omnia.recording')?.featureVersion, '0.1.1');
+    assert.equal(upgrade[1]?.featureId, 'omnia.create-associate');
+    assert.equal(upgrade[1]?.action, 'installed');
+    assert.equal(manager.list().find((item) => item.featureId === 'omnia.recording')?.featureVersion, '0.2.0');
+    assert.equal(manager.list().find((item) => item.featureId === 'omnia.create-associate')?.featureVersion, '0.2.1');
 
     manager.rollback('omnia.recording', '0.1.0');
     const generation = manager.list().find((item) => item.featureId === 'omnia.recording')?.activationGeneration;
@@ -47,7 +50,9 @@ test('official recording Feature is built in and actions follow real Connector s
   const installer = new FeaturePackageManager(database.db, paths);
   const installed = installBuiltinFeaturePackages(installer, repository, false);
   assert.equal(installed[0]?.featureId, 'omnia.recording');
-  assert.equal(installed[0]?.targetVersion, '0.1.1');
+  assert.equal(installed[0]?.targetVersion, '0.2.0');
+  assert.equal(installed[1]?.featureId, 'omnia.create-associate');
+  assert.equal(installed[1]?.targetVersion, '0.2.0');
   installer.install(path.join(repository, 'feature-packages', 'delete-elements', 'candidates', 'delete-elements-0.1.2.ofp'));
   let state: Record<string, any> = { schemaVersion: 'omnia.v5.recording-status/v1', state: 'idle', active: false, recordingId: '', message: 'idle' };
   const commands: string[] = [];
@@ -74,15 +79,17 @@ test('official recording Feature is built in and actions follow real Connector s
     let snapshot = runtime.snapshot(context);
     assert.equal(snapshot.groups.filter((group) => group.id === 'other').length, 1);
     assert.equal(snapshot.groups.find((group) => group.id === 'other')?.label, '其他');
-    assert.deepEqual(snapshot.navigation.filter((leaf) => leaf.parentId === 'other').map((leaf) => leaf.label).sort(), ['删除元素', '录制']);
+    assert.deepEqual(snapshot.navigation.filter((leaf) => ['omnia.delete-elements', 'omnia.recording'].includes(leaf.featureId)).map((leaf) => leaf.label).sort(), ['删除元素', '录制']);
+    assert.equal(snapshot.navigation.find((leaf) => leaf.featureId === 'omnia.recording')?.parentId, '');
     assert.equal(snapshot.navigation.find((leaf) => leaf.featureId === 'omnia.recording')?.availability, 'available');
+    assert.equal(snapshot.navigation.find((leaf) => leaf.featureId === 'omnia.create-associate')?.availability, 'available');
     assert.equal(snapshot.navigation.find((leaf) => leaf.featureId === 'omnia.recording')?.label, '录制');
     assert.equal(snapshot.groups[0]?.id, 'other');
     assert.equal(snapshot.groups[0]?.label, '其他');
-    snapshot = await runtime.action({ featureId: 'omnia.recording', featureVersion: '0.1.1', surfaceId: 'recording.workbench', actionId: 'start-recording', expectedStateVersion: 1, payload: {} }, context);
+    snapshot = await runtime.action({ featureId: 'omnia.recording', featureVersion: '0.2.0', surfaceId: 'recording.workbench', actionId: 'start-recording', expectedStateVersion: 1, payload: {} }, context);
     assert.equal(snapshot.surface?.actions.find((action) => action.actionId === 'start-recording')?.enabled, false);
     assert.equal(snapshot.surface?.actions.find((action) => action.actionId === 'stop-export')?.enabled, true);
-    snapshot = await runtime.action({ featureId: 'omnia.recording', featureVersion: '0.1.1', surfaceId: 'recording.workbench', actionId: 'stop-export', expectedStateVersion: snapshot.surface!.stateVersion, payload: {} }, context);
+    snapshot = await runtime.action({ featureId: 'omnia.recording', featureVersion: '0.2.0', surfaceId: 'recording.workbench', actionId: 'stop-export', expectedStateVersion: snapshot.surface!.stateVersion, payload: {} }, context);
     assert.match(snapshot.surface?.items[1]?.subtitle || '', /recording\.json/);
     assert.deepEqual(commands, ['start', 'status', 'stop_export']);
   } finally {

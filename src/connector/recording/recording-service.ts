@@ -13,6 +13,8 @@ const MAX_EVENTS = 100_000;
 const BODY_CONCURRENCY = 4;
 const STOP_TIMEOUT_MS = 120_000;
 const STOP_IDLE_MS = 1_500;
+const EXPORT_CHUNK_BYTES = 512 * 1024;
+const MAX_EXPORT_BYTES = 64 * 1024 * 1024;
 const SENSITIVE = /(?:token|authorization|cookie|secret|password|credential|api[_-]?key|session)/i;
 const INTERACTION_SOURCE = `(() => {
   const marker = Symbol.for('omnia.agent.v5.recording.interactions');
@@ -126,10 +128,12 @@ export class RecordingService {
     this.sessions = new Map();
   }
 
-  status() {
+  status(recordingId = '') {
     const active = this.active;
-    if (!active) return { schemaVersion: 'omnia.v5.recording-status/v1', state: 'idle', active: false, recordingId: this.lastRecordingId, message: '当前没有正在进行的录制。' };
-    return this.publicStatus(active);
+    if (active && (!recordingId || active.recordingId === recordingId)) return this.publicStatus(active);
+    const requestedId = recordingId || this.lastRecordingId || this.latestRecordingId();
+    if (!requestedId) return this.idleStatus();
+    try { return this.readManifest(requestedId); } catch { return this.idleStatus(); }
   }
 
   async start({ page, engagementId, sessionGeneration }) {
@@ -142,9 +146,10 @@ export class RecordingService {
     const active = {
       recordingId, engagementId, sessionGeneration, directory, startedAt: now(), updatedAt: now(), state: 'recording',
       events: 0, droppedEvents: 0, interactionCount: 0, networkRequestCount: 0, mutationRequestCount: 0,
+      elapsedMs: 0, runningSince: Date.now(), pauseCount: 0, exportedAt: '',
       requests: new Map(), pendingBodies: new Set(), bodyQueue: [], bodyRunning: 0, criticalPending: new Set(),
       integrity: { complete: true, bodyCapture: { scheduled: 0, captured: 0, omitted: 0 }, critical: { expected: 0, captured: 0, missing: [], endpoints: {} } },
-      lastCriticalAt: Date.now(), spool: path.join(directory, 'events.jsonl'), sessions: new Map(), contextListeners: new Map()
+      catalogs: [], catalogFailures: [], lastCriticalAt: Date.now(), spool: path.join(directory, 'events.jsonl'), sessions: new Map(), contextListeners: new Map()
     };
     fs.writeFileSync(active.spool, '', { flag: 'wx', mode: 0o600 });
     this.active = active;
@@ -155,13 +160,14 @@ export class RecordingService {
     active.contextListeners.set(context, onPage);
     for (const candidate of context.pages()) if (parseEngagementId(candidate.url()) === engagementId) await this.attachPage(candidate);
     if (!active.sessions.size) { this.active = null; throw codeError('RECORDING.CDP_ATTACH_FAILED', '无法为当前 Omnia 页面建立 CDP 录制会话。'); }
+    this.event(active, { type: 'recording.started', recordingId, engagementId });
     this.persistManifest(active);
     return this.publicStatus(active);
   }
 
   async attachPage(page) {
     const active = this.active;
-    if (!active || page.isClosed() || active.sessions.has(page)) return;
+    if (!active || active.state !== 'recording' || page.isClosed() || active.sessions.has(page)) return;
     if (parseEngagementId(page.url()) !== active.engagementId) return;
     const cdp = await page.context().newCDPSession(page);
     const sessionId = crypto.randomUUID();
@@ -300,8 +306,8 @@ export class RecordingService {
     fs.appendFileSync(active.spool, `${JSON.stringify({ sequence: active.events, occurredAt: active.updatedAt, ...value })}\n`, { encoding: 'utf8' });
   }
 
-  async stopExport(recordingId = '') {
-    const active = this.requireActive(recordingId);
+  async drain(active, reason) {
+    if (active.state !== 'recording') return;
     const started = Date.now();
     while (Date.now() - started < STOP_TIMEOUT_MS) {
       if (!active.criticalPending.size && !active.bodyQueue.length && !active.pendingBodies.size && Date.now() - active.lastCriticalAt >= STOP_IDLE_MS) break;
@@ -309,44 +315,207 @@ export class RecordingService {
     }
     if (active.criticalPending.size || active.bodyQueue.length || active.pendingBodies.size) {
       active.integrity.complete = false;
-      for (const key of active.criticalPending) this.missing(active, active.requests.get(key), 'stop-drain-timeout');
+      for (const key of active.criticalPending) this.missing(active, active.requests.get(key), `${reason}-drain-timeout`);
     }
-    return this.finish(active, 'stopped', true);
+    this.event(active, { type: 'recording.drain-completed', reason, waitMs: Date.now() - started });
+  }
+
+  async detach(active, removeContextListeners) {
+    if (removeContextListeners) {
+      for (const [context, listener] of active.contextListeners) context.off('page', listener);
+      active.contextListeners.clear();
+    }
+    await Promise.allSettled([...active.sessions.values()].map((item) => item.cdp.detach()));
+    active.sessions.clear();
+  }
+
+  async pause(recordingId = '') {
+    const active = this.requireActive(recordingId, ['recording']);
+    await this.drain(active, 'pause');
+    this.event(active, { type: 'recording.paused' });
+    active.elapsedMs += Math.max(0, Date.now() - active.runningSince);
+    active.runningSince = 0;
+    active.pauseCount += 1;
+    active.state = 'paused';
+    active.updatedAt = now();
+    await this.detach(active, false);
+    this.persistManifest(active);
+    return this.publicStatus(active);
+  }
+
+  async resume({ page, engagementId, sessionGeneration }, recordingId = '') {
+    let active = this.active;
+    if (!active) active = this.restorePaused(recordingId, engagementId, sessionGeneration);
+    if (active.recordingId !== recordingId || active.state !== 'paused') throw codeError('RECORDING.NOT_PAUSED', '该录制当前不处于暂停状态。');
+    if (!page || page.isClosed() || engagementId !== active.engagementId || sessionGeneration !== active.sessionGeneration || parseEngagementId(page.url()) !== engagementId) {
+      throw codeError('RECORDING.BINDING_CHANGED', '当前页面、会话世代或 Pack 与暂停录制不一致。');
+    }
+    active.state = 'recording';
+    active.runningSince = Date.now();
+    active.lastCriticalAt = Date.now();
+    const context = page.context();
+    if (!active.contextListeners.has(context)) {
+      const onPage = (candidate) => { void this.attachPage(candidate); };
+      context.on('page', onPage);
+      active.contextListeners.set(context, onPage);
+    }
+    for (const candidate of context.pages()) if (parseEngagementId(candidate.url()) === engagementId) await this.attachPage(candidate);
+    if (!active.sessions.size) {
+      active.state = 'paused'; active.runningSince = 0;
+      throw codeError('RECORDING.CDP_ATTACH_FAILED', '无法恢复当前 Omnia 页面的 CDP 录制会话。');
+    }
+    this.event(active, { type: 'recording.resumed', pauseCount: active.pauseCount });
+    this.persistManifest(active);
+    return this.publicStatus(active);
+  }
+
+  async stop(recordingId = '') {
+    let active = this.active;
+    if (!active) {
+      const manifest = this.readManifest(recordingId);
+      if (!['recording', 'paused'].includes(manifest.state)) return { ...manifest, alreadyStopped: true };
+      manifest.state = 'stopped';
+      manifest.active = false;
+      manifest.integrity = manifest.integrity || {};
+      manifest.integrity.complete = false;
+      manifest.integrity.critical ||= { expected: 0, captured: 0, missing: [], endpoints: {} };
+      manifest.integrity.critical.missing ||= [];
+      manifest.integrity.critical.missing.push({ endpoint: 'recording-session', request: '', reason: 'connector-restart-interrupted' });
+      manifest.updatedAt = now();
+      manifest.exportAvailable = true;
+      manifest.message = 'Connector 重启中断了原录制；已按不完整录制停止，可导出诊断记录。';
+      atomicJson(path.join(this.recordingDirectory(recordingId), 'manifest.json'), manifest);
+      return manifest;
+    }
+    active = this.requireActive(recordingId, ['recording', 'paused']);
+    if (active.state === 'recording') {
+      await this.drain(active, 'stop');
+      this.event(active, { type: 'recording.stopped' });
+      active.elapsedMs += Math.max(0, Date.now() - active.runningSince);
+      active.runningSince = 0;
+    }
+    active.state = 'stopped';
+    active.updatedAt = now();
+    await this.detach(active, true);
+    this.persistManifest(active);
+    this.active = null;
+    return this.publicStatus(active);
+  }
+
+  async stopExport(recordingId = '') {
+    const stopped = await this.stop(recordingId);
+    const exported = await this.exportRecording(stopped.recordingId);
+    return { ...stopped, ...exported, exportPath: path.join(this.recordingDirectory(stopped.recordingId), 'recording.json') };
   }
 
   async cancel(recordingId = '') {
-    const active = this.requireActive(recordingId);
-    return this.finish(active, 'cancelled', false);
+    const active = this.requireActive(recordingId, ['recording', 'paused']);
+    if (active.state === 'recording') {
+      active.elapsedMs += Math.max(0, Date.now() - active.runningSince);
+      active.runningSince = 0;
+    }
+    active.state = 'cancelled';
+    active.updatedAt = now();
+    await this.detach(active, true);
+    this.persistManifest(active);
+    this.active = null;
+    return this.publicStatus(active);
   }
 
-  requireActive(recordingId) {
+  requireActive(recordingId, states = ['recording']) {
     const active = this.active;
     if (!active) throw codeError('RECORDING.NOT_ACTIVE', '当前没有正在进行的录制。');
     if (recordingId && recordingId !== active.recordingId) throw codeError('RECORDING.IDENTITY_CHANGED', '录制 ID 已变化，已拒绝旧操作。');
+    if (!states.includes(active.state)) throw codeError('RECORDING.STATE_CHANGED', `录制当前状态为 ${active.state}，已拒绝该操作。`);
     return active;
   }
 
-  async finish(active, state, exportRecording) {
-    active.state = state;
-    active.updatedAt = now();
-    for (const [context, listener] of active.contextListeners) context.off('page', listener);
-    await Promise.allSettled([...active.sessions.values()].map((item) => item.cdp.detach()));
-    active.sessions.clear();
-    this.persistManifest(active);
-    let exportPath = '';
-    if (exportRecording) {
-      const events = (await fsp.readFile(active.spool, 'utf8')).split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
-      exportPath = path.join(active.directory, 'recording.json');
-      atomicJson(exportPath, {
-        format: FORMAT, source: 'edge-cdp', recordingId: active.recordingId, engagementId: active.engagementId,
-        createdAt: active.startedAt, exportedAt: now(), state: active.integrity.complete ? 'complete' : 'incomplete',
-        integrity: active.integrity,
-        security: { credentialsRecorded: false, requestHeadersRecorded: false, responseHeadersRecorded: false, responseBodiesRecorded: true, inputValuesRecorded: true, excluded: ['Cookie', 'Authorization', 'credential input values'] },
-        totalEvents: active.events, droppedEvents: active.droppedEvents, events
-      });
+  async exportRecording(recordingId = '') {
+    if (this.active?.recordingId === recordingId) throw codeError('RECORDING.STOP_REQUIRED', '请先停止录制，再导出录制记录。');
+    const manifest = this.readManifest(recordingId);
+    if (manifest.state !== 'stopped') throw codeError('RECORDING.STOP_REQUIRED', '只有已经停止的录制可以导出。');
+    const directory = this.recordingDirectory(recordingId);
+    const spool = path.join(directory, 'events.jsonl');
+    const events = (await fsp.readFile(spool, 'utf8')).split(/\r?\n/u).filter(Boolean).map((line) => JSON.parse(line));
+    const catalogs = (manifest.catalogs || []).map((catalog) => {
+      const filename = path.basename(String(catalog.file || ''));
+      if (!filename || filename !== catalog.file) return { metadata: catalog, catalog: null };
+      try { return { metadata: catalog, catalog: JSON.parse(fs.readFileSync(path.join(directory, filename), 'utf8')) }; }
+      catch { return { metadata: catalog, catalog: null }; }
+    });
+    const exportPath = path.join(directory, 'recording.json');
+    const preparedAt = now();
+    atomicJson(exportPath, {
+      format: FORMAT, source: 'edge-cdp', recordingId: manifest.recordingId, engagementId: manifest.engagementId,
+      createdAt: manifest.startedAt, exportedAt: preparedAt, state: manifest.integrity?.complete ? 'complete' : 'incomplete',
+      elapsedMs: manifest.elapsedMs, pauseCount: manifest.pauseCount, integrity: manifest.integrity, catalogs,
+      security: { credentialsRecorded: false, requestHeadersRecorded: false, responseHeadersRecorded: false, responseBodiesRecorded: true, inputValuesRecorded: true, excluded: ['Cookie', 'Authorization', 'credential input values'] },
+      totalEvents: manifest.eventCount, droppedEvents: manifest.droppedEventCount, events
+    });
+    const stat = fs.statSync(exportPath);
+    if (stat.size < 1 || stat.size > MAX_EXPORT_BYTES) {
+      fs.rmSync(exportPath, { force: true });
+      throw codeError('RECORDING.EXPORT_SIZE_UNSUPPORTED', `录制记录为 ${stat.size} bytes，超过当前 Artifact Store 的 64 MiB 单文件上限；未截断、未伪装为成功。`);
     }
-    this.active = null;
-    return { ...this.publicStatus(active), exportPath };
+    const nextManifest = { ...manifest, exportPreparedAt: preparedAt, updatedAt: preparedAt, exportAvailable: true };
+    atomicJson(path.join(directory, 'manifest.json'), nextManifest);
+    const chunkCount = Math.ceil(stat.size / EXPORT_CHUNK_BYTES);
+    return {
+      ...nextManifest,
+      transfer: {
+        schemaVersion: 'omnia.v5.recording-export-transfer/v1', recordingId, fileName: `omnia-recording-${recordingId}.json`,
+        mediaType: 'application/json', sizeBytes: stat.size, chunkSizeBytes: EXPORT_CHUNK_BYTES, chunkCount
+      }
+    };
+  }
+
+  async exportChunk(recordingId = '', chunkIndex = -1) {
+    if (!Number.isSafeInteger(chunkIndex) || chunkIndex < 0) throw codeError('RECORDING.EXPORT_CHUNK_INVALID', '录制导出分块序号无效。');
+    const directory = this.recordingDirectory(recordingId);
+    const exportPath = path.join(directory, 'recording.json');
+    const stat = await fsp.stat(exportPath).catch(() => null);
+    if (!stat?.isFile() || stat.size < 1 || stat.size > MAX_EXPORT_BYTES) throw codeError('RECORDING.EXPORT_NOT_READY', '录制导出文件尚未生成或大小无效。');
+    const chunkCount = Math.ceil(stat.size / EXPORT_CHUNK_BYTES);
+    if (chunkIndex >= chunkCount) throw codeError('RECORDING.EXPORT_CHUNK_INVALID', '录制导出分块超出真实文件范围。');
+    const length = Math.min(EXPORT_CHUNK_BYTES, stat.size - chunkIndex * EXPORT_CHUNK_BYTES);
+    const handle = await fsp.open(exportPath, 'r');
+    try {
+      const bytes = Buffer.allocUnsafe(length);
+      const result = await handle.read(bytes, 0, length, chunkIndex * EXPORT_CHUNK_BYTES);
+      if (result.bytesRead !== length) throw codeError('RECORDING.EXPORT_READ_INCOMPLETE', '录制导出分块读取不完整。');
+      return { schemaVersion: 'omnia.v5.recording-export-chunk/v1', recordingId, chunkIndex, chunkCount, sizeBytes: length, contentBase64: bytes.toString('base64') };
+    } finally { await handle.close(); }
+  }
+
+  attachCatalog(recordingId, result) {
+    const active = this.requireActive(recordingId, ['recording', 'paused']);
+    const catalog = result?.catalog;
+    const riskAssessmentId = id(catalog?.identity?.gra?.id);
+    if (!isGuid(riskAssessmentId)) throw codeError('RECORDING.CATALOG_IDENTITY_INVALID', '自动采集结果缺少稳定 GRA 身份。');
+    const filename = `risk-control-${riskAssessmentId}.json`;
+    atomicJson(path.join(active.directory, filename), catalog);
+    const completeness = catalog?.completeness || {};
+    const metadata = {
+      riskAssessmentId, file: filename, status: result.status === 'complete' ? 'complete' : 'incomplete',
+      riskCount: Number(completeness.riskCount || 0), controlCount: Number(completeness.controlCount || 0),
+      missingReasons: Array.isArray(completeness.missingReasons) ? completeness.missingReasons.map((value) => clean(value, 300)).slice(0, 100) : [],
+      capturedAt: clean(catalog?.capturedAt || now(), 100)
+    };
+    active.catalogs = active.catalogs.filter((item) => item.riskAssessmentId !== riskAssessmentId);
+    active.catalogs.push(metadata);
+    active.updatedAt = now();
+    this.persistManifest(active);
+    return metadata;
+  }
+
+  noteAutomaticCatalogFailure(recordingId, message) {
+    const active = this.active;
+    if (!active || active.recordingId !== recordingId || !['recording', 'paused'].includes(active.state)) return;
+    const failure = clean(message, 300);
+    if (failure && !active.catalogFailures.includes(failure)) active.catalogFailures.push(failure);
+    active.catalogFailures = active.catalogFailures.slice(-20);
+    active.updatedAt = now();
+    this.persistManifest(active);
   }
 
   persistManifest(active) {
@@ -354,14 +523,76 @@ export class RecordingService {
   }
 
   publicStatus(active) {
+    const elapsedMs = Number(active.elapsedMs || 0) + (active.state === 'recording' && active.runningSince ? Math.max(0, Date.now() - active.runningSince) : 0);
+    const catalogs = Array.isArray(active.catalogs) ? active.catalogs : [];
+    const riskCount = catalogs.reduce((sum, item) => sum + Number(item.riskCount || 0), 0);
+    const controlCount = catalogs.reduce((sum, item) => sum + Number(item.controlCount || 0), 0);
+    const completeCatalogs = catalogs.filter((item) => item.status === 'complete').length;
+    const captureState = completeCatalogs > 0 && completeCatalogs === catalogs.length
+      ? 'complete'
+      : catalogs.length > 0 ? 'incomplete'
+        : active.state === 'recording' ? 'pending' : 'incomplete';
+    const captureMessage = captureState === 'complete'
+      ? `已自动采集 ${catalogs.length} 个当前页 GRA：Risk ${riskCount}，Control ${controlCount}。`
+      : catalogs.length
+        ? `当前页自动采集不完整：${catalogs.flatMap((item) => item.missingReasons || []).slice(0, 3).join('；') || '存在必需读取缺失。'}`
+        : active.catalogFailures?.length
+          ? `正在等待当前页可重试的 GRA 数据：${active.catalogFailures.at(-1)}`
+          : active.state === 'recording' ? '正在自动识别当前页 GRA，并采集 Risk 与 Control。' : '本次录制未获得可验证的当前页 GRA Risk/Control 目录。';
     return {
-      schemaVersion: 'omnia.v5.recording-status/v1', state: active.state, active: active.state === 'recording',
+      schemaVersion: 'omnia.v5.recording-status/v1', state: active.state, active: ['recording', 'paused'].includes(active.state),
       recordingId: active.recordingId, engagementId: active.engagementId, sessionGeneration: active.sessionGeneration,
       startedAt: active.startedAt, updatedAt: active.updatedAt, eventCount: active.events, interactionCount: active.interactionCount,
       networkRequestCount: active.networkRequestCount, mutationRequestCount: active.mutationRequestCount,
-      droppedEventCount: active.droppedEvents, integrity: active.integrity,
-      message: active.state === 'recording' ? '正在录制当前 Pack 的真实浏览器交互与网络证据。' : active.state === 'cancelled' ? '录制已取消，未生成导出文件。' : '录制已停止。'
+      droppedEventCount: active.droppedEvents, elapsedMs, pauseCount: Number(active.pauseCount || 0), integrity: active.integrity,
+      catalogs, capture: { state: captureState, message: captureMessage, riskCount, controlCount, graCount: catalogs.length },
+      exportedAt: active.exportedAt || '', exportAvailable: active.state === 'stopped',
+      message: active.state === 'recording' ? '正在录制当前 Pack；Risk 与 Control 会在当前页面自动采集。' : active.state === 'paused' ? '录制已暂停；继续后仍使用同一 recordingId。' : active.state === 'cancelled' ? '录制已取消，未生成导出文件。' : '录制已停止，可导出真实录制记录。'
     };
+  }
+
+  idleStatus() {
+    return { schemaVersion: 'omnia.v5.recording-status/v1', state: 'idle', active: false, recordingId: '', elapsedMs: 0, eventCount: 0, interactionCount: 0, networkRequestCount: 0, capture: { state: 'idle', message: '开始录制后将自动采集当前页 Risk 与 Control。', riskCount: 0, controlCount: 0, graCount: 0 }, exportAvailable: false, message: '当前没有录制。' };
+  }
+
+  recordingDirectory(recordingId) {
+    if (!isGuid(recordingId)) throw codeError('RECORDING.IDENTITY_INVALID', '录制 ID 无效。');
+    return path.join(this.rootDir, recordingId.toLowerCase());
+  }
+
+  latestRecordingId() {
+    return fs.readdirSync(this.rootDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && isGuid(entry.name) && fs.existsSync(path.join(this.rootDir, entry.name, 'manifest.json')))
+      .map((entry) => ({ id: entry.name.toLowerCase(), mtime: fs.statSync(path.join(this.rootDir, entry.name, 'manifest.json')).mtimeMs }))
+      .sort((left, right) => right.mtime - left.mtime)[0]?.id || '';
+  }
+
+  readManifest(recordingId) {
+    const normalized = clean(recordingId, 100).toLowerCase();
+    const manifest = JSON.parse(fs.readFileSync(path.join(this.recordingDirectory(normalized), 'manifest.json'), 'utf8'));
+    if (manifest?.schemaVersion !== 'omnia.v5.recording-status/v1' || manifest.recordingId !== normalized) throw codeError('RECORDING.MANIFEST_INVALID', '录制状态文件无效。');
+    this.lastRecordingId = normalized;
+    return { ...manifest, active: ['recording', 'paused'].includes(manifest.state), exportAvailable: manifest.state === 'stopped' };
+  }
+
+  restorePaused(recordingId, engagementId, sessionGeneration) {
+    const manifest = this.readManifest(recordingId);
+    if (manifest.state !== 'paused' || manifest.engagementId !== engagementId || Number(manifest.sessionGeneration) !== Number(sessionGeneration)) {
+      throw codeError('RECORDING.BINDING_CHANGED', '暂停录制与当前 Connector 绑定不一致。');
+    }
+    const directory = this.recordingDirectory(recordingId);
+    const active = {
+      recordingId, engagementId, sessionGeneration, directory, startedAt: manifest.startedAt, updatedAt: manifest.updatedAt, state: 'paused',
+      events: Number(manifest.eventCount || 0), droppedEvents: Number(manifest.droppedEventCount || 0), interactionCount: Number(manifest.interactionCount || 0),
+      networkRequestCount: Number(manifest.networkRequestCount || 0), mutationRequestCount: Number(manifest.mutationRequestCount || 0),
+      elapsedMs: Number(manifest.elapsedMs || 0), runningSince: 0, pauseCount: Number(manifest.pauseCount || 0), exportedAt: '',
+      requests: new Map(), pendingBodies: new Set(), bodyQueue: [], bodyRunning: 0, criticalPending: new Set(),
+      integrity: manifest.integrity, catalogs: manifest.catalogs || [], catalogFailures: [], lastCriticalAt: Date.now(),
+      spool: path.join(directory, 'events.jsonl'), sessions: new Map(), contextListeners: new Map()
+    };
+    this.active = active;
+    this.lastRecordingId = recordingId;
+    return active;
   }
 }
 

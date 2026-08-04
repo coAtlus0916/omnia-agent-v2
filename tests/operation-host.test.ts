@@ -60,7 +60,7 @@ test('signed Operation host exposes only declared steps and consumes a generic o
     throw new Error(`Unexpected step ${route.stepId}`);
   });
   const planDigest = 'a'.repeat(64);
-  const target = { objectId: informationId, informationId, workItemId };
+  const target = { objectId: informationId, informationId, workItemId, workspaceIds: [workspaceId] };
   const catalog = await invoke('omnia.delete.catalog.heavy-read.v1', {
     connectorBinding: binding,
     workspaceIds: [workspaceId]
@@ -77,6 +77,14 @@ test('signed Operation host exposes only declared steps and consumes a generic o
   await assert.rejects(
     invoke('omnia.delete.information.direct.v1', { connectorBinding: binding, target, planDigest }, false),
     /not authorized/
+  );
+  await assert.rejects(
+    invoke('omnia.delete.information.direct.v1', {
+      connectorBinding: binding,
+      target: { ...target, workspaceIds: ['77777777-7777-4777-8777-777777777777'] },
+      planDigest
+    }, true),
+    /permit is missing/
   );
   await invoke('omnia.delete.information.direct.v1', { connectorBinding: binding, target, planDigest }, true);
   assert.equal(deleted, true);

@@ -4,7 +4,8 @@ import type { FeaturePackageManager, FeatureInstallResult } from './package-mana
 import { packageDigest, verifyOfficialPackage } from './official-package.js';
 
 export const BUILTIN_FEATURES = Object.freeze([
-  { featureId: 'omnia.recording', version: '0.1.1', filename: 'recording-0.1.1.ofp' }
+  { featureId: 'omnia.recording', version: '0.3.0', filename: 'recording-0.3.0.ofp', sourceDirectory: 'recording' },
+  { featureId: 'omnia.create-associate', version: '0.2.1', filename: 'create-associate-0.2.1.ofp', sourceDirectory: 'create-associate' }
 ]);
 
 export interface BuiltinFeatureBootstrapResult {
@@ -24,7 +25,7 @@ export function installBuiltinFeaturePackages(
   return BUILTIN_FEATURES.map((builtin) => {
     const filename = packaged
       ? path.join(applicationRoot, 'builtins', builtin.filename)
-      : path.join(applicationRoot, 'feature-packages', 'recording', 'candidates', builtin.filename);
+      : path.join(applicationRoot, 'feature-packages', builtin.sourceDirectory, 'candidates', builtin.filename);
     if (!fs.existsSync(filename)) throw new Error(`Built-in Feature package is missing: ${filename}`);
     const existing = manager.installedVersion(builtin.featureId, builtin.version);
     const active = manager.list().find((item) => item.featureId === builtin.featureId);

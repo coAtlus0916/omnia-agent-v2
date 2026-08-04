@@ -1,3 +1,5 @@
+import type { BridgePairingCapabilityInspection } from './bridge-contracts.js';
+
 export type ConnectionStatus =
   | 'not_configured'
   | 'not_connected'
@@ -36,6 +38,9 @@ export interface ConnectionSnapshot {
   connectorName: string;
   connectorVersion: string;
   sessionGeneration?: number;
+  authorityInstanceId?: string;
+  tenantOrOrgId?: string;
+  packId?: string;
   engagementId: string;
   engagementName: string;
   clientName: string;
@@ -237,6 +242,7 @@ export interface ShellSnapshot {
   layout: LayoutPreference;
   settingsLayout: SettingsLayoutPreference;
   settings: SettingsSnapshot;
+  bridgePairing: BridgePairingCapabilityInspection;
   remotePairing: RemotePairingSnapshot;
 }
 
@@ -284,6 +290,8 @@ export interface ShellApi {
   }): Promise<ShellSnapshot>;
   selectFeature(input: { featureId: string }): Promise<ShellSnapshot>;
   featureAction(input: import('./feature-contracts.js').FeatureActionRequest): Promise<ShellSnapshot>;
+  queryInteractionLogs(input: import('./interaction-log-contracts.js').InteractionLogQuery): Promise<import('./interaction-log-contracts.js').InteractionLogPage>;
+  getInteractionTrace(traceId: string): Promise<import('./interaction-log-contracts.js').InteractionLogTrace>;
   openFeatureSurface?(input: {
     instanceId: string;
     featureId: string;
@@ -298,6 +306,7 @@ export interface ShellApi {
   restoreFeatureSurface?(instanceId: string): Promise<void>;
   setDockedSurfaceVisibility?(input: DockedSurfaceVisibilityInput): Promise<DockedSurfaceManagerSnapshot>;
   getSurfaceManagerSnapshot?(): Promise<DockedSurfaceManagerSnapshot>;
+  onFeatureDocked?(listener: (instanceId: string) => void): () => void;
   onFeatureBootstrap?(listener: (surface: import('./feature-contracts.js').DeclarativeFeatureSurface) => void): () => void;
   onChanged(listener: (snapshot: ShellSnapshot) => void): () => void;
 }

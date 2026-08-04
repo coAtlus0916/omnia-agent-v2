@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomInt, randomUUID } from 'node:crypto';
 
 export type BindingLifecycle = 'candidate' | 'active' | 'revoked';
 
@@ -103,16 +103,21 @@ export class BridgeBindingStore {
       const current = this.binding(replacementPairId);
       if (!current || current.lifecycle !== 'active') throw new Error('replacement binding is not active');
     }
-    // Hex keeps the displayed and normalized forms identical while retaining
-    // 96 bits of entropy; base64url '_' was previously stripped by consumeCode.
-    const raw = randomBytes(12).toString('hex').toUpperCase();
-    const pairingCode = raw.match(/.{1,4}/g)!.join('-');
+    let pairingCode = '';
+    for (let attempt = 0; attempt < 10_000; attempt += 1) {
+      const candidate = String(randomInt(0, 10_000)).padStart(4, '0');
+      if (!this.document.sessions.some((session) => !session.consumedAt && !session.cancelledAt
+        && Date.parse(session.expiresAt) > Date.now() && session.codeHash === digest(candidate))) {
+        pairingCode = candidate; break;
+      }
+    }
+    if (!pairingCode) throw new Error('pairing code space is exhausted');
     const pollSecret = randomBytes(32).toString('base64url');
     const session: PairingSession = {
       sessionId: `pairing-${randomUUID()}`,
-      codeHash: digest(raw),
+      codeHash: digest(pairingCode),
       pollSecretHash: digest(pollSecret),
-      expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+      expiresAt: new Date(Date.now() + 2 * 60_000).toISOString(),
       consumedAt: '',
       cancelledAt: '',
       pairId: '',
@@ -132,7 +137,8 @@ export class BridgeBindingStore {
     protocol: string;
   }): BridgeBinding {
     this.prune();
-    const normalized = input.pairingCode.replace(/[^A-Z0-9]/gi, '').toUpperCase();
+    const normalized = input.pairingCode.trim();
+    if (!/^\d{4}$/u.test(normalized)) throw new Error('pairing code is invalid, expired, or already used');
     const session = this.document.sessions.find((item) => item.codeHash === digest(normalized));
     if (!session || session.consumedAt || session.cancelledAt || Date.parse(session.expiresAt) <= Date.now()) {
       throw new Error('pairing code is invalid, expired, or already used');

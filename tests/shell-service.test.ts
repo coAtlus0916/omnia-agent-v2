@@ -15,6 +15,21 @@ const engagementId = '11111111-1111-4111-8111-111111111111';
 const sectionId = '22222222-2222-4222-8222-222222222222';
 const workspaceId = '33333333-3333-4333-8333-333333333333';
 
+const supportedBridgeInspection = () => ({
+  status: 'supported' as const,
+  canCreateSession: true,
+  reasonCode: '',
+  reason: 'Remote Bridge 支持当前一次性链接会话合同。',
+  bridgeVersion: '0.4.3',
+  bridgeProtocol: 'omnia.v5.remote-connector/v2',
+  buildIdentity: 'bridge-contract-fixture',
+  checkedAt: new Date().toISOString()
+});
+const lifecycleWithBridge = <T extends Record<string, unknown>>(overrides = {} as T) => ({
+  inspectBridge: async () => supportedBridgeInspection(),
+  ...overrides
+});
+
 class FakeAdapter {
   connectCalls = 0;
   cancelCalls = 0;
@@ -90,7 +105,7 @@ async function fixture(run: (
   delete process.env.OMNIA_AI_MODEL;
   delete process.env.OMNIA_AI_API_KEY;
   const chat = new ChatService(database);
-  const shell = new ShellService(database, adapter as any, chat, undefined, undefined, timing);
+  const shell = new ShellService(database, adapter as any, chat, undefined, undefined, timing, lifecycleWithBridge());
   try {
     await shell.initialize();
     await run(shell, database, adapter);
@@ -191,6 +206,71 @@ test('repair and unbind require an explicit confirmation and no Local snapshot i
   });
 });
 
+test('legacy Bridge health blocks pairing before durable reservation or pairing POST', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-bridge-gate-'));
+  const database = new CoreDatabase(path.join(root, 'core.sqlite'), createTestContentCipher());
+  let beginCalls = 0;
+  const legacy = {
+    status: 'upgrade_required' as const,
+    canCreateSession: false,
+    reasonCode: 'REMOTE.BRIDGE_UPGRADE_REQUIRED',
+    reason: 'Remote Bridge 版本过旧，未声明一次性链接会话能力；请先升级 Bridge。',
+    bridgeVersion: '', bridgeProtocol: '', buildIdentity: '', checkedAt: new Date().toISOString()
+  };
+  const lifecycle = {
+    inspectBridge: async () => legacy,
+    beginPairing: async () => {
+      beginCalls += 1;
+      throw new Error('pairing POST must not be reached');
+    }
+  };
+  const shell = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, lifecycle as any);
+  try {
+    await shell.initialize();
+    const initial = database.getRemoteBinding();
+    assert.equal(shell.snapshot().bridgePairing.canCreateSession, false);
+    await assert.rejects(
+      () => shell.beginRemotePairing({ repair: false, expectedStateVersion: initial.stateVersion }),
+      (error: any) => error.code === 'REMOTE.BRIDGE_UPGRADE_REQUIRED'
+    );
+    assert.equal(beginCalls, 0);
+    assert.equal(database.getPendingRemotePairing(), null);
+  } finally {
+    shell.dispose(); database.close(); rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('diagnose refreshes Bridge pairing compatibility from unreachable to supported', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-bridge-diagnose-'));
+  const database = new CoreDatabase(path.join(root, 'core.sqlite'), createTestContentCipher());
+  let reachable = false;
+  let inspections = 0;
+  const lifecycle = {
+    inspectBridge: async () => {
+      inspections += 1;
+      return reachable ? supportedBridgeInspection() : {
+        status: 'unreachable' as const,
+        canCreateSession: false,
+        reasonCode: 'REMOTE.BRIDGE_UNREACHABLE',
+        reason: '无法访问 Remote Bridge 健康检查；请检查网络。',
+        bridgeVersion: '', bridgeProtocol: '', buildIdentity: '', checkedAt: new Date().toISOString()
+      };
+    }
+  };
+  const shell = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, lifecycle as any);
+  try {
+    await shell.initialize();
+    assert.equal(shell.snapshot().bridgePairing.status, 'unreachable');
+    reachable = true;
+    const diagnosed = await shell.diagnoseRemoteConnection();
+    assert.equal(diagnosed.bridgePairing.status, 'supported');
+    assert.equal(diagnosed.bridgePairing.canCreateSession, true);
+    assert.equal(inspections, 2);
+  } finally {
+    shell.dispose(); database.close(); rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('one Connect action automatically advances delayed login, Pack, authorization and hierarchy states', async () => {
   await fixture(async (shell, database, adapter) => {
     bindRemoteFixture(database);
@@ -265,7 +345,7 @@ test('Connector restart re-registers Feature runtime and refreshes hierarchy onc
       };
     }
   };
-  const shell = new ShellService(database, adapter as any, chat, undefined, features as any);
+  const shell = new ShellService(database, adapter as any, chat, undefined, features as any, {}, lifecycleWithBridge());
   const settle = async (predicate: () => boolean) => {
     for (let index = 0; index < 50 && !predicate(); index += 1) await new Promise((resolve) => setImmediate(resolve));
     assert.equal(predicate(), true);
@@ -318,7 +398,7 @@ test('persisted pairing session survives Shell crash after Bridge activation and
     commitPairing: async () => undefined,
     revoke: async () => undefined
   };
-  const first = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, lifecycle as any);
+  const first = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, lifecycleWithBridge(lifecycle) as any);
   try {
     await first.initialize();
     const initial = database.getRemoteBinding();
@@ -333,7 +413,7 @@ test('persisted pairing session survives Shell crash after Bridge activation and
   }
 
   database = new CoreDatabase(filename, cipher);
-  const second = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, lifecycle as any);
+  const second = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, lifecycleWithBridge(lifecycle) as any);
   try {
     await second.initialize();
     const recovered = database.getRemoteBinding();
@@ -370,7 +450,7 @@ test('restart after durable stage but before Bridge commit completes the two-pha
     }),
     commitPairing: async () => { commits += 1; }
   };
-  const shell = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, lifecycle as any);
+  const shell = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, lifecycleWithBridge(lifecycle) as any);
   try {
     await shell.initialize();
     assert.equal(commits, 1);
@@ -408,7 +488,7 @@ test('lost commit response recovers by polling matched and promotes without a se
       throw new AppError('REMOTE.PAIRING_COMMIT_FAILED', 'response lost', true);
     }
   };
-  const shell = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, lifecycle as any);
+  const shell = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, lifecycleWithBridge(lifecycle) as any);
   try {
     await shell.initialize();
     assert.equal(commits, 1);
@@ -429,7 +509,7 @@ test('offline explicit unbind stays repair_required, then restart retry or inval
     const offlineLifecycle = {
       revoke: async () => { throw new AppError('REMOTE.REVOKE_FAILED', 'Bridge offline', true); }
     };
-    const first = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, offlineLifecycle as any);
+    const first = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, lifecycleWithBridge(offlineLifecycle) as any);
     try {
       await first.initialize();
       const current = database.getRemoteBinding();
@@ -453,7 +533,7 @@ test('offline explicit unbind stays repair_required, then restart retry or inval
         if (completion === 'credential_invalid') throw new AppError('REMOTE.REVOKE_CREDENTIAL_INVALID', 'already invalid');
       }
     };
-    const second = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, recoveryLifecycle as any);
+    const second = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, lifecycleWithBridge(recoveryLifecycle) as any);
     try {
       await second.initialize();
       const revoked = database.getRemoteBinding();
@@ -490,7 +570,7 @@ test('revoked transport state persists repair_required and subsequent repair use
       };
     }
   };
-  const shell = new ShellService(database, adapter as any, new ChatService(database), undefined, undefined, {}, lifecycle as any);
+  const shell = new ShellService(database, adapter as any, new ChatService(database), undefined, undefined, {}, lifecycleWithBridge(lifecycle) as any);
   try {
     await shell.initialize();
     const repaired = database.getRemoteBinding();
@@ -516,7 +596,7 @@ test('pending pairing serializes repair/unbind and proof-bound cancel clears it'
     }),
     cancelPairing: async () => 'cancelled' as const
   };
-  const shell = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, lifecycle as any);
+  const shell = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, lifecycleWithBridge(lifecycle) as any);
   try {
     await shell.initialize();
     const initial = database.getRemoteBinding();
@@ -550,11 +630,12 @@ test('pairing lifecycle is single-flight across double begin, begin-vs-revoke an
     beginPairing: async () => { beginCalls += 1; return beginGate; },
     cancelPairing: async () => 'cancelled' as const
   };
-  const shell = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, lifecycle as any);
+  const shell = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, lifecycleWithBridge(lifecycle) as any);
   try {
     await shell.initialize();
     const current = database.getRemoteBinding();
     const first = shell.beginRemotePairing({ repair: true, confirmed: true, expectedStateVersion: current.stateVersion });
+    await new Promise((resolve) => setImmediate(resolve));
     assert.equal(database.getPendingRemotePairing()?.status, 'creating');
     await assert.rejects(
       () => shell.beginRemotePairing({ repair: true, confirmed: true, expectedStateVersion: current.stateVersion }),
@@ -596,7 +677,7 @@ test('pairing poll and cancel are mutually exclusive and cancel cannot clear an 
     pollPairing: async () => pollGate,
     cancelPairing: async () => 'cancelled' as const
   };
-  const shell = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, lifecycle as any);
+  const shell = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, lifecycleWithBridge(lifecycle) as any);
   try {
     await shell.initialize();
     const current = database.getRemoteBinding();
@@ -639,7 +720,7 @@ test('identity-mismatch matched candidate is durably cleaned after offline resta
     pollPairing: async () => matched,
     revoke: async () => { throw new AppError('REMOTE.REVOKE_FAILED', 'offline', true); }
   };
-  const first = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, offline as any);
+  const first = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, lifecycleWithBridge(offline) as any);
   try {
     await first.initialize();
     assert.equal(database.getRemoteBinding().pairId, 'pair-current-wins');
@@ -651,7 +732,7 @@ test('identity-mismatch matched candidate is durably cleaned after offline resta
 
   database = new CoreDatabase(filename, cipher);
   const online = { revoke: async () => undefined };
-  const second = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, online as any);
+  const second = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, lifecycleWithBridge(online) as any);
   try {
     await second.initialize();
     assert.equal(database.getRemoteBinding().pairId, 'pair-current-wins');
@@ -674,7 +755,7 @@ test('expired local code cannot clear an unstaged corrupt-proof tombstone or lif
     expectedGeneration: bound.generation, expectedBindingState: 'bound', expectedStateVersion: bound.stateVersion
   });
   database.db.prepare(`UPDATE remote_pairing_pending SET poll_secret_ciphertext='enc:v1:not-valid' WHERE singleton=1`).run();
-  const shell = new ShellService(database, new FakeAdapter() as any, new ChatService(database));
+  const shell = new ShellService(database, new FakeAdapter() as any, new ChatService(database), undefined, undefined, {}, lifecycleWithBridge());
   try {
     await shell.initialize();
     const pending = database.getPendingRemotePairing();

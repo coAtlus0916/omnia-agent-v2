@@ -527,7 +527,7 @@ stateDiagram-v2
 | `replacementPairId` | 重新配对时指向旧 active；否则 null |
 | `connector` | 只有认证 polling 且已消费后返回非敏感 `connectorId/name/version/platform/protocol` |
 
-Bridge 只保存 code hash。polling secret 只能作为 Shell pairing session proof；Shell 可在 Migration 11 的短期 pending 表中用实例密钥加密保存以恢复崩溃，但不能保存为设备 credential、进入 Renderer snapshot/普通诊断/导出或写日志，完成、Bridge 确认过期或取消后清除。Shell 不得仅凭本地 code `expiresAt` 删除 pending：ready/active session 在独立 recovery TTL 内仍须通过 Bridge poll 恢复。创建 session 前 Core 必须先占 durable `creating` reservation，所有 begin/poll/cancel/revoke 生命周期入口单飞；进程中断时 reservation 持续阻断新流程，直到安全到期。错误/过期/已消费 code 对匿名调用方返回不可枚举错误。
+Bridge 只保存 code hash。polling secret 只能作为 Shell pairing session proof；Shell 可在 Migration 11 的短期 pending 表中用实例密钥加密保存以恢复崩溃，但不能保存为设备 credential、进入 Renderer snapshot/普通诊断/导出或写日志，完成、Bridge 确认过期或取消后清除。Shell 不得仅凭本地 code `expiresAt` 删除 pending：ready/active session 在独立 recovery TTL 内仍须通过 Bridge poll 恢复。begin 先在生命周期单飞门禁内执行公开、只读的 Bridge capability health；该预检不创建或改变远端 pairing session，不写 reservation。预检通过后，在创建 session 或发送任何会改变 pairing session 状态的请求前，Core 必须先占 durable `creating` reservation；进程中断时 reservation 持续阻断新流程，直到安全到期。所有 begin/poll/cancel/revoke 生命周期入口保持单飞；错误/过期/已消费 code 对匿名调用方返回不可枚举错误。
 
 ### `RemoteBinding`
 
@@ -753,6 +753,16 @@ stateDiagram-v2
 ```
 
 `.invalid` 域名只用于合同文档，不能用于连接测试。
+
+## 13.1 Interaction Log
+
+Shell 的诊断日志使用 `omnia.interaction-log/v1`。它是短期、严格脱敏的运行诊断，不替代 Run/Event、Command Evidence、Remote binding audit 或 Feature 随包证据。
+
+每个真实入口先持久化 `phase=start`，再原位完成为 `success|failure`；`interactionId` 标识当前阶段，`traceId` 关联同一次用户交互，`parentId` 关联父阶段。记录包含 timestamp/duration、`surface|middle|core|connector` Plane、component/surface/action、severity、稳定 error code、failure point，以及可选 run/command/request/operation ID。进程启动时遗留的 `start` 必须转为 `APP.PROCESS_INTERRUPTED`，不得伪装成功。
+
+`details` 只允许平面 allowlist 元数据。API Key、token、Cookie、Authorization、password、credential、poll secret、链接码、请求/响应 body、聊天/工作簿正文、文件内容、密文和完整本机路径不得进入日志；文件只允许 basename、大小、媒体类型和 digest。Renderer 只能通过受限查询合同读取已经脱敏的行，不能执行任意 SQL。
+
+查询支持 severity、Plane、时间和 interaction/trace/parent ID 前缀，单页最多 200 条；trace 详情最多 500 个阶段。当前无清空或导出合同，因此 UI 不得提供对应按钮。
 
 ## 14. 统一错误模型
 
@@ -1031,7 +1041,9 @@ Bridge credential 绑定 `role/pairId/generation/protocol`。WebSocket 使用 pi
 
 ### AI Provider 合同
 
-- DeepSeek：OpenAI-compatible `/models` 与 `/chat/completions`，附件能力固定为 `text_only`；
+- DeepSeek：新默认 profile 使用 `https://api.deepseek.com` 与 `deepseek-v4-flash`；OpenAI-compatible `/models` 必须明确返回该模型，缺失时失败，不自动改选其他模型；
+- DeepSeek 普通聊天的 `/chat/completions` 必须携带 `thinking:{type:'disabled'}`，仅当 `finish_reason='stop'` 且 assistant content 非空时才持久化为成功；附件能力固定为 `text_only`；
+- 只迁移“仍使用旧默认 Base URL + 旧默认模型”的 DeepSeek profile；用户自定义值不改，API Key 密文字节保持不变；
 - Custom：相同 OpenAI-compatible 合同，能力由用户显式选择；
 - Nova 专有协议仍未验证，不进入本轮合同。
 

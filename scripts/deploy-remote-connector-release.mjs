@@ -51,7 +51,13 @@ try {
   scp(installer, `${remote}:${staging}/install-release.py`);
   scp(caddyUpdater, `${remote}:${staging}/update-caddy.py`);
   remoteRun(
-    `sudo python3 '${staging}/install-release.py' '${staging}/${packageName}' '${staging}/stable.json'`
+    `sudo python3 '${staging}/install-release.py' stage '${staging}/${packageName}' '${staging}/stable.json'`
+  );
+
+  verifyPublishedArchiveBeforeStable();
+
+  remoteRun(
+    `sudo python3 '${staging}/install-release.py' activate '${staging}/${packageName}' '${staging}/stable.json'`
   );
 
   const backup = `/etc/caddy/Caddyfile.before-v5-remote-connector-${nonce}`;
@@ -155,4 +161,18 @@ function curlHead(url) {
   ], { encoding: 'utf8', windowsHide: true });
   if (result.status !== 0) throw new Error(`Public release HEAD failed: ${result.stderr}`);
   return String(result.stdout || '');
+}
+
+function verifyPublishedArchiveBeforeStable() {
+  const tsxCli = path.join(root, 'node_modules', 'tsx', 'dist', 'cli.mjs');
+  const verifier = path.join(root, 'scripts', 'verify-remote-release-target.ts');
+  const result = spawnSync(process.execPath, [
+    tsxCli,
+    verifier,
+    '--connector-manifest',
+    stable
+  ], { encoding: 'utf8', windowsHide: true });
+  if (result.status !== 0) {
+    throw new Error(`Target ZIP preflight failed before stable activation: ${result.stderr || result.stdout}`);
+  }
 }

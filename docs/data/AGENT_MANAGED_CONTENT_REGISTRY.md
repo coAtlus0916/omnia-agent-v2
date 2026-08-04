@@ -238,3 +238,6 @@ authorityInstanceId
 - [ ] 备份、恢复、迁移、保留、删除和导出通过真实数据规模演练。
 
 本设计由 [ADR-0024](../adr/0024-agent-managed-content-registry.md) 约束；具体公共对象见[统一合同](../contracts/CONTRACTS.md)。
+# Create-and-associate verified-current rule
+
+An intended object, relation, field, score, documentation value, or Risk-Control link is first an immutable intent. Current managed state advances only after the matching signed command has authoritative readback for the exact authority, engagement, Workspace, object identity, and value/multiset. An `uncertain` command creates a read-only reconcile obligation and never an automatic replay.

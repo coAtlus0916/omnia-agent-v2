@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const root = path.resolve(import.meta.dirname, '..');
-const version = '0.4.1';
+const version = '0.4.4';
 const releasesRoot = path.join(root, 'bridge', 'releases');
 const releaseTarget = path.join(releasesRoot, version);
 const release = path.join(releasesRoot, `.staging-${version}-${process.pid}-${Date.now()}`);

@@ -1,11 +1,13 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../../shared/errors.js';
+import type { InteractionContext } from '../../shared/interaction-log-contracts.js';
 
 export interface FeatureWorkerPortContext {
   featureId: string;
   featureVersion: string;
   allowMutation: boolean;
+  interactionContext?: InteractionContext;
 }
 
 export interface FeatureWorkerPorts {
@@ -25,6 +27,7 @@ export class FeatureWorkerSupervisor {
   private ready: Promise<void> | null = null;
   private readonly pending = new Map<string, PendingCall>();
   private readonly invocationMutation = new Map<string, boolean>();
+  private readonly invocationContexts = new Map<string, InteractionContext | undefined>();
 
   constructor(
     private readonly hostEntrypoint: string,
@@ -67,16 +70,24 @@ export class FeatureWorkerSupervisor {
     this.handleExit();
   }
 
-  async invoke(method: string, input: unknown, options: { allowMutation?: boolean; timeoutMs?: number } = {}): Promise<any> {
+  async invoke(method: string, input: unknown, options: { allowMutation?: boolean; timeoutMs?: number; interactionContext?: InteractionContext } = {}): Promise<any> {
     await this.start();
     if (!this.child?.connected) throw new AppError('FEATURE.WORKER_UNAVAILABLE', 'Feature worker 不可用。', true);
     const id = randomUUID();
     this.invocationMutation.set(id, options.allowMutation === true);
+    this.invocationContexts.set(id, options.interactionContext);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
+        const mutation = this.invocationMutation.get(id) === true;
         this.pending.delete(id);
         this.invocationMutation.delete(id);
-        reject(new AppError('FEATURE.WORKER_TIMEOUT', 'Feature worker 响应超时。', true));
+        this.invocationContexts.delete(id);
+        if (mutation) {
+          const timedOutChild=this.child;this.child=null;this.ready=null;
+          if(timedOutChild&&!timedOutChild.killed) timedOutChild.kill();
+          this.handleExit();
+          reject(new AppError('FEATURE.WORKER_TIMEOUT', 'Mutation Feature worker timed out and was terminated; retry is forbidden until durable recovery classifies the Run.', false));
+        } else reject(new AppError('FEATURE.WORKER_TIMEOUT', 'Feature worker 响应超时。', true));
       }, options.timeoutMs || 120_000);
       this.pending.set(id, { resolve, reject, timer });
       this.child!.send({
@@ -95,7 +106,10 @@ export class FeatureWorkerSupervisor {
       const context: FeatureWorkerPortContext = {
         featureId: this.featureId,
         featureVersion: this.featureVersion,
-        allowMutation: this.invocationMutation.get(String(message.invocationId)) === true
+        allowMutation: this.invocationMutation.get(String(message.invocationId)) === true,
+        ...(this.invocationContexts.get(String(message.invocationId))
+          ? { interactionContext: this.invocationContexts.get(String(message.invocationId))! }
+          : {})
       };
       try {
         let value: unknown;
@@ -119,6 +133,7 @@ export class FeatureWorkerSupervisor {
     clearTimeout(pending.timer);
     this.pending.delete(String(message.id));
     this.invocationMutation.delete(String(message.id));
+    this.invocationContexts.delete(String(message.id));
     if (message.ok) pending.resolve(message.value);
     else pending.reject(new AppError(
       message.error?.code || 'FEATURE.WORKER_FAILED',
@@ -133,6 +148,7 @@ export class FeatureWorkerSupervisor {
       pending.reject(new AppError('FEATURE.WORKER_EXITED', 'Feature worker 进程已退出。', true));
       this.pending.delete(id);
       this.invocationMutation.delete(id);
+      this.invocationContexts.delete(id);
     }
   }
 }

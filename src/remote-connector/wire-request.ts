@@ -77,7 +77,7 @@ export function validateConnectorWireRequest(value: unknown): ConnectorRequest {
       || payload.featureId !== 'omnia.recording'
       || typeof payload.featureVersion !== 'string'
       || !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/.test(payload.featureVersion)
-      || !['status', 'start', 'stop_export', 'cancel', 'capture_current_gra_catalog'].includes(String(payload.kind || ''))
+      || !['status', 'start', 'pause', 'resume', 'stop', 'export', 'export_chunk', 'stop_export', 'cancel', 'capture_current_gra_catalog'].includes(String(payload.kind || ''))
       || !binding
       || typeof binding.connectorId !== 'string'
       || !binding.connectorId
@@ -86,7 +86,9 @@ export function validateConnectorWireRequest(value: unknown): ConnectorRequest {
       || typeof binding.engagementId !== 'string'
       || !binding.engagementId
       || (payload.recordingId !== undefined && (typeof payload.recordingId !== 'string' || !payload.recordingId))
-      || keys.some((key) => !['schemaVersion', 'featureId', 'featureVersion', 'kind', 'connectorBinding', 'recordingId'].includes(key))
+      || (payload.chunkIndex !== undefined && (!Number.isSafeInteger(payload.chunkIndex) || Number(payload.chunkIndex) < 0))
+      || (payload.kind === 'export_chunk' && payload.chunkIndex === undefined)
+      || keys.some((key) => !['schemaVersion', 'featureId', 'featureVersion', 'kind', 'connectorBinding', 'recordingId', 'chunkIndex'].includes(key))
     ) throw new ConnectorWireError('CONNECTOR.INVALID_PAYLOAD', 'recording_command payload 不符合签名 Feature 合同。', id);
   } else if (operation === 'operation_register') {
     if (value.payload.schemaVersion !== 'omnia.operation-registration/v1') {

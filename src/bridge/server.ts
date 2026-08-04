@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { WebSocket, WebSocketServer } from 'ws';
 import {
+  BRIDGE_HEALTH_PRODUCT,
+  BRIDGE_PAIRING_SESSION_CONTRACT,
   BRIDGE_PRODUCT,
   BRIDGE_PROTOCOL,
   BRIDGE_SCHEMA,
@@ -39,6 +41,9 @@ export interface BridgeServerOptions {
   buildIdentity?: string;
   heartbeatIntervalMs?: number;
   staleSocketTimeoutMs?: number;
+  pairingFailureWindowMs?: number;
+  pairingFailurePerScope?: number;
+  pairingFailureGlobal?: number;
 }
 
 const connectorVersionCompatible = (value: string): boolean => {
@@ -109,8 +114,14 @@ export function createBridgeServer(options: BridgeServerOptions) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 2 * 1024 * 1024 });
   const connectors = new Map<string, WebSocket>();
   const shells = new Map<string, Set<WebSocket>>();
-  const requestOwners = new Map<string, { owner: WebSocket; pairId: string; timer: NodeJS.Timeout }>();
+  const requestOwners = new Map<string, { owner: WebSocket; pairId: string; timer: NodeJS.Timeout; mutationAuthorized: boolean }>();
   const sessionRate = new Map<string, number[]>();
+  const pairFailureRate = new Map<string, number[]>();
+  let globalPairFailures: number[] = [];
+  const pairingFailureWindowMs = options.pairingFailureWindowMs ?? 2 * 60_000;
+  const pairingFailurePerScope = options.pairingFailurePerScope ?? 5;
+  const pairingFailureGlobal = options.pairingFailureGlobal ?? 100;
+  if (pairingFailureWindowMs < 1_000 || pairingFailurePerScope < 1 || pairingFailureGlobal < pairingFailurePerScope) throw new Error('Bridge pairing failure limits are invalid.');
 
   const socketFresh = (socket: WebSocket | undefined) => Boolean(
     socket
@@ -149,12 +160,18 @@ export function createBridgeServer(options: BridgeServerOptions) {
       json(res, 200, {
         schemaVersion: BRIDGE_SCHEMA,
         ok: true,
-        product: 'omnia-agent-v5-bridge',
+        product: BRIDGE_HEALTH_PRODUCT,
         version: BRIDGE_VERSION,
         buildIdentity,
         protocol: BRIDGE_PROTOCOL,
         startedAt,
-        onlineConnectors: fresh
+        onlineConnectors: fresh,
+        capabilities: {
+          pairingSessions: {
+            contractVersion: BRIDGE_PAIRING_SESSION_CONTRACT,
+            create: true
+          }
+        }
       });
       return;
     }
@@ -276,8 +293,19 @@ export function createBridgeServer(options: BridgeServerOptions) {
     }
 
     if (req.method === 'POST' && req.url === '/v1/pair') {
+      const remoteIp = String(req.socket.remoteAddress || 'unknown');
+      let scopeKey = `${remoteIp}\u0000unknown`;
+      const current = Date.now();
+      globalPairFailures = globalPairFailures.filter((value) => value > current - pairingFailureWindowMs);
       try {
         const input = await readJson(req) as BridgePairRequest;
+        scopeKey = `${remoteIp}\u0000${String(input.connectorId || 'unknown').slice(0, 128)}`;
+        const scopeFailures = (pairFailureRate.get(scopeKey) || []).filter((value) => value > current - pairingFailureWindowMs);
+        pairFailureRate.set(scopeKey, scopeFailures);
+        if (scopeFailures.length >= pairingFailurePerScope || globalPairFailures.length >= pairingFailureGlobal) {
+          json(res, 429, { code: 'BRIDGE.PAIRING_RATE_LIMITED', message: '配对请求过于频繁。' });
+          return;
+        }
         if (
           input.schemaVersion !== BRIDGE_SCHEMA
           || input.role !== 'connector'
@@ -285,6 +313,7 @@ export function createBridgeServer(options: BridgeServerOptions) {
           || input.protocol !== BRIDGE_PROTOCOL
           || !validIdentity(input.connectorId)
           || !connectorVersionCompatible(String(input.connectorVersion || ''))
+          || !/^\d{4}$/u.test(String(input.pairingCode || ''))
         ) throw new Error('invalid pairing request');
         const binding = store.consumeCode({
           pairingCode: input.pairingCode,
@@ -306,9 +335,16 @@ export function createBridgeServer(options: BridgeServerOptions) {
           generation: binding.generation,
           expiresAt: new Date(expiresAt).toISOString()
         };
+        pairFailureRate.delete(scopeKey);
         json(res, 200, response);
       } catch {
-        json(res, 401, { code: 'BRIDGE.PAIRING_REJECTED', message: '链接码无效、已过期或已使用。' });
+        const failedAt = Date.now();
+        const failures = (pairFailureRate.get(scopeKey) || []).filter((value) => value > failedAt - pairingFailureWindowMs);
+        failures.push(failedAt); pairFailureRate.set(scopeKey, failures);
+        globalPairFailures = globalPairFailures.filter((value) => value > failedAt - pairingFailureWindowMs); globalPairFailures.push(failedAt);
+        if (failures.length >= pairingFailurePerScope || globalPairFailures.length >= pairingFailureGlobal) {
+          json(res, 429, { code: 'BRIDGE.PAIRING_RATE_LIMITED', message: '配对请求过于频繁。' });
+        } else json(res, 401, { code: 'BRIDGE.PAIRING_REJECTED', message: '链接码无效、已过期或已使用。' });
       }
       return;
     }
@@ -451,13 +487,16 @@ export function createBridgeServer(options: BridgeServerOptions) {
           requestOwners.delete(envelope.request.id);
           if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ schemaVersion: BRIDGE_SCHEMA, kind: 'result', response: {
             schemaVersion: 'omnia.connector-ipc/v1', id: envelope.request.id, ok: false,
-            error: envelope.request.operation === 'operation_invoke'
+            error: envelope.request.operation === 'operation_invoke' && envelope.request.payload.mutationAuthorized === true
               ? { code: 'REMOTE.MUTATION_UNCERTAIN', message: 'Remote Operation 已超过 Bridge 期限；effect 状态未知，禁止自动重放。', retryable: false }
               : { code: 'REMOTE.DEADLINE_EXCEEDED', message: 'Bridge 命令超过期限。', retryable: true }
           }}));
         }, Math.max(1_000, deadline - Date.now()));
         timer.unref();
-        requestOwners.set(envelope.request.id, { owner: ws, pairId: identity.pairId, timer });
+        requestOwners.set(envelope.request.id, {
+          owner: ws, pairId: identity.pairId, timer,
+          mutationAuthorized: envelope.request.operation === 'operation_invoke' && envelope.request.payload.mutationAuthorized === true
+        });
         connector!.send(JSON.stringify(envelope));
       } else if (identity.role === 'shell' && envelope.kind === 'cancel') {
         const pending = requestOwners.get(envelope.requestId);
@@ -484,7 +523,9 @@ export function createBridgeServer(options: BridgeServerOptions) {
           requestOwners.delete(id);
           if (pending.owner.readyState === WebSocket.OPEN) pending.owner.send(JSON.stringify({ schemaVersion: BRIDGE_SCHEMA, kind: 'result', response: {
             schemaVersion: 'omnia.connector-ipc/v1', id, ok: false,
-            error: { code: 'REMOTE.CONNECTOR_DISCONNECTED', message: 'Remote Connector 在命令执行期间断开；effect 状态未知，禁止自动重试。', retryable: false }
+            error: pending.mutationAuthorized
+              ? { code: 'REMOTE.MUTATION_UNCERTAIN', message: 'Remote mutation 在命令执行期间断开；effect 状态未知，禁止自动重试。', retryable: false }
+              : { code: 'REMOTE.CONNECTOR_DISCONNECTED', message: 'Remote read-only Operation 在执行期间断开。', retryable: true }
           }}));
         }
         notifyShells(identity.pairId);

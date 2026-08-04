@@ -2,17 +2,17 @@
 
 本页是 v5 文档的当前状态索引。新 Agent 必须先读 [Agent 开发入口](development/AGENT_START_HERE.md)，再按任务路由阅读；不要把历史验收或 v4 研究报告当作当前实现状态。
 
-## 当前状态（2026-08-03）
+## 当前状态（2026-08-04）
 
 | 项目 | 当前状态 | 仍待完成 |
 |---|---|---|
-| Shell | `0.4.2` Remote-only 候选：继承 0.4.1 UI regression 修复，删除 Local/模式切换/Connector Settings，首次配对进入顶部 Connect | 自动化/便携结果以验收记录为准；公司电脑真实 Pack canary 未通过/待 canary |
-| 录制 | 官方签名独立 Feature `omnia.recording 0.1.1 / sequence 2`，随 Shell 便携包内置，首次启动自动升级/注册；显式 rollback 不被启动覆盖 | 真实 Pack/Remote 现场 canary |
+| Shell | `0.4.6` Remote-only 候选源码：功能栏扁平显示 Feature；通用两列式三步 Surface 支持真实进度/问题、拖拽上传和签名资产下载；设置内有查询 Core 真实记录的独立“日志”菜单；内置 recording 0.2.0 与 create-associate 0.2.1 | 0.4.6 便携包与真实 Pack canary 待完成 |
+| 录制 | 官方签名独立 Feature `omnia.recording 0.2.0 / sequence 3`，使用同一三步 Surface 投影实时 Connector/录制证据状态 | 真实 Pack/Remote 现场 canary |
 | 删除元素 | 独立后装 Feature `0.1.2`；Remote-only 前的 Local 自动化仅保留为历史合同证据 | 目标 Pack 的真实 Remote mutation 待公司电脑 canary；不允许 fallback Local |
 | 删除聊天记录 | 未交付 | 仍处于产品设计阶段 |
-| 新建与关联 | 未交付 | 需要 TemplateVersion、Managed Content 和签名 Operation |
-| Phase 1 母版 | 已完成治理母版：7 sheets、183 字段、68 条关系、21 条 v4 证据、180/180 源字段追溯、公式错误 0 | 用户整理业务值并发布首个 TemplateVersion |
-| Remote | Remote-only 候选：Connector `0.3.5 / sequence 8`、Bridge `0.4.1`；短期链接码 + 长期 protected binding、heartbeat/state、无 Local fallback | 公司电脑真实 Pack canary 未通过/待 canary；0.3.4/0.4.0 与 v4 更新通道保持不可变 |
+| 新建与关联 | `omnia.create-associate@0.2.1 / sequence 3` 候选源码；上传、校验、回传三步；V3 模板的 APP/DB/OS/Tool 分栏、11 项 canonical checks、字段修订后完整重检；APP 身份、回收站、resume/reuse/create 由签名只读 Operation 解析，只有 create-only 即时预检可授予一次性写许可 | 0.2.1 包、便携用户测试及真实 SAP ECC mutation/readback canary 待完成；AI review 暂为 `not_evaluable` warning，不冒充已执行 |
+| Phase 1 母版 | 已冻结 V8 治理输入：9 sheets、187 字段、68 条关系、21 条 v4 证据、180/180 源字段追溯；运行时使用独立签名 base/TemplateInstance，不把 V8 当用户模板 | 真实 Omnia/目标 Pack canary 未通过；待发布首个获批 TemplateVersion |
+| Remote | Remote-only：Bridge `0.4.4` 使用 4 位、2 分钟、一次性链接码；Connector `0.3.8 / sequence 11` 已发布 stable 在线更新通道，已有长期 protected binding 后不再输入链接码；无 Local fallback | 公司电脑上的 0.3.7 是否已在安全窗口自动激活 0.3.8 仍需现场读回；真实 Pack canary 待完成 |
 | Nova | 仅保留 OpenAI-compatible 配置路径 | Nova 专有协议尚未校验 |
 
 Feature 的原装/内置/后装/Operation/额外部署边界以 [Feature 包总览](implementation/FEATURE_PACKAGE_CATALOG.md) 为准；Shell 的实际代码映射以 [Shell 实现映射](implementation/SHELL_IMPLEMENTATION_MAP.md) 为准。
@@ -51,9 +51,14 @@ Feature 的原装/内置/后装/Operation/额外部署边界以 [Feature 包总�
 - [录制 Feature 实现](implementation/RECORDING_FEATURE.md)
 - [Remote Connector 0.3.4 发布记录](implementation/REMOTE_CONNECTOR_0_3_4_RELEASE.md)
 - [Remote Connector 0.3.5 Remote-only 发布记录](implementation/REMOTE_CONNECTOR_0_3_5_RELEASE.md)
+- [Remote Connector 0.3.6 新建与关联 Gate 发布记录](implementation/REMOTE_CONNECTOR_0_3_6_RELEASE.md)
+- [Remote Connector 0.3.7 可升级便携包发布记录](implementation/REMOTE_CONNECTOR_0_3_7_RELEASE.md)
 - [v5 Bridge 部署合同](implementation/V5_BRIDGE_DEPLOYMENT.md)
+- [Bridge 0.4.4 配对收紧发布记录](implementation/BRIDGE_0_4_4_RELEASE.md)
 - [Remote-only 迁移说明](implementation/REMOTE_ONLY_MIGRATION.md)
 - [Shell 0.4.2 Remote-only UI/Connector 验收](reviews/SHELL_0_4_2_REMOTE_ONLY_ACCEPTANCE.md)
+- [Shell 0.4.3 新建与关联便携验收](reviews/SHELL_0_4_3_CREATE_ASSOCIATE_PORTABLE_ACCEPTANCE.md)
+- [Shell 0.4.4 启动修复与便携入口验收](reviews/SHELL_0_4_4_STARTUP_ACCEPTANCE.md)
 - [公司电脑 Remote Pack canary](reviews/REMOTE_PACK_CANARY_0_4_2.md)
 - [前代实现复用清单](implementation/V4_REUSE_MANIFEST.md)
 - [Phase 1 母版待办与最终工作簿](planning/PHASE1_TEMPLATE_MASTER_WORKBOOK_TODO.md)
@@ -67,6 +72,9 @@ Feature 的原装/内置/后装/Operation/额外部署边界以 [Feature 包总�
 - [删除元素](product/DELETE_ELEMENTS_FEATURE.md)
 - [删除聊天记录](product/DELETE_CHAT_HISTORY_FEATURE.md)
 - [新建与关联](product/CREATE_AND_ASSOCIATE_FEATURE.md)
+- [新建与关联四阶段 Remote 回传 ADR](adr/0036-create-associate-four-stage-remote-return.md)
+- [新建与关联 0.1.0 验收记录](reviews/CREATE_ASSOCIATE_0_1_0_ACCEPTANCE.md)
+- [新建与关联 0.2.1 验收记录](reviews/CREATE_ASSOCIATE_0_2_1_ACCEPTANCE.md)
 - [全局缩放](product/GLOBAL_UI_SCALE.md)
 - [可调整布局](product/RESIZABLE_LAYOUT_SYSTEM.md)
 - [主界面布局规范](design/SHELL_UI_LAYOUT_SPEC.md)

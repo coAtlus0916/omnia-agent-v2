@@ -26,7 +26,13 @@ fi
 chmod 0600 "$INSTALL_ROOT/.env"
 
 cd "$INSTALL_ROOT"
-docker compose up -d --build --remove-orphans
+docker compose build
+# Named volumes are initially owned by root, while the Bridge runs as the
+# unprivileged node user (uid/gid 1000). Initialize ownership before startup so
+# pairing can persist bindings.json instead of passing health but failing POST.
+docker compose run --rm --no-deps --user root --cap-add CHOWN --entrypoint chown \
+  omnia-agent-v5-bridge -R 1000:1000 /var/lib/omnia-agent-v5-bridge
+docker compose up -d --remove-orphans
 
 attempt=0
 until curl --fail --silent --show-error http://127.0.0.1:18785/v1/health >/dev/null; do

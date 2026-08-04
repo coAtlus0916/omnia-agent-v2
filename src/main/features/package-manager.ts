@@ -4,6 +4,8 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type {
   DeclarativeFeatureSurface,
+  FeatureArtifactDescriptor,
+  FeatureArtifactInputRequest,
   FeatureActionRequest,
   FeatureNavigationGroup,
   FeatureNavigationLeaf,
@@ -14,6 +16,7 @@ import type { ProductPaths } from '../paths.js';
 import type { ConnectionSnapshot, WorkspaceSafetySnapshot } from '../../shared/contracts.js';
 import type { ConnectorTransport } from '../connector/connector-transport.js';
 import {
+  canonicalJson,
   packageDigest,
   packageFile,
   verifyOfficialPackage,
@@ -21,8 +24,9 @@ import {
 } from './official-package.js';
 import { FeatureRuntimeStore } from './feature-runtime-store.js';
 import { FeatureWorkerSupervisor } from './worker-supervisor.js';
+import type { InteractionLogService } from '../services/interaction-log-service.js';
 
-const PRODUCT_VERSION = '0.4.2';
+const PRODUCT_VERSION = '0.4.7';
 const REQUIRED_FEATURE_MEMBERS = [
   'SIGNATURE.json',
   'backend/migrations/001.json',
@@ -51,6 +55,10 @@ interface FeatureManifest {
   surfacePath: 'frontend/surface.json';
   workerPath: 'middle/worker.cjs';
   operationPackagePath: 'connector-capability/operation.ofop';
+  contractsPath?: 'contracts/feature-runtime.json';
+  implementationMapPath?: 'contracts/implementation-map.json';
+  testsManifestPath?: 'tests/manifest.json';
+  assets?: Array<{ path: string; sha256: string; kind: 'governance' | 'runtime_template_base' | 'source_template' }>;
   navigation: {
     groups: FeatureNavigationGroup[];
     leaves: Array<Omit<FeatureNavigationLeaf, 'availability' | 'reason'>>;
@@ -71,12 +79,13 @@ interface OperationDescriptor {
   responseSchema: string;
   enabledByDefault: boolean;
   grantsMutationPermit?: boolean;
+  permitsOperationId?: string;
   routes: Array<{
     stepId: string;
     method: 'GET' | 'POST' | 'PATCH';
     routeTemplate: string;
     parameters?: Array<{ name: string; type: 'guid' | 'string' }>;
-    bodyMode: 'none' | 'single_id_array' | 'information_search' | 'parameter_array';
+    bodyMode: 'none' | 'single_id_array' | 'information_search' | 'parameter_array' | 'signed_json';
     bodyParameter?: string;
   }>;
 }
@@ -116,6 +125,12 @@ export interface FeatureInstallResult {
 export interface FeatureRuntimeContext {
   connection: ConnectionSnapshot;
   safetyLock: WorkspaceSafetySnapshot;
+  /** Test/canary harness evidence. The production Shell intentionally supplies no entries. */
+  verifiedCanaryCapabilities?: Array<{
+    featureId: string;
+    scenarioId: string;
+    capabilityId: string;
+  }>;
 }
 
 export interface FeatureRuntimeDependencies {
@@ -185,7 +200,11 @@ function parseManifest(envelope: OfficialPackageEnvelope): FeatureManifest {
     'surfacePath',
     'workerPath',
     'operationPackagePath',
-    'navigation'
+    ...(Object.hasOwn(value,'contractsPath')?['contractsPath']:[]),
+    ...(Object.hasOwn(value,'implementationMapPath')?['implementationMapPath']:[]),
+    ...(Object.hasOwn(value,'testsManifestPath')?['testsManifestPath']:[]),
+    'navigation',
+    ...(Object.hasOwn(value, 'assets') ? ['assets'] : [])
   ], 'Feature manifest');
   const manifest = value as FeatureManifest;
   if (
@@ -209,13 +228,20 @@ function parseManifest(envelope: OfficialPackageEnvelope): FeatureManifest {
     || typeof manifest.navigation !== 'object'
     || Array.isArray(manifest.navigation)
   ) throw new Error('Feature manifest identity, compatibility, or isolation contract is invalid.');
+  const declaresBundleContracts = manifest.contractsPath !== undefined
+    || manifest.implementationMapPath !== undefined
+    || manifest.testsManifestPath !== undefined;
+  if (declaresBundleContracts && (
+    manifest.contractsPath !== 'contracts/feature-runtime.json'
+    || manifest.implementationMapPath !== 'contracts/implementation-map.json'
+    || manifest.testsManifestPath !== 'tests/manifest.json'
+  )) throw new Error('A Feature bundle contract extension must declare the runtime contract, implementation map, and tests manifest together.');
   exactKeys(manifest.navigation, ['groups', 'leaves'], 'Feature navigation');
   if (!Array.isArray(manifest.navigation.groups) || !Array.isArray(manifest.navigation.leaves)) {
     throw new Error('Feature navigation arrays are invalid.');
   }
   if (
-    manifest.navigation.groups.length < 1
-    || manifest.navigation.groups.length > 12
+    manifest.navigation.groups.length > 12
     || manifest.navigation.leaves.length > 24
   ) throw new Error('Feature navigation exceeds the product limits.');
   const groupIds = new Set<string>();
@@ -251,11 +277,12 @@ function parseManifest(envelope: OfficialPackageEnvelope): FeatureManifest {
     exactKeys(leaf, ['id', 'parentId', 'level', 'label', 'order', 'featureId', 'featureVersion', 'route'], 'Feature navigation leaf');
     validateNavigationId(leaf.id, 'Feature navigation leaf id');
     const parent = manifest.navigation.groups.find((group) => group.id === leaf.parentId);
+    const flat = leaf.parentId === '' && leaf.level === 2;
     if (
       allNavigationIds.has(leaf.id)
-      || !parent
-      || (leaf.level === 2 && parent.level !== 1)
-      || (leaf.level === 3 && parent.level !== 2)
+      || (!flat && !parent)
+      || (!flat && leaf.level === 2 && parent!.level !== 1)
+      || (leaf.level === 3 && parent!.level !== 2)
       || (leaf.level !== 2 && leaf.level !== 3)
       || typeof leaf.label !== 'string'
       || leaf.label.length < 1
@@ -271,6 +298,20 @@ function parseManifest(envelope: OfficialPackageEnvelope): FeatureManifest {
     routes.add(leaf.route);
   }
   if (manifest.navigation.leaves.length === 0) throw new Error('Feature must declare at least one navigation leaf.');
+  if (manifest.assets !== undefined) {
+    if (!Array.isArray(manifest.assets) || manifest.assets.length > 16) throw new Error('Feature managed assets are invalid.');
+    const paths = new Set<string>();
+    for (const asset of manifest.assets) {
+      exactKeys(asset, ['path', 'sha256', 'kind'], 'Feature managed asset');
+      if (!/^backend\/[\p{L}\p{N}][\p{L}\p{N} ._-]{2,127}\.(json|xlsx)$/u.test(asset.path)
+        || paths.has(asset.path) || !/^[0-9a-f]{64}$/u.test(asset.sha256)
+        || !['governance', 'runtime_template_base', 'source_template'].includes(asset.kind)
+        || crypto.createHash('sha256').update(packageFile(envelope, asset.path)).digest('hex') !== asset.sha256) {
+        throw new Error('Feature managed asset identity or digest is invalid.');
+      }
+      paths.add(asset.path);
+    }
+  }
   return manifest;
 }
 
@@ -292,7 +333,13 @@ function parseSurface(envelope: OfficialPackageEnvelope, manifest: FeatureManife
     'items',
     'selectedItemIds',
     'search',
-    'actions'
+    'actions',
+    ...(Object.hasOwn(value, 'recorder') ? ['recorder'] : []),
+    ...(Object.hasOwn(value, 'artifacts') ? ['artifacts'] : []),
+    ...(Object.hasOwn(value, 'editors') ? ['editors'] : []),
+    ...(Object.hasOwn(value, 'workflow') ? ['workflow'] : []),
+    ...(Object.hasOwn(value, 'progress') ? ['progress'] : []),
+    ...(Object.hasOwn(value, 'issues') ? ['issues'] : [])
   ], 'Declarative Feature surface');
   const surface = value as DeclarativeFeatureSurface;
   if (
@@ -313,6 +360,10 @@ function parseSurface(envelope: OfficialPackageEnvelope, manifest: FeatureManife
     || !Array.isArray(surface.selectedItemIds)
     || typeof surface.search !== 'string'
     || !Array.isArray(surface.actions)
+    || (surface.recorder !== undefined && (!surface.recorder || typeof surface.recorder !== 'object' || Array.isArray(surface.recorder)))
+    || (surface.artifacts !== undefined && !Array.isArray(surface.artifacts))
+    || (surface.editors !== undefined && !Array.isArray(surface.editors))
+    || (surface.issues !== undefined && !Array.isArray(surface.issues))
   ) throw new Error('Declarative Feature surface contract is invalid.');
   for (const action of surface.actions) {
     if (
@@ -324,11 +375,83 @@ function parseSurface(envelope: OfficialPackageEnvelope, manifest: FeatureManife
       || !['read_only', 'local_state_write', 'omnia_mutation'].includes(action.effect)
       || typeof action.enabled !== 'boolean'
       || typeof action.reason !== 'string'
+      || (action.presentation !== undefined && !['default', 'record', 'pause', 'stop', 'export', 'refresh'].includes(action.presentation))
       || (action.selectionMode !== undefined && !['none', 'single', 'multiple'].includes(action.selectionMode))
     ) throw new Error('Declarative Feature action is invalid.');
-    exactKeys(action, Object.hasOwn(action, 'selectionMode')
-      ? ['actionId', 'label', 'effect', 'enabled', 'reason', 'selectionMode']
-      : ['actionId', 'label', 'effect', 'enabled', 'reason'], 'Declarative Feature action');
+    const actionKeys = ['actionId', 'label', 'effect', 'enabled', 'reason'];
+    if (Object.hasOwn(action, 'presentation')) actionKeys.push('presentation');
+    if (Object.hasOwn(action, 'selectionMode')) actionKeys.push('selectionMode');
+    if (Object.hasOwn(action, 'dependencies')) actionKeys.push('dependencies');
+    if (Object.hasOwn(action, 'canaryCapability')) actionKeys.push('canaryCapability');
+    if (Object.hasOwn(action, 'input')) actionKeys.push('input');
+    if (Object.hasOwn(action, 'output')) actionKeys.push('output');
+    exactKeys(action, actionKeys, 'Declarative Feature action');
+    if (action.dependencies !== undefined && (
+      !Array.isArray(action.dependencies)
+      || new Set(action.dependencies).size !== action.dependencies.length
+      || action.dependencies.some((dependency) => !['remote_connector', 'safety_lock', 'verified_canary'].includes(dependency))
+    )) throw new Error('Declarative Feature action dependencies are invalid.');
+    if (action.canaryCapability !== undefined) {
+      if (!action.canaryCapability || typeof action.canaryCapability !== 'object' || Array.isArray(action.canaryCapability)) {
+        throw new Error('Declarative Feature action canary capability is invalid.');
+      }
+      exactKeys(action.canaryCapability, ['scenarioId', 'capabilityId'], 'Declarative Feature canary capability');
+      if (
+        !/^[a-z0-9][a-z0-9._-]{2,127}$/u.test(action.canaryCapability.scenarioId)
+        || !/^[a-z0-9][a-z0-9._-]{2,127}$/u.test(action.canaryCapability.capabilityId)
+      ) throw new Error('Declarative Feature canary capability identity is invalid.');
+    }
+    if (action.dependencies?.includes('verified_canary') && !action.canaryCapability) {
+      throw new Error('A verified-canary action must declare its scenario and capability.');
+    }
+    if (action.input !== undefined) {
+      if (!action.input || typeof action.input !== 'object' || Array.isArray(action.input)) {
+        throw new Error('Declarative Feature action input is invalid.');
+      }
+      exactKeys(action.input, ['kind', 'accept', 'label'], 'Declarative Feature action input');
+      if (
+        action.input.kind !== 'open_file'
+        || !Array.isArray(action.input.accept)
+        || action.input.accept.length < 1
+        || action.input.accept.length > 8
+        || action.input.accept.some((item) => typeof item !== 'string' || !/^\.[a-z0-9]{1,12}$/u.test(item))
+        || typeof action.input.label !== 'string'
+        || action.input.label.length < 1
+        || action.input.label.length > 80
+      ) throw new Error('Declarative Feature action input fields are invalid.');
+    }
+    if (action.output !== undefined) {
+      if (!action.output || typeof action.output !== 'object' || Array.isArray(action.output)) throw new Error('Declarative Feature action output is invalid.');
+      exactKeys(action.output, ['kind', 'memberPath', 'suggestedName'], 'Declarative Feature action output');
+      if (action.output.kind !== 'save_managed_asset'
+        || !/^backend\/[\p{L}\p{N}][\p{L}\p{N} ._/-]{1,239}$/u.test(action.output.memberPath)
+        || action.output.memberPath.includes('..')
+        || typeof action.output.suggestedName !== 'string' || action.output.suggestedName.length < 1 || action.output.suggestedName.length > 255) {
+        throw new Error('Declarative Feature action output fields are invalid.');
+      }
+    }
+  }
+  if (surface.recorder !== undefined) {
+    const recorder = surface.recorder;
+    exactKeys(recorder, [
+      'state', 'recordingId', 'startedAt', 'updatedAt', 'elapsedMs', 'eventCount', 'interactionCount',
+      'networkRequestCount', 'riskCount', 'controlCount', 'captureState', 'captureMessage', 'exportAvailable'
+    ], 'Declarative recorder');
+    if (
+      !['idle', 'recording', 'paused', 'stopped', 'exported', 'cancelled', 'error'].includes(recorder.state)
+      || typeof recorder.recordingId !== 'string' || recorder.recordingId.length > 100
+      || typeof recorder.startedAt !== 'string' || recorder.startedAt.length > 100
+      || typeof recorder.updatedAt !== 'string' || recorder.updatedAt.length > 100
+      || !Number.isSafeInteger(recorder.elapsedMs) || recorder.elapsedMs < 0
+      || !Number.isSafeInteger(recorder.eventCount) || recorder.eventCount < 0
+      || !Number.isSafeInteger(recorder.interactionCount) || recorder.interactionCount < 0
+      || !Number.isSafeInteger(recorder.networkRequestCount) || recorder.networkRequestCount < 0
+      || !Number.isSafeInteger(recorder.riskCount) || recorder.riskCount < 0
+      || !Number.isSafeInteger(recorder.controlCount) || recorder.controlCount < 0
+      || !['idle', 'pending', 'complete', 'incomplete'].includes(recorder.captureState)
+      || typeof recorder.captureMessage !== 'string' || recorder.captureMessage.length > 500
+      || typeof recorder.exportAvailable !== 'boolean'
+    ) throw new Error('Declarative recorder fields are invalid.');
   }
   if (
     surface.title.length < 1
@@ -340,7 +463,49 @@ function parseSurface(envelope: OfficialPackageEnvelope, manifest: FeatureManife
     || surface.items.length > 2_000
     || surface.selectedItemIds.length > 2_000
     || surface.actions.length > 20
+    || (surface.artifacts?.length || 0) > 100
+    || (surface.editors?.length || 0) > 500
+    || (surface.issues?.length || 0) > 2_000
   ) throw new Error('Declarative Feature surface exceeds product limits.');
+  if (surface.workflow !== undefined) {
+    if (!surface.workflow || typeof surface.workflow !== 'object' || Array.isArray(surface.workflow)) throw new Error('Declarative workflow is invalid.');
+    exactKeys(surface.workflow, ['revision', 'currentStepId', 'steps'], 'Declarative workflow');
+    if (!Number.isSafeInteger(surface.workflow.revision) || surface.workflow.revision < 1
+      || typeof surface.workflow.currentStepId !== 'string' || !Array.isArray(surface.workflow.steps)
+      || surface.workflow.steps.length < 1 || surface.workflow.steps.length > 20) throw new Error('Declarative workflow fields are invalid.');
+    const stepIds = new Set<string>();
+    for (const step of surface.workflow.steps) {
+      exactKeys(step, ['stepId', 'label', 'state', 'detail'], 'Declarative workflow step');
+      if (!/^[a-z0-9][a-z0-9._-]{1,63}$/u.test(step.stepId) || stepIds.has(step.stepId)
+        || typeof step.label !== 'string' || step.label.length < 1 || step.label.length > 80
+        || !['pending', 'current', 'completed', 'warning', 'failed'].includes(step.state)
+        || typeof step.detail !== 'string' || step.detail.length > 500) throw new Error('Declarative workflow step fields are invalid.');
+      stepIds.add(step.stepId);
+    }
+    if (!stepIds.has(surface.workflow.currentStepId)) throw new Error('Declarative workflow current step is invalid.');
+  }
+  if (surface.progress !== undefined) {
+    const progress = surface.progress;
+    if (!progress || typeof progress !== 'object' || Array.isArray(progress)) throw new Error('Declarative progress is invalid.');
+    exactKeys(progress, ['label', 'completed', 'total', 'percent', 'state', 'message', 'items'], 'Declarative progress');
+    if (typeof progress.label !== 'string' || progress.label.length < 1 || progress.label.length > 100
+      || !Number.isSafeInteger(progress.completed) || !Number.isSafeInteger(progress.total) || progress.completed < 0 || progress.total < 0 || progress.completed > progress.total
+      || !Number.isFinite(progress.percent) || progress.percent < 0 || progress.percent > 100
+      || !['pending', 'running', 'passed', 'warning', 'failed', 'skipped', 'uncertain'].includes(progress.state)
+      || typeof progress.message !== 'string' || progress.message.length > 500 || !Array.isArray(progress.items) || progress.items.length > 500) throw new Error('Declarative progress fields are invalid.');
+    for (const item of progress.items) {
+      exactKeys(item, ['itemId', 'label', 'state', 'detail'], 'Declarative progress item');
+      if (typeof item.itemId !== 'string' || typeof item.label !== 'string' || item.label.length < 1 || item.label.length > 120
+        || !['pending', 'running', 'passed', 'warning', 'failed', 'skipped', 'uncertain'].includes(item.state)
+        || typeof item.detail !== 'string' || item.detail.length > 500) throw new Error('Declarative progress item fields are invalid.');
+    }
+  }
+  for (const issue of surface.issues || []) {
+    exactKeys(issue, ['issueId', 'scope', 'severity', 'elementId', 'fieldKey', 'message'], 'Declarative issue');
+    if (typeof issue.issueId !== 'string' || !['global', 'element', 'field'].includes(issue.scope)
+      || !['warning', 'error'].includes(issue.severity) || typeof issue.elementId !== 'string'
+      || typeof issue.fieldKey !== 'string' || typeof issue.message !== 'string' || issue.message.length < 1 || issue.message.length > 500) throw new Error('Declarative issue fields are invalid.');
+  }
   const scopeIds = new Set<string>();
   for (const scope of surface.scopes) {
     if (!scope || typeof scope !== 'object' || Array.isArray(scope)) throw new Error('Declarative Feature scope is invalid.');
@@ -413,6 +578,40 @@ function parseSurface(envelope: OfficialPackageEnvelope, manifest: FeatureManife
     ) throw new Error('Declarative Feature action identity is invalid.');
     actionIds.add(action.actionId);
   }
+  for (const artifact of surface.artifacts || []) {
+    if (!artifact || typeof artifact !== 'object' || Array.isArray(artifact)) throw new Error('Declarative Feature artifact is invalid.');
+    exactKeys(artifact, ['artifactId', 'kind', 'name', 'sha256', 'sizeBytes', 'available', 'reason'], 'Declarative Feature artifact');
+    if (
+      typeof artifact.artifactId !== 'string'
+      || !['source', 'template_candidate', 'template_instance', 'result', 'evidence'].includes(artifact.kind)
+      || typeof artifact.name !== 'string'
+      || artifact.name.length < 1
+      || artifact.name.length > 255
+      || !/^[0-9a-f]{64}$/u.test(artifact.sha256)
+      || !Number.isSafeInteger(artifact.sizeBytes)
+      || artifact.sizeBytes < 0
+      || typeof artifact.available !== 'boolean'
+      || typeof artifact.reason !== 'string'
+      || artifact.reason.length > 500
+    ) throw new Error('Declarative Feature artifact fields are invalid.');
+  }
+  for (const editor of surface.editors || []) {
+    if (!editor || typeof editor !== 'object' || Array.isArray(editor)) throw new Error('Declarative Feature editor is invalid.');
+    exactKeys(editor, [
+      'issueId', 'fieldKey', 'expectedRevision', 'inputKind', 'label', 'currentValue',
+      'allowedValues', 'required', 'maxLength'
+    ], 'Declarative Feature editor');
+    if (
+      typeof editor.issueId !== 'string' || typeof editor.fieldKey !== 'string'
+      || !Number.isSafeInteger(editor.expectedRevision) || editor.expectedRevision < 1
+      || !['text', 'enum'].includes(editor.inputKind) || typeof editor.label !== 'string'
+      || typeof editor.currentValue !== 'string' || !Array.isArray(editor.allowedValues)
+      || editor.allowedValues.some((value) => typeof value !== 'string' || value.length > 200)
+      || (editor.inputKind === 'enum' && editor.allowedValues.length < 1)
+      || typeof editor.required !== 'boolean' || !Number.isSafeInteger(editor.maxLength)
+      || editor.maxLength < 1 || editor.maxLength > 10_000
+    ) throw new Error('Declarative Feature editor fields are invalid.');
+  }
   return surface;
 }
 
@@ -428,17 +627,39 @@ function validateDocumentation(envelope: OfficialPackageEnvelope, manifest: Feat
     || !Array.isArray(docs.documents)
     || docs.documents.length < 2
   ) throw new Error('Documentation manifest identity is invalid.');
+  const documentPaths = new Set<string>();
   for (const document of docs.documents) {
     if (!document || typeof document !== 'object' || Array.isArray(document)) throw new Error('Documentation entry is invalid.');
     exactKeys(document, ['path', 'sha256', 'purpose'], 'Documentation entry');
     if (
-      !['docs/FEATURE.md', 'docs/IMPLEMENTATION_MAP.md'].includes(document.path)
+      !/^docs\/[A-Z][A-Z0-9_]{1,63}\.md$/u.test(document.path)
+      || documentPaths.has(document.path)
       || !/^[0-9a-f]{64}$/u.test(document.sha256)
       || typeof document.purpose !== 'string'
       || crypto.createHash('sha256').update(packageFile(envelope, document.path)).digest('hex') !== document.sha256
     ) throw new Error('Documentation entry digest or path is invalid.');
+    documentPaths.add(document.path);
   }
   return crypto.createHash('sha256').update(packageFile(envelope, 'docs/manifest.json')).digest('hex');
+}
+
+function validateFeatureBundleContracts(envelope: OfficialPackageEnvelope, manifest: FeatureManifest): void {
+  if(!manifest.contractsPath||!manifest.implementationMapPath||!manifest.testsManifestPath) throw new Error('Feature bundle contract extension is absent.');
+  const runtime=parseJson(packageFile(envelope,manifest.contractsPath),'Feature runtime contract') as Record<string,unknown>;
+  const mapping=parseJson(packageFile(envelope,manifest.implementationMapPath),'Feature implementation map') as Record<string,unknown>;
+  const tests=parseJson(packageFile(envelope,manifest.testsManifestPath),'Feature tests manifest') as Record<string,unknown>;
+  const vectors=parseJson(packageFile(envelope,'tests/vectors.json'),'Feature test vectors') as Record<string,unknown>;
+  if(runtime?.schemaVersion!=='omnia.feature-runtime-contract/v1'||runtime.featureId!==manifest.featureId||runtime.featureVersion!==manifest.version
+    ||!Array.isArray(runtime.inputs)||!Array.isArray(runtime.outputs)||!Array.isArray(runtime.events)||!Array.isArray(runtime.errors)||!Array.isArray(runtime.storePorts)) throw new Error('Feature runtime contract is invalid.');
+  if(mapping?.schemaVersion!=='omnia.feature-implementation-map/v1'||mapping.featureId!==manifest.featureId||mapping.featureVersion!==manifest.version
+    ||!mapping.planes||typeof mapping.planes!=='object'||Array.isArray(mapping.planes)) throw new Error('Feature implementation map is invalid.');
+  const planes=mapping.planes as Record<string,unknown>;
+  for(const plane of ['surface','worker','store','connector']) if(!Array.isArray(planes[plane])||(planes[plane] as unknown[]).length<1) throw new Error('Feature implementation map omits a required Plane.');
+  if(tests?.schemaVersion!=='omnia.feature-tests-manifest/v1'||tests.featureId!==manifest.featureId||tests.featureVersion!==manifest.version
+    ||!Array.isArray(tests.testIds)||(tests.testIds as unknown[]).length<1||tests.vectorsPath!=='tests/vectors.json'||tests.selfTestPath!=='tests/self-test.cjs'||tests.status!=='declared') throw new Error('Feature tests manifest is invalid.');
+  if(vectors?.schemaVersion!=='omnia.feature-test-vectors/v1'||vectors.featureId!==manifest.featureId||!Array.isArray(vectors.vectors)||(vectors.vectors as unknown[]).length<1) throw new Error('Feature test vectors are invalid.');
+  const ids=new Set((tests.testIds as unknown[]).map(String));
+  if((vectors.vectors as Array<Record<string,unknown>>).some((vector)=>!ids.has(String(vector.testId||''))||!Object.hasOwn(vector,'expected'))) throw new Error('Feature test vectors differ from the signed test inventory.');
 }
 
 function validateOperationPackage(input: unknown, featureManifest: FeatureManifest): void {
@@ -477,6 +698,7 @@ function validateOperationPackage(input: unknown, featureManifest: FeatureManife
       'responseSchema',
       'enabledByDefault',
       'grantsMutationPermit',
+      ...(Object.hasOwn(operation, 'permitsOperationId') ? ['permitsOperationId'] : []),
       'routes'
     ] : [
       'operationId',
@@ -497,6 +719,7 @@ function validateOperationPackage(input: unknown, featureManifest: FeatureManife
       || !/^omnia\.[a-z0-9.-]+\/v\d+$/u.test(operation.responseSchema)
       || typeof operation.enabledByDefault !== 'boolean'
       || (executable && typeof operation.grantsMutationPermit !== 'boolean')
+      || (operation.permitsOperationId !== undefined && typeof operation.permitsOperationId !== 'string')
       || !Array.isArray(operation.routes)
       || operation.routes.length < 1
       || operation.routes.length > 16
@@ -521,8 +744,8 @@ function validateOperationPackage(input: unknown, featureManifest: FeatureManife
         || route.routeTemplate.length > 300
         || !/^\/[a-zA-Z0-9._?=&{}/-]+$/u.test(route.routeTemplate)
         || /\*\*|https?:|\/\/|\\|\.\./iu.test(route.routeTemplate)
-        || !['none', 'single_id_array', 'information_search', 'parameter_array'].includes(route.bodyMode)
-        || (route.bodyMode !== 'none' && route.method !== 'POST')
+        || !['none', 'single_id_array', 'information_search', 'parameter_array', 'signed_json'].includes(route.bodyMode)
+        || (!['none', 'signed_json'].includes(route.bodyMode) && route.method !== 'POST')
         || (route.method === 'GET' && route.bodyMode !== 'none')
       ) throw new Error('Connector Operation route is not a strict product allowlist entry.');
       if (executable) {
@@ -544,6 +767,12 @@ function validateOperationPackage(input: unknown, featureManifest: FeatureManife
       }
       stepIds.add(route.stepId);
     }
+  }
+  for (const operation of manifest.operations) {
+    if (
+      operation.permitsOperationId !== undefined
+      && manifest.operations.find((candidate) => candidate.operationId === operation.permitsOperationId)?.effect !== 'omnia_mutation'
+    ) throw new Error('Connector Operation permit target is not a declared mutation Operation.');
   }
   const policy = parseJson(packageFile(envelope, 'operation/policy.json'), 'Connector Operation policy');
   if (!policy || typeof policy !== 'object' || Array.isArray(policy)) throw new Error('Connector Operation policy is invalid.');
@@ -676,6 +905,7 @@ export class FeaturePackageManager {
   private selectedFeatureId = '';
   private readonly supervisors = new Map<string, FeatureWorkerSupervisor>();
   private readonly runtimeSurfaces = new Map<string, DeclarativeFeatureSurface>();
+  private readonly operationRegistrations = new Map<string, { sessionGeneration: number; packageDigest: string }>();
   private readonly pendingRuntimeEvents = new Set<string>();
   private readonly runtimeStore: FeatureRuntimeStore;
 
@@ -683,7 +913,8 @@ export class FeaturePackageManager {
     private readonly database: DatabaseSync,
     private readonly paths: ProductPaths,
     private readonly faultInjector?: (point: 'after_immutable_move_before_activation') => void,
-    private readonly runtime?: FeatureRuntimeDependencies
+    private readonly runtime?: FeatureRuntimeDependencies,
+    private readonly interactionLogs?: InteractionLogService
   ) {
     this.runtimeStore = new FeatureRuntimeStore(database, paths);
     fs.mkdirSync(path.join(paths.data, 'packages', 'staging'), { recursive: true });
@@ -691,6 +922,173 @@ export class FeaturePackageManager {
     fs.mkdirSync(path.join(paths.data, 'features'), { recursive: true });
     fs.mkdirSync(path.join(paths.data, 'documentation', 'staging'), { recursive: true });
     fs.mkdirSync(path.join(paths.data, 'documentation', 'features'), { recursive: true });
+  }
+
+  importArtifact(request: FeatureArtifactInputRequest, sourceFilename: string): FeatureArtifactDescriptor {
+    const source = path.resolve(sourceFilename);
+    const stat = fs.statSync(source);
+    if (!stat.isFile()) throw new AppError('FEATURE.ARTIFACT_SIZE_INVALID', 'Feature input must be a regular file.');
+    return this.importArtifactContent(request, path.basename(source), fs.readFileSync(source), 'interactive-file-picker');
+  }
+
+  importArtifactBytes(request: FeatureArtifactInputRequest, name: string, bytes: Uint8Array): FeatureArtifactDescriptor {
+    if (!(bytes instanceof Uint8Array)) throw new AppError('FEATURE.ARTIFACT_BYTES_INVALID', 'Dropped Feature input bytes are invalid.');
+    return this.importArtifactContent(request, name, Buffer.from(bytes), 'renderer-drag-drop');
+  }
+
+  private importArtifactContent(
+    request: FeatureArtifactInputRequest,
+    originalName: string,
+    bytes: Buffer,
+    sourceRef: 'interactive-file-picker' | 'renderer-drag-drop'
+  ): FeatureArtifactDescriptor {
+    const head = this.head(request.featureId);
+    if (!head || head.featureVersion !== request.featureVersion) {
+      throw new AppError('FEATURE.VERSION_MISMATCH', 'The Feature artifact target is not the active version.');
+    }
+    const { surface } = this.loadInstalled(head);
+    if (surface.surfaceId !== request.surfaceId) throw new AppError('FEATURE.SURFACE_MISMATCH', 'Feature artifact surface drifted.');
+    const action = surface.actions.find((candidate) => candidate.actionId === request.actionId);
+    if (!action?.input || action.input.kind !== 'open_file') throw new AppError('FEATURE.INPUT_NOT_DECLARED', 'This action has no file input contract.');
+    if (
+      request.accept.length !== action.input.accept.length
+      || request.accept.some((extension) => !action.input!.accept.includes(extension))
+    ) throw new AppError('FEATURE.INPUT_CONTRACT_MISMATCH', 'Feature input accept list drifted.');
+    if (bytes.length < 1 || bytes.length > 64 * 1024 * 1024) {
+      throw new AppError('FEATURE.ARTIFACT_SIZE_INVALID', 'Feature input must be a non-empty file no larger than 64 MiB.');
+    }
+    if (typeof originalName !== 'string' || originalName !== path.basename(originalName) || originalName.length > 255) {
+      throw new AppError('FEATURE.ARTIFACT_NAME_INVALID', 'Feature input name is invalid.');
+    }
+    const extension = path.extname(originalName).toLowerCase();
+    if (!action.input.accept.includes(extension)) throw new AppError('FEATURE.ARTIFACT_TYPE_INVALID', 'Selected file type is not allowed.');
+    const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+    const artifactId = randomUUID();
+    const runId = randomUUID();
+    const traceId = randomUUID();
+    const startedAt = utcNow();
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      this.database.prepare(`
+        INSERT INTO feature_runs(
+          run_id, trace_id, feature_id, feature_version, engagement_id, state, state_revision,
+          source_artifact_id, template_version_id, output_artifact_id, plan_digest, last_error, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, '', 'draft', 1, '', '', '', '', '', ?, ?)
+      `).run(runId, traceId, request.featureId, request.featureVersion, startedAt, startedAt);
+      this.database.prepare(`
+        INSERT INTO feature_run_events(event_id, run_id, revision, from_state, to_state, event_type, details_json, occurred_at)
+        VALUES(?, ?, 1, '', 'draft', 'intake.prepared', '{}', ?)
+      `).run(randomUUID(), runId, startedAt);
+      this.database.exec('COMMIT;');
+    } catch (error) {
+      this.database.exec('ROLLBACK;');
+      throw error;
+    }
+    const relative = path.posix.join('features', request.featureId, 'artifacts', artifactId, `source${extension}`);
+    const destination = path.resolve(this.paths.data, ...relative.split('/'));
+    const artifactRoot = path.resolve(this.paths.data, 'features', request.featureId, 'artifacts');
+    if (!destination.startsWith(`${artifactRoot}${path.sep}`)) throw new AppError('FEATURE.ARTIFACT_PATH_INVALID', 'Managed artifact path escaped its Feature root.');
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    try { fs.writeFileSync(destination, bytes, { flag: 'wx' }); }
+    catch (error) {
+      const failedAt = utcNow();
+      this.database.exec('BEGIN IMMEDIATE;');
+      try {
+        this.database.prepare(`UPDATE feature_runs SET state='cancelled', state_revision=2, last_error=?, updated_at=? WHERE run_id=? AND state_revision=1`)
+          .run(error instanceof Error ? error.message : 'Artifact copy failed.', failedAt, runId);
+        this.database.prepare(`
+          INSERT INTO feature_run_events(event_id, run_id, revision, from_state, to_state, event_type, details_json, occurred_at)
+          VALUES(?, ?, 2, 'draft', 'cancelled', 'artifact.copy_failed', ?, ?)
+        `).run(randomUUID(), runId, JSON.stringify({ message: error instanceof Error ? error.message : 'Artifact copy failed.' }), failedAt);
+        this.database.exec('COMMIT;');
+      } catch (databaseError) {
+        this.database.exec('ROLLBACK;');
+        throw databaseError;
+      }
+      throw error;
+    }
+    const importedAt = utcNow();
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      this.database.prepare(`
+        INSERT INTO feature_artifacts(
+          artifact_id, run_id, feature_id, kind, media_type, original_name, source_kind, source_ref,
+          managed_path, sha256, size_bytes, source_version, imported_at, created_at
+        ) VALUES(?, ?, ?, 'source', ?, ?, 'user_import', ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        artifactId, runId, request.featureId,
+        extension === '.xlsx' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'application/octet-stream',
+        originalName, sourceRef, relative, sha256, bytes.length, request.featureVersion, importedAt, importedAt
+      );
+      const attached = this.database.prepare(`
+        UPDATE feature_runs SET source_artifact_id=?, state='acquiring', state_revision=2, updated_at=?
+        WHERE run_id=? AND state='draft' AND state_revision=1
+      `).run(artifactId, importedAt, runId);
+      if (attached.changes !== 1) throw new Error('Feature Run changed before the source artifact could be attached.');
+      this.database.prepare(`
+        INSERT INTO feature_run_events(event_id, run_id, revision, from_state, to_state, event_type, details_json, occurred_at)
+        VALUES(?, ?, 2, 'draft', 'acquiring', 'artifact.attached', ?, ?)
+      `).run(randomUUID(), runId, JSON.stringify({ artifactId, sha256, sizeBytes: bytes.length, sourceRef }), importedAt);
+      this.database.exec('COMMIT;');
+    } catch (error) {
+      this.database.exec('ROLLBACK;');
+      fs.rmSync(destination, { force: true });
+      const failedAt=utcNow();
+      try{
+        this.database.exec('BEGIN IMMEDIATE;');
+        const failed=this.database.prepare(`UPDATE feature_runs SET state='cancelled',state_revision=2,last_error=?,updated_at=? WHERE run_id=? AND state='draft' AND state_revision=1`).run(error instanceof Error?error.message:'Artifact attach failed.',failedAt,runId);
+        if(failed.changes===1)this.database.prepare(`INSERT INTO feature_run_events(event_id,run_id,revision,from_state,to_state,event_type,details_json,occurred_at) VALUES(?,?,2,'draft','cancelled','artifact.attach_failed',?,?)`).run(randomUUID(),runId,JSON.stringify({message:error instanceof Error?error.message:'Artifact attach failed.'}),failedAt);
+        this.database.exec('COMMIT;');
+      }catch(recoveryError){this.database.exec('ROLLBACK;');if(error&&typeof error==='object')Object.defineProperty(error,'recoveryError',{value:recoveryError,enumerable:false});}
+      throw error;
+    }
+    return {
+      schemaVersion: 'omnia.feature-artifact/v1', artifactId, runId, traceId,
+      featureId: request.featureId, featureVersion: request.featureVersion, surfaceId: request.surfaceId,
+      kind: 'source', originalName,
+      mediaType: extension === '.xlsx' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'application/octet-stream',
+      sizeBytes: bytes.length, sha256, importedAt
+    };
+  }
+
+  exportManagedAsset(featureId: string, featureVersion: string, actionId: string, memberPath: string): { source: string; suggestedName: string } {
+    const head = this.head(featureId);
+    if (!head || head.featureVersion !== featureVersion) throw new AppError('FEATURE.VERSION_MISMATCH', 'Managed asset target is not the active Feature version.');
+    const { surface } = this.loadInstalled(head);
+    const action = surface.actions.find((candidate) => candidate.actionId === actionId);
+    if (action?.output?.kind !== 'save_managed_asset' || action.output.memberPath !== memberPath) throw new AppError('FEATURE.OUTPUT_CONTRACT_MISMATCH', 'Managed asset output differs from the signed Surface contract.');
+    const row = this.database.prepare(`
+      SELECT managed_path, member_digest, asset_kind FROM feature_managed_assets
+      WHERE feature_id=? AND feature_version=? AND member_path=?
+    `).get(featureId, featureVersion, memberPath) as { managed_path: string; member_digest: string; asset_kind: string } | undefined;
+    if (!row || row.asset_kind !== 'source_template') throw new AppError('FEATURE.ASSET_NOT_EXPORTABLE', 'The requested signed source template is unavailable.');
+    const source = path.resolve(this.paths.data, ...row.managed_path.split('/'));
+    const installedRoot = path.resolve(this.paths.data, 'packages', 'installed', featureId, featureVersion);
+    if (!source.startsWith(`${installedRoot}${path.sep}`) || !fs.statSync(source).isFile()) throw new AppError('FEATURE.ASSET_PATH_INVALID', 'Managed source template path is invalid.');
+    const bytes = fs.readFileSync(source);
+    if (crypto.createHash('sha256').update(bytes).digest('hex') !== row.member_digest) throw new AppError('FEATURE.ASSET_INTEGRITY', 'Managed source template digest drifted from the signed package member.');
+    return { source, suggestedName: action.output.suggestedName };
+  }
+
+  exportArtifact(featureId: string, artifactId: string): { source: string; suggestedName: string } {
+    const row = this.database.prepare(`
+      SELECT managed_path, original_name, kind, sha256, size_bytes FROM feature_artifacts WHERE artifact_id=? AND feature_id=?
+    `).get(artifactId, featureId) as {
+      managed_path: string; original_name: string; kind: string; sha256: string; size_bytes: number;
+    } | undefined;
+    if (!row || !['template_candidate', 'template_instance', 'result', 'evidence'].includes(row.kind)) {
+      throw new AppError('FEATURE.ARTIFACT_NOT_EXPORTABLE', 'The requested Feature artifact is unavailable for download.');
+    }
+    const source = path.resolve(this.paths.data, ...row.managed_path.split('/'));
+    const featureRoot = path.resolve(this.paths.data, 'features', featureId, 'artifacts');
+    if (!source.startsWith(`${featureRoot}${path.sep}`) || !fs.statSync(source).isFile()) {
+      throw new AppError('FEATURE.ARTIFACT_PATH_INVALID', 'Managed artifact path is invalid.');
+    }
+    const bytes = fs.readFileSync(source);
+    if (bytes.length !== row.size_bytes || crypto.createHash('sha256').update(bytes).digest('hex') !== row.sha256) {
+      throw new AppError('FEATURE.ARTIFACT_INTEGRITY', 'Managed artifact bytes drifted from their durable digest.');
+    }
+    return { source, suggestedName: path.basename(row.original_name) };
   }
 
   private recoverInterruptedInstalls(): void {
@@ -732,7 +1130,8 @@ export class FeaturePackageManager {
     }
     const stage = path.join(this.paths.data, 'documentation', 'staging', attemptId);
     fs.mkdirSync(stage, { recursive: false });
-    for (const memberPath of ['docs/manifest.json', 'docs/FEATURE.md', 'docs/IMPLEMENTATION_MAP.md']) {
+    const docs = parseJson(packageFile(envelope, 'docs/manifest.json'), 'Documentation manifest') as DocumentationManifest;
+    for (const memberPath of ['docs/manifest.json', ...docs.documents.map((document) => document.path)]) {
       const output = path.join(stage, path.basename(memberPath));
       fs.writeFileSync(output, packageFile(envelope, memberPath), { flag: 'wx' });
     }
@@ -751,14 +1150,25 @@ export class FeaturePackageManager {
     surface: DeclarativeFeatureSurface;
     documentationDigest: string;
   } {
-    const members = [...envelope.files.map((member) => member.path)].sort();
-    const required = [...REQUIRED_FEATURE_MEMBERS].sort();
-    if (members.length !== required.length || members.some((member, index) => member !== required[index])) {
-      throw new Error('Feature package member inventory is incomplete or contains undeclared files.');
-    }
     const manifest = parseManifest(envelope);
     const surface = parseSurface(envelope, manifest);
     const documentationDigest = validateDocumentation(envelope, manifest);
+    if (manifest.contractsPath || manifest.implementationMapPath || manifest.testsManifestPath) {
+      validateFeatureBundleContracts(envelope, manifest);
+    }
+    const docs = parseJson(packageFile(envelope, 'docs/manifest.json'), 'Documentation manifest') as DocumentationManifest;
+    const members = [...envelope.files.map((member) => member.path)].sort();
+    const required = [...new Set([
+      ...REQUIRED_FEATURE_MEMBERS,
+      ...docs.documents.map((document) => document.path),
+      ...(manifest.assets || []).map((asset) => asset.path),
+      ...(manifest.contractsPath?[manifest.contractsPath]:[]),
+      ...(manifest.implementationMapPath?[manifest.implementationMapPath]:[]),
+      ...(manifest.testsManifestPath?[manifest.testsManifestPath,'tests/vectors.json','tests/self-test.cjs']:[])
+    ])].sort();
+    if (members.length !== required.length || members.some((member, index) => member !== required[index])) {
+      throw new Error('Feature package member inventory is incomplete or contains undeclared files.');
+    }
     parsePrivateMigration(envelope, manifest.storeNamespace);
     const operationInput = parseJson(packageFile(envelope, manifest.operationPackagePath), 'Connector Operation package');
     validateOperationPackage(operationInput, manifest);
@@ -901,6 +1311,23 @@ export class FeaturePackageManager {
             documentation_digest=excluded.documentation_digest, lifecycle='candidate',
             activated_at=excluded.activated_at, physical_path=excluded.physical_path
         `).run(manifest.featureId, manifest.version, documentationDigest, now, documentationPath);
+        for (const asset of manifest.assets || []) {
+          this.database.prepare(`
+            INSERT INTO feature_managed_assets(
+              feature_id, feature_version, package_digest, member_path, member_digest,
+              asset_kind, managed_path, imported_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(feature_id, feature_version, member_path) DO UPDATE SET
+              package_digest=excluded.package_digest,
+              member_digest=excluded.member_digest,
+              asset_kind=excluded.asset_kind,
+              managed_path=excluded.managed_path,
+              imported_at=excluded.imported_at
+          `).run(
+            manifest.featureId, manifest.version, digest, asset.path, asset.sha256, asset.kind,
+            path.posix.join(relativeInstalled, asset.path), now
+          );
+        }
         this.database.prepare(`
           INSERT INTO feature_activation_heads(
             feature_id, feature_version, activation_generation, runtime_enabled, runtime_reason,
@@ -1128,6 +1555,7 @@ export class FeaturePackageManager {
   async disposeRuntime(): Promise<void> {
     await Promise.allSettled([...this.supervisors.values()].map((supervisor) => supervisor.stop()));
     this.supervisors.clear();
+    this.operationRegistrations.clear();
   }
 
   takePendingRuntimeEvents(): string[] {
@@ -1154,12 +1582,13 @@ export class FeaturePackageManager {
     const operationPackage = JSON.parse(
       fs.readFileSync(path.join(installed.root, installed.manifest.operationPackagePath), 'utf8')
     ) as unknown;
-    const registration = await this.runtime.connector.registerOperation({
-      schemaVersion: 'omnia.operation-registration/v1',
-      featureId: head.featureId,
-      featureVersion: head.featureVersion,
-      operationPackage
-    });
+    const operationEnvelope = verifyOfficialPackage(operationPackage, 'omnia-connector-operation');
+    const operationPackageDigest = packageDigest(operationEnvelope);
+    const operationManifest = parseJson(packageFile(operationEnvelope, 'manifest.json'), 'Connector Operation manifest') as OperationManifest;
+    const operationEffects = new Map(operationManifest.operations.map((operation) => [operation.operationId, operation.effect]));
+    for (const key of this.operationRegistrations.keys()) {
+      if (key.startsWith(`${head.featureId}|`)) this.operationRegistrations.delete(key);
+    }
     const supervisor = new FeatureWorkerSupervisor(
       this.runtime.workerHostEntrypoint,
       path.join(installed.root, installed.manifest.workerPath),
@@ -1172,33 +1601,199 @@ export class FeaturePackageManager {
             if (context.featureId !== 'omnia.recording' || invocation.featureId !== context.featureId || invocation.featureVersion !== context.featureVersion) {
               throw new AppError('FEATURE.RECORDING_IDENTITY_MISMATCH', 'Recording command identity is invalid.');
             }
-            return this.runtime!.connector.recordingCommand({
+            const recording = () => this.runtime!.connector.recordingCommand({
               schemaVersion: 'omnia.v5.recording-command/v1',
               featureId: 'omnia.recording',
               featureVersion: context.featureVersion,
               kind: invocation.kind,
               connectorBinding: invocation.connectorBinding,
-              ...(invocation.recordingId ? { recordingId: String(invocation.recordingId) } : {})
+              ...(invocation.recordingId ? { recordingId: String(invocation.recordingId) } : {}),
+              ...(Number.isSafeInteger(invocation.chunkIndex) ? { chunkIndex: Number(invocation.chunkIndex) } : {})
             });
+            return this.interactionLogs ? this.interactionLogs.run({
+              plane: 'connector', component: 'remote-operation', surface: 'feature.recording',
+              action: String(invocation.kind || 'recording-command'), failurePoint: `connector.recording.${String(invocation.kind || 'unknown')}`,
+              operationId: String(invocation.kind || ''), details: { featureId: context.featureId, featureVersion: context.featureVersion }
+            }, recording, context.interactionContext) : recording();
           }
           if (
             invocation?.schemaVersion !== 'omnia.operation-invocation/v1'
             || invocation.featureId !== context.featureId
             || invocation.featureVersion !== context.featureVersion
           ) throw new AppError('FEATURE.OPERATION_IDENTITY_MISMATCH', 'Feature Operation identity is invalid.');
+          const sessionGeneration = Number(invocation.request?.connectorBinding?.sessionGeneration || 0);
+          if (!Number.isSafeInteger(sessionGeneration) || sessionGeneration < 1) {
+            throw new AppError('FEATURE.OPERATION_BINDING_MISSING', 'Remote Operation requires a frozen session generation.');
+          }
+          const registrationKey = `${context.featureId}|${context.featureVersion}|${operationPackageDigest}`;
+          const cachedRegistration = this.operationRegistrations.get(registrationKey);
+          if (!cachedRegistration || cachedRegistration.sessionGeneration !== sessionGeneration) {
+            const registration = await this.runtime!.connector.registerOperation({
+              schemaVersion: 'omnia.operation-registration/v1',
+              featureId: context.featureId,
+              featureVersion: context.featureVersion,
+              operationPackage
+            });
+            if (registration.packageDigest !== operationPackageDigest) {
+              throw new AppError('FEATURE.OPERATION_REGISTRATION_DRIFT', 'Remote Connector registered another Operation package digest.');
+            }
+            this.operationRegistrations.set(registrationKey, { sessionGeneration, packageDigest: operationPackageDigest });
+          }
           try {
-            return await this.runtime!.connector.invokeOperation({
+            const operationId = String(invocation.operationId || '');
+            const receiptContext = invocation.request?.receiptContext as Record<string, unknown> | undefined;
+            const operationRequest = { ...(invocation.request as Record<string, unknown>) };
+            delete operationRequest.receiptContext;
+            const signedCommand = operationRequest.command as Record<string, any> | undefined;
+            const mutationTarget = operationRequest.target as Record<string, any> | undefined;
+            const mutationBinding = operationRequest.connectorBinding as Record<string, any> | undefined;
+            const declaresDurableMutationProtocol = operationEffects.get(operationId) === 'omnia_mutation'
+              && Boolean(signedCommand && mutationTarget && mutationBinding && String(operationRequest.planDigest || ''));
+            if (declaresDurableMutationProtocol) {
+              const commandRow = this.database.prepare(`
+                SELECT c.operation_id,c.idempotency_key,c.plan_digest,c.request_digest,c.state,c.evidence_target_identity_key,
+                  f.credential_digest,f.authority_instance_id,f.tenant_or_org_id,f.pack_id,f.engagement_id,
+                  s.workspace_ids_json,i.intended_revision_json,
+                  EXISTS(SELECT 1 FROM feature_mutation_reservations mr WHERE mr.owner_command_id=c.command_id AND mr.lifecycle='active') AS owns_reservation
+                FROM feature_commands c
+                JOIN feature_runs r ON r.run_id=c.run_id
+                JOIN managed_content_intents i ON i.intent_id=c.intent_id AND i.run_id=c.run_id
+                JOIN feature_confirmations f ON f.run_id=c.run_id AND f.plan_digest=c.plan_digest AND f.decision='approved'
+                JOIN workspace_safety s ON s.singleton=1
+                WHERE c.command_id=? AND r.feature_id=? AND r.feature_version=?
+                ORDER BY f.created_at DESC LIMIT 1
+              `).get(String(signedCommand?.commandId || ''),context.featureId,context.featureVersion) as Record<string,any>|undefined;
+              const workspaceIds=commandRow?JSON.parse(String(commandRow.workspace_ids_json)) as string[]:[];
+              const authorityDigest=mutationBinding?crypto.createHash('sha256').update(canonicalJson({
+                connectorId:mutationBinding.connectorId,sessionGeneration:Number(mutationBinding.sessionGeneration),engagementId:mutationBinding.engagementId,
+                authorityInstanceId:mutationBinding.authorityInstanceId,tenantOrOrgId:mutationBinding.tenantOrOrgId,packId:mutationBinding.packId,workspaceIds
+              })).digest('hex'):'';
+              const commandIntent=commandRow?JSON.parse(String(commandRow.intended_revision_json)) as Record<string,unknown>:{};
+              const reservationRequired=String(commandIntent.kind)==='object'&&String(commandIntent.disposition)==='create';
+              if(!commandRow||commandRow.state!=='submitted'||operationId!==String(commandRow.operation_id)
+                ||String(signedCommand?.idempotencyKey||'')!==String(commandRow.idempotency_key)
+                ||String(operationRequest.planDigest||'')!==String(commandRow.plan_digest)
+                ||crypto.createHash('sha256').update(canonicalJson(signedCommand?.payload)).digest('hex')!==String(commandRow.request_digest)
+                ||String(mutationTarget?.targetIdentityKey||'')!==String(commandRow.evidence_target_identity_key)
+                ||!workspaceIds.includes(String(mutationTarget?.workspaceId||''))||authorityDigest!==String(commandRow.credential_digest)
+                ||String(mutationBinding?.authorityInstanceId||'')!==String(commandRow.authority_instance_id)
+                ||String(mutationBinding?.tenantOrOrgId||'')!==String(commandRow.tenant_or_org_id)
+                ||String(mutationBinding?.packId||'')!==String(commandRow.pack_id)
+                ||String(mutationBinding?.engagementId||'')!==String(commandRow.engagement_id)
+                ||(reservationRequired&&Number(commandRow.owns_reservation)!==1)) {
+                throw new AppError('FEATURE.MUTATION_COMMAND_DRIFT','Signed mutation differs from the immutable confirmed command, target, plan, payload, or authority.');
+              }
+            }
+            const invokeRemote = () => this.runtime!.connector.invokeOperation({
               schemaVersion: 'omnia.operation-invocation/v1',
               featureId: context.featureId,
               featureVersion: context.featureVersion,
-              operationId: String(invocation.operationId || ''),
-              request: invocation.request as Record<string, unknown>,
-              operationPackageDigest: registration.packageDigest,
-              mutationAuthorized: context.allowMutation
+              operationId,
+              request: operationRequest,
+              operationPackageDigest,
+              mutationAuthorized: operationEffects.get(operationId) === 'omnia_mutation' && context.allowMutation
             });
+            const semanticStage = operationId.includes('.preflight.') ? 'preflight'
+              : operationId.includes('.reconcile.') ? 'reconcile'
+                : operationId.includes('.readback.') || operationId.includes('.read.') ? 'readback'
+                  : operationEffects.get(operationId) === 'omnia_mutation' ? 'execute' : 'read';
+            const command = operationRequest.command as Record<string, unknown> | undefined;
+            const response = this.interactionLogs ? await this.interactionLogs.run({
+              plane: 'connector', component: 'signed-operation', surface: `feature.${context.featureId}`,
+              action: semanticStage, failurePoint: `connector.operation.${semanticStage}.${operationId}`,
+              operationId, runId: String(receiptContext?.runId || ''), commandId: String(command?.commandId || receiptContext?.commandId || ''),
+              requestId: String(command?.idempotencyKey || ''),
+              details: { featureId: context.featureId, featureVersion: context.featureVersion, operationId,
+                effect: operationEffects.get(operationId) || 'read_only', runId: receiptContext?.runId,
+                commandId: command?.commandId, sessionGeneration }
+            }, invokeRemote, context.interactionContext) : await invokeRemote();
+            if (receiptContext !== undefined) {
+              if (operationEffects.get(operationId) !== 'read_only') {
+                throw new AppError('FEATURE.RECEIPT_EFFECT_INVALID', 'Only signed read-only Operations may issue authoritative receipts.');
+              }
+              const runId = String(receiptContext.runId || '');
+              const commandId = String(receiptContext.commandId || '');
+              const receiptBinding = operationRequest.connectorBinding as Record<string, unknown> | undefined;
+              const target = operationRequest.target as Record<string, unknown> | undefined;
+              const receiptRow = this.database.prepare(`
+                SELECT c.plan_digest,c.state,c.evidence_operation_ids_json,c.evidence_target_identity_key,c.evidence_request_digest,
+                  i.target_key,i.intended_revision_json,
+                  f.credential_digest,f.connector_id,f.session_generation,f.engagement_id,
+                  f.authority_instance_id,f.tenant_or_org_id,f.pack_id,
+                  s.enabled,s.engagement_id AS safety_engagement_id,s.workspace_ids_json,s.state_version,f.safety_revision
+                FROM feature_commands c
+                JOIN feature_runs r ON r.run_id=c.run_id
+                JOIN managed_content_intents i ON i.intent_id=c.intent_id AND i.run_id=c.run_id AND i.plan_digest=c.plan_digest
+                JOIN feature_confirmations f ON f.run_id=c.run_id AND f.plan_digest=c.plan_digest AND f.decision='approved'
+                JOIN workspace_safety s ON s.singleton=1
+                WHERE c.command_id=? AND c.run_id=? AND r.feature_id=? AND r.feature_version=?
+                ORDER BY f.created_at DESC LIMIT 1
+              `).get(commandId, runId, context.featureId, context.featureVersion) as Record<string, any> | undefined;
+              if (!receiptRow || !['prepared','committed','verifying','uncertain'].includes(String(receiptRow.state))) {
+                throw new AppError('FEATURE.RECEIPT_COMMAND_INVALID', 'Authoritative receipt is not bound to an eligible frozen Return command.');
+              }
+              const workspaceIds = JSON.parse(String(receiptRow.workspace_ids_json)) as string[];
+              const authorityDigest = crypto.createHash('sha256').update(canonicalJson({
+                connectorId: receiptBinding?.connectorId,
+                sessionGeneration: Number(receiptBinding?.sessionGeneration),
+                engagementId: receiptBinding?.engagementId,
+                authorityInstanceId: receiptBinding?.authorityInstanceId,
+                tenantOrOrgId: receiptBinding?.tenantOrOrgId,
+                packId: receiptBinding?.packId,
+                workspaceIds
+              })).digest('hex');
+              const intended = JSON.parse(String(receiptRow.intended_revision_json)) as Record<string, unknown>;
+              const targetIdentityKey = String(target?.targetIdentityKey || '');
+              const workspaceId = String(target?.workspaceId || '');
+              const exactRequestDigest = crypto.createHash('sha256').update(canonicalJson(operationRequest)).digest('hex');
+              if (
+                !receiptBinding || !targetIdentityKey || !workspaceId
+                || !(JSON.parse(String(receiptRow.evidence_operation_ids_json)) as string[]).includes(operationId)
+                || targetIdentityKey !== String(receiptRow.evidence_target_identity_key)
+                || (intended.operationTargetIdentityMode !== 'resolved_relation' && targetIdentityKey !== String(intended.operationTargetIdentityKey || ''))
+                || !String(receiptRow.evidence_request_digest)
+                || exactRequestDigest !== String(receiptRow.evidence_request_digest)
+                || authorityDigest !== String(receiptRow.credential_digest)
+                || String(receiptBinding.connectorId) !== String(receiptRow.connector_id)
+                || Number(receiptBinding.sessionGeneration) !== Number(receiptRow.session_generation)
+                || String(receiptBinding.engagementId) !== String(receiptRow.engagement_id)
+                || String(receiptBinding.authorityInstanceId || '') !== String(receiptRow.authority_instance_id)
+                || String(receiptBinding.tenantOrOrgId || '') !== String(receiptRow.tenant_or_org_id)
+                || String(receiptBinding.packId || '') !== String(receiptRow.pack_id)
+                || Number(receiptRow.enabled) !== 1
+                || String(receiptRow.safety_engagement_id) !== String(receiptRow.engagement_id)
+                || Number(receiptRow.state_version) !== Number(receiptRow.safety_revision)
+                || !workspaceIds.includes(workspaceId)
+                || String(intended.workspace || '') !== workspaceId
+              ) throw new AppError('FEATURE.RECEIPT_AUTHORITY_DRIFT', 'Authoritative receipt scope differs from the frozen authority, safety, or target identity.');
+              if (!response || typeof response !== 'object' || Array.isArray(response)) {
+                throw new AppError('FEATURE.RECEIPT_RESPONSE_INVALID', 'Authoritative read Operation response is not a JSON object.');
+              }
+              const receiptId = randomUUID();
+              const responseJson = canonicalJson(response);
+              this.database.prepare(`
+                INSERT INTO feature_operation_receipts(
+                  receipt_id,run_id,command_id,feature_id,feature_version,operation_package_digest,operation_id,
+                  authority_digest,connector_id,session_generation,engagement_id,
+                  authority_instance_id,tenant_or_org_id,pack_id,frozen_target_key,target_identity_key,
+                  workspace_ids_json,plan_digest,request_digest,response_digest,response_json,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+              `).run(
+                receiptId, runId, commandId, context.featureId, context.featureVersion, operationPackageDigest, operationId,
+                authorityDigest, String(receiptBinding.connectorId), Number(receiptBinding.sessionGeneration),
+                String(receiptBinding.engagementId), String(receiptBinding.authorityInstanceId),
+                String(receiptBinding.tenantOrOrgId), String(receiptBinding.packId),
+                String(receiptRow.target_key), targetIdentityKey,
+                canonicalJson(workspaceIds), String(receiptRow.plan_digest),
+                exactRequestDigest,
+                crypto.createHash('sha256').update(responseJson).digest('hex'), responseJson, utcNow()
+              );
+              return { ...(response as Record<string, unknown>), __operationReceiptId: receiptId };
+            }
+            return response;
           } catch (error) {
             const code = error instanceof AppError ? error.code : String((error as any)?.code || '');
-            if (context.allowMutation && [
+            if (operationEffects.get(String(invocation.operationId || '')) === 'omnia_mutation' && context.allowMutation && [
               'REMOTE.MUTATION_UNCERTAIN',
               'REMOTE.CONNECTOR_DISCONNECTED',
               'REMOTE.IN_FLIGHT_DISCONNECTED'
@@ -1226,10 +1821,83 @@ export class FeaturePackageManager {
       || health.featureId !== head.featureId
       || health.featureVersion !== head.featureVersion
     ) throw new Error('Feature worker health identity is invalid.');
+    const persisted = this.database.prepare(`
+      SELECT feature_version, surface_id, state_revision, payload_json
+      FROM feature_surface_states WHERE feature_id=?
+    `).get(head.featureId) as {
+      feature_version: string; surface_id: string; state_revision: number; payload_json: string;
+    } | undefined;
+    let restored = installed.surface;
+    if (persisted && persisted.feature_version === head.featureVersion && persisted.surface_id === installed.surface.surfaceId) {
+      try {
+        const candidate = JSON.parse(persisted.payload_json) as DeclarativeFeatureSurface;
+        if (
+          candidate.featureId === head.featureId
+          && candidate.featureVersion === head.featureVersion
+          && candidate.surfaceId === installed.surface.surfaceId
+          && candidate.stateVersion === persisted.state_revision
+          && candidate.stateVersion >= installed.surface.stateVersion
+        ) restored = candidate;
+      } catch { /* corrupted state fails closed to the immutable package surface */ }
+    }
+    if (health.recoveredSurfacePatch) {
+      const patch = health.recoveredSurfacePatch as Record<string, unknown>;
+      if (patch.status !== 'stale' || typeof patch.statusMessage !== 'string' || !Array.isArray(patch.scopes) || !Array.isArray(patch.items)) {
+        throw new Error('Recovered Feature surface patch is invalid.');
+      }
+      const recoveryScopes=patch.scopes as Array<Record<string,unknown>>; const recoveryItems=patch.items as Array<Record<string,unknown>>;
+      const recoveryActionPatches=Array.isArray(patch.actions)?patch.actions as Array<unknown>:null;
+      const scopeIds=new Set(recoveryScopes.map((scope)=>String(scope.id||'')));
+      if(scopeIds.has('')||scopeIds.size!==recoveryScopes.length||recoveryScopes.some((scope)=>typeof scope.label!=='string'||typeof scope.parentLabel!=='string'||typeof scope.parentId!=='string'||typeof scope.selected!=='boolean')
+        ||recoveryItems.some((item)=>!scopeIds.has(String(item.scopeId||''))||typeof item.id!=='string'||typeof item.title!=='string'||typeof item.subtitle!=='string'||typeof item.selectable!=='boolean'||typeof item.disabledReason!=='string'||typeof item.concurrencyToken!=='string')) throw new Error('Recovered Feature surface structure is invalid.');
+      const patchedActions = recoveryActionPatches
+        ? restored.actions.map((declared) => {
+          const actionPatch = recoveryActionPatches.find((candidate: unknown) => (
+            typeof candidate === 'object' && candidate !== null
+            && (candidate as Record<string, unknown>).actionId === declared.actionId
+          )) as Record<string, unknown> | undefined;
+          return actionPatch ? {
+            ...declared,
+            enabled: actionPatch.enabled === true,
+            reason: typeof actionPatch.reason === 'string' ? actionPatch.reason : declared.reason
+          } : declared;
+        })
+        : restored.actions;
+      const recoveryPayload = {
+        status: patch.status,
+        statusMessage: patch.statusMessage,
+        scopes: recoveryScopes as unknown as DeclarativeFeatureSurface['scopes'],
+        items: recoveryItems as unknown as DeclarativeFeatureSurface['items'],
+        artifacts: Array.isArray(patch.artifacts) ? patch.artifacts : [],
+        editors: Array.isArray(patch.editors) ? patch.editors : [],
+        actions: patchedActions
+      };
+      const alreadyRestored = restored.status === recoveryPayload.status
+        && restored.statusMessage === recoveryPayload.statusMessage
+        && canonicalJson(restored.scopes) === canonicalJson(recoveryPayload.scopes)
+        && canonicalJson(restored.items) === canonicalJson(recoveryPayload.items)
+        && canonicalJson(restored.artifacts || []) === canonicalJson(recoveryPayload.artifacts)
+        && canonicalJson(restored.editors || []) === canonicalJson(recoveryPayload.editors)
+        && canonicalJson(restored.actions) === canonicalJson(recoveryPayload.actions);
+      if (!alreadyRestored) {
+        restored = {
+          ...restored,
+          ...recoveryPayload,
+          selectedItemIds: [],
+          stateVersion: Math.max(restored.stateVersion + 1, Number(patch.stateVersion || 0))
+        } as DeclarativeFeatureSurface;
+        this.persistSurface(restored);
+      }
+    }
+    if (health.recoveredMessageCard) {
+      const message=health.recoveredMessageCard as import('../../shared/feature-contracts.js').FeatureMessageCard;
+      if(message.featureId!==head.featureId||message.featureVersion!==head.featureVersion||message.surfaceId!==installed.surface.surfaceId) throw new Error('Recovered Feature message identity is invalid.');
+      this.database.prepare(`INSERT INTO feature_runtime_messages(message_id,feature_id,feature_version,surface_id,state_version,payload_json,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(message_id) DO UPDATE SET state_version=excluded.state_version,payload_json=excluded.payload_json,updated_at=excluded.updated_at WHERE excluded.state_version>feature_runtime_messages.state_version`).run(message.messageId,message.featureId,message.featureVersion,message.surfaceId,message.stateVersion,JSON.stringify(message),utcNow());
+    }
     const old = this.supervisors.get(head.featureId);
     this.supervisors.set(head.featureId, supervisor);
     if (old) await old.stop();
-    this.runtimeSurfaces.set(head.featureId, installed.surface);
+    this.runtimeSurfaces.set(head.featureId, restored);
     const now = utcNow();
     this.database.exec('BEGIN IMMEDIATE;');
     try {
@@ -1289,20 +1957,84 @@ export class FeaturePackageManager {
     return this.snapshot();
   }
 
-  private runtimeBlockReason(head: ActivationHead, context?: FeatureRuntimeContext): string {
+  private runtimeBlockReason(head: ActivationHead): string {
     if (!head.runtimeEnabled) return head.runtimeReason;
+    return '';
+  }
+
+  private actionBlockReason(
+    head: ActivationHead,
+    action: import('../../shared/feature-contracts.js').DeclarativeFeatureAction,
+    context?: FeatureRuntimeContext
+  ): string {
+    const runtimeReason = this.runtimeBlockReason(head);
+    if (runtimeReason) return runtimeReason;
     if (!context) return '';
-    if (head.featureId === 'omnia.recording') {
-      if (!context.connection.connected) return '请先连接 Omnia Pack。';
-      if (!context.connection.sessionGeneration || context.connection.sessionGeneration < 1) return 'Connector 会话标识不可用，请重新连接。';
-      return '';
+    const dependencies = action.dependencies || (
+      head.featureId === 'omnia.recording'
+        ? ['remote_connector'] as const
+        : ['remote_connector', 'safety_lock'] as const
+    );
+    if (dependencies.includes('remote_connector')) {
+      if (!context.connection.connected) return '请先连接当前 Omnia Pack。';
+      if (!context.connection.sessionGeneration || context.connection.sessionGeneration < 1) {
+        return 'Connector 会话标识不可用，请重新连接。';
+      }
     }
-    if (!context.connection.connected) return '请先连接 Omnia Pack。';
-    if (!context.connection.sessionGeneration || context.connection.sessionGeneration < 1) return 'Connector 会话标识不可用，请重新连接。';
-    if (!context.safetyLock.enabled || !context.safetyLock.validForCurrentConnection) {
+    if (dependencies.includes('safety_lock') && (!context.safetyLock.enabled || !context.safetyLock.validForCurrentConnection)) {
       return context.safetyLock.invalidReason || '请先启用当前 Pack 的安全锁。';
     }
+    if (dependencies.includes('verified_canary')) {
+      if (!context.connection.authorityInstanceId || !context.connection.tenantOrOrgId || !context.connection.packId) {
+        return '生产回传未开放：当前 Connector 缺少实时 canonical authority instance、tenant/org 或 Pack identity；真实 Omnia canary 也尚未完成。';
+      }
+      const harnessVerified = process.env.NODE_ENV === 'test' && context.verifiedCanaryCapabilities?.some((capability) =>
+        capability.featureId === head.featureId
+        && capability.scenarioId === action.canaryCapability?.scenarioId
+        && capability.capabilityId === action.canaryCapability?.capabilityId
+      ) === true;
+      const installed = this.loadInstalled(head);
+      const operationPackage = JSON.parse(packageFile(installed.envelope, installed.manifest.operationPackagePath).toString('utf8')) as unknown;
+      const operationDigest = packageDigest(verifyOfficialPackage(operationPackage, 'omnia-connector-operation'));
+      const workspaceId = context.safetyLock.workspaceIds.length === 1 ? context.safetyLock.workspaceIds[0] : '';
+      const authorityInstanceId = context.connection.authorityInstanceId || '';
+      const tenantOrOrgId = context.connection.tenantOrOrgId || '';
+      const packId = context.connection.packId || '';
+      const engagementId = context.connection.engagementId || '';
+      const durableEvidence = authorityInstanceId && tenantOrOrgId && packId && engagementId && workspaceId ? this.database.prepare(`
+        SELECT 1 FROM feature_capability_evidence
+        WHERE feature_id=? AND feature_version=? AND operation_package_digest=?
+          AND scenario_id=? AND capability_id=?
+          AND authority_instance_id=? AND tenant_or_org_id=? AND pack_contract_id=? AND engagement_id=? AND workspace_id=?
+          AND automated_status='passed' AND portable_status='passed'
+          AND canary_status='passed' AND readback_status='passed' AND verified=1
+          AND revoked_at='' AND expires_at>?
+        LIMIT 1
+      `).get(
+        head.featureId, head.featureVersion, operationDigest,
+        action.canaryCapability?.scenarioId || '', action.canaryCapability?.capabilityId || '',
+        authorityInstanceId, tenantOrOrgId, packId, engagementId, workspaceId, utcNow()
+      ) : null;
+      if (!harnessVerified && !durableEvidence) {
+        return '生产回传未开放：该场景/能力组合的真实 Omnia canary 与读回证据尚未通过。';
+      }
+    }
     return '';
+  }
+
+  private persistSurface(surface: DeclarativeFeatureSurface): void {
+    this.database.prepare(`
+      INSERT INTO feature_surface_states(feature_id, feature_version, surface_id, state_revision, payload_json, updated_at)
+      VALUES(?, ?, ?, ?, ?, ?)
+      ON CONFLICT(feature_id) DO UPDATE SET
+        feature_version=excluded.feature_version,
+        surface_id=excluded.surface_id,
+        state_revision=excluded.state_revision,
+        payload_json=excluded.payload_json,
+        updated_at=excluded.updated_at
+      WHERE excluded.state_revision > feature_surface_states.state_revision
+         OR excluded.feature_version != feature_surface_states.feature_version
+    `).run(surface.featureId, surface.featureVersion, surface.surfaceId, surface.stateVersion, JSON.stringify(surface), utcNow());
   }
 
   private messageCards(): import('../../shared/feature-contracts.js').FeatureMessageCard[] {
@@ -1322,7 +2054,7 @@ export class FeaturePackageManager {
     for (const head of heads) {
       const { manifest, surface } = this.loadInstalled(head);
       for (const group of manifest.navigation.groups) if (!groupMap.has(group.id)) groupMap.set(group.id, group);
-      const blockReason = this.runtimeBlockReason(head, context);
+      const blockReason = this.runtimeBlockReason(head);
       navigation.push(...manifest.navigation.leaves.map((leaf) => ({
         ...leaf,
         availability: head.runtimeEnabled ? 'available' as const : 'disabled' as const,
@@ -1336,21 +2068,20 @@ export class FeaturePackageManager {
           statusMessage: blockReason || current.statusMessage,
           actions: current.actions.map((action) => ({
             ...action,
-            enabled: !blockReason && action.enabled,
-            reason: blockReason || action.reason
+            enabled: !this.actionBlockReason(head, action, context) && action.enabled,
+            reason: this.actionBlockReason(head, action, context) || action.reason
           }))
         };
       }
     }
     const cards = this.messageCards().map((card) => {
       const head = heads.find((item) => item.featureId === card.featureId);
-      const reason = head ? this.runtimeBlockReason(head, context) : 'Feature is not active.';
       return {
         ...card,
         actions: card.actions.map((action) => ({
           ...action,
-          enabled: !reason && action.enabled,
-          reason: reason || action.reason
+          enabled: Boolean(head) && !this.actionBlockReason(head!, action, context) && action.enabled,
+          reason: head ? (this.actionBlockReason(head, action, context) || action.reason) : 'Feature is not active.'
         }))
       };
     });
@@ -1391,11 +2122,13 @@ export class FeaturePackageManager {
       if (selectedItemIds.some((id) => typeof id !== 'string' || !selectable.has(id))) {
         throw new AppError('FEATURE.SELECTION_INVALID', 'Feature selection contains a blocked or stale item.');
       }
-      this.runtimeSurfaces.set(head.featureId, {
+      const next = {
         ...surface,
         stateVersion: surface.stateVersion + 1,
         selectedItemIds: [...selectedItemIds]
-      });
+      };
+      this.runtimeSurfaces.set(head.featureId, next);
+      this.persistSurface(next);
       return this.snapshot(context);
     }
     let action = surface.actions.find((item) => item.actionId === request.actionId);
@@ -1416,7 +2149,7 @@ export class FeaturePackageManager {
     if (actualStateVersion !== request.expectedStateVersion) {
       throw new AppError('FEATURE.STATE_CONFLICT', 'Feature state changed; refresh before retrying.', true);
     }
-    const blockReason = this.runtimeBlockReason(head, context);
+    const blockReason = this.actionBlockReason(head, action, context);
     if (blockReason || !action.enabled) throw new AppError('FEATURE.RUNTIME_DISABLED', blockReason || action.reason);
     const supervisor = this.supervisors.get(request.featureId);
     if (!supervisor) throw new AppError('FEATURE.WORKER_UNAVAILABLE', 'Feature worker is not running.', true);
@@ -1440,7 +2173,7 @@ export class FeaturePackageManager {
         throw new AppError('FEATURE.SELECTION_REQUIRED', 'This action requires at least one selected item.');
       }
     }
-    const result = await supervisor.invoke('handleAction', {
+    const invokeWorker = () => supervisor.invoke('handleAction', {
       actionId: request.actionId,
       expectedStateVersion: request.expectedStateVersion,
       payload: request.payload,
@@ -1448,11 +2181,25 @@ export class FeaturePackageManager {
         connectorBinding: {
           connectorId: context.connection.connectorId,
           sessionGeneration: context.connection.sessionGeneration,
-          engagementId: context.connection.engagementId
+          engagementId: context.connection.engagementId,
+          authorityInstanceId: context.connection.authorityInstanceId || '',
+          tenantOrOrgId: context.connection.tenantOrOrgId || '',
+          packId: context.connection.packId || ''
         },
         safetyLock: context.safetyLock
       }
-    }, { allowMutation: action.effect === 'omnia_mutation' }) as Record<string, any>;
+    }, {
+      allowMutation: action.effect === 'omnia_mutation',
+      ...(this.interactionLogs?.current() ? { interactionContext: this.interactionLogs.current()! } : {})
+    }) as Promise<Record<string, any>>;
+    const result = this.interactionLogs ? await this.interactionLogs.run({
+      plane: 'middle', component: 'feature-worker', surface: request.surfaceId, action: request.actionId,
+      failurePoint: `feature-worker.${request.featureId}.${request.actionId}`,
+      runId: String(request.payload.runId || ''), commandId: String(request.payload.commandId || ''),
+      details: { featureId: request.featureId, featureVersion: request.featureVersion, surfaceId: request.surfaceId,
+        actionId: request.actionId, expectedStateVersion: request.expectedStateVersion, runId: request.payload.runId,
+        commandId: request.payload.commandId, effect: action.effect }
+    }, invokeWorker) : await invokeWorker();
     if (result?.surfacePatch) {
       const patchedActions = Array.isArray(result.surfacePatch.actions)
         ? surface.actions.map((declared) => {
@@ -1476,6 +2223,7 @@ export class FeaturePackageManager {
         actions: patchedActions
       } as DeclarativeFeatureSurface;
       this.runtimeSurfaces.set(head.featureId, next);
+      this.persistSurface(next);
     }
     if (result?.messageCard) {
       const message = result.messageCard as import('../../shared/feature-contracts.js').FeatureMessageCard;
@@ -1490,6 +2238,7 @@ export class FeaturePackageManager {
         ) VALUES(?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(message_id) DO UPDATE SET
           state_version=excluded.state_version, payload_json=excluded.payload_json, updated_at=excluded.updated_at
+        WHERE excluded.state_version>feature_runtime_messages.state_version
       `).run(
         message.messageId, message.featureId, message.featureVersion, message.surfaceId,
         message.stateVersion, JSON.stringify(message), utcNow()

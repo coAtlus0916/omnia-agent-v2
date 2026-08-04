@@ -15,7 +15,7 @@ import {
 } from './recording/recording-service.js';
 
 const DEFAULT_HOME = 'https://deloitteomnia.deloitte.com.cn/';
-const CONNECTOR_VERSION = '0.3.5';
+const CONNECTOR_VERSION = '0.3.9';
 const WORKSPACE_FACET_TYPE = '8dba1267-9c45-4d88-a2e3-a1619bd905c2';
 
 type FetchLike = typeof fetch;
@@ -67,6 +67,16 @@ function explicitId(value: unknown): string {
   return id && id !== '00000000-0000-0000-0000-000000000000' ? id : '';
 }
 
+function canonicalAuthorityIdentity(apiOrigin: string, hierarchyItem: Record<string, unknown>): {
+  authorityInstanceId: string; tenantOrOrgId: string; packId: string;
+} {
+  let authorityInstanceId = '';
+  try { authorityInstanceId = new URL(apiOrigin).origin.toLowerCase(); } catch { /* fail closed below */ }
+  const tenantOrOrgId = explicitId(hierarchyItem.tenantId || hierarchyItem.organizationId || hierarchyItem.orgId);
+  const packId = explicitId(hierarchyItem.packId);
+  return { authorityInstanceId, tenantOrOrgId, packId };
+}
+
 function sectionIdOf(value: any): string {
   return explicitId(value?.sectionId || value?.sectionFacetId || value?.id);
 }
@@ -75,24 +85,37 @@ function workspaceIdOf(value: any): string {
   return explicitId(value?.workspaceFacetId || value?.workspaceId || value?.facetId || value?.id);
 }
 
-function collectExplicitWorkspaceParents(value: unknown, inheritedSectionId = '', result = new Map<string, string>()): Map<string, string> {
-  if (!value || typeof value !== 'object') return result;
-  if (Array.isArray(value)) {
-    for (const item of value) collectExplicitWorkspaceParents(item, inheritedSectionId, result);
-    return result;
+function collectCanonicalWorkspaceMembership(
+  sectionPayload: unknown,
+  workspaceIds: Set<string>
+): { parents: Map<string, string>; ambiguous: Set<string> } {
+  const parents = new Map<string, string>();
+  const ambiguous = new Set<string>();
+  const visit = (value: unknown, sectionId: string): void => {
+    if (typeof value === 'string') {
+      const candidate = explicitId(value);
+      if (!candidate || !workspaceIds.has(candidate)) return;
+      const existing = parents.get(candidate);
+      if (existing && existing !== sectionId) ambiguous.add(candidate);
+      else parents.set(candidate, sectionId);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, sectionId);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      if (['name', 'label', 'value', 'description', 'title'].includes(key)) continue;
+      visit(child, sectionId);
+    }
+  };
+  for (const section of list(sectionPayload)) {
+    const sectionId = sectionIdOf(section);
+    if (!sectionId) continue;
+    visit(section, sectionId);
   }
-  const record = value as Record<string, any>;
-  const ownSectionId = explicitId(record.sectionId || record.sectionFacetId)
-    || (record.kind === 'section' || record.type === 'section' ? sectionIdOf(record) : '')
-    || inheritedSectionId;
-  const workspaceId = explicitId(record.workspaceFacetId || record.workspaceId);
-  const parentSectionId = explicitId(record.parentSectionId || record.sectionId || record.sectionFacetId) || ownSectionId;
-  if (workspaceId && parentSectionId) result.set(workspaceId, parentSectionId);
-  for (const [key, child] of Object.entries(record)) {
-    if (['name', 'label', 'value', 'description', 'title'].includes(key)) continue;
-    collectExplicitWorkspaceParents(child, ownSectionId, result);
-  }
-  return result;
+  return { parents, ambiguous };
 }
 
 function selectUniqueTargetIndex(urls: string[]): number {
@@ -175,24 +198,31 @@ function normalizeLightRead(
       'Omnia 未返回可核验的 Section identity。'
     );
   }
-  const parents = collectExplicitWorkspaceParents(sectionPayload);
-  const workspaces = list(workspacePayload)
+  const rawWorkspaces = list(workspacePayload)
     .filter((workspace) => workspace?.isDeleted !== true && workspace?.deleted !== true)
     .map((workspace) => {
       const id = workspaceIdOf(workspace);
-      const parentSectionId = explicitId(
-        workspace?.parentSectionId || workspace?.sectionId || workspace?.sectionFacetId
-      ) || parents.get(id) || '';
       return {
         id,
-        parentSectionId,
         name: clean(workspace?.name || workspace?.value),
-        status: clean(workspace?.status || 'active', 50)
+        status: clean(workspace?.status || 'active', 50),
+        explicitParentSectionId: explicitId(
+          workspace?.parentSectionId || workspace?.sectionId || workspace?.sectionFacetId
+        )
       };
     })
     .filter((workspace) => workspace.id && workspace.name);
+  const membership = collectCanonicalWorkspaceMembership(
+    sectionPayload,
+    new Set(rawWorkspaces.map((workspace) => workspace.id))
+  );
+  const workspaces = rawWorkspaces.map(({ explicitParentSectionId, ...workspace }) => ({
+    ...workspace,
+    parentSectionId: explicitParentSectionId || membership.parents.get(workspace.id) || ''
+  }));
   if (
     workspaces.length === 0
+    || membership.ambiguous.size > 0
     || workspaces.some((workspace) => !workspace.parentSectionId || !sectionIds.has(workspace.parentSectionId))
   ) {
     throw new ConnectorOperationError(
@@ -220,6 +250,8 @@ export class WorkstationOmniaSession {
     identityMismatch: boolean;
   }>();
   private riskAssessmentIdsByPage = new WeakMap<Page, Set<string>>();
+  private automaticCatalogCaptures = new Map<string, Promise<void>>();
+  private automaticCatalogCompleted = new Set<string>();
   private port = 0;
   private readonly profileDir: string;
   private readonly statePath: string;
@@ -428,6 +460,59 @@ export class WorkstationOmniaSession {
       engagementId: authIdentity.engagementId,
       identityMismatch: authIdentity.identityMismatch
     });
+    if (observedRiskAssessment) void this.captureCatalogAutomatically(page, observedRiskAssessment).catch(() => undefined);
+  }
+
+  private async captureCatalogAutomatically(page: Page, riskAssessmentId: string): Promise<void> {
+    const recordingStatus = this.recording.status() as Record<string, any>;
+    const recordingId = String(recordingStatus.recordingId || '');
+    if (!recordingId || !['recording', 'paused'].includes(String(recordingStatus.state || ''))) return;
+    const key = `${recordingId}:${riskAssessmentId}`;
+    if (this.automaticCatalogCompleted.has(key)) return;
+    const existing = this.automaticCatalogCaptures.get(key);
+    if (existing) return existing;
+    const task = (async () => {
+      const auth = this.authByPage.get(page);
+      const pageEngagementId = parseEngagementId(page.url());
+      if (!auth?.headers.authorization || auth.identityMismatch || auth.engagementId !== pageEngagementId) {
+        throw new ConnectorOperationError('RECORDING.AUTO_CAPTURE_AUTH_PENDING', '当前页尚未提供与 Pack 一致的 Omnia API 授权。', true);
+      }
+      const session: Session = {
+        page,
+        targetUrl: normalizeOmniaUrl(page.url()),
+        apiOrigin: auth.apiOrigin,
+        engagementId: pageEngagementId,
+        headers: auth.headers
+      };
+      const pack = await this.identify(session);
+      const result = await captureCurrentGraCatalog({
+        fetchImpl: this.fetchImpl,
+        apiOrigin: session.apiOrigin,
+        headers: session.headers,
+        engagementId: session.engagementId,
+        riskAssessmentId,
+        pack,
+        outputRoot: this.dataRootPath
+      });
+      this.recording.attachCatalog(recordingId, result);
+      if (result.status === 'complete') this.automaticCatalogCompleted.add(key);
+    })().catch((error) => {
+      this.recording.noteAutomaticCatalogFailure(recordingId, clean(error instanceof Error ? error.message : error));
+      throw error;
+    }).finally(() => this.automaticCatalogCaptures.delete(key));
+    this.automaticCatalogCaptures.set(key, task);
+    return task;
+  }
+
+  private async captureKnownCurrentPageCatalog(session: Session, recordingId: string): Promise<void> {
+    const candidates = [...(this.riskAssessmentIdsByPage.get(session.page) || new Set<string>())];
+    if (candidates.length !== 1) {
+      this.recording.noteAutomaticCatalogFailure(recordingId, candidates.length
+        ? '当前页面观察到多个 GRA 身份，无法把 Risk/Control 归入唯一录制上下文。'
+        : '当前页面尚未观察到唯一 GRA；录制会继续监听页面 Risk/Control 请求。');
+      return;
+    }
+    await this.captureCatalogAutomatically(session.page, candidates[0]!).catch(() => undefined);
   }
 
   private async omniaPages(): Promise<Page[]> {
@@ -518,7 +603,7 @@ export class WorkstationOmniaSession {
     return payload;
   }
 
-  private async identify(session: Session): Promise<{ name: string; clientName: string }> {
+  private async identify(session: Session): Promise<{ name: string; clientName: string; authorityInstanceId: string; tenantOrOrgId: string; packId: string }> {
     const hierarchy = list(await this.api(session, `/engagements/v1/${session.engagementId}/headers/hierarchy`));
     const exact = hierarchy.find((item) =>
       explicitId(item?.engagementId || item?.id) === session.engagementId
@@ -528,7 +613,7 @@ export class WorkstationOmniaSession {
     }
     const name = clean(exact?.name);
     if (!name) throw new Error('已识别 Pack ID，但 Omnia hierarchy 未返回可核验名称。');
-    return { name, clientName: clean(exact?.clientName) };
+    return { name, clientName: clean(exact?.clientName), ...canonicalAuthorityIdentity(session.apiOrigin, exact) };
   }
 
   async status(): Promise<ConnectorConnection> {
@@ -618,12 +703,16 @@ export class WorkstationOmniaSession {
 
   async invokeOperation(input: OperationInvocationRequest): Promise<unknown> {
     const session = await this.session(true);
+    const pack = await this.identify(session);
     const binding = {
       connectorId: this.connectorIdentity.id,
       sessionGeneration: this.sessionGeneration,
-      engagementId: session.engagementId
+      engagementId: session.engagementId,
+      authorityInstanceId: pack.authorityInstanceId,
+      tenantOrOrgId: pack.tenantOrOrgId,
+      packId: pack.packId
     };
-    return this.operationHost.invoke(input, binding, async (route, routePath, body) => {
+    return this.operationHost.invoke(input, binding, async (route, routePath, body, execution) => {
       const url = new URL(routePath, session.apiOrigin);
       if (url.origin !== session.apiOrigin || !isAllowedOmniaUrl(url.href)) {
         throw new ConnectorOperationError('CONNECTOR.OPERATION_ROUTE_DENIED', 'Operation step escaped the current Omnia origin.');
@@ -642,16 +731,16 @@ export class WorkstationOmniaSession {
         });
       } catch {
         throw new ConnectorOperationError(
-          route.method === 'PATCH' ? 'CONNECTOR.RESPONSE_LOST' : 'CONNECTOR.OPERATION_TIMEOUT',
-          route.method === 'PATCH'
+          execution.commitStep ? 'CONNECTOR.RESPONSE_LOST' : 'CONNECTOR.OPERATION_TIMEOUT',
+          execution.commitStep
             ? 'Omnia mutation connection ended before a response was received; the result is uncertain.'
             : 'Omnia Operation read timed out.',
-          route.method !== 'PATCH'
+          !execution.commitStep
         );
       }
       const payload = response.status === 204 ? null : await response.json().catch(() => null);
       if (!response.ok) {
-        if (route.method === 'PATCH' && response.status >= 500) {
+        if (execution.commitStep && response.status >= 500) {
           throw new ConnectorOperationError('CONNECTOR.RESPONSE_LOST', `Omnia mutation returned HTTP ${response.status}; the result is uncertain.`, false);
         }
         throw new ConnectorOperationError(
@@ -671,22 +760,48 @@ export class WorkstationOmniaSession {
       || !/^\d+\.\d+\.\d+$/u.test(String(input.featureVersion || ''))
       || !input.connectorBinding
     ) throw new ConnectorOperationError('RECORDING.INVALID_COMMAND', '录制命令合同无效。');
-    const session = await this.session(input.kind !== 'status');
+    const session = await this.session(!['status', 'export', 'export_chunk'].includes(input.kind));
     const expectedConnectorId = this.connectorIdentity.id;
     if (
       input.connectorBinding.connectorId !== expectedConnectorId
       || Number(input.connectorBinding.sessionGeneration) !== this.sessionGeneration
       || input.connectorBinding.engagementId !== session.engagementId
     ) throw new ConnectorOperationError('RECORDING.BINDING_CHANGED', 'Connector、会话世代或 Pack 身份已变化，已拒绝录制操作。');
-    if (input.kind === 'status') return this.recording.status();
+    if (input.kind === 'status') return this.recording.status(input.recordingId || '');
     if (input.kind === 'start') {
-      return this.recording.start({
+      const result = await this.recording.start({
         page: session.page,
         engagementId: session.engagementId,
         sessionGeneration: this.sessionGeneration
       });
+      void this.captureKnownCurrentPageCatalog(session, result.recordingId);
+      return this.recording.status(result.recordingId);
     }
-    if (input.kind === 'stop_export') return this.recording.stopExport(input.recordingId || '');
+    if (input.kind === 'pause') {
+      if (input.recordingId) void this.captureKnownCurrentPageCatalog(session, input.recordingId);
+      return this.recording.pause(input.recordingId || '');
+    }
+    if (input.kind === 'resume') {
+      const result = await this.recording.resume({
+        page: session.page,
+        engagementId: session.engagementId,
+        sessionGeneration: this.sessionGeneration
+      }, input.recordingId || '');
+      void this.captureKnownCurrentPageCatalog(session, result.recordingId);
+      return this.recording.status(result.recordingId);
+    }
+    if (input.kind === 'stop') {
+      if (input.recordingId) await this.captureKnownCurrentPageCatalog(session, input.recordingId);
+      const pendingPrefix = `${input.recordingId || ''}:`;
+      await Promise.allSettled([...this.automaticCatalogCaptures.entries()].filter(([key]) => key.startsWith(pendingPrefix)).map(([, task]) => task));
+      return this.recording.stop(input.recordingId || '');
+    }
+    if (input.kind === 'export') return this.recording.exportRecording(input.recordingId || '');
+    if (input.kind === 'export_chunk') return this.recording.exportChunk(input.recordingId || '', Number(input.chunkIndex));
+    if (input.kind === 'stop_export') {
+      if (input.recordingId) await this.captureKnownCurrentPageCatalog(session, input.recordingId);
+      return this.recording.stopExport(input.recordingId || '');
+    }
     if (input.kind === 'cancel') return this.recording.cancel(input.recordingId || '');
     if (input.kind === 'capture_current_gra_catalog') {
       const candidates = [...(this.riskAssessmentIdsByPage.get(session.page) || new Set<string>())];
@@ -716,7 +831,7 @@ export class WorkstationOmniaSession {
     status: ConnectorConnection['status'],
     message: string,
     session?: Session,
-    pack?: { name: string; clientName: string }
+    pack?: { name: string; clientName: string; authorityInstanceId: string; tenantOrOrgId: string; packId: string }
   ): ConnectorConnection {
     return {
       status,
@@ -729,6 +844,9 @@ export class WorkstationOmniaSession {
       connectorName: this.connectorIdentity.name,
       connectorVersion: this.connectorIdentity.version,
       sessionGeneration: this.sessionGeneration,
+      authorityInstanceId: pack?.authorityInstanceId || '',
+      tenantOrOrgId: pack?.tenantOrOrgId || '',
+      packId: pack?.packId || '',
       engagementId: session?.engagementId || '',
       engagementName: pack?.name || '',
       clientName: pack?.clientName || '',
@@ -739,11 +857,13 @@ export class WorkstationOmniaSession {
 }
 
 export const _test = {
-  collectExplicitWorkspaceParents,
+  collectExplicitWorkspaceParents: collectCanonicalWorkspaceMembership,
+  collectCanonicalWorkspaceMembership,
   normalizeLightRead,
   findEdgeExecutable,
   selectUniqueTargetIndex,
   authorizationEngagementId,
   selectSafeTargetIndex,
   browserIdentityMatches
+  ,canonicalAuthorityIdentity
 };

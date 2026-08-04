@@ -8,8 +8,8 @@ if (process.platform !== 'win32') throw new Error('v5 Remote Connector portable 
 
 const root = path.resolve(import.meta.dirname, '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-const version = '0.3.5';
-const sequence = Number(process.env.OMNIA_V5_REMOTE_CONNECTOR_RELEASE_SEQUENCE || 8);
+const version = '0.3.9';
+const sequence = Number(process.env.OMNIA_V5_REMOTE_CONNECTOR_RELEASE_SEQUENCE || 12);
 const product = 'omnia-agent-v5-remote-connector';
 const platform = 'win32-x64';
 const keyId = 'v5-remote-connector-release-2026-01';
@@ -136,6 +136,7 @@ writeText('README.txt', [
   '- v5 与 v4 完全共存，不停止、不读取、不覆盖、不配对或升级 v4 Connector。',
   '- v5 安装目录：%LOCALAPPDATA%\\OmniaAgentV5RemoteConnector。',
   '- v5 数据目录：%APPDATA%\\OmniaAgentV5RemoteConnector。',
+  '- 手工升级：先运行旧包 StopRemoteConnector.cmd 并等待停止，再运行新包 InstallRemoteConnector.cmd 和 StartRemoteConnector.cmd；安装器会保留 data/binding 并拒绝在 active/uncertain Operation 时切换。',
   '- Supervisor 自动检查官方签名 stable 清单；只有命令排空且无 active/uncertain operation 时才激活。',
   '- candidate 健康/probation 失败会恢复 previous，并阻止重复坏 sequence。',
   '- 独立更新清单：',

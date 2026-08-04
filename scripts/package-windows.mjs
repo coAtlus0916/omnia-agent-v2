@@ -1,7 +1,6 @@
 import { cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createReadStream, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 
 if (process.platform !== 'win32') throw new Error('Windows portable packaging must run on Windows.');
@@ -14,11 +13,7 @@ const runId = `${process.pid}-${Date.now()}`;
 const releaseTarget = path.join(releasesRoot, version);
 const release = path.join(releasesRoot, `.staging-${version}-${runId}`);
 const appRoot = path.join(release, 'resources', 'app');
-const artifactsRoot = path.join(root, 'artifacts');
-const portableName = `omnia-agent-v5-portable-${version}`;
-const portableTarget = path.join(artifactsRoot, portableName);
-const zip = path.join(artifactsRoot, `${portableName}.zip`);
-for (const target of [releaseTarget, portableTarget, zip]) if (existsSync(target)) {
+for (const target of [releaseTarget]) if (existsSync(target)) {
   throw new Error(`Immutable Shell artifact already exists: ${target}`);
 }
 
@@ -88,10 +83,16 @@ await cp(path.join(root, 'dist', 'main'), path.join(appRoot, 'dist', 'main'), { 
 await cp(path.join(root, 'dist', 'renderer'), path.join(appRoot, 'dist', 'renderer'), { recursive: true });
 await cp(path.join(root, 'dist', 'tools'), path.join(appRoot, 'dist', 'tools'), { recursive: true });
 await mkdir(path.join(appRoot, 'builtins'), { recursive: true });
-await cp(
-  path.join(root, 'feature-packages', 'recording', 'candidates', 'recording-0.1.1.ofp'),
-  path.join(appRoot, 'builtins', 'recording-0.1.1.ofp')
-);
+const builtins = [
+  ['recording', 'recording-0.3.0.ofp'],
+  ['create-associate', 'create-associate-0.2.1.ofp']
+];
+for (const [sourceDirectory, filename] of builtins) {
+  await cp(
+    path.join(root, 'feature-packages', sourceDirectory, 'candidates', filename),
+    path.join(appRoot, 'builtins', filename)
+  );
+}
 await mkdir(path.join(appRoot, 'node_modules'), { recursive: true });
 await writeFile(path.join(appRoot, 'package.json'), JSON.stringify({
   name: 'omnia-agent-v5-shell-release',
@@ -105,7 +106,8 @@ const releaseFiles = [
   'resources/app/dist/main/preload.cjs',
   'resources/app/dist/main/feature-worker-host.cjs',
   'resources/app/dist/tools/feature-installer.cjs',
-  'resources/app/builtins/recording-0.1.1.ofp',
+  'resources/app/builtins/recording-0.3.0.ofp',
+  'resources/app/builtins/create-associate-0.2.1.ofp',
   'resources/app/dist/renderer/app.js',
   'resources/app/dist/renderer/index.html',
   'resources/app/dist/renderer/styles.css'
@@ -145,38 +147,29 @@ await writeFile(path.join(release, 'sbom.json'), JSON.stringify({
   ]
 }, null, 2));
 await publishDirectory(release, releaseTarget);
-const artifactsStageRoot = path.join(artifactsRoot, `.staging-${runId}`);
-const portableRoot = path.join(artifactsStageRoot, portableName);
-const portableRelease = path.join(portableRoot, 'releases', version);
-await removeWithRetry(artifactsStageRoot);
-await mkdir(path.dirname(portableRelease), { recursive: true });
-await cp(releaseTarget, portableRelease, { recursive: true });
-await mkdir(path.join(portableRoot, 'data'), { recursive: true });
-await writeFile(path.join(portableRoot, 'portable-root.json'), JSON.stringify({
+await mkdir(path.join(releasesRoot, 'data'), { recursive: true });
+const markerStage = path.join(releasesRoot, `.portable-root-${runId}.json`);
+const currentStage = path.join(releasesRoot, `.current-${runId}.json`);
+const ps1Stage = path.join(releasesRoot, `.Start-Omnia-Agent-v5-${runId}.ps1`);
+const cmdStage = path.join(releasesRoot, `.Start-Omnia-Agent-v5-${runId}.cmd`);
+await writeFile(markerStage, JSON.stringify({
   schemaVersion: 'omnia.portable-product-root/v1',
   product: 'omnia-agent-v5',
   formatVersion: 1,
   candidateVersion: version,
   createdAt: new Date().toISOString()
 }, null, 2));
-await writeFile(path.join(portableRoot, 'current'), JSON.stringify({
+await writeFile(currentStage, JSON.stringify({
   schemaVersion: 'omnia.active-release/v1',
   version,
-  relativePath: `releases/${version}`,
+  relativePath: version,
   activatedAt: new Date().toISOString()
 }, null, 2));
-const stagedZip = path.join(artifactsStageRoot, `${portableName}.zip`);
-const archive = spawnSync('python', [
-  path.join(root, 'scripts', 'create-portable-zip.py'),
-  portableRoot,
-  stagedZip
-], {
-  encoding: 'utf8',
-  windowsHide: true
-});
-if (archive.status !== 0) throw new Error(`Portable ZIP creation failed: ${archive.stderr || archive.stdout}`);
-await publishDirectory(portableRoot, portableTarget);
-await publishFile(stagedZip, zip);
-await removeWithRetry(artifactsStageRoot);
+await cp(path.join(root, 'scripts', 'launch-portable-shell.ps1'), ps1Stage);
+await cp(path.join(root, 'scripts', 'launch-portable-shell.cmd'), cmdStage);
+await publishFile(markerStage, path.join(releasesRoot, 'portable-root.json'));
+await publishFile(currentStage, path.join(releasesRoot, 'current'));
+await publishFile(ps1Stage, path.join(releasesRoot, 'Start Omnia Agent v5.ps1'));
+await publishFile(cmdStage, path.join(releasesRoot, 'Start Omnia Agent v5.cmd'));
 
-console.log(`Packaged candidate release at releases/${version}/ and complete portable artifact at artifacts/${portableName}.zip`);
+console.log(`Packaged and activated releases/${version}/ under the sole releases product root.`);

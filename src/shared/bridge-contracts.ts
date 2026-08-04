@@ -3,8 +3,47 @@ import type { ConnectorRequest, ConnectorResponse } from '../connector/contracts
 export const BRIDGE_SCHEMA = 'omnia.v5.bridge/v1' as const;
 export const BRIDGE_PRODUCT = 'omnia-agent-v5' as const;
 export const BRIDGE_PROTOCOL = 'omnia.v5.remote-connector/v2' as const;
-export const BRIDGE_VERSION = '0.4.1' as const;
+export const BRIDGE_VERSION = '0.4.4' as const;
+export const BRIDGE_PAIRING_CODE_PATTERN = /^\d{4}$/u;
+export const BRIDGE_PAIRING_CODE_TTL_MS = 2 * 60_000;
+export const BRIDGE_HEALTH_PRODUCT = 'omnia-agent-v5-bridge' as const;
+export const BRIDGE_PAIRING_SESSION_CONTRACT = 'omnia.v5.bridge-pairing-session/v1' as const;
 export const DEFAULT_V5_BRIDGE_URL = 'https://agent.labcaspian.com/v5-bridge/' as const;
+
+export interface BridgeHealthResponse {
+  schemaVersion: typeof BRIDGE_SCHEMA;
+  ok: true;
+  product: typeof BRIDGE_HEALTH_PRODUCT;
+  version: string;
+  buildIdentity: string;
+  protocol: typeof BRIDGE_PROTOCOL;
+  startedAt: string;
+  onlineConnectors: number;
+  capabilities: {
+    pairingSessions: {
+      contractVersion: typeof BRIDGE_PAIRING_SESSION_CONTRACT;
+      create: true;
+    };
+  };
+}
+
+export type BridgePairingCapabilityStatus =
+  | 'checking'
+  | 'supported'
+  | 'upgrade_required'
+  | 'unreachable'
+  | 'incompatible';
+
+export interface BridgePairingCapabilityInspection {
+  status: BridgePairingCapabilityStatus;
+  canCreateSession: boolean;
+  reasonCode: string;
+  reason: string;
+  bridgeVersion: string;
+  bridgeProtocol: string;
+  buildIdentity: string;
+  checkedAt: string;
+}
 
 export interface BridgePairingSessionRequest {
   schemaVersion: typeof BRIDGE_SCHEMA;

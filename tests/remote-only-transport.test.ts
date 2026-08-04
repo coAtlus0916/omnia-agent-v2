@@ -60,18 +60,18 @@ test('Remote Worker retains old credential until an identity-matched commit sign
     schemaVersion: 'omnia.v5.bridge/v1', ...next, expiresAt: new Date(Date.now() + 60_000).toISOString()
   }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   try {
-    await pairRemoteConnector({ dataRoot, bridgeUrl: 'https://bridge.example.invalid/', pairingCode: 'OLD-CODE', name: 'Worker', fetchImpl: fetchImpl as typeof fetch });
+    await pairRemoteConnector({ dataRoot, bridgeUrl: 'https://bridge.example.invalid/', pairingCode: '1001', name: 'Worker', fetchImpl: fetchImpl as typeof fetch });
     assert.equal(acceptCommittedCandidateBridgeCredential(dataRoot, 'pair-old', 1), true);
     assert.equal(readStoredBridgeCredential(dataRoot)?.pairId, 'pair-old');
 
     next = { pairId: 'pair-cancelled', generation: 2, token: 'token-cancelled' };
-    await pairRemoteConnector({ dataRoot, bridgeUrl: 'https://bridge.example.invalid/', pairingCode: 'CANCEL-CODE', name: 'Worker', fetchImpl: fetchImpl as typeof fetch });
+    await pairRemoteConnector({ dataRoot, bridgeUrl: 'https://bridge.example.invalid/', pairingCode: '1002', name: 'Worker', fetchImpl: fetchImpl as typeof fetch });
     assert.equal(readStoredBridgeCredential(dataRoot)?.pairId, 'pair-old');
     clearCandidateBridgeCredential(dataRoot);
     assert.equal(readStoredBridgeCredential(dataRoot)?.pairId, 'pair-old');
 
     next = { pairId: 'pair-new', generation: 2, token: 'token-new' };
-    await pairRemoteConnector({ dataRoot, bridgeUrl: 'https://bridge.example.invalid/', pairingCode: 'NEW-CODE', name: 'Worker', fetchImpl: fetchImpl as typeof fetch });
+    await pairRemoteConnector({ dataRoot, bridgeUrl: 'https://bridge.example.invalid/', pairingCode: '1003', name: 'Worker', fetchImpl: fetchImpl as typeof fetch });
     assert.equal(acceptCommittedCandidateBridgeCredential(dataRoot, 'pair-new', 99), false);
     assert.equal(readStoredBridgeCredential(dataRoot)?.pairId, 'pair-old');
     // This models a lost HTTP commit response followed by candidate WSS
@@ -84,11 +84,13 @@ test('Remote Worker retains old credential until an identity-matched commit sign
   }
 });
 
-test('Remote mutation timeout and response loss are explicitly uncertain and non-retryable', () => {
+test('POST/PATCH mutation loss is uncertain while read-only POST remains retryable', () => {
   const transport = fs.readFileSync(path.join(root, 'src', 'main', 'connector', 'remote-connector-transport.ts'), 'utf8');
   const workstation = fs.readFileSync(path.join(root, 'src', 'connector', 'workstation-omnia-session.ts'), 'utf8');
   const packageManager = fs.readFileSync(path.join(root, 'src', 'main', 'features', 'package-manager.ts'), 'utf8');
-  assert.match(transport, /operation === 'operation_invoke'[\s\S]{0,300}'REMOTE\.MUTATION_UNCERTAIN'/);
-  assert.match(workstation, /route\.method !== 'PATCH'/);
+  assert.match(transport, /operation === 'operation_invoke' && payload\.mutationAuthorized === true/);
+  assert.match(transport, /mutationUncertain \? 'REMOTE\.MUTATION_UNCERTAIN' : 'REMOTE\.TIMEOUT'/);
+  assert.match(workstation, /execution\.commitStep/);
+  assert.doesNotMatch(workstation, /route\.method !== 'PATCH'/);
   assert.match(packageManager, /'REMOTE\.MUTATION_UNCERTAIN'[\s\S]{0,240}'CONNECTOR\.RESPONSE_LOST'/);
 });

@@ -2,6 +2,8 @@
 
 > 审计范围：v4 `omnia-agent-v4` 的新建/关联执行链、v5 当前架构/契约/Recording 0.1.0、Sol master workbook 的只读 inspect artifact。本文是研究与落地顺序，不是产品实现承诺；未读取旧 Luna workbook。本文只评估，不修改产品代码或母 workbook。
 
+> 当前状态（2026-08-03，取代下方历史开篇评估）：`omnia.create-associate@0.1.0` 是 Remote-only 签名自动化候选。Local/Remote parity 已废弃，没有 Local fallback。生产 Return 仍受实时 canonical authority identity 完整性和真实 Omnia mutation/readback canary 门槛阻断。下方旧缺口表仅作迁移历史保留。
+
 ## 0. 先给结论
 
 v4 已经证明了不少“业务细节”：四类 IT Element 的解析、DB/OS 从 Application 继承 RAIT、精确 Workspace/Engagement/对象匹配、Infrastructure→Application 与可选 Tool 关系、GRA 风险/控制的查询与读回、部分失败/不确定状态，以及有限并发批量执行。这些可以作为 v5 的证据种子（不是可直接复制的运行时）。
@@ -283,3 +285,12 @@ Feature 顺序文档是 recording → delete elements → delete chat history �
 ## 结束判定
 
 在官方 TemplateVersion、真实非生产 scope、签名 create/associate Operation、Local/Remote command parity、Managed Content current/revision/ledger/tombstone/CAS 和 uncertain/reconcile 通过前，v5 “新建并关联”只能保持设计/hidden/blocked 状态。把 v4 workbook、硬编码常量或 fixture 跑通都不构成 canary 通过。本文完成的是边界审计；产品代码、母 workbook 和运行时外部数据均未改动。
+# v5 implementation disposition
+
+Confirmed v4 routes and bodies were moved into fixed signed Operations, including paged element/relationship reads, exact IT Element/GRA create bodies, dynamic Risk Factor spectrum selection, `/documentation` JSON Patch, Risk-Control hidden-data validation and association, Evaluation submission, and readback. Unverified fields stay blocked; v5 does not import or execute v4 runtime code.
+
+## Current status (2026-08-03; supersedes historical gap statements above)
+
+`omnia.create-associate@0.1.0` now has a Remote-only signed automated candidate: frozen V8 governance (9 sheets, 187 fields, 68 relations), offline conversion/revision, one-time confirmation, signed business Operations, receipt-backed readback and Managed Content, and uncertain/read-only reconcile. Statements above that call the package or business Operations unimplemented, require Local/Remote parity, or describe 7 sheets/183 fields are retained only as historical research and are superseded.
+
+This is not a real Omnia canary result. Production Return remains fail-closed until the live Connector provides canonical authority-instance, tenant/org, Pack, Engagement, and Workspace identities and the exact mutation/readback capability has current non-production canary evidence. There is no Local transport or silent fallback.

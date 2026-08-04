@@ -154,7 +154,7 @@ export async function pairRemoteConnector(input: {
   const base = validateRemoteBridgeUrl(input.bridgeUrl);
   const identity = readOrCreateConnectorDeviceIdentity(input.dataRoot);
   const pairingCode = input.pairingCode.trim();
-  if (!pairingCode || pairingCode.length > 500) throw new Error('Connector 一次性配对码无效。');
+  if (!/^\d{4}$/u.test(pairingCode)) throw new Error('Connector 一次性配对码必须是 4 位数字。');
   const response = await (input.fetchImpl || fetch)(
     new URL('v1/pair', base.href.endsWith('/') ? base.href : `${base.href}/`),
     {
@@ -166,7 +166,7 @@ export async function pairRemoteConnector(input: {
         pairingCode,
         name: input.name.trim().slice(0, 160) || 'Omnia Agent v5 Remote Connector',
         connectorId: identity.connectorId,
-        connectorVersion: process.env.OMNIA_V5_REMOTE_CONNECTOR_VERSION || '0.3.5',
+        connectorVersion: process.env.OMNIA_V5_REMOTE_CONNECTOR_VERSION || '0.3.9',
         platform: `${process.platform}-${process.arch}`,
         product: BRIDGE_PRODUCT,
         protocol: BRIDGE_PROTOCOL

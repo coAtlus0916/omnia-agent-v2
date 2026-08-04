@@ -359,6 +359,482 @@ export class CoreDatabase {
           details_json TEXT NOT NULL,
           occurred_at TEXT NOT NULL
         );
+      `],
+      [12, `
+        CREATE TABLE feature_runs (
+          run_id TEXT PRIMARY KEY,
+          trace_id TEXT NOT NULL UNIQUE,
+          feature_id TEXT NOT NULL,
+          feature_version TEXT NOT NULL,
+          engagement_id TEXT NOT NULL,
+          state TEXT NOT NULL CHECK(state IN (
+            'draft','acquiring','processing','needs_input','converting','validating_output',
+            'ready_for_review','waiting_confirmation','returning','verifying','succeeded',
+            'failed','uncertain','reconciling','cancelled','not_evaluable'
+          )),
+          state_revision INTEGER NOT NULL CHECK(state_revision >= 1),
+          source_artifact_id TEXT NOT NULL,
+          template_version_id TEXT NOT NULL,
+          output_artifact_id TEXT NOT NULL,
+          plan_digest TEXT NOT NULL,
+          last_error TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX feature_runs_feature_state ON feature_runs(feature_id, state, updated_at);
+        CREATE TABLE feature_run_events (
+          event_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          revision INTEGER NOT NULL CHECK(revision >= 1),
+          from_state TEXT NOT NULL,
+          to_state TEXT NOT NULL,
+          event_type TEXT NOT NULL,
+          details_json TEXT NOT NULL,
+          occurred_at TEXT NOT NULL,
+          UNIQUE(run_id, revision)
+        );
+        CREATE INDEX feature_run_events_run_revision ON feature_run_events(run_id, revision);
+
+        CREATE TABLE feature_artifacts (
+          artifact_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          feature_id TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK(kind IN ('source','template_candidate','template_instance','result','evidence')),
+          media_type TEXT NOT NULL,
+          original_name TEXT NOT NULL,
+          source_kind TEXT NOT NULL CHECK(source_kind IN ('user_import','managed_template','worker_output','connector_evidence')),
+          source_ref TEXT NOT NULL,
+          managed_path TEXT NOT NULL,
+          sha256 TEXT NOT NULL CHECK(length(sha256)=64),
+          size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+          source_version TEXT NOT NULL,
+          imported_at TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX feature_artifacts_run_kind ON feature_artifacts(run_id, kind, created_at);
+
+        CREATE TABLE template_versions (
+          template_version_id TEXT PRIMARY KEY,
+          template_id TEXT NOT NULL,
+          version TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('candidate','published','revoked')),
+          source_artifact_id TEXT NOT NULL,
+          file_digest TEXT NOT NULL CHECK(length(file_digest)=64),
+          semantic_digest TEXT NOT NULL CHECK(length(semantic_digest)=64),
+          schema_version TEXT NOT NULL,
+          owner TEXT NOT NULL,
+          license TEXT NOT NULL,
+          authorization_ref TEXT NOT NULL,
+          requested_by TEXT NOT NULL,
+          published_by TEXT NOT NULL,
+          published_at TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          UNIQUE(template_id, version)
+        );
+
+        CREATE TABLE template_instances (
+          template_instance_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          template_version_id TEXT NOT NULL,
+          source_artifact_id TEXT NOT NULL,
+          output_artifact_id TEXT NOT NULL,
+          patch_digest TEXT NOT NULL,
+          semantic_digest TEXT NOT NULL CHECK(length(semantic_digest)=64),
+          output_file_digest TEXT NOT NULL CHECK(length(output_file_digest)=64),
+          governance_digest TEXT NOT NULL CHECK(length(governance_digest)=64),
+          state TEXT NOT NULL CHECK(state IN ('candidate','valid','invalid','revoked')),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE feature_field_revisions (
+          field_revision_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          template_instance_id TEXT NOT NULL,
+          field_key TEXT NOT NULL,
+          raw_field_key TEXT NOT NULL,
+          canonical_field_id TEXT NOT NULL,
+          revision INTEGER NOT NULL CHECK(revision >= 1),
+          value_kind TEXT NOT NULL CHECK(value_kind IN ('source','derived','inherited','rule_default','user_revision')),
+          value_json TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('accepted','needs_input','blocked','superseded')),
+          created_at TEXT NOT NULL,
+          UNIQUE(run_id, field_key, revision)
+        );
+        CREATE INDEX feature_field_revisions_current ON feature_field_revisions(run_id, field_key, revision DESC);
+
+        CREATE TABLE feature_field_provenance (
+          provenance_id TEXT PRIMARY KEY,
+          field_revision_id TEXT NOT NULL,
+          source_artifact_id TEXT NOT NULL,
+          source_sheet TEXT NOT NULL,
+          source_row INTEGER NOT NULL CHECK(source_row >= 1),
+          row_key TEXT NOT NULL,
+          field_key TEXT NOT NULL,
+          source_trace_id TEXT NOT NULL,
+          derivation_rule TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX feature_field_provenance_revision ON feature_field_provenance(field_revision_id);
+
+        CREATE TABLE feature_issues (
+          issue_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          field_key TEXT NOT NULL,
+          issue_type TEXT NOT NULL CHECK(issue_type IN ('missing','conflict','ambiguous','invalid_enum','digest_mismatch','contract_mismatch','visual_unverified')),
+          state TEXT NOT NULL CHECK(state IN ('needs_input','resolved','waived','blocking')),
+          message TEXT NOT NULL,
+          resolution_revision_id TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          resolved_at TEXT NOT NULL
+        );
+        CREATE INDEX feature_issues_run_state ON feature_issues(run_id, state, created_at);
+
+        CREATE TABLE feature_confirmations (
+          confirmation_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          message_id TEXT NOT NULL,
+          plan_digest TEXT NOT NULL,
+          connector_id TEXT NOT NULL,
+          session_generation INTEGER NOT NULL,
+          engagement_id TEXT NOT NULL,
+          safety_revision INTEGER NOT NULL,
+          credential_digest TEXT NOT NULL,
+          preflight_digest TEXT NOT NULL,
+          confirmation_token_digest TEXT NOT NULL,
+          decision TEXT NOT NULL CHECK(decision IN ('pending','approved','rejected','expired','invalidated')),
+          actor_id TEXT NOT NULL,
+          decision_at TEXT NOT NULL,
+          consumed_command_id TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE managed_content_intents (
+          intent_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          plan_digest TEXT NOT NULL,
+          target_kind TEXT NOT NULL CHECK(target_kind IN ('object','relation','field','risk_control','documentation','evaluation')),
+          target_key TEXT NOT NULL,
+          intended_revision_json TEXT NOT NULL,
+          state TEXT NOT NULL CHECK(state IN ('frozen','commanded','verified','failed','uncertain','cancelled')),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(run_id, target_kind, target_key)
+        );
+
+        CREATE TABLE feature_commands (
+          command_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          intent_id TEXT NOT NULL,
+          operation_id TEXT NOT NULL,
+          idempotency_key TEXT NOT NULL UNIQUE,
+          plan_digest TEXT NOT NULL,
+          request_digest TEXT NOT NULL,
+          evidence_operation_ids_json TEXT NOT NULL,
+          evidence_target_identity_key TEXT NOT NULL,
+          evidence_request_digest TEXT NOT NULL,
+          state TEXT NOT NULL CHECK(state IN (
+            'prepared','submitted','committed','verifying','readback_verified','closed_not_applied','failed','uncertain'
+          )),
+          commit_point_at TEXT NOT NULL,
+          submitted_at TEXT NOT NULL,
+          completed_at TEXT NOT NULL,
+          last_error TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX feature_commands_run_state ON feature_commands(run_id, state, created_at);
+        CREATE TABLE feature_command_specs (
+          command_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          spec_json TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE feature_operation_receipts (
+          receipt_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          command_id TEXT NOT NULL,
+          feature_id TEXT NOT NULL,
+          feature_version TEXT NOT NULL,
+          operation_package_digest TEXT NOT NULL,
+          operation_id TEXT NOT NULL,
+          authority_digest TEXT NOT NULL,
+          connector_id TEXT NOT NULL,
+          session_generation INTEGER NOT NULL,
+          engagement_id TEXT NOT NULL,
+          frozen_target_key TEXT NOT NULL,
+          target_identity_key TEXT NOT NULL,
+          workspace_ids_json TEXT NOT NULL,
+          plan_digest TEXT NOT NULL,
+          request_digest TEXT NOT NULL,
+          response_digest TEXT NOT NULL,
+          response_json TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE feature_command_evidence (
+          evidence_id TEXT PRIMARY KEY,
+          command_id TEXT NOT NULL,
+          run_id TEXT NOT NULL,
+          evidence_type TEXT NOT NULL CHECK(evidence_type IN ('preflight','request','commit','readback','reconcile','projection')),
+          evidence_digest TEXT NOT NULL,
+          receipt_id TEXT NOT NULL,
+          verified INTEGER NOT NULL CHECK(verified IN (0,1)),
+          payload_json TEXT NOT NULL,
+          occurred_at TEXT NOT NULL
+        );
+        CREATE INDEX feature_command_evidence_command ON feature_command_evidence(command_id, occurred_at);
+        CREATE UNIQUE INDEX feature_command_evidence_receipt ON feature_command_evidence(receipt_id) WHERE receipt_id<>'';
+
+        CREATE TABLE feature_reconcile_commands (
+          reconcile_command_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          original_command_id TEXT NOT NULL,
+          operation_id TEXT NOT NULL,
+          request_digest TEXT NOT NULL,
+          state TEXT NOT NULL CHECK(state IN ('prepared','running','completed','failed')),
+          outcome TEXT NOT NULL CHECK(outcome IN ('pending','applied','not_applied','inconclusive','drifted')),
+          evidence_id TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          completed_at TEXT NOT NULL
+        );
+
+        CREATE TABLE managed_objects (
+          authority_instance_id TEXT NOT NULL,
+          tenant_or_org_id TEXT NOT NULL,
+          pack_id TEXT NOT NULL,
+          engagement_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          object_type TEXT NOT NULL,
+          object_id TEXT NOT NULL,
+          current_revision INTEGER NOT NULL CHECK(current_revision >= 1),
+          lifecycle TEXT NOT NULL CHECK(lifecycle IN ('active','deleted','unknown')),
+          freshness TEXT NOT NULL CHECK(freshness IN ('verified_current','stale','unknown')),
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(authority_instance_id, tenant_or_org_id, pack_id, engagement_id, workspace_id, object_type, object_id)
+        );
+        CREATE TABLE managed_object_revisions (
+          revision_id TEXT PRIMARY KEY,
+          authority_instance_id TEXT NOT NULL,
+          tenant_or_org_id TEXT NOT NULL,
+          pack_id TEXT NOT NULL,
+          engagement_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          object_type TEXT NOT NULL,
+          object_id TEXT NOT NULL,
+          revision INTEGER NOT NULL CHECK(revision >= 1),
+          run_id TEXT NOT NULL,
+          intent_id TEXT NOT NULL,
+          command_id TEXT NOT NULL,
+          evidence_id TEXT NOT NULL,
+          provenance_json TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          verified_at TEXT NOT NULL,
+          UNIQUE(authority_instance_id, tenant_or_org_id, pack_id, engagement_id, workspace_id, object_type, object_id, revision)
+        );
+
+        CREATE TABLE managed_relations (
+          authority_instance_id TEXT NOT NULL,
+          tenant_or_org_id TEXT NOT NULL,
+          pack_id TEXT NOT NULL,
+          engagement_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          relation_type TEXT NOT NULL,
+          relation_key TEXT NOT NULL,
+          source_object_id TEXT NOT NULL,
+          target_object_id TEXT NOT NULL,
+          current_revision INTEGER NOT NULL CHECK(current_revision >= 1),
+          lifecycle TEXT NOT NULL CHECK(lifecycle IN ('active','deleted','unknown')),
+          freshness TEXT NOT NULL CHECK(freshness IN ('verified_current','stale','unknown')),
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(authority_instance_id, tenant_or_org_id, pack_id, engagement_id, workspace_id, relation_type, relation_key)
+        );
+        CREATE TABLE managed_relation_revisions (
+          revision_id TEXT PRIMARY KEY,
+          authority_instance_id TEXT NOT NULL,
+          tenant_or_org_id TEXT NOT NULL,
+          pack_id TEXT NOT NULL,
+          engagement_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          relation_type TEXT NOT NULL,
+          relation_key TEXT NOT NULL,
+          source_object_id TEXT NOT NULL,
+          target_object_id TEXT NOT NULL,
+          revision INTEGER NOT NULL CHECK(revision >= 1),
+          run_id TEXT NOT NULL,
+          intent_id TEXT NOT NULL,
+          command_id TEXT NOT NULL,
+          evidence_id TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          verified_at TEXT NOT NULL,
+          UNIQUE(authority_instance_id, tenant_or_org_id, pack_id, engagement_id, workspace_id, relation_type, relation_key, revision)
+        );
+
+        CREATE TABLE managed_content_repairs (
+          repair_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          command_id TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK(kind IN ('projection_retry','read_only_reconcile','manual_review')),
+          state TEXT NOT NULL CHECK(state IN ('pending','running','completed','blocked')),
+          automatic_replay_allowed INTEGER NOT NULL DEFAULT 0 CHECK(automatic_replay_allowed=0),
+          last_error TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE feature_surface_states (
+          feature_id TEXT PRIMARY KEY,
+          feature_version TEXT NOT NULL,
+          surface_id TEXT NOT NULL,
+          state_revision INTEGER NOT NULL CHECK(state_revision >= 1),
+          payload_json TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE feature_capability_evidence (
+          capability_evidence_id TEXT PRIMARY KEY,
+          feature_id TEXT NOT NULL,
+          feature_version TEXT NOT NULL,
+          operation_package_digest TEXT NOT NULL,
+          scenario_id TEXT NOT NULL,
+          capability_id TEXT NOT NULL,
+          authority_instance_id TEXT NOT NULL,
+          tenant_or_org_id TEXT NOT NULL,
+          pack_contract_id TEXT NOT NULL,
+          engagement_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          automated_status TEXT NOT NULL CHECK(automated_status IN ('pending','passed','failed')),
+          portable_status TEXT NOT NULL CHECK(portable_status IN ('pending','passed','failed')),
+          canary_status TEXT NOT NULL CHECK(canary_status IN ('pending','passed','failed','revoked')),
+          readback_status TEXT NOT NULL CHECK(readback_status IN ('pending','passed','failed')),
+          evidence_digest TEXT NOT NULL CHECK(length(evidence_digest)=64),
+          verified INTEGER NOT NULL CHECK(verified IN (0,1)),
+          verified_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          revoked_at TEXT NOT NULL,
+          UNIQUE(feature_id, feature_version, operation_package_digest, scenario_id, capability_id,
+                 authority_instance_id, tenant_or_org_id, pack_contract_id, engagement_id, workspace_id)
+        );
+        CREATE INDEX feature_capability_gate ON feature_capability_evidence(
+          feature_id, feature_version, scenario_id, capability_id, canary_status, readback_status
+        );
+        CREATE TABLE feature_managed_assets (
+          feature_id TEXT NOT NULL,
+          feature_version TEXT NOT NULL,
+          package_digest TEXT NOT NULL,
+          member_path TEXT NOT NULL,
+          member_digest TEXT NOT NULL CHECK(length(member_digest)=64),
+          asset_kind TEXT NOT NULL CHECK(asset_kind IN ('governance','runtime_template_base')),
+          managed_path TEXT NOT NULL,
+          imported_at TEXT NOT NULL,
+          PRIMARY KEY(feature_id, feature_version, member_path)
+        );
+      `],
+      [13, `
+        CREATE TABLE feature_mutation_reservations (
+          authority_instance_id TEXT NOT NULL,
+          tenant_or_org_id TEXT NOT NULL,
+          pack_id TEXT NOT NULL,
+          engagement_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          logical_identity_key TEXT NOT NULL,
+          owner_run_id TEXT NOT NULL,
+          owner_intent_id TEXT NOT NULL,
+          owner_command_id TEXT NOT NULL,
+          lifecycle TEXT NOT NULL CHECK(lifecycle IN ('active','completed','released')),
+          acquired_at TEXT NOT NULL,
+          lease_expires_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,logical_identity_key)
+        );
+        CREATE INDEX feature_mutation_reservation_owner ON feature_mutation_reservations(owner_run_id,owner_intent_id,lifecycle);
+      `],
+      [14, `
+        CREATE TABLE template_instance_field_revisions (
+          template_instance_id TEXT NOT NULL,
+          field_revision_id TEXT NOT NULL,
+          field_key TEXT NOT NULL,
+          revision INTEGER NOT NULL,
+          bound_at TEXT NOT NULL,
+          PRIMARY KEY(template_instance_id,field_key),
+          UNIQUE(template_instance_id,field_revision_id)
+        );
+      `],
+      [15, `
+        CREATE TABLE feature_issues_v15 (
+          issue_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          field_key TEXT NOT NULL,
+          issue_type TEXT NOT NULL CHECK(issue_type IN ('missing','conflict','ambiguous','invalid_enum','digest_mismatch','contract_mismatch','visual_unverified')),
+          state TEXT NOT NULL CHECK(state IN ('needs_input','resolved','waived','blocking')),
+          message TEXT NOT NULL,
+          resolution_revision_id TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          resolved_at TEXT NOT NULL
+        );
+        INSERT INTO feature_issues_v15 SELECT * FROM feature_issues;
+        DROP TABLE feature_issues;
+        ALTER TABLE feature_issues_v15 RENAME TO feature_issues;
+        CREATE INDEX feature_issues_run_state ON feature_issues(run_id,state,created_at);
+      `],
+      [16, `
+        ALTER TABLE feature_confirmations ADD COLUMN authority_instance_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE feature_confirmations ADD COLUMN tenant_or_org_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE feature_confirmations ADD COLUMN pack_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE feature_operation_receipts ADD COLUMN authority_instance_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE feature_operation_receipts ADD COLUMN tenant_or_org_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE feature_operation_receipts ADD COLUMN pack_id TEXT NOT NULL DEFAULT '';
+      `],
+      [17, `
+        CREATE TABLE feature_managed_assets_v17 (
+          feature_id TEXT NOT NULL,
+          feature_version TEXT NOT NULL,
+          package_digest TEXT NOT NULL,
+          member_path TEXT NOT NULL,
+          member_digest TEXT NOT NULL CHECK(length(member_digest)=64),
+          asset_kind TEXT NOT NULL CHECK(asset_kind IN ('governance','runtime_template_base','source_template')),
+          managed_path TEXT NOT NULL,
+          imported_at TEXT NOT NULL,
+          PRIMARY KEY(feature_id,feature_version,member_path)
+        );
+        INSERT INTO feature_managed_assets_v17 SELECT * FROM feature_managed_assets;
+        DROP TABLE feature_managed_assets;
+        ALTER TABLE feature_managed_assets_v17 RENAME TO feature_managed_assets;
+      `],
+      [18, `
+        UPDATE ai_provider_settings
+        SET base_url='https://api.deepseek.com', model='deepseek-v4-flash',
+            test_status='untested', test_message='', tested_at='', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE singleton=1 AND provider='deepseek' AND model='deepseek-chat'
+          AND base_url IN ('https://api.deepseek.com/v1/','https://api.deepseek.com/v1','https://api.deepseek.com/');
+      `],
+      [19, `
+        CREATE TABLE interaction_logs (
+          event_id TEXT PRIMARY KEY,
+          interaction_id TEXT NOT NULL UNIQUE,
+          trace_id TEXT NOT NULL,
+          parent_id TEXT NOT NULL,
+          timestamp TEXT NOT NULL,
+          completed_at TEXT NOT NULL,
+          duration_ms INTEGER NOT NULL CHECK(duration_ms >= 0),
+          plane TEXT NOT NULL CHECK(plane IN ('surface','middle','core','connector')),
+          component TEXT NOT NULL,
+          surface TEXT NOT NULL,
+          action TEXT NOT NULL,
+          phase TEXT NOT NULL CHECK(phase IN ('start','success','failure')),
+          severity TEXT NOT NULL CHECK(severity IN ('info','error')),
+          error_code TEXT NOT NULL,
+          failure_point TEXT NOT NULL,
+          message TEXT NOT NULL,
+          details_json TEXT NOT NULL,
+          run_id TEXT NOT NULL,
+          command_id TEXT NOT NULL,
+          request_id TEXT NOT NULL,
+          operation_id TEXT NOT NULL
+        );
+        CREATE INDEX interaction_logs_timestamp ON interaction_logs(timestamp DESC, event_id DESC);
+        CREATE INDEX interaction_logs_trace ON interaction_logs(trace_id, timestamp, event_id);
+        CREATE INDEX interaction_logs_failure ON interaction_logs(severity, plane, timestamp DESC);
+        CREATE INDEX interaction_logs_action ON interaction_logs(component, action, timestamp DESC);
       `]
     ];
     for (const [version, sql] of migrations) {
@@ -433,7 +909,7 @@ export class CoreDatabase {
       INSERT OR IGNORE INTO ai_provider_settings(
         singleton, provider, base_url, model, attachment_capability, api_key_ciphertext,
         state_version, test_status, test_message, tested_at, updated_at
-      ) VALUES(1, 'deepseek', 'https://api.deepseek.com/v1/', 'deepseek-chat', 'text_only', '', 1, 'untested', '', '', ?)
+      ) VALUES(1, 'deepseek', 'https://api.deepseek.com', 'deepseek-v4-flash', 'text_only', '', 1, 'untested', '', '', ?)
     `).run(now);
     this.db.prepare(`
       INSERT OR IGNORE INTO remote_binding_settings(

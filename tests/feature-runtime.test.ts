@@ -127,11 +127,11 @@ test('installed 0.1.2 starts a real worker, persists selection/card/evidence, an
       actionId: 'confirm-delete-plan', expectedStateVersion: card.stateVersion,
       payload: { runId: card.runId, confirmationId: card.confirmationId }
     }, context);
-    assert.equal(snapshot.messageCards[0]?.state, 'completed');
+    assert.equal(snapshot.messageCards[0]?.state, 'uncertain');
     assert.deepEqual(mutations, [true]);
-    assert.equal((database.db.prepare('SELECT COUNT(*) AS count FROM managed_content_records').get() as any).count, 1);
-    assert.equal((database.db.prepare('SELECT COUNT(*) AS count FROM feature_runtime_events').get() as any).count, 1);
-    assert.equal(runtime.takePendingRuntimeEvents().length, 1);
+    assert.equal((database.db.prepare('SELECT COUNT(*) AS count FROM managed_content_records').get() as any).count, 0);
+    assert.equal((database.db.prepare('SELECT COUNT(*) AS count FROM feature_runtime_events').get() as any).count, 0);
+    assert.equal(runtime.takePendingRuntimeEvents().length, 0);
 
     deleted = false;
     reconcileFails = true;

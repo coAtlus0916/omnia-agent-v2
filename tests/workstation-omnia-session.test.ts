@@ -76,6 +76,24 @@ test('Authorization is bound to the exact target Engagement and rejects identity
   );
 });
 
+test('live hierarchy snapshot exposes only explicit canonical authority identities', async()=>{
+  const root=mkdtempSync(path.join(os.tmpdir(),'omnia-v5-authority-identity-'));const connector=new WorkstationOmniaSession(root,fetch);
+  const page={url:()=>`https://deloitteomnia.deloitte.com.cn/engagement/${engagementId}/home`};
+  const tenantId='44444444-4444-4444-8444-444444444444',packId='55555555-5555-4555-8555-555555555555';
+  try{
+    (connector as any).port=32123;(connector as any).cdpReady=async()=>true;(connector as any).currentPage=async()=>page;
+    (connector as any).authByPage.set(page,{headers:{authorization:'Bearer live'},apiOrigin:'https://api.deloitteomnia.deloitte.com.cn',engagementId,identityMismatch:false});
+    (connector as any).api=async()=>[{engagementId,name:'Live Pack',clientName:'Client',tenantId,packId}];
+    const status=await connector.status();assert.equal(status.status,'connected');assert.equal(status.authorityInstanceId,'https://api.deloitteomnia.deloitte.com.cn');assert.equal(status.tenantOrOrgId,tenantId);assert.equal(status.packId,packId);
+  }finally{await connector.close();rmSync(root,{recursive:true,force:true});}
+});
+
+test('authority extraction never substitutes display names or Engagement ID for missing canonical tenant/Pack IDs',()=>{
+  assert.deepEqual(_test.canonicalAuthorityIdentity('https://api.deloitteomnia.deloitte.com.cn',{engagementId,name:'Display Pack',clientName:'Display Client'}),{
+    authorityInstanceId:'https://api.deloitteomnia.deloitte.com.cn',tenantOrOrgId:'',packId:''
+  });
+});
+
 test('SSO/new-tab handoff accepts one Pack only in the bound browser context', () => {
   const pack = `https://deloitteomnia.deloitte.com.cn/engagement/${engagementId}/home`;
   assert.equal(_test.selectSafeTargetIndex([
@@ -156,7 +174,7 @@ test('Workstation Session Core health is self-contained and does not start a bro
   const root = mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-connector-'));
   const connector = new WorkstationOmniaSession(root, fetch);
   try {
-    assert.deepEqual(connector.health(), { ready: true, connectorVersion: '0.3.5' });
+    assert.deepEqual(connector.health(), { ready: true, connectorVersion: '0.3.8' });
   } finally {
     void connector.close();
     rmSync(root, { recursive: true, force: true });

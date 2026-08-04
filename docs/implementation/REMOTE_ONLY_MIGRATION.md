@@ -1,6 +1,6 @@
 # Remote-only 升级迁移说明
 
-目标版本：Shell `0.4.2`、Bridge `0.4.1`、Remote Connector `0.3.5 / sequence 8`
+当前目标版本：Shell `0.4.3`、Bridge `0.4.2`、Remote Connector `0.3.7 / sequence 10`。本页主体保留 0.4.2 完成 Remote-only 迁移时的数据库与回滚合同；0.4.3 不恢复 Local，也不改变其失败关闭边界。
 日期：2026-08-03
 状态：代码与自动化验收随本次升级收口；公司电脑真实 Pack canary 未通过/待 canary
 
@@ -59,7 +59,7 @@ Migration 9 的审计 decision 分别使用 `fresh_remote_unpaired`、`migrated_
 
 ## 回滚
 
-- release `0.4.1` 与 `0.4.2` 目录保持不可变并列，升级只切换 active release，不覆盖 `data/`。
+- release `0.4.1`、`0.4.2` 与 `0.4.3` 目录保持不可变并列，升级只切换 active release，不覆盖 `data/`；0.4.2→0.4.3 便携升级保持已由自动化验收。
 - Migration 10 删除旧 mode 表；回滚只能切换不可变 release，不能把 0.4.2 数据库降级交给旧 Shell 写入。Migration 9 已在 `connector_migration_audit` 保留必要审计摘要，但 0.4.2 创建或提升的 Remote binding generation 不应由旧 Shell 管理或降级。
 - 回滚不得恢复 Local fallback，也不得把旧 Local snapshot 当成已连接。若旧二进制仍具有 Local 产品语义，只能作为历史 release 证据，不能作为 Remote-only 正式产品继续发布。
 - Feature 包版本和 activation head 不随 Shell Transport 迁移重置。录制和删除元素继续按其独立签名包版本与 rollback 规则运行。

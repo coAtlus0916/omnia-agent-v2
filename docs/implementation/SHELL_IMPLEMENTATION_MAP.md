@@ -1,15 +1,15 @@
 # Shell Baseline 实现映射
 
-版本：`0.4.2`
-状态：Remote-only 候选；继承 Shell 0.4.1 UI regression patch。录制沿用当前独立签名 patch，删除元素 0.1.2 为独立后装 Feature。公司电脑真实 Remote Pack canary 未通过/待 canary。
+版本：`0.4.6`
+状态：Remote-only 候选源码；内置 recording 0.2.0 与 create-associate 0.2.1。功能栏直接显示 Feature，不再投影业务分级；通用 Feature Surface 提供两列式三步流程、持久 revision、真实进度/问题、同一 artifact chain 的选择/拖放上传和签名受管资产导出。设置的独立“日志”菜单查询真实 Core 交互记录并按 trace 展示失败阶段。`releases/` 仍是唯一产品根；0.4.6 便携用户测试和真实 Remote Pack canary 待完成。
 
 ## 范围
 
-Shell 原装平台包含 Core Store、Feature/Documentation Registry、通用 Worker/Store/Event/Managed Content ports 和唯一 RemoteConnectorTransport。Shell 不包含 Local Connector、Edge/CDP Session Core、Transport router 或 fallback。业务不硬编码进 Shell：当前 recording patch 作为独立签名 Feature 随便携包携带并首次启动自动升级/注册；删除元素 0.1.2 作为独立签名 Feature按需后装。删除聊天记录、新建与关联仍未交付。
+Shell 原装平台包含 Core Store、Feature/Documentation Registry、通用 Worker/Store/Event/Managed Content ports 和唯一 RemoteConnectorTransport。Shell 不包含 Local Connector、Transport router 或 fallback。业务不硬编码进 Shell：recording、删除元素与 `omnia.create-associate@0.2.1` 均是独立签名 Feature；新建与关联首次真实回传必须经过确认、逐命令权威读回，只在完整成功后记录精确 scope 的限时 capability evidence。删除聊天记录仍未交付。
 
 | 能力 | Delivery | Control & Data | Integration | 真实状态 |
 |---|---|---|---|---|
-| 首次配对 | 顶部 Connect 引导显示短期链接码/expiry | Core pairing session、safeStorage credential、Remote binding/generation/audit | Bridge 0.4.1 → Remote Connector 0.3.5 消费链接码 | 候选实现；真实公司电脑配对待 canary |
+| 首次配对 | 顶部 Connect 引导显示短期链接码/expiry | Core pairing session、safeStorage credential、Remote binding/generation/audit | Bridge 0.4.2 → Remote Connector 0.3.7 消费链接码 | 候选实现；真实公司电脑配对待 canary |
 | 连接 | 顶部 Connect/Cancel 与分阶段状态 | `ShellService` 持久 Remote-only connect state，最长 10 分钟只读 polling | Remote transport → Bridge → Remote Worker → `WorkstationOmniaSession` | 自动化收口中；真实 Omnia canary 待执行 |
 | 刷新 | 顶部刷新按钮与错误提示 | `ShellService.refresh` 更新 Core 状态 | Remote Worker 的 Session Core 重新加载页面、识别 Pack，并触发轻抓取 | 失败不覆盖成功 observation；真实 Pack 待 canary |
 | 保活 | 启停、运行/下次/错误状态 | Core DB `keepalive_state` + 后台 5 秒调度扫描 | 到期调用真实只读 refresh | 已实现；重启恢复 |
@@ -17,7 +17,7 @@ Shell 原装平台包含 Core Store、Feature/Documentation Registry、通用 Wo
 | 对话 | 第三列消息列表与输入区 | `chat_sessions/chat_messages` 持久化状态 | Provider 只由 Main 受控调用；未配置则不调用 | 已实现；无假回复 |
 | 缩放 | 右上角/设置 `− 百分比 +`、快捷键 | `user_preferences` CAS；Main 对所有当前/新建 WebContents `setZoomFactor` | Feature view/window 继承同一值 | 0.4.1 已按实际 DPR/viewport/bounds 验证；重启恢复、无 CSS 双缩放 |
 | Splitter | Feature 菜单/Tabbed Host、Comments 内容/composer、设置导航/内容 | `layout_preferences` 与 `settings.main` CAS | 不适用 | 已实现；pointer/键盘；Rail 固定且无 splitter |
-| Native Surface 可见性 | Renderer 只声明 active tab/overlay | `SurfaceWindowManager` 唯一拥有 attached/visible，Comments/Settings 时附着数为 0 | Worker/Run 生命周期不随隐藏终止 | 0.4.1；任意时刻最多一个 docked view |
+| Native Surface 可见性 | Renderer 只声明 active tab/overlay | `SurfaceWindowManager` 唯一拥有 attached/visible，Comments/Settings 时附着数为 0；Shell 主窗口在 load 前订阅显示事件并在 load 后检查可见性 | Worker/Run 生命周期不随隐藏终止 | 0.4.4 修复主窗口隐藏竞态；任意时刻最多一个 docked view |
 | 设置稳定布局 | 固定/clamp 外框、左右独立滚动、公共 splitter；无 Connector 子菜单 | `settings.main` LayoutPreference CAS | 配对/修复只从顶部 Connect 进入 | 继承 0.4.1；0.4.2 删除 Local/Remote/Bridge/Pair 表单 |
 | 重新配对/解除绑定 | Connect 错误/详情弹层，明确确认 | candidate 原子切换、previous generation 撤销；解除不清其他用户数据 | Bridge binding store + 双端 protected credential | 自动化收口中；真实撤销/重配待 canary |
 
@@ -29,8 +29,8 @@ Electron Renderer（无 Node）
   → allowlisted typed IPC
 Electron Main / Core（SQLite owner、AI broker、Remote binding owner）
   → authenticated RemoteConnectorTransport
-v5 Bridge 0.4.1（binding/generation/relay/heartbeat）
-  → v5 Remote Connector Worker 0.3.5 / sequence 8
+v5 Bridge 0.4.2（binding/generation/relay/heartbeat）
+  → v5 Remote Connector Worker 0.3.7 / sequence 10
   → WorkstationOmniaSession（Omnia credential/session owner）
   → verified dedicated Edge CDP + signed OperationHost
 ```
@@ -46,7 +46,7 @@ v5 Bridge 0.4.1（binding/generation/relay/heartbeat）
 
 ## Remote
 
-`0.3.4 / sequence 7` Remote Connector 和 `0.4.0` Bridge 是不可变 historical previous。0.4.2 配套候选为 Remote Connector `0.3.5 / sequence 8` 与 Bridge `0.4.1`：删除 waiting discovery/匿名候选认领，改为顶部 Connect 创建短期链接码、公司电脑 Connector 消费、双端保存长期受保护 credential。普通重启/断线不重新配对；撤销/不可恢复进入 `repair_required`。`state` envelope、heartbeat freshness、协议兼容和 Pack Session 分开投影。具体真实 Pack、录制与 mutation 仍待公司电脑 canary。
+`0.3.4 / sequence 7`、`0.3.5 / sequence 8`、`0.3.6 / sequence 9` Remote Connector 和 `0.4.0`、`0.4.1` Bridge 均为不可变 historical previous。0.4.3 配套候选为 Remote Connector `0.3.7 / sequence 10` 与 Bridge `0.4.2`：保持链接码/长期受保护 binding，并补入固定签名 JSON Operation、权威 tenant/Pack identity、mutation 响应丢失语义及安全手工升级。普通重启/断线不重新配对；撤销/不可恢复进入 `repair_required`。具体真实 Pack、录制与 mutation 仍待公司电脑 canary。
 
 ## AI
 
@@ -105,3 +105,12 @@ Remote 只暴露：
 `health | connect | status | refresh | workspace_light_read`
 
 Remote 不把任意 URL/method/body 传给 Connector；mutation 只使用官方签名 Operation。Bridge、Connector、Session 或 Pack 不可验证时失败关闭，且代码、IPC、package 和运行时均不存在 Local fallback。
+# Create-and-associate host responsibilities
+
+Shell hosts native file selection/export, no-path artifact descriptors, scoped byte transfer, Surface state persistence, Comments message cards, action-level dependency/capability gates, and lazy Operation registration. Renderer only collects declared editor values; Core validates Run/artifact ownership, revisions, template identities, and evidence.
+
+# Interaction diagnostics
+
+`src/main/index.ts` 的统一 IPC handler 为 Shell 与 Feature Surface 入口建立真实 interaction；原有五个 Feature Surface 直连 handler 也复用同一包装。`InteractionLogService` 负责 SQLite start/success/failure、trace/parent 关联、脱敏、崩溃恢复、滚动与受限查询。Feature Worker 调用显式传递 interaction context，签名 Connector Operation 按 preflight/execute/readback/reconcile 的 operation ID 记录子阶段；AI Provider 与逐文件附件导入补记原先会被业务状态吸收的失败。
+
+设置 → 日志直接查询 Core 数据，不使用 sample 数据。窗口保持固定 860×680（小屏受 viewport 上限约束），日志列表与详情独立滚动；不存在清空/导出入口。该诊断不替代 Feature Run/Event/Evidence，也不改变 Remote-only、失败关闭或无 Local fallback 边界。

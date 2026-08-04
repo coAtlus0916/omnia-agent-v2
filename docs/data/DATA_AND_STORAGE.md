@@ -305,6 +305,10 @@ legal_or_security_hold
 
 “无按年龄自动删除”不等于承诺永久保存。UI 只有在真实引用扫描、显式确认、物理 GC 和结果 Evidence 均存在时才提供清理；不得提供只有设置项、没有真实清理器的保留入口。
 
+### Interaction diagnostics 的当前滚动策略
+
+Shell 0.4.5 的 `interaction_logs` 是普通诊断日志：保留 14 天且最多 20,000 行，启动及每 250 次完成时自动清理终态记录。单条脱敏 details 上限 2 KiB，查询单页最多 200 条。该滚动不删除或降级 Run/Event、Command Evidence、Feature evidence、Remote binding audit 或 `uncertain/reconcile` 事实。设置页只提供真实查询和 trace 详情，不提供未实现的清空/导出入口。
+
 正式业务 Feature 前仍须由 D5 冻结：各 owner 的配额与软/硬阈值、低磁盘准入、Windows ACL/Secret Store、checkpoint/导出完整性和真实恢复能力。删除聊天记录的正文/附件/Evidence 具体语义仍由 P-10 决定；卸载 Feature、清除历史文档和移除 Pack 历史都必须复用引用与 GC 合同。
 
 ### 10.1 受控移除实例

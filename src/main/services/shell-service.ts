@@ -13,14 +13,19 @@ import {
   beginPairingSession,
   cancelPairingSession,
   commitPairingSession,
+  inspectBridgePairingCapability,
   pollPairingSession,
   revokeBinding
 } from '../connector/remote-connector-transport.js';
-import { BRIDGE_PROTOCOL } from '../../shared/bridge-contracts.js';
+import {
+  BRIDGE_PROTOCOL,
+  type BridgePairingCapabilityInspection
+} from '../../shared/bridge-contracts.js';
 import type { CoreDatabase } from '../database.js';
 import type { AttachmentService } from './attachment-service.js';
 import type { ChatService } from './chat-service.js';
 import type { FeaturePackageManager } from '../features/package-manager.js';
+import type { InteractionLogService } from './interaction-log-service.js';
 
 const utcNow = () => new Date().toISOString();
 
@@ -32,6 +37,7 @@ export interface ShellServiceTiming {
 }
 
 interface RemoteLifecycleApi {
+  inspectBridge: typeof inspectBridgePairingCapability;
   beginPairing: typeof beginPairingSession;
   pollPairing: typeof pollPairingSession;
   cancelPairing: typeof cancelPairingSession;
@@ -54,6 +60,11 @@ export class ShellService {
   private readonly events = new EventEmitter();
   private remotePairing: RemotePairingSnapshot = {
     state: 'idle', pairingCode: '', expiresAt: '', message: ''
+  };
+  private bridgePairing: BridgePairingCapabilityInspection = {
+    status: 'checking', canCreateSession: false, reasonCode: '',
+    reason: '正在检查 Remote Bridge 是否支持一次性链接会话。',
+    bridgeVersion: '', bridgeProtocol: '', buildIdentity: '', checkedAt: ''
   };
   private pairingSecret: {
     sessionId: string;
@@ -83,7 +94,8 @@ export class ShellService {
     private readonly attachments?: AttachmentService,
     private readonly features?: FeaturePackageManager,
     timing: Partial<ShellServiceTiming> = {},
-    remoteLifecycle: Partial<RemoteLifecycleApi> = {}
+    remoteLifecycle: Partial<RemoteLifecycleApi> = {},
+    private readonly interactionLogs?: InteractionLogService
   ) {
     this.timing = {
       now: timing.now || Date.now,
@@ -92,6 +104,7 @@ export class ShellService {
       connectPollMs: timing.connectPollMs ?? 2_500
     };
     this.remoteLifecycle = {
+      inspectBridge: remoteLifecycle.inspectBridge || inspectBridgePairingCapability,
       beginPairing: remoteLifecycle.beginPairing || beginPairingSession,
       pollPairing: remoteLifecycle.pollPairing || pollPairingSession,
       cancelPairing: remoteLifecycle.cancelPairing || cancelPairingSession,
@@ -133,6 +146,7 @@ export class ShellService {
   }
 
   async initialize(): Promise<void> {
+    await this.refreshBridgePairingCapability();
     const pendingPairing = this.database.getPendingRemotePairing();
     if (pendingPairing) {
       if (pendingPairing.status === 'creating') {
@@ -253,7 +267,7 @@ export class ShellService {
     return {
       schemaVersion: 'omnia.shell-home/v1',
       generatedAt: utcNow(),
-      productVersion: '0.4.2',
+      productVersion: '0.4.7',
       featureCount: this.database.activeFeatureCount(),
       features: featureRuntime,
       connection: this.connection,
@@ -269,8 +283,14 @@ export class ShellService {
         ai: this.database.publicAiSettings(),
         connection: this.database.publicConnectionSettings()
       },
+      bridgePairing: this.bridgePairing,
       remotePairing: this.remotePairing
     };
+  }
+
+  private async refreshBridgePairingCapability(): Promise<void> {
+    const binding = this.database.getRemoteBinding();
+    this.bridgePairing = await this.remoteLifecycle.inspectBridge({ bridgeUrl: binding.bridgeUrl });
   }
 
   selectFeature(featureId: string): ShellSnapshot {
@@ -442,7 +462,13 @@ export class ShellService {
       throw new AppError('CONNECTOR.UNAVAILABLE', this.connection.adapterReason || 'Remote Connector 服务不可用。', true);
     }
     try {
-      this.connection = await this.adapter.refresh();
+      const refresh = () => this.adapter.refresh();
+      this.connection = this.interactionLogs
+        ? await this.interactionLogs.run({
+          plane: 'connector', component: 'remote-transport', surface: 'shell.session', action: 'session-refresh',
+          failurePoint: 'connector.session.refresh'
+        }, refresh)
+        : await refresh();
       this.database.saveConnectionPayload(this.connection);
       if (this.connection.connected) await this.refreshWorkspaceDirectory();
       else {
@@ -509,7 +535,13 @@ export class ShellService {
     this.emitChanged();
     try {
       if (!this.connection.connected) throw new AppError('KEEPALIVE.NOT_CONNECTED', '当前 Pack 连接已失效。');
-      this.connection = await this.adapter.refresh();
+      const refresh = () => this.adapter.refresh();
+      this.connection = this.interactionLogs
+        ? await this.interactionLogs.run({
+          plane: 'connector', component: 'remote-transport', surface: 'shell.session', action: 'keepalive-refresh',
+          failurePoint: 'connector.keepalive.refresh'
+        }, refresh)
+        : await refresh();
       this.database.saveConnectionPayload(this.connection);
       if (!this.connection.connected) throw new AppError('KEEPALIVE.REFRESH_FAILED', this.connection.message);
       this.database.updateKeepalive({ lastSuccessAt: utcNow(), lastError: '' });
@@ -536,7 +568,13 @@ export class ShellService {
     }
     const previous = this.database.getLatestWorkspaceObservation(this.connection.engagementId);
     try {
-      const observation = await this.adapter.lightRead(this.connection.engagementId);
+      const lightRead = () => this.adapter.lightRead(this.connection.engagementId);
+      const observation = this.interactionLogs
+        ? await this.interactionLogs.run({
+          plane: 'connector', component: 'remote-transport', surface: 'settings.safety', action: 'workspace-light-read',
+          failurePoint: 'connector.workspace_light_read', details: { engagementId: this.connection.engagementId }
+        }, lightRead)
+        : await lightRead();
       this.database.saveWorkspaceObservation(observation);
       this.workspaceDirectory = {
         available: true,
@@ -556,6 +594,8 @@ export class ShellService {
         reason: error instanceof Error ? error.message : '权威 Workspace 轻抓取失败。',
         observation: previous
       };
+      this.emitChanged();
+      throw error;
     }
     this.emitChanged();
     return this.snapshot();
@@ -656,7 +696,10 @@ export class ShellService {
   }
 
   async diagnoseRemoteConnection(): Promise<ShellSnapshot> {
-    await this.syncConnection();
+    await Promise.all([
+      this.syncConnection(),
+      this.refreshBridgePairingCapability()
+    ]);
     this.emitChanged();
     return this.snapshot();
   }
@@ -669,10 +712,24 @@ export class ShellService {
       if (this.database.hasPendingRemoteLifecycleWork()) {
         throw new AppError('REMOTE.LIFECYCLE_PENDING', '已有配对或解除绑定流程正在恢复；请先完成或取消当前流程。', true);
       }
-      const current = this.database.getRemoteBinding();
+      let current = this.database.getRemoteBinding();
       if (current.stateVersion !== input.expectedStateVersion) throw new AppError('SETTINGS.CONFLICT', '连接状态已更新，请重试。', true);
       if (current.remotePaired && !input.repair) throw new AppError('REMOTE.ALREADY_PAIRED', '当前设备已绑定。');
       if (input.repair && input.confirmed !== true) throw new AppError('REMOTE.CONFIRMATION_REQUIRED', '重新配对前需要明确确认。');
+      await this.refreshBridgePairingCapability();
+      this.emitChanged();
+      if (!this.bridgePairing.canCreateSession) {
+        throw new AppError(
+          this.bridgePairing.reasonCode || 'REMOTE.BRIDGE_UPGRADE_REQUIRED',
+          this.bridgePairing.reason,
+          this.bridgePairing.status === 'unreachable'
+        );
+      }
+      const afterPreflight = this.database.getRemoteBinding();
+      if (afterPreflight.stateVersion !== current.stateVersion) {
+        throw new AppError('SETTINGS.CONFLICT', '连接状态在 Bridge 预检期间已更新，请重试。', true);
+      }
+      current = afterPreflight;
       const replacement = input.repair && current.bindingState === 'bound' ? current : null;
       const reservation = this.database.reserveRemotePairingIntent({
         bridgeUrl: current.bridgeUrl, expectedPairId: current.pairId, expectedGeneration: current.generation,
@@ -694,7 +751,7 @@ export class ShellService {
       };
       this.remotePairing = {
         state: 'waiting', pairingCode: session.pairingCode, expiresAt: session.expiresAt,
-        message: '请在公司电脑 Remote Connector 中输入该一次性链接码。'
+        message: '请在公司电脑 Remote Connector 中输入该 4 位数字链接码（2 分钟内有效）。'
       };
       this.emitChanged();
       return this.snapshot();

@@ -105,3 +105,6 @@ Codex 只有在持有用户针对具体 TemplateVersion/digest 签发的单次�
 - [ ] RAIT、Factors Considered、对象/GRA/关系的 Managed Content Schema、provenance 和 Phase 2 查询合同已由双方 owner 批准。
 
 任一条件未满足时，“新建与关联”必须保持 `DoR blocked`，菜单不得因存在临时文件而开放。
+# Implemented packaging boundary
+
+V8 supplies rules and evidence only. The user supplies a real four-section APP/DB/OS/Tool workbook. The Feature emits a new workbook with processing results, an execution plan, provenance, and an issue/support matrix. No V8 example or historical object ID is used as a runtime default.

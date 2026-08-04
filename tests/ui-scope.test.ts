@@ -31,4 +31,8 @@ test('Connector settings and anonymous discovery are absent; pairing lives in th
   assert.match(renderer, /revokeRemoteBinding\(\{ confirmed: true/);
   assert.match(renderer, /window\.confirm\(/);
   assert.match(renderer, /pollRemotePairing/);
+  assert.match(renderer, /snapshot\.bridgePairing/);
+  assert.match(renderer, /remote-pairing-capability-reason/);
+  assert.match(renderer, /disabled=\{!pairingCapability\.canCreateSession\}/);
+  assert.match(renderer, /pairingCapability\.reason/);
 });

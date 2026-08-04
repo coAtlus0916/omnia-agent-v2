@@ -13,6 +13,11 @@ export type ConnectorOperation =
 export type RecordingCommandKind =
   | 'status'
   | 'start'
+  | 'pause'
+  | 'resume'
+  | 'stop'
+  | 'export'
+  | 'export_chunk'
   | 'stop_export'
   | 'cancel'
   | 'capture_current_gra_catalog';
@@ -28,6 +33,7 @@ export interface RecordingCommandRequest {
     engagementId: string;
   };
   recordingId?: string;
+  chunkIndex?: number;
 }
 
 export interface ConnectorRequest {
@@ -64,6 +70,9 @@ export interface ConnectorConnection {
   connectorName: string;
   connectorVersion: string;
   sessionGeneration: number;
+  authorityInstanceId?: string;
+  tenantOrOrgId?: string;
+  packId?: string;
   engagementId: string;
   engagementName: string;
   clientName: string;

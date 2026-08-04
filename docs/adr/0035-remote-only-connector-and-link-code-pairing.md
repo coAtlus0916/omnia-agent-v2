@@ -104,7 +104,7 @@ repair_required
 
 2026-08-03 实现澄清：配对取消使用同一 poll proof 调用 `DELETE /v1/pairing/sessions/:id`。waiting 取消使 code 永久不可消费；candidate 取消先 revoke；若 activation 已先赢则返回 `409 matched`，Shell 不得丢弃新 token，而须完成 binding 保存，或在本地 expected old identity 已变化时持久化 cleanup proof 并撤销未接管 candidate。取消/cleanup 网络失败保留实例加密 pending，不能只清 UI 状态。
 
-begin、poll、cancel、revoke 共用生命周期单飞门禁；begin 在任何 Bridge await 前写入 durable `creating` reservation。损坏的 pairing/revocation pending 不得通过删除记录解除 transport gate：可从同 pair 凭据恢复时继续；否则保留人工 Bridge reconcile/revoke tombstone。特别是普通未 stage pairing 的 poll proof 损坏时，Core 不知道 Bridge 是否已有 ready candidate，必须无限期标记 `manual_reconcile_required`，即使本地 code `expiresAt` 已过也不能清理；UI 只显示 session hash，要求 Bridge 管理员确认 candidate 已取消、recovery TTL 已过或已 revoke 后，才允许人工清 tombstone 并开始新链接。
+begin、poll、cancel、revoke 共用生命周期单飞门禁。begin 先在该门禁内执行公开、只读的 Bridge capability health；该请求不创建或改变远端 pairing session，因此不写 reservation。预检通过后，begin 必须在任何会创建或改变远端 pairing session 状态的 Bridge await 前写入 durable `creating` reservation。损坏的 pairing/revocation pending 不得通过删除记录解除 transport gate：可从同 pair 凭据恢复时继续；否则保留人工 Bridge reconcile/revoke tombstone。特别是普通未 stage pairing 的 poll proof 损坏时，Core 不知道 Bridge 是否已有 ready candidate，必须无限期标记 `manual_reconcile_required`，即使本地 code `expiresAt` 已过也不能清理；UI 只显示 session hash，要求 Bridge 管理员确认 candidate 已取消、recovery TTL 已过或已 revoke 后，才允许人工清 tombstone 并开始新链接。
 
 只有同一受控 target 同时满足受信 Omnia URL、合法 Engagement ID、同 target Authorization、相同 identity 的实时 hierarchy 与 Pack 名称时才进入 `connected`。用户稍后完成登录并打开 Pack 时自动晋升，不要求第二次点击 Connect。刷新是明确的真实 action，不能被 polling 冒充。
 

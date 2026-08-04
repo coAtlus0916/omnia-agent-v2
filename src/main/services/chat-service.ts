@@ -9,6 +9,7 @@ import type {
 } from '../../shared/contracts.js';
 import { AppError } from '../../shared/errors.js';
 import type { CoreDatabase } from '../database.js';
+import type { InteractionLogService } from './interaction-log-service.js';
 
 const TEXT_MEDIA = new Set([
   'text/plain', 'text/markdown', 'text/csv', 'application/json',
@@ -90,8 +91,17 @@ async function validateModelAttachment(
 export class ChatService {
   constructor(
     private readonly database: CoreDatabase,
-    private readonly fetchImpl: typeof fetch = fetch
+    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly interactionLogs?: InteractionLogService
   ) {}
+
+  private providerInteraction<T>(action: string, operationId: string, callback: () => Promise<T>): Promise<T> {
+    if (!this.interactionLogs) return callback();
+    return this.interactionLogs.run({
+      plane: 'connector', component: 'ai-provider', surface: 'settings.ai', action,
+      failurePoint: `ai-provider.${action}`, operationId
+    }, callback);
+  }
 
   snapshot(): ChatSnapshot {
     const sessionId = this.database.getChatSessionId();
@@ -133,6 +143,7 @@ export class ChatService {
     const base = validateProviderUrl(settings.baseUrl);
     this.database.updateAiTest('testing', '正在连接 Provider。');
     try {
+      await this.providerInteraction('test', 'models', async () => {
       await assertPublicProviderHost(base);
       const response = await this.fetchImpl(endpoint(base, 'models'), {
         headers: { Authorization: `Bearer ${settings.apiKey}`, Accept: 'application/json' },
@@ -144,10 +155,9 @@ export class ChatService {
       try { payload = JSON.parse(text); } catch { throw new Error('Provider 未返回 JSON。'); }
       if (!Array.isArray(payload?.data)) throw new Error('Provider 的 /models 返回不符合 OpenAI-compatible 合同。');
       const visible = payload.data.some((item: any) => String(item?.id || '') === settings.model);
-      this.database.updateAiTest(
-        'success',
-        visible ? `连接成功，模型 ${settings.model} 可见。` : `连接成功；/models 未列出 ${settings.model}。`
-      );
+      if (!visible) throw new Error(`/models 未列出所选模型 ${settings.model}。`);
+      this.database.updateAiTest('success', `连接成功，模型 ${settings.model} 可见。`);
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误';
       this.database.updateAiTest('failed', `连接测试失败：${message}`.slice(0, 1000));
@@ -215,6 +225,7 @@ export class ChatService {
       return;
     }
     try {
+      await this.providerInteraction('chat', 'chat.completions', async () => {
       const history = this.database.listMessages(sessionId)
         .filter((message) => message.id !== userMessage.id && message.status !== 'failed')
         .slice(-24)
@@ -250,13 +261,16 @@ export class ChatService {
             role: 'user',
             content: attachments.length ? currentContent : content
           }],
+          ...(settings.provider === 'deepseek' ? { thinking: { type: 'disabled' } } : {}),
           stream: false
         }),
         signal: AbortSignal.timeout(90_000)
       });
       const payload = await response.json() as any;
       if (!response.ok) throw new Error(`Provider HTTP ${response.status}`);
-      const assistantContent = String(payload?.choices?.[0]?.message?.content || '').trim();
+      const choice = payload?.choices?.[0];
+      if (choice?.finish_reason !== 'stop') throw new Error(`Provider 返回未完成或不支持的 finish_reason：${String(choice?.finish_reason || 'missing')}。`);
+      const assistantContent = String(choice?.message?.content || '').trim();
       if (!assistantContent) throw new Error('Provider 未返回有效消息。');
       for (const item of attachments) this.database.updateAttachmentDelivery(item.id, 'sent', '');
       this.database.updateMessage(userMessage.id, 'delivered');
@@ -265,6 +279,7 @@ export class ChatService {
         role: 'assistant',
         content: assistantContent,
         status: 'delivered'
+      });
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : '未知错误';

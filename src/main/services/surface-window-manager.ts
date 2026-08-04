@@ -1,6 +1,6 @@
 import { BrowserWindow, WebContentsView } from 'electron';
 import path from 'node:path';
-import type { DeclarativeFeatureSurface, FeatureActionRequest } from '../../shared/feature-contracts.js';
+import type { DeclarativeFeatureSurface, FeatureActionRequest, FeatureArtifactInputRequest } from '../../shared/feature-contracts.js';
 import type { ShellSnapshot } from '../../shared/contracts.js';
 import type { DockedSurfaceManagerSnapshot, DockedSurfaceVisibilityInput } from '../../shared/contracts.js';
 
@@ -12,6 +12,10 @@ export interface SurfaceOpenInput {
   surfaceId: string;
   placement: 'docked' | 'detached' | 'minimized';
   bounds?: { x: number; y: number; width: number; height: number };
+}
+export interface SurfaceSelfContext {
+  instanceId: string;
+  placement: SurfacePlacement;
 }
 interface SurfaceWindowState extends Omit<SurfaceOpenInput, 'placement'> {
   placement: SurfacePlacement;
@@ -183,6 +187,52 @@ export class SurfaceWindowManager {
       throw new Error('Feature Surface context is not authorized or has drifted.');
     }
     return this.invokeFeatureAction(request);
+  }
+
+  selfContext(senderId: number): SurfaceSelfContext {
+    const instanceId = this.senderInstances.get(senderId);
+    const state = instanceId ? this.states.get(instanceId) : undefined;
+    if (!state || state.placement === 'closed') throw new Error('Feature Surface sender is not authorized.');
+    return { instanceId: state.instanceId, placement: state.placement };
+  }
+
+  dockFromSender(senderId: number): SurfaceSelfContext {
+    const context = this.selfContext(senderId);
+    const state = this.states.get(context.instanceId)!;
+    if (state.placement !== 'detached' && state.placement !== 'minimized') {
+      throw new Error('Only a detached Feature Surface can be docked to the Shell.');
+    }
+    setTimeout(() => { void this.performDock(state); }, 0);
+    return context;
+  }
+
+  private async performDock(state: SurfaceWindowState): Promise<void> {
+    const surface = this.currentSurface(state);
+    if (!surface || state.placement === 'closed') return;
+    this.destroyDetached(state);
+    if (!state.view) await this.createDocked(state, surface, state.bounds);
+    else state.placement = 'docked';
+    this.activeDockedInstanceId = state.instanceId;
+    this.overlayActive = false;
+    this.reconcileDockedViews();
+    if (!this.shellWindow.isDestroyed()) this.shellWindow.webContents.send('surface:docked', state.instanceId);
+  }
+
+  authorizeArtifactInput(senderId: number, request: FeatureArtifactInputRequest): void {
+    const instanceId = this.senderInstances.get(senderId);
+    const state = instanceId ? this.states.get(instanceId) : undefined;
+    if (!state || state.placement === 'closed' || state.featureId !== request.featureId
+      || state.featureVersion !== request.featureVersion || state.surfaceId !== request.surfaceId) {
+      throw new Error('Feature artifact input context is not authorized or has drifted.');
+    }
+  }
+
+  authorizeArtifactExport(senderId: number, featureId: string): void {
+    const instanceId = this.senderInstances.get(senderId);
+    const state = instanceId ? this.states.get(instanceId) : undefined;
+    if (!state || state.placement === 'closed' || state.featureId !== featureId) {
+      throw new Error('Feature artifact export context is not authorized or has drifted.');
+    }
   }
 
   async open(input: SurfaceOpenInput): Promise<{ instanceId: string; placement: SurfacePlacement; attached: boolean; reason: string }> {

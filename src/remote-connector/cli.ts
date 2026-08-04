@@ -60,6 +60,33 @@ function installBootstrap(versionRootPath: string): void {
   }
 }
 
+function processIsAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+function assertManualActivationSafe(): void {
+  if (fs.existsSync(paths.supervisorLock)) {
+    try {
+      const lock = JSON.parse(fs.readFileSync(paths.supervisorLock, 'utf8')) as { pid?: number };
+      if (processIsAlive(Number(lock.pid))) {
+        throw new Error('请先运行 StopRemoteConnector.cmd 并等待 Connector 停止，再激活新版本。');
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('请先运行')) throw error;
+      throw new Error('Supervisor lock 无法验证；为避免在途命令被切换，拒绝手工升级。');
+    }
+  }
+  if (fs.existsSync(paths.status)) {
+    let status: { activeOperations?: number; uncertainOperations?: number };
+    try { status = JSON.parse(fs.readFileSync(paths.status, 'utf8')) as typeof status; }
+    catch { throw new Error('Connector status 无法验证；为避免在途命令被切换，拒绝手工升级。'); }
+    if (Number(status.activeOperations || 0) > 0 || Number(status.uncertainOperations || 0) > 0) {
+      throw new Error('存在 active/uncertain Operation；必须先完成或只读 reconcile，不能切换 Connector 版本。');
+    }
+  }
+}
+
 function install(): void {
   const installed = copyPortableVersion();
   installBootstrap(installed.destination);
@@ -67,12 +94,16 @@ function install(): void {
   if (state.current && compareVersions(state.current, installed.version) > 0) {
     throw new Error('Manual bootstrap refuses to downgrade the managed v5 Remote Connector.');
   }
+  const promotesNewVersion = !state.current || compareVersions(installed.version, state.current) > 0;
+  if (state.current && promotesNewVersion) assertManualActivationSafe();
   writeManagedState(paths, {
     ...state,
-    current: state.current || installed.version,
+    current: promotesNewVersion ? installed.version : state.current,
+    previous: state.current && promotesNewVersion ? state.current : state.previous,
+    pending: promotesNewVersion ? null : state.pending,
     highestSequence: Math.max(state.highestSequence, installed.sequence)
   });
-  process.stdout.write(`v5 Remote Connector ${installed.version} 已安装到独立目录：${paths.installRoot}\n`);
+  process.stdout.write(`v5 Remote Connector ${installed.version} 已安装并激活到独立目录：${paths.installRoot}\n`);
 }
 
 function supervisorCommand(): { node: string; script: string } {

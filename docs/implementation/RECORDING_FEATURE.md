@@ -1,23 +1,24 @@
 # 官方内置录制 Feature
 
-`omnia.recording` 0.1.1 / sequence 2 是独立签名、独立 worker、可独立升级的 v5 Feature。候选包随 Shell 放入 `resources/app/builtins/recording-0.1.1.ofp`，首次启动由 Core 自动安装，因此用户无需运行 Feature 安装器；入口显示在 `其他 > 录制`，内容使用 Tabbed Feature Surface。
+`omnia.recording` 0.3.0 / sequence 4 已生成官方签名候选，并内置到本地 Shell 0.4.7 不可变包。0.2.0 与更早候选保持不可变，可作为历史 rollback 目标。本轮没有部署外部下载站，也没有完成公司电脑真实 Omnia canary，因此这里只声明“本地候选已打包”，不声明生产上线。
 
-0.1.1 是 0.1.0 的兼容导航补丁：保持同一 Feature ID、Surface、Worker Store、Run 和 Connector command，只把错误的 `Feature > 录制` 改为稳定 group id `other`/标签“其他”。0.1.0 包保持不可变并作为 previous；Package Manager 会把后装 `omnia.delete-elements@0.1.2` 合并到同一“其他”分组。
+0.3.0 保持同一 Feature ID 和 Remote-only recording command，新增播放器式 `recorder` 声明合同、真实 pause/resume/stop/export 状态、当前页 Risk/Control 自动采集和跨 Bridge 分块 Artifact 交付。旧 `stop_export` 与手工 catalog command 只为已安装旧包保留 Connector 兼容性；0.3.0 Surface 不再声明这些按钮。
 
 ## 四层实现
 
-- Frontend：声明式 Surface 展示 Connector 的连接、录制、目录与导出结果；动作可用性由真实状态更新。
-- Middle：`feature-packages/recording/source/middle/worker.cjs` 调用窄化 recording command，写入 Feature evidence store。
-- Connector：`src/connector/recording/recording-service.ts` 由 Remote Worker 的 `WorkstationOmniaSession` 宿主，负责 CDP 交互/页面/网络证据、脱敏响应体、关键 endpoint 完整性和 graceful stop；使用同一 `omnia.v5.recording-command/v1` payload。
-- Package：`scripts/package-recording-feature.mjs` 生成官方不可变 0.1.1 `.ofp`；`scripts/package-windows.mjs` 把它装入 Shell 0.4.1 便携包。
+- Frontend：通用声明式 `recorder` Surface 渲染播放器、真实计时投影、事件/Risk/Control 计数和五个控制动作；Renderer 不含录制 Feature ID 分支。
+- Middle：`feature-packages/recording/source/middle/worker.cjs` 调用 start/pause/resume/stop/export/export_chunk，写入 Feature evidence，并把真实文件提交到 Core Artifact Store。
+- Core/Data：`FeatureRuntimeStore.commitStandaloneArtifact` 为没有用户上传源文件的 Connector evidence 创建独立 succeeded Run 和受管 Artifact；下载使用既有 `surface:save-feature-artifact`。
+- Connector：`src/connector/recording/recording-service.ts` 与 `WorkstationOmniaSession` 负责 CDP、暂停恢复、graceful drain、当前页自动目录采集、持久 manifest 和 512 KiB 导出分块。
+- Package：`scripts/package-recording-feature.mjs` 已生成并验签 0.3.0 / sequence 4 `.ofp`；Shell 0.4.7 release manifest 固定引用该候选。
 
 ## v4 复用与重构
 
-v4 `omnia-recorder.js` 的事件类型、凭据排除、关键 response body 完整性和停止 drain 语义重构为 v5 Playwright CDP 会话。v4 `omnia-session-host.js` 的唯一 Pack/Engagement 绑定原则进入 Remote Connector 内部的 `WorkstationOmniaSession`。v4 浮动 recording controller 不复用；v5 使用隔离 Feature Surface。所有代码和产物均在 v5 工作区，不存在 v4 运行时路径依赖。
+v4 `omnia-recorder.js` 的同一 recordingId 多 segment、pause/continue、关键 response body 完整性和停止 drain 语义重构为 v5 Playwright CDP 会话。v4 `omnia-session-host.js` 的唯一 Pack/Engagement 绑定原则进入 Remote Connector 内部的 `WorkstationOmniaSession`。v4 UI 的播放/暂停/停止交互语义被保留，但界面通过 v5 通用声明式 Surface 重写。所有代码均在 v5 工作区，不存在 v4 运行时路径依赖。
 
 ## Phase1 Risk/Control 完整目录
 
-只有当前页面实际请求过唯一 GRA 的已验证目录 endpoint，Connector 才接受抓取；无身份或多身份时返回真实 blocker。抓取全程只使用固定 GET：
+Connector 监听当前页面实际出现的唯一 GRA 身份，并在开始、网络观察、暂停和停止时自动抓取；无身份、多身份、授权未就绪或读取缺失都进入录制 manifest 的真实 pending/incomplete 状态，不再要求用户点击单独按钮。抓取全程只使用固定 GET：
 
 - GRA detail 与 IT Element detail；
 - `plannedresponse/byRiskAssessmentId`；
@@ -29,10 +30,14 @@ v4 `omnia-recorder.js` 的事件类型、凭据排除、关键 response body 完
 
 Higher/Lower 只按 `capturedRait` 记录和合并。观察到的关系单列保存，`linkRequired` 固定保持未知 `null`，不得由目录存在推断母版应关联。
 
+## 导出边界
+
+Bridge WebSocket `maxPayload` 为 2 MiB，不能一次回传完整录制。Connector 先冻结 `recording.json`，再通过 `export_chunk` 返回最多 512 KiB 的真实文件分块；Worker 核对序号和冻结长度后提交 `commitStandaloneArtifact`。超过 Core 64 MiB 单 Artifact 上限时明确失败并保留 Connector 原始录制，不截断、不显示成功下载。
+
 ## 验收边界
 
-自动化使用受控 CDP/HTTP fixture 验证代码与合同。未使用用户 Omnia 登录，因此真实 Pack 的 endpoint 返回形态、Edge 交互覆盖和 Remote 跨 Bridge 现场录制仍需用户授权环境 canary；不得把 fixture 通过描述为生产数据验收。
+本轮按用户要求停止单元测试，只执行一次 typecheck/build。未使用用户 Omnia 登录，因此真实 Pack 的 endpoint 返回形态、暂停恢复、当前页自动 Risk/Control 和 Remote 跨 Bridge Artifact 导出仍需用户授权环境 canary；不得把源码检查描述为生产数据验收。
 
 ## Remote-only 平台边界（2026-08-03）
 
-本轮不改写 `omnia.recording@0.1.1` 包、sequence、Worker、Operation 或随包文档。Shell 0.4.2 删除 Local 产品链后，录制 Connector command 只能经 RemoteConnectorTransport → Bridge → 公司电脑 Remote Worker → `WorkstationOmniaSession` 的同一签名 recording contract 执行；缺 binding、Connector offline、不兼容或真实 Pack 未就绪时失败关闭，不存在 Local fallback。公司电脑真实录制 canary 未通过/待 canary。
+录制命令只能经 RemoteConnectorTransport → Bridge → 公司电脑 Remote Worker → `WorkstationOmniaSession` 执行；缺 binding、Connector offline、不兼容或真实 Pack 未就绪时失败关闭，不存在 Local fallback。公司电脑真实录制 canary 未通过/待 canary。

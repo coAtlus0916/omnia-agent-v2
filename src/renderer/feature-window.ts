@@ -136,6 +136,21 @@ function reviewFieldControl(field: DeclarativeReviewField): string {
   return `<input ${common} value="${esc(value)}">`;
 }
 
+function reviewDraftRevisions() {
+  return (surface?.review?.fields || []).filter((field) => dirtyReviewValues.has(field.fieldKey)).map((field) => ({
+    rowKey: field.rowKey,
+    fieldKey: field.fieldKey,
+    expectedRevision: field.expectedRevision,
+    value: dirtyReviewValues.get(field.fieldKey) ?? field.currentValue
+  }));
+}
+
+function reviewActionDirtyDisabled(actionId: string | undefined): boolean {
+  if (actionId === 'apply-revisions') return dirtyReviewValues.size === 0;
+  if (actionId === 'back-to-upload' || actionId === 'revalidate-all') return false;
+  return dirtyReviewValues.size > 0;
+}
+
 function renderReview(review: DeclarativeFeatureReview): string {
   reconcileReviewSelection(review);
   const elements = activeReviewElements(review);
@@ -155,9 +170,7 @@ function renderReview(review: DeclarativeFeatureReview): string {
   const footerOrder = ['back-to-upload', 'revalidate-all', 'remove-batch-row', 'apply-revisions', 'prepare-return'];
   const footerActions = footerOrder.map((actionId) => actionMap.get(actionId)).filter((action): action is DeclarativeFeatureAction => Boolean(action)).map((action) => {
     const selectedDisabled = action.actionId === 'remove-batch-row' && !selectedElement;
-    const dirtyDisabled = action.actionId === 'apply-revisions'
-      ? dirtyReviewValues.size === 0
-      : dirtyReviewValues.size > 0;
+    const dirtyDisabled = reviewActionDirtyDisabled(action.actionId);
     const reason = selectedDisabled
       ? '当前没有可移除元素。'
       : dirtyDisabled
@@ -215,7 +228,7 @@ function bindInteractions(inputAction: DeclarativeFeatureAction | undefined): vo
     root.querySelectorAll<HTMLButtonElement>('.review-actions [data-action]').forEach((button) => {
       const action = surface?.actions.find((candidate) => candidate.actionId === button.dataset.action);
       const isApply = action?.actionId === 'apply-revisions';
-      const dirtyDisabled = isApply ? dirtyReviewValues.size === 0 : dirtyReviewValues.size > 0;
+      const dirtyDisabled = reviewActionDirtyDisabled(action?.actionId);
       const selectionDisabled = action?.actionId === 'remove-batch-row' && !selectedReviewRowKey;
       button.disabled = busy || !action?.enabled || dirtyDisabled || selectionDisabled;
       button.title = selectionDisabled
@@ -249,13 +262,11 @@ function bindInteractions(inputAction: DeclarativeFeatureAction | undefined): vo
     if (surface?.workflow?.currentStepId !== 'upload' && surface?.review && action?.input?.kind === 'open_file') { errorMessage = '请先返回上传步骤，再重新选择资料。'; render(); return; }
     let payload: Record<string, unknown> = selection && selection !== 'none' ? {targetIds: selected} : {};
     if (action?.actionId === 'apply-revisions') {
-      payload = {revisions: (surface?.review?.fields || []).filter((field) => dirtyReviewValues.has(field.fieldKey)).map((field) => ({
-        rowKey: field.rowKey, fieldKey: field.fieldKey, expectedRevision: field.expectedRevision, value: dirtyReviewValues.get(field.fieldKey) ?? field.currentValue
-      }))};
+      payload = {revisions: reviewDraftRevisions()};
     } else if (action?.actionId === 'remove-batch-row') {
       payload = {rowKey: selectedReviewRowKey, expectedRunRevision: surface?.stateVersion};
     } else if (action?.actionId === 'revalidate-all') {
-      payload = {expectedRunRevision: surface?.stateVersion};
+      payload = {expectedRunRevision: surface?.stateVersion, revisions: reviewDraftRevisions()};
     }
     if (action?.output?.kind === 'save_managed_asset' && surface) {
       busy = true; render(); errorMessage = '';

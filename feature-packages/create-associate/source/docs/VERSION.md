@@ -1,6 +1,6 @@
-# 0.2.5 / sequence 7
+# 0.2.6 / sequence 8
 
-Shell 0.4.12 builtin release. It preserves the real `返回上传` and `重新开始` Core-backed state transitions and the v4-verified Workspace Facet Type. The Factors Considered check states the missing Provider/evaluation condition directly. Connector interaction remains fixed-route transport; Feature/Core own validation and state. Minimum Shell remains 0.4.9. Real Omnia canary is pending.
+Shell 0.4.12 hot-update builtin release. `返回上传` is no longer blocked by dirty drafts; `重新检查全部` commits the same CAS revision batch as apply before the full live recheck. Review no longer projects the internal TemplateInstance download. Missing binding or Workspace safety scope fails all three live checks with the exact reason; an available scope continues through the existing signed Connector Operations. The v4-verified Workspace Facet Type and the real `重新开始` Core transition are unchanged. Minimum Shell remains 0.4.9. Real Omnia mutation/readback canary is pending.
 
 # 0.2.1 history / sequence 3
 

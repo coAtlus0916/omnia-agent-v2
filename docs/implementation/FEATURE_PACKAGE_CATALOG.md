@@ -14,7 +14,7 @@ v5 便携产品根
 │  └─ RemoteConnectorTransport、Remote binding 与 Gate 基础设施（无 Local）
 ├─ 内置独立 Feature（官方签名 .ofp，随 Shell 携带并自动安装）
 │  ├─ omnia.recording 0.3.0
-│  └─ omnia.create-associate 0.2.5
+│  └─ omnia.create-associate 0.2.6
 ├─ 后装独立 Feature（官方签名 .ofp，按需安装）
 │  └─ 删除元素 0.1.2
 ├─ Connector Operation 包（官方签名 .ofop，按 Feature/capability 装载）
@@ -45,7 +45,7 @@ v5 便携产品根
 | 1 | 录制 | 官方签名 omnia.recording 0.3.0 / sequence 4，已内置 Shell 0.4.8 | 独立 .ofp 随便携包内置；不是 Shell 硬编码业务 | 播放器式 start/pause/resume/stop/export；当前页自动采集 Risk/Control；分块进入 Core Artifact；公司电脑真实录制待 canary | 无 | 在授权 Pack/公司电脑完成现场录制 canary |
 | 2 | 删除元素 | 官方签名 .ofp 0.1.5 / sequence 6，随 Shell 0.4.12 内置 | builtin bootstrap 自动安装/升级，按真实依赖启用；无需用户单独安装 | 目标必须命中显式 Workspace，关联可落入真实 Section 冻结成员；真实 Remote 删除待公司电脑 canary | 无 | 完成目标 Pack canary；不得 fallback 到历史 Local 路径 |
 | 3 | 删除聊天记录 | 未交付，仅产品设计 | 未来独立后装 .ofp | 不依赖 Omnia 的本地事务仍未实现 | 无 | 开发真实本地事务、附件引用清理和恢复测试；没有闭环前不要显示入口 |
-| 4 | 新建与关联 | `omnia.create-associate@0.2.5 / sequence 7` 候选包 | 独立 .ofp + .ofop；随 Shell 0.4.12 内置并自动升级 | 保留真实三步状态机、返回上传、重新开始与 APP/DB/OS/TOOL Return；AI 未执行时直接显示 Provider/评估条件 | 有 | 完成真实 SAP ECC canary；接通真实 AI review port |
+| 4 | 新建与关联 | `omnia.create-associate@0.2.6 / sequence 8` 候选包 | 独立 .ofp + .ofop；随 Shell 0.4.12 内置并自动升级 | dirty draft 可返回上传或随重新检查原子保存；Review 隐藏内部 XLSX；缺 binding/安全范围时三项 live check 明确 failed，范围可用后仍执行真实 signed Operation | 有 | 完成真实 SAP ECC canary；接通真实 AI review port |
 
 ### 3.1 录制的准确边界
 
@@ -90,6 +90,6 @@ Candidate package: `feature-packages/create-associate/candidates/create-associat
 
 0.2.0 候选收紧为通用三步 Surface，不在 Renderer 硬编码 Feature 业务分支。create-associate 随包携带签名 `Phase1-用户填写模板V3.xlsx` 源模板并可精确导出；用户选择与拖放都建立真实 Run/输入 Artifact。升级不更改已有 `data/`、Remote binding、Pack 观测或历史 Run。自动化已通过；Feature 候选文件 SHA-256 为 `4b947b7d759f854fec68df254350c91a0302278f0e47b767e71058ccd874d1b8`，Operation 候选文件 SHA-256 为 `b60253ef82ebc57c6917d2a613632c8dcbccdf408607f603bfec5646b8d52260`；便携升级与真实 Omnia canary 仍待完成。
 
-## omnia.create-associate 0.2.5 / omnia.recording 0.3.0 / omnia.delete-elements 0.1.5 / Shell 0.4.12
+## omnia.create-associate 0.2.6 / omnia.recording 0.3.0 / omnia.delete-elements 0.1.5 / Shell 0.4.12
 
-0.2.5 是当前开发版本。它保留返回上传、重新开始、APP/DB/OS/Tool Review、authority Workspace 修复与 Return 闭环，并把未执行的 Factors Considered AI 复核直接显示为 Provider/评估条件缺失。Shell 0.4.12/Connector 0.3.13 由 Connector 原始读取、Core 处理和实时复核安全锁，并内置自动升级 delete-elements 0.1.5。真实 Pack canary 仍待执行。
+0.2.6 是当前热更新版本。它保留返回上传、重新开始、APP/DB/OS/Tool Review、authority Workspace 修复与 Return 闭环；返回上传不再受 dirty draft 门禁影响，重新检查全部会以同一 CAS 路径先保存草稿，Review 不再投影内部 TemplateInstance 下载。缺 Connector binding 或当前 Pack Workspace 安全范围时，三项 live check 都以具体原因 failed；范围可用后仍通过既有 signed Connector Operations 执行 APP 身份/回收站、非 APP 活动对象和关系检查，不绕过安全锁。Shell 仍为 0.4.12；真实 mutation/readback canary 仍待执行。

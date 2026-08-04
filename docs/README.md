@@ -2,15 +2,15 @@
 
 本页是 v5 文档的当前状态索引。新 Agent 必须先读 [Agent 开发入口](development/AGENT_START_HERE.md)，再按任务路由阅读；不要把历史验收或 v4 研究报告当作当前实现状态。
 
-## 当前状态（2026-08-04）
+## 当前状态（2026-08-05）
 
 | 项目 | 当前状态 | 仍待完成 |
 |---|---|---|
-| Shell | `0.4.12` Remote-only：安全锁支持搜索、真实 Section 折叠、右侧已选与全局关联锁；Core 单飞读取、CAS 持久化并冻结精确成员；固定宿主由启动器加载工作区热构建；内置 recording 0.3.0、create-associate 0.2.5 与 delete-elements 0.1.5 | 真实 Pack canary 待完成 |
+| Shell | `0.4.12` Remote-only：安全锁支持搜索、真实 Section 折叠、右侧已选与全局关联锁；Core 单飞读取、CAS 持久化并冻结精确成员；固定宿主由启动器加载工作区热构建；内置 recording 0.3.0、create-associate 0.2.6 与 delete-elements 0.1.5 | 真实 Pack canary 待完成 |
 | 录制 | 官方签名独立 Feature `omnia.recording 0.3.0 / sequence 4`，播放器式真实 start/pause/resume/stop/export 并自动采集当前页 Risk/Control | 真实 Pack/Remote 现场 canary |
 | 删除元素 | 独立签名 Feature `0.1.5 / sequence 6`，随 Shell 内置自动安装/升级；目标显式 Workspace + 真实 Section 全局关联范围 | 目标 Pack 的真实 Remote mutation 待公司电脑 canary；不允许 fallback Local |
 | 删除聊天记录 | 未交付 | 仍处于产品设计阶段 |
-| 新建与关联 | `omnia.create-associate@0.2.5 / sequence 7`；保留上传、校验、回传三步和真实重置动作；AI 未执行时直接显示 Provider/评估条件 | 真实 SAP ECC mutation/readback canary 待完成；AI review port 待接通 |
+| 新建与关联 | `omnia.create-associate@0.2.6 / sequence 8`；dirty draft 不再阻断返回上传，重新检查可原子保存草稿后执行真实复核，Review 不再显示内部 XLSX 下载；缺 binding/安全范围时三项 live check 明确 failed | 真实 SAP ECC mutation/readback canary 待完成；AI review port 待接通 |
 | Phase 1 母版 | 已冻结 V8 治理输入：9 sheets、187 字段、68 条关系、21 条 v4 证据、180/180 源字段追溯；运行时使用独立签名 base/TemplateInstance，不把 V8 当用户模板 | 真实 Omnia/目标 Pack canary 未通过；待发布首个获批 TemplateVersion |
 | Remote | Remote-only：Bridge `0.4.5` 下发在线更新；Connector `0.3.13 / sequence 16` 已发布 stable，恢复托管启动并只回传 authority 原始响应；无 Local fallback | 公司电脑自动激活和真实 Pack canary 待现场读回 |
 | Nova | 仅保留 OpenAI-compatible 配置路径 | Nova 专有协议尚未校验 |
@@ -48,6 +48,7 @@ Feature 的原装/内置/后装/Operation/额外部署边界以 [Feature 包总�
 - [Feature 包总览](implementation/FEATURE_PACKAGE_CATALOG.md)
 - [Feature 快速开发、安装与测试](development/FEATURE_FAST_ITERATION_GUIDE.md)
 - [Feature 随包文档模板](development/FEATURE_DOCUMENTATION_TEMPLATE.md)
+- [新建与关联 0.2.6 热更新](implementation/CREATE_ASSOCIATE_0_2_6_HOT_UPDATE.md)
 - [录制 Feature 实现](implementation/RECORDING_FEATURE.md)
 - [Remote Connector 0.3.4 发布记录](implementation/REMOTE_CONNECTOR_0_3_4_RELEASE.md)
 - [Remote Connector 0.3.5 Remote-only 发布记录](implementation/REMOTE_CONNECTOR_0_3_5_RELEASE.md)

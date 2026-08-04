@@ -86,7 +86,7 @@ await cp(path.join(root, 'scripts', 'hot-shell-bootstrap.cjs'), path.join(appRoo
 await mkdir(path.join(appRoot, 'builtins'), { recursive: true });
 const builtins = [
   ['recording', 'recording-0.3.0.ofp'],
-  ['create-associate', 'create-associate-0.2.5.ofp'],
+  ['create-associate', 'create-associate-0.2.6.ofp'],
   ['delete-elements', 'delete-elements-0.1.5.ofp']
 ];
 for (const [sourceDirectory, filename] of builtins) {
@@ -110,7 +110,7 @@ const releaseFiles = [
   'resources/app/dist/main/feature-worker-host.cjs',
   'resources/app/dist/tools/feature-installer.cjs',
   'resources/app/builtins/recording-0.3.0.ofp',
-  'resources/app/builtins/create-associate-0.2.5.ofp',
+  'resources/app/builtins/create-associate-0.2.6.ofp',
   'resources/app/builtins/delete-elements-0.1.5.ofp',
   'resources/app/dist/renderer/app.js',
   'resources/app/dist/renderer/index.html',

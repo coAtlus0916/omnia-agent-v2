@@ -254,7 +254,9 @@ async function buildVersion(version, sequence) {
       }, null, 2))
     ]
   });
-  const versionNote = version === '0.1.5'
+  const versionNote = version === '0.2.0'
+    ? '0.2.0 以声明式目录工作台恢复真实 Section、Workspace 与元素类型层级，提供当前权威快照搜索、复选多选和批量选择；计划确认、执行与终态仍只由 Comments 消息卡持有。'
+    : version === '0.1.5'
     ? '0.1.5 将 0.1.4 的 Omnia 权威 Section 全局关联安全范围纳入 Shell builtin 自动升级；删除目标仍必须命中显式 Workspace 锁，Section 展开结果随安全快照冻结。'
     : version === '0.1.3'
       ? '0.1.3 修正 Workspace Facet 权威类型为 v4 已验证值；其余删除范围与 0.1.2 相同。'
@@ -284,7 +286,7 @@ async function buildVersion(version, sequence) {
     version,
     sequence,
     displayName: '删除元素',
-    minimumShellVersion: version === '0.1.5' ? '0.4.10' : '0.4.0',
+    minimumShellVersion: version === '0.2.0' ? '0.4.12' : version === '0.1.5' ? '0.4.10' : '0.4.0',
     requiredIsolation: 'process',
     storeNamespace: 'delete_elements',
     migrationPath: 'backend/migrations/001.json',
@@ -318,8 +320,8 @@ async function buildVersion(version, sequence) {
     title: '删除元素',
     description: '仅处理安全锁范围内、经权威重抓取与二次预检确认的元素。',
     density: 'compact',
-    status: 'idle',
-    statusMessage: '候选包已安装；Windows 强隔离和当前 Omnia canary 尚未认证，运行与写入保持禁用。',
+    status: 'loading',
+    statusMessage: '正在核对当前 Remote Connector、Pack 与安全锁状态。',
     scopes: [],
     items: [],
     selectedItemIds: [],
@@ -331,7 +333,8 @@ async function buildVersion(version, sequence) {
         effect: 'read_only',
         enabled: true,
         reason: '',
-        selectionMode: 'none'
+        selectionMode: 'none',
+        dependencies: ['remote_connector', 'safety_lock']
       },
       {
         actionId: 'create-delete-plan',
@@ -339,11 +342,23 @@ async function buildVersion(version, sequence) {
         effect: 'local_state_write',
         enabled: true,
         reason: '',
-        selectionMode: 'single'
+        selectionMode: 'multiple',
+        dependencies: ['remote_connector', 'safety_lock']
       }
-    ]
+    ],
+    selectionBrowser: {
+      schemaVersion: 'omnia.declarative-selection-browser/v1',
+      hierarchyLabel: '所在部分 / Workspace / 元素类型',
+      resultsLabel: '当前权威目录',
+      searchPlaceholder: '搜索编号、名称、类型或权威 ID',
+      emptyMessage: '当前范围没有可显示的元素',
+      allScopesLabel: '全部当前范围',
+      selectVisibleLabel: '全选当前可选结果',
+      clearSelectionLabel: '取消选择当前结果',
+      footerActionIds: ['refresh-authoritative-catalog', 'create-delete-plan'],
+      primaryActionId: 'create-delete-plan'
+    }
   };
-  surface.statusMessage = '连接 Pack 并启用安全锁后，执行权威重抓取。';
   const migration = {
     schemaVersion: 'omnia.feature-private-migration/v1',
     namespace: 'delete_elements',
@@ -437,5 +452,5 @@ async function buildVersion(version, sequence) {
 }
 
 const results = [];
-results.push(await buildVersion('0.1.5', 6));
+results.push(await buildVersion('0.2.0', 7));
 for (const result of results) console.log(`${path.relative(root, result.filename)} ${result.digest}`);

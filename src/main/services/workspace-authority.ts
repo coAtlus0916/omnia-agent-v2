@@ -64,6 +64,35 @@ function workspaceIdOf(value: Record<string, any>): string {
   return exactGuid(value.workspaceFacetId || value.workspaceId || value.facetId || value.id);
 }
 
+function referencedAuthorityIds(value: unknown, allowedIds: Set<string>): Set<string> {
+  const result = new Set<string>();
+  const seen = new WeakSet<object>();
+  let visited = 0;
+  const visit = (candidate: unknown, depth: number): void => {
+    if (depth > 8 || visited >= 20_000) return;
+    visited += 1;
+    if (typeof candidate === 'string') {
+      const id = exactGuid(candidate);
+      if (allowedIds.has(id)) result.add(id);
+      return;
+    }
+    if (!candidate || typeof candidate !== 'object') return;
+    if (seen.has(candidate as object)) return;
+    seen.add(candidate as object);
+    if (Array.isArray(candidate)) {
+      for (const item of candidate) visit(item, depth + 1);
+      return;
+    }
+    for (const [key, child] of Object.entries(candidate as Record<string, unknown>)) {
+      const keyId = exactGuid(key);
+      if (allowedIds.has(keyId)) result.add(keyId);
+      visit(child, depth + 1);
+    }
+  };
+  visit(value, 0);
+  return result;
+}
+
 function normalizeBinding(value: unknown): AuthorityBinding {
   const binding = object(value, 'Workspace authority connectorBinding');
   const normalized: AuthorityBinding = {
@@ -114,8 +143,9 @@ export function normalizeWorkspaceAuthorityRead(input: unknown, expected: {
     throw new AppError('WORKSPACE.AUTHORITY_IDENTITY_CHANGED', 'Workspace authority 响应与当前 Connector/Pack 身份不一致。');
   }
 
+  const sectionRows = rows(envelope.sectionsPayload, 'Omnia Section authority');
   const sectionMap = new Map<string, { id: string; name: string; order: number }>();
-  for (const [order, raw] of rows(envelope.sectionsPayload, 'Omnia Section authority').entries()) {
+  for (const [order, raw] of sectionRows.entries()) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
     const id = sectionIdOf(raw);
     const name = text(raw.name || raw.label || raw.value);
@@ -128,28 +158,48 @@ export function normalizeWorkspaceAuthorityRead(input: unknown, expected: {
     sectionMap.set(id, item);
   }
 
-  const workspaceMap = new Map<string, { id: string; parentSectionId: string; name: string; status: string }>();
-  for (const raw of rows(envelope.workspaceFacetsPayload, 'Omnia Workspace Facet authority')) {
+  const workspaceRows = rows(envelope.workspaceFacetsPayload, 'Omnia Workspace Facet authority');
+  const workspaceRecords = new Map<string, { raw: Record<string, any>; id: string; name: string; status: string }>();
+  for (const raw of workspaceRows) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw) || raw.isDeleted === true || raw.deleted === true) continue;
     const id = workspaceIdOf(raw);
     const name = text(raw.name || raw.value);
     if (!id || !name) continue;
-    const candidateParent = exactGuid(raw.parentSectionId || raw.sectionId || raw.sectionFacetId);
-    const item = {
-      id,
-      parentSectionId: sectionMap.has(candidateParent) ? candidateParent : '',
-      name,
-      status: text(raw.status || 'active', 50)
-    };
-    const previous = workspaceMap.get(id);
-    if (previous && (previous.name !== item.name || previous.parentSectionId !== item.parentSectionId
-      || previous.status !== item.status)) {
+    const item = { raw, id, name, status: text(raw.status || 'active', 50) };
+    const previous = workspaceRecords.get(id);
+    if (previous && (previous.name !== item.name || previous.status !== item.status)) {
       throw new AppError('WORKSPACE.AUTHORITY_AMBIGUOUS', `Omnia 返回了冲突的 Workspace Facet ID：${id}。`);
     }
-    workspaceMap.set(id, item);
+    workspaceRecords.set(id, item);
   }
-  if (workspaceMap.size === 0) {
+  if (workspaceRecords.size === 0) {
     throw new AppError('WORKSPACE.AUTHORITY_DIRECTORY_EMPTY', 'Omnia 未返回可核验的 Workspace Facet ID。');
+  }
+
+  const sectionIds = new Set(sectionMap.keys());
+  const workspaceIds = new Set(workspaceRecords.keys());
+  const sectionCandidatesByWorkspace = new Map<string, Set<string>>();
+  for (const rawSection of sectionRows) {
+    if (!rawSection || typeof rawSection !== 'object' || Array.isArray(rawSection)) continue;
+    const sectionId = sectionIdOf(rawSection);
+    if (!sectionMap.has(sectionId)) continue;
+    for (const workspaceId of referencedAuthorityIds(rawSection, workspaceIds)) {
+      const candidates = sectionCandidatesByWorkspace.get(workspaceId) || new Set<string>();
+      candidates.add(sectionId);
+      sectionCandidatesByWorkspace.set(workspaceId, candidates);
+    }
+  }
+
+  const workspaceMap = new Map<string, { id: string; parentSectionId: string; name: string; status: string }>();
+  for (const record of workspaceRecords.values()) {
+    const candidates = referencedAuthorityIds(record.raw, sectionIds);
+    for (const sectionId of sectionCandidatesByWorkspace.get(record.id) || []) candidates.add(sectionId);
+    workspaceMap.set(record.id, {
+      id: record.id,
+      parentSectionId: candidates.size === 1 ? [...candidates][0] : '',
+      name: record.name,
+      status: record.status
+    });
   }
   return {
     observationId: randomUUID(),

@@ -65,16 +65,10 @@ function operationDescriptors() {
           bodyMode: 'none'
         },
         {
-          stepId: 'workspace-sections',
-          method: 'GET',
-          routeTemplate: '/work/v1/engagements/{engagementId}/liveindex/menu/sections',
-          bodyMode: 'none'
-        },
-        {
-          stepId: 'workspace-facets',
-          method: 'GET',
-          routeTemplate: '/engagements/v1/engagements/{engagementId}/facets/byFacetType/{workspaceFacetType}/?includeDeleted=true',
-          bodyMode: 'none'
+          stepId: 'authority-directory',
+          method: 'POST',
+          routeTemplate: '/engagements/v1/facets/byEngagementIds',
+          bodyMode: 'engagement_id_array'
         }
       ]
     },
@@ -183,6 +177,9 @@ function operationDescriptors() {
   ].map((operation) => ({
     ...operation,
     grantsMutationPermit: operation.operationId === 'omnia.delete.information.preflight.v1',
+    ...(operation.operationId === 'omnia.delete.information.preflight.v1'
+      ? { permitsOperationId: 'omnia.delete.information.direct.v1' }
+      : {}),
     routes: operation.routes.map((route) => {
       const routeTemplate = route.routeTemplate.replace(
         '{workspaceFacetType}',
@@ -192,6 +189,7 @@ function operationDescriptors() {
         .map((match) => match[1])
         .filter((name) => name !== 'engagementId');
       if (route.bodyMode === 'single_id_array') parameterNames.push('informationId');
+      if (route.bodyMode === 'engagement_id_array') parameterNames.push('engagementId');
       const parameters = [...new Set(parameterNames)]
         .map((name) => ({ name, type: 'guid' }));
       return {
@@ -199,8 +197,8 @@ function operationDescriptors() {
         method: route.method,
         routeTemplate,
         parameters,
-        bodyMode: route.bodyMode === 'single_id_array' ? 'parameter_array' : 'none',
-        bodyParameter: route.bodyMode === 'single_id_array' ? 'informationId' : ''
+        bodyMode: ['single_id_array', 'engagement_id_array'].includes(route.bodyMode) ? 'parameter_array' : route.bodyMode,
+        bodyParameter: route.bodyMode === 'single_id_array' ? 'informationId' : route.bodyMode === 'engagement_id_array' ? 'engagementId' : ''
       };
     })
   }));

@@ -82,6 +82,7 @@ export class FeatureRuntimeStore {
     if (method === 'commitStandaloneArtifact') return this.commitStandaloneArtifact(input, context);
     if (method === 'recordTemplateMetadata') return this.recordTemplateMetadata(input, context);
     if (method === 'loadLatestRun') return this.loadLatestRun(context);
+    if (method === 'createMutationRun') return this.createMutationRun(input, context);
     if (method === 'transitionRun') return this.transitionRun(input, context);
     if (method === 'recordFieldRevisions') return this.recordFieldRevisions(input, context);
     if (method === 'recordIssues') return this.recordIssues(input, context);
@@ -91,9 +92,11 @@ export class FeatureRuntimeStore {
     if (method === 'prepareReturnIntent') return this.prepareReturnIntent(input, context);
     if (method === 'approveReturnIntent') return this.approveReturnIntent(input, context);
     if (method === 'prepareReturnCommand') return this.prepareReturnCommand(input, context);
+    if (method === 'prepareDeletionCommand') return this.prepareDeletionCommand(input, context);
     if (method === 'freezeReturnEvidenceSpec') return this.freezeReturnEvidenceSpec(input, context);
     if (method === 'recordReturnEvidence') return this.recordReturnEvidence(input, context);
     if (method === 'projectVerifiedReturn') return this.projectVerifiedReturn(input, context);
+    if (method === 'projectVerifiedDeletion') return this.projectVerifiedDeletion(input, context);
     if (method === 'finishReturn') return this.finishReturn(input, context);
     if (method === 'recordBootstrapCapabilityEvidence') return this.recordBootstrapCapabilityEvidence(input, context);
     if (method === 'getCapabilityEvidenceState') {
@@ -156,6 +159,30 @@ export class FeatureRuntimeStore {
     } finally {
       store.close();
     }
+  }
+
+  private createMutationRun(input: unknown, context: FeatureWorkerPortContext): Record<string, unknown> {
+    const request = object(input, 'Mutation Run request');
+    const engagementId = String(request.engagementId || '');
+    if (!engagementId || engagementId.length > 200) throw new Error('Mutation Run Engagement identity is invalid.');
+    const runId = randomUUID();
+    const traceId = randomUUID();
+    const createdAt = now();
+    this.core.exec('BEGIN IMMEDIATE;');
+    try {
+      this.core.prepare(`
+        INSERT INTO feature_runs(
+          run_id,trace_id,feature_id,feature_version,engagement_id,state,state_revision,
+          source_artifact_id,template_version_id,output_artifact_id,plan_digest,last_error,created_at,updated_at
+        ) VALUES(?,?,?,?,?,'ready_for_review',1,'','','','','',?,?)
+      `).run(runId, traceId, context.featureId, context.featureVersion, engagementId, createdAt, createdAt);
+      this.core.prepare(`
+        INSERT INTO feature_run_events(event_id,run_id,revision,from_state,to_state,event_type,details_json,occurred_at)
+        VALUES(?,?,1,'','ready_for_review','mutation.plan_prepared','{}',?)
+      `).run(randomUUID(), runId, createdAt);
+      this.core.exec('COMMIT;');
+    } catch (error) { this.core.exec('ROLLBACK;'); throw error; }
+    return { runId, traceId, state: 'ready_for_review', stateRevision: 1 };
   }
 
   private loadLatestRun(context: FeatureWorkerPortContext): Record<string, unknown> | null {
@@ -701,6 +728,9 @@ export class FeatureRuntimeStore {
     const binding = object(request.connectorBinding, 'Return Connector binding');
     const safety = object(request.safetyLock, 'Return safety lock');
     const workspaceIds = Array.isArray(safety.workspaceIds) ? safety.workspaceIds.map(String) : [];
+    const globalWorkspaceIds = safety.globalEnabled === true && Array.isArray(safety.globalWorkspaceIds)
+      ? safety.globalWorkspaceIds.map(String) : [];
+    const allowedWorkspaceIds = [...new Set([...workspaceIds, ...globalWorkspaceIds])];
     if (!binding.connectorId || Number(binding.sessionGeneration) < 1 || !binding.engagementId
       || !binding.authorityInstanceId || !binding.tenantOrOrgId || !binding.packId
       || safety.enabled !== true || safety.engagementId !== binding.engagementId || workspaceIds.length < 1) {
@@ -716,10 +746,13 @@ export class FeatureRuntimeStore {
       || String(planAuthority.engagementId || '') !== String(binding.engagementId)) {
       throw new Error('Return plan authority snapshot differs from the exact current Connector authority.');
     }
-    const durableSafety = this.core.prepare(`SELECT enabled, engagement_id, workspace_ids_json, state_version FROM workspace_safety WHERE singleton=1`)
-      .get() as { enabled: number; engagement_id: string; workspace_ids_json: string; state_version: number };
+    const durableSafety = this.core.prepare(`SELECT enabled, engagement_id, workspace_ids_json, global_enabled, global_section_ids_json, global_workspace_ids_json, state_version FROM workspace_safety WHERE singleton=1`)
+      .get() as { enabled: number; engagement_id: string; workspace_ids_json: string; global_enabled:number; global_section_ids_json:string; global_workspace_ids_json:string; state_version: number };
     if (durableSafety.enabled !== 1 || durableSafety.engagement_id !== binding.engagementId
       || canonical(JSON.parse(durableSafety.workspace_ids_json)) !== canonical(workspaceIds)
+      || durableSafety.global_enabled !== (safety.globalEnabled === true ? 1 : 0)
+      || canonical(JSON.parse(durableSafety.global_section_ids_json)) !== canonical(Array.isArray(safety.globalSectionIds) ? safety.globalSectionIds.map(String) : [])
+      || canonical(JSON.parse(durableSafety.global_workspace_ids_json)) !== canonical(globalWorkspaceIds)
       || durableSafety.state_version !== Number(safety.stateVersion)) throw new Error('Return intent safety lock differs from durable Core state.');
     const authorityDigest = crypto.createHash('sha256').update(canonical({
       connectorId: binding.connectorId, sessionGeneration: Number(binding.sessionGeneration), engagementId: binding.engagementId,
@@ -738,7 +771,7 @@ export class FeatureRuntimeStore {
         const target = object(raw, 'Return intent target');
         if (!['object', 'relation', 'field', 'risk_control', 'documentation', 'evaluation'].includes(String(target.kind))
           || !String(target.key || '')) throw new Error('Return intent target identity is invalid.');
-        if (target.workspace !== undefined && !workspaceIds.includes(String(target.workspace))) {
+        if (target.workspace !== undefined && !allowedWorkspaceIds.includes(String(target.workspace))) {
           throw new Error('Return intent target Workspace is outside the exact durable safety scope.');
         }
         this.core.prepare(`
@@ -780,8 +813,8 @@ export class FeatureRuntimeStore {
     `).get(confirmationId, context.featureId, context.featureVersion) as Record<string, any> | undefined;
     const binding = object(request.connectorBinding, 'Current Return Connector binding');
     const safety = object(request.safetyLock, 'Current Return safety lock');
-    const durableSafety = this.core.prepare(`SELECT enabled, engagement_id, workspace_ids_json, state_version FROM workspace_safety WHERE singleton=1`)
-      .get() as { enabled: number; engagement_id: string; workspace_ids_json: string; state_version: number };
+    const durableSafety = this.core.prepare(`SELECT enabled, engagement_id, workspace_ids_json, global_enabled, global_section_ids_json, global_workspace_ids_json, state_version FROM workspace_safety WHERE singleton=1`)
+      .get() as { enabled: number; engagement_id: string; workspace_ids_json: string; global_enabled:number; global_section_ids_json:string; global_workspace_ids_json:string; state_version: number };
     if (!row || row.decision !== 'pending' || row.state !== 'waiting_confirmation' || row.confirmation_token_digest !== tokenDigest
       || row.expires_at <= now() || Number(request.expectedStateVersion) !== 1
       || String(binding.connectorId) !== String(row.connector_id) || Number(binding.sessionGeneration) !== Number(row.session_generation)
@@ -798,7 +831,10 @@ export class FeatureRuntimeStore {
       || String(safety.engagementId) !== String(row.engagement_id) || Number(safety.stateVersion) !== Number(row.safety_revision)
       || durableSafety.enabled !== 1 || durableSafety.engagement_id !== String(row.engagement_id)
       || durableSafety.state_version !== Number(row.safety_revision)
-      || canonical(JSON.parse(durableSafety.workspace_ids_json)) !== canonical(safety.workspaceIds)) {
+      || canonical(JSON.parse(durableSafety.workspace_ids_json)) !== canonical(safety.workspaceIds)
+      || durableSafety.global_enabled !== (safety.globalEnabled === true ? 1 : 0)
+      || canonical(JSON.parse(durableSafety.global_section_ids_json)) !== canonical(Array.isArray(safety.globalSectionIds) ? safety.globalSectionIds.map(String) : [])
+      || canonical(JSON.parse(durableSafety.global_workspace_ids_json)) !== canonical(safety.globalEnabled === true && Array.isArray(safety.globalWorkspaceIds) ? safety.globalWorkspaceIds.map(String) : [])) {
       throw new Error('Return confirmation is stale, invalid, expired, or no longer bound to the durable safety scope.');
     }
     const approvedAt = now();
@@ -821,14 +857,17 @@ export class FeatureRuntimeStore {
     const request=object(input,'Return authority validation'); const runId=String(request.runId||'');
     const binding=object(request.connectorBinding,'Current Return Connector binding'); const safety=object(request.safetyLock,'Current Return safety lock');
     const confirmation=this.core.prepare(`SELECT c.credential_digest,c.engagement_id,c.authority_instance_id,c.tenant_or_org_id,c.pack_id,c.safety_revision,r.engagement_id AS run_engagement_id FROM feature_confirmations c JOIN feature_runs r ON r.run_id=c.run_id WHERE c.run_id=? AND c.decision='approved' AND r.feature_id=? AND r.feature_version=? ORDER BY c.created_at DESC LIMIT 1`).get(runId,context.featureId,context.featureVersion) as Record<string,any>|undefined;
-    const durable=this.core.prepare(`SELECT enabled,engagement_id,workspace_ids_json,state_version FROM workspace_safety WHERE singleton=1`).get() as {enabled:number;engagement_id:string;workspace_ids_json:string;state_version:number};
+    const durable=this.core.prepare(`SELECT enabled,engagement_id,workspace_ids_json,global_enabled,global_section_ids_json,global_workspace_ids_json,state_version FROM workspace_safety WHERE singleton=1`).get() as {enabled:number;engagement_id:string;workspace_ids_json:string;global_enabled:number;global_section_ids_json:string;global_workspace_ids_json:string;state_version:number};
     const workspaceIds=Array.isArray(safety.workspaceIds)?safety.workspaceIds.map(String):[];
     const authorityDigest=crypto.createHash('sha256').update(canonical({connectorId:binding.connectorId,sessionGeneration:Number(binding.sessionGeneration),engagementId:binding.engagementId,authorityInstanceId:binding.authorityInstanceId,tenantOrOrgId:binding.tenantOrOrgId,packId:binding.packId,workspaceIds})).digest('hex');
     if(!confirmation||confirmation.credential_digest!==authorityDigest||confirmation.engagement_id!==binding.engagementId
       ||confirmation.run_engagement_id!==binding.engagementId||confirmation.authority_instance_id!==binding.authorityInstanceId
       ||confirmation.tenant_or_org_id!==binding.tenantOrOrgId||confirmation.pack_id!==binding.packId
       ||confirmation.safety_revision!==Number(safety.stateVersion)||durable.enabled!==1||durable.engagement_id!==binding.engagementId
-      ||durable.state_version!==Number(safety.stateVersion)||canonical(JSON.parse(durable.workspace_ids_json))!==canonical(workspaceIds)) throw new Error('Current Return authority differs from the approved exact scope.');
+      ||durable.state_version!==Number(safety.stateVersion)||canonical(JSON.parse(durable.workspace_ids_json))!==canonical(workspaceIds)
+      ||durable.global_enabled!==(safety.globalEnabled===true?1:0)
+      ||canonical(JSON.parse(durable.global_section_ids_json))!==canonical(Array.isArray(safety.globalSectionIds)?safety.globalSectionIds.map(String):[])
+      ||canonical(JSON.parse(durable.global_workspace_ids_json))!==canonical(safety.globalEnabled===true&&Array.isArray(safety.globalWorkspaceIds)?safety.globalWorkspaceIds.map(String):[])) throw new Error('Current Return authority differs from the approved exact scope.');
     return true;
   }
 
@@ -961,6 +1000,65 @@ export class FeatureRuntimeStore {
       this.core.exec('COMMIT;');
     } catch (error) { this.core.exec('ROLLBACK;'); throw error; }
     return { commandId, intentId: intent.intent_id, idempotencyKey, requestDigest };
+  }
+
+  private prepareDeletionCommand(input: unknown, context: FeatureWorkerPortContext): Record<string, unknown> {
+    if (!context.allowMutation) throw new Error('Deletion commands require an authorized mutation action.');
+    const request = object(input, 'Deletion command');
+    const runId = String(request.runId || '');
+    const planDigest = String(request.planDigest || '');
+    if (!this.core.prepare(`SELECT 1 FROM feature_runs WHERE run_id=? AND feature_id=? AND feature_version=? AND state='returning'`)
+      .get(runId, context.featureId, context.featureVersion)) throw new Error('Deletion command Run is not active.');
+    const targetKind = String(request.targetKind || '');
+    const targetKey = String(request.targetKey || '');
+    const intent = this.core.prepare(`SELECT intent_id,state,intended_revision_json FROM managed_content_intents WHERE run_id=? AND plan_digest=? AND target_kind=? AND target_key=?`)
+      .get(runId, planDigest, targetKind, targetKey) as { intent_id:string; state:string; intended_revision_json:string }|undefined;
+    const confirmation = this.core.prepare(`SELECT decision,credential_digest,authority_instance_id,tenant_or_org_id,pack_id,engagement_id FROM feature_confirmations WHERE run_id=? AND plan_digest=? ORDER BY created_at DESC LIMIT 1`)
+      .get(runId, planDigest) as Record<string,any>|undefined;
+    const binding = object(request.binding, 'Deletion command authority binding');
+    const workspaceIds = Array.isArray(request.workspaceIds) ? request.workspaceIds.map(String) : [];
+    const intended = intent ? JSON.parse(intent.intended_revision_json) as Record<string,unknown> : {};
+    const mutationPayload = object(request.request, 'Exact deletion mutation payload');
+    const evidenceOperationIds = Array.isArray(request.evidenceOperationIds) ? request.evidenceOperationIds.map(String) : [];
+    const targetIdentityKey = String(request.evidenceTargetIdentityKey || '');
+    const authorityDigest = crypto.createHash('sha256').update(canonical({
+      connectorId: binding.connectorId, sessionGeneration: Number(binding.sessionGeneration), engagementId: binding.engagementId,
+      authorityInstanceId: binding.authorityInstanceId, tenantOrOrgId: binding.tenantOrOrgId, packId: binding.packId, workspaceIds
+    })).digest('hex');
+    if (!intent || intent.state !== 'frozen' || confirmation?.decision !== 'approved'
+      || confirmation.credential_digest !== authorityDigest
+      || confirmation.authority_instance_id !== binding.authorityInstanceId
+      || confirmation.tenant_or_org_id !== binding.tenantOrOrgId
+      || confirmation.pack_id !== binding.packId || confirmation.engagement_id !== binding.engagementId
+      || String(intended.workspace || '') !== String(request.workspaceId || '')
+      || String(intended.mutationOperationId || '') !== String(request.operationId || '')
+      || String(intended.operationTargetIdentityKey || '') !== targetIdentityKey
+      || canonical(intended.mutationPayload) !== canonical(mutationPayload)
+      || canonical(intended.evidenceOperationIds || []) !== canonical(evidenceOperationIds)
+      || evidenceOperationIds.length < 1 || evidenceOperationIds.some((value) => !value) || !targetIdentityKey) {
+      throw new Error('Deletion command differs from the approved immutable intent.');
+    }
+    const durable = this.core.prepare(`SELECT enabled,engagement_id,workspace_ids_json,global_enabled,global_workspace_ids_json FROM workspace_safety WHERE singleton=1`)
+      .get() as {enabled:number;engagement_id:string;workspace_ids_json:string;global_enabled:number;global_workspace_ids_json:string};
+    const allowedWorkspaceIds = [...new Set([
+      ...(JSON.parse(durable.workspace_ids_json) as string[]),
+      ...(durable.global_enabled === 1 ? JSON.parse(durable.global_workspace_ids_json) as string[] : [])
+    ])];
+    if (durable.enabled !== 1 || durable.engagement_id !== binding.engagementId
+      || !allowedWorkspaceIds.includes(String(request.workspaceId || ''))) throw new Error('Deletion target is outside the current durable safety lock.');
+    const commandId = randomUUID();
+    const idempotencyKey = crypto.createHash('sha256').update(canonical({runId,planDigest,targetKind,targetKey,operationId:request.operationId})).digest('hex');
+    const requestDigest = crypto.createHash('sha256').update(canonical(mutationPayload)).digest('hex');
+    const createdAt = now();
+    this.core.exec('BEGIN IMMEDIATE;');
+    try {
+      const claimed = this.core.prepare(`UPDATE managed_content_intents SET state='commanded',updated_at=? WHERE intent_id=? AND state='frozen'`).run(createdAt,intent.intent_id);
+      if (claimed.changes !== 1) throw new Error('Deletion intent was already claimed.');
+      this.core.prepare(`INSERT INTO feature_commands(command_id,run_id,intent_id,operation_id,idempotency_key,plan_digest,request_digest,evidence_operation_ids_json,evidence_target_identity_key,evidence_request_digest,state,commit_point_at,submitted_at,completed_at,last_error,created_at) VALUES(?,?,?,?,?,?,?,?,?,'','prepared','','','','',?)`)
+        .run(commandId,runId,intent.intent_id,String(request.operationId||''),idempotencyKey,planDigest,requestDigest,canonical(evidenceOperationIds),targetIdentityKey,createdAt);
+      this.core.exec('COMMIT;');
+    } catch (error) { this.core.exec('ROLLBACK;'); throw error; }
+    return {commandId,intentId:intent.intent_id,idempotencyKey,requestDigest};
   }
 
   private freezeReturnEvidenceSpec(input: unknown, context: FeatureWorkerPortContext): Record<string, unknown> {
@@ -1166,6 +1264,54 @@ export class FeatureRuntimeStore {
       this.core.prepare(`INSERT INTO managed_relations(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,relation_type,relation_key,source_object_id,target_object_id,current_revision,lifecycle,freshness,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,'active','verified_current',?) ON CONFLICT(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,relation_type,relation_key) DO UPDATE SET current_revision=excluded.current_revision,lifecycle='active',freshness='verified_current',updated_at=excluded.updated_at`).run(binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,relationType,relationKey,source,targetId,revision,occurredAt);
       this.core.prepare(`INSERT INTO managed_relation_revisions(revision_id,authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,relation_type,relation_key,source_object_id,target_object_id,revision,run_id,intent_id,command_id,evidence_id,payload_json,verified_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(),binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,relationType,relationKey,source,targetId,revision,runId,command.intent_id,commandId,evidence.evidence_id,JSON.stringify(request.payload||{}),occurredAt);
     } else throw new Error('Unsupported verified projection kind.');
+      this.core.exec('COMMIT;');
+    } catch (error) { this.core.exec('ROLLBACK;'); throw error; }
+    return true;
+  }
+
+  private projectVerifiedDeletion(input: unknown, context: FeatureWorkerPortContext): true {
+    const request = object(input, 'Verified deletion projection');
+    const commandId = String(request.commandId || '');
+    const runId = String(request.runId || '');
+    const command = this.core.prepare(`SELECT c.intent_id,c.state,c.plan_digest,i.target_key,i.intended_revision_json,i.state AS intent_state FROM feature_commands c JOIN managed_content_intents i ON i.intent_id=c.intent_id AND i.run_id=c.run_id AND i.plan_digest=c.plan_digest JOIN feature_runs r ON r.run_id=c.run_id WHERE c.command_id=? AND c.run_id=? AND r.feature_id=? AND r.feature_version=? AND r.state IN ('returning','verifying','reconciling')`)
+      .get(commandId,runId,context.featureId,context.featureVersion) as Record<string,any>|undefined;
+    const evidence = this.core.prepare(`SELECT evidence_id,payload_json FROM feature_command_evidence WHERE command_id=? AND evidence_type IN ('readback','reconcile') AND receipt_id<>'' AND verified=1 ORDER BY occurred_at DESC LIMIT 1`)
+      .get(commandId) as {evidence_id:string;payload_json:string}|undefined;
+    if (!command || command.state !== 'readback_verified' || command.intent_state !== 'verified' || !evidence) {
+      throw new Error('Deletion tombstone requires receipt-backed authoritative readback.');
+    }
+    const observed = JSON.parse(evidence.payload_json) as Record<string,unknown>;
+    if (observed.deleted !== true) throw new Error('Deletion readback does not prove the target is deleted.');
+    const intended = JSON.parse(String(command.intended_revision_json)) as Record<string,any>;
+    const binding = object(request.binding, 'Deletion projection authority binding');
+    const workspaceId = String(request.workspaceId || '');
+    const objectType = String(request.objectType || '');
+    const objectId = String(request.objectId || '');
+    if (!workspaceId || workspaceId !== String(intended.workspace || '')
+      || objectType !== String(intended.objectType || '') || objectId !== String(intended.objectId || '')
+      || String(command.target_key) !== String(intended.key || '')) throw new Error('Deletion projection differs from the frozen target.');
+    const confirmation = this.core.prepare(`SELECT authority_instance_id,tenant_or_org_id,pack_id,engagement_id FROM feature_confirmations WHERE run_id=? AND plan_digest=? AND decision='approved' ORDER BY created_at DESC LIMIT 1`)
+      .get(runId,String(command.plan_digest)) as Record<string,any>|undefined;
+    if (!confirmation || confirmation.authority_instance_id !== binding.authorityInstanceId
+      || confirmation.tenant_or_org_id !== binding.tenantOrOrgId || confirmation.pack_id !== binding.packId
+      || confirmation.engagement_id !== binding.engagementId) throw new Error('Deletion projection authority drifted.');
+    const current = this.core.prepare(`SELECT current_revision FROM managed_objects WHERE authority_instance_id=? AND tenant_or_org_id=? AND pack_id=? AND engagement_id=? AND workspace_id=? AND object_type=? AND object_id=?`)
+      .get(binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,objectType,objectId) as {current_revision:number}|undefined;
+    const occurredAt = now();
+    const baseline = object(intended.baseline, 'Deletion adopted baseline');
+    this.core.exec('BEGIN IMMEDIATE;');
+    try {
+      let revision = Number(current?.current_revision || 0);
+      if (!current) {
+        revision = 1;
+        this.core.prepare(`INSERT INTO managed_object_revisions(revision_id,authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,object_type,object_id,revision,run_id,intent_id,command_id,evidence_id,provenance_json,payload_json,verified_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+          .run(randomUUID(),binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,objectType,objectId,revision,runId,command.intent_id,commandId,evidence.evidence_id,JSON.stringify({source:'adopted_on_mutation',preflightDigest:String(intended.preflightDigest||'')}),JSON.stringify(baseline),occurredAt);
+      }
+      revision += 1;
+      this.core.prepare(`INSERT INTO managed_objects(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,object_type,object_id,current_revision,lifecycle,freshness,updated_at) VALUES(?,?,?,?,?,?,?,?,'deleted','verified_current',?) ON CONFLICT(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,object_type,object_id) DO UPDATE SET current_revision=excluded.current_revision,lifecycle='deleted',freshness='verified_current',updated_at=excluded.updated_at`)
+        .run(binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,objectType,objectId,revision,occurredAt);
+      this.core.prepare(`INSERT INTO managed_object_revisions(revision_id,authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,object_type,object_id,revision,run_id,intent_id,command_id,evidence_id,provenance_json,payload_json,verified_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(randomUUID(),binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,objectType,objectId,revision,runId,command.intent_id,commandId,evidence.evidence_id,JSON.stringify({source:'agent_verified_delete'}),JSON.stringify({deleted:true,tombstoneAt:occurredAt,baselineDigest:crypto.createHash('sha256').update(canonical(baseline)).digest('hex')}),occurredAt);
       this.core.exec('COMMIT;');
     } catch (error) { this.core.exec('ROLLBACK;'); throw error; }
     return true;

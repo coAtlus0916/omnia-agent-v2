@@ -351,7 +351,8 @@ function validateSurface(value: unknown, manifest: FeatureManifest): Declarative
     ...(Object.hasOwn(value, 'workflow') ? ['workflow'] : []),
     ...(Object.hasOwn(value, 'progress') ? ['progress'] : []),
     ...(Object.hasOwn(value, 'issues') ? ['issues'] : []),
-    ...(Object.hasOwn(value, 'review') ? ['review'] : [])
+    ...(Object.hasOwn(value, 'review') ? ['review'] : []),
+    ...(Object.hasOwn(value, 'selectionBrowser') ? ['selectionBrowser'] : [])
   ], 'Declarative Feature surface');
   const surface = value as DeclarativeFeatureSurface;
   if (
@@ -377,7 +378,29 @@ function validateSurface(value: unknown, manifest: FeatureManifest): Declarative
     || (surface.editors !== undefined && !Array.isArray(surface.editors))
     || (surface.issues !== undefined && !Array.isArray(surface.issues))
     || (surface.review !== undefined && (!surface.review || typeof surface.review !== 'object' || Array.isArray(surface.review)))
+    || (surface.selectionBrowser !== undefined && (!surface.selectionBrowser || typeof surface.selectionBrowser !== 'object' || Array.isArray(surface.selectionBrowser)))
   ) throw new Error('Declarative Feature surface contract is invalid.');
+  if (surface.selectionBrowser !== undefined) {
+    const browser = surface.selectionBrowser;
+    exactKeys(browser, [
+      'schemaVersion', 'hierarchyLabel', 'resultsLabel', 'searchPlaceholder', 'emptyMessage',
+      'allScopesLabel', 'selectVisibleLabel', 'clearSelectionLabel', 'footerActionIds', 'primaryActionId'
+    ], 'Declarative selection browser');
+    if (browser.schemaVersion !== 'omnia.declarative-selection-browser/v1'
+      || typeof browser.hierarchyLabel !== 'string' || browser.hierarchyLabel.length < 1 || browser.hierarchyLabel.length > 80
+      || typeof browser.resultsLabel !== 'string' || browser.resultsLabel.length < 1 || browser.resultsLabel.length > 80
+      || typeof browser.searchPlaceholder !== 'string' || browser.searchPlaceholder.length < 1 || browser.searchPlaceholder.length > 120
+      || typeof browser.emptyMessage !== 'string' || browser.emptyMessage.length < 1 || browser.emptyMessage.length > 500
+      || typeof browser.allScopesLabel !== 'string' || browser.allScopesLabel.length < 1 || browser.allScopesLabel.length > 80
+      || typeof browser.selectVisibleLabel !== 'string' || browser.selectVisibleLabel.length < 1 || browser.selectVisibleLabel.length > 80
+      || typeof browser.clearSelectionLabel !== 'string' || browser.clearSelectionLabel.length < 1 || browser.clearSelectionLabel.length > 80
+      || !Array.isArray(browser.footerActionIds) || browser.footerActionIds.length < 1 || browser.footerActionIds.length > 20
+      || new Set(browser.footerActionIds).size !== browser.footerActionIds.length
+      || browser.footerActionIds.some((actionId) => typeof actionId !== 'string' || !/^[a-z0-9][a-z0-9._-]{2,127}$/u.test(actionId))
+      || typeof browser.primaryActionId !== 'string' || !browser.footerActionIds.includes(browser.primaryActionId)) {
+      throw new Error('Declarative selection browser fields are invalid.');
+    }
+  }
   for (const action of surface.actions) {
     if (
       !action
@@ -475,7 +498,7 @@ function validateSurface(value: unknown, manifest: FeatureManifest): Declarative
     || surface.description.length > 500
     || surface.statusMessage.length > 500
     || surface.search.length > 200
-    || surface.scopes.length > 100
+    || surface.scopes.length > 5000
     || surface.items.length > 2_000
     || surface.selectedItemIds.length > 2_000
     || surface.actions.length > 20
@@ -590,15 +613,19 @@ function validateSurface(value: unknown, manifest: FeatureManifest): Declarative
   const scopeIds = new Set<string>();
   for (const scope of surface.scopes) {
     if (!scope || typeof scope !== 'object' || Array.isArray(scope)) throw new Error('Declarative Feature scope is invalid.');
-    exactKeys(scope, ['id', 'parentId', 'label', 'parentLabel', 'selected'], 'Declarative Feature scope');
+    exactKeys(scope, surface.selectionBrowser === undefined
+      ? ['id', 'parentId', 'label', 'parentLabel', 'selected']
+      : ['id', 'parentId', 'kind', 'level', 'label', 'parentLabel', 'selected', 'initialExpanded', 'disabledReason'], 'Declarative Feature scope');
     if (
       typeof scope.id !== 'string'
       || scope.id.length < 1
       || scope.id.length > 200
       || scopeIds.has(scope.id)
-      || typeof scope.parentId !== 'string'
-      || scope.parentId.length < 1
-      || scope.parentId.length > 200
+      || (surface.selectionBrowser === undefined
+        ? (typeof scope.parentId !== 'string' || scope.parentId.length < 1 || scope.parentId.length > 200)
+        : (scope.parentId !== null && (typeof scope.parentId !== 'string' || scope.parentId.length < 1 || scope.parentId.length > 200)))
+      || (surface.selectionBrowser !== undefined && !['section', 'workspace', 'element_type'].includes(scope.kind))
+      || (surface.selectionBrowser !== undefined && ![1, 2, 3].includes(scope.level))
       || typeof scope.label !== 'string'
       || scope.label.length < 1
       || scope.label.length > 120
@@ -606,8 +633,19 @@ function validateSurface(value: unknown, manifest: FeatureManifest): Declarative
       || scope.parentLabel.length < 1
       || scope.parentLabel.length > 120
       || typeof scope.selected !== 'boolean'
+      || (surface.selectionBrowser !== undefined && typeof scope.initialExpanded !== 'boolean')
+      || (surface.selectionBrowser !== undefined && (typeof scope.disabledReason !== 'string' || scope.disabledReason.length > 500))
     ) throw new Error('Declarative Feature scope fields are invalid.');
     scopeIds.add(scope.id);
+  }
+  for (const scope of surface.selectionBrowser === undefined ? [] : surface.scopes) {
+    const parent = scope.parentId === null ? undefined : surface.scopes.find((candidate) => candidate.id === scope.parentId);
+    if ((scope.level === 1 && (scope.parentId !== null || scope.kind !== 'section'))
+      || (scope.level > 1 && (!parent || parent.level !== scope.level - 1))
+      || (scope.level === 2 && scope.kind !== 'workspace')
+      || (scope.level === 3 && scope.kind !== 'element_type')) {
+      throw new Error('Declarative Feature scope hierarchy is invalid.');
+    }
   }
   const itemIds = new Set<string>();
   for (const item of surface.items) {
@@ -658,6 +696,11 @@ function validateSurface(value: unknown, manifest: FeatureManifest): Declarative
       || action.reason.length > 500
     ) throw new Error('Declarative Feature action identity is invalid.');
     actionIds.add(action.actionId);
+  }
+  if (surface.selectionBrowser !== undefined
+    && (surface.selectionBrowser.footerActionIds.some((actionId) => !actionIds.has(actionId))
+      || !actionIds.has(surface.selectionBrowser.primaryActionId))) {
+    throw new Error('Declarative selection browser references an undeclared action.');
   }
   for (const artifact of surface.artifacts || []) {
     if (!artifact || typeof artifact !== 'object' || Array.isArray(artifact)) throw new Error('Declarative Feature artifact is invalid.');
@@ -1829,7 +1872,7 @@ export class FeaturePackageManager {
               const commandRow = this.database.prepare(`
                 SELECT c.operation_id,c.idempotency_key,c.plan_digest,c.request_digest,c.state,c.evidence_target_identity_key,
                   f.credential_digest,f.authority_instance_id,f.tenant_or_org_id,f.pack_id,f.engagement_id,
-                  s.workspace_ids_json,i.intended_revision_json,
+                  s.workspace_ids_json,s.global_enabled,s.global_workspace_ids_json,i.intended_revision_json,
                   EXISTS(SELECT 1 FROM feature_mutation_reservations mr WHERE mr.owner_command_id=c.command_id AND mr.lifecycle='active') AS owns_reservation
                 FROM feature_commands c
                 JOIN feature_runs r ON r.run_id=c.run_id
@@ -1840,6 +1883,7 @@ export class FeaturePackageManager {
                 ORDER BY f.created_at DESC LIMIT 1
               `).get(String(signedCommand?.commandId || ''),context.featureId,context.featureVersion) as Record<string,any>|undefined;
               const workspaceIds=commandRow?JSON.parse(String(commandRow.workspace_ids_json)) as string[]:[];
+              const allowedWorkspaceIds=commandRow?[...new Set([...workspaceIds,...(Number(commandRow.global_enabled)===1?JSON.parse(String(commandRow.global_workspace_ids_json)) as string[]:[])])]:[];
               const authorityDigest=mutationBinding?crypto.createHash('sha256').update(canonicalJson({
                 connectorId:mutationBinding.connectorId,sessionGeneration:Number(mutationBinding.sessionGeneration),engagementId:mutationBinding.engagementId,
                 authorityInstanceId:mutationBinding.authorityInstanceId,tenantOrOrgId:mutationBinding.tenantOrOrgId,packId:mutationBinding.packId,workspaceIds
@@ -1851,7 +1895,7 @@ export class FeaturePackageManager {
                 ||String(operationRequest.planDigest||'')!==String(commandRow.plan_digest)
                 ||crypto.createHash('sha256').update(canonicalJson(signedCommand?.payload)).digest('hex')!==String(commandRow.request_digest)
                 ||String(mutationTarget?.targetIdentityKey||'')!==String(commandRow.evidence_target_identity_key)
-                ||!workspaceIds.includes(String(mutationTarget?.workspaceId||''))||authorityDigest!==String(commandRow.credential_digest)
+                ||!allowedWorkspaceIds.includes(String(mutationTarget?.workspaceId||''))||authorityDigest!==String(commandRow.credential_digest)
                 ||String(mutationBinding?.authorityInstanceId||'')!==String(commandRow.authority_instance_id)
                 ||String(mutationBinding?.tenantOrOrgId||'')!==String(commandRow.tenant_or_org_id)
                 ||String(mutationBinding?.packId||'')!==String(commandRow.pack_id)
@@ -1896,7 +1940,7 @@ export class FeaturePackageManager {
                   i.target_key,i.intended_revision_json,
                   f.credential_digest,f.connector_id,f.session_generation,f.engagement_id,
                   f.authority_instance_id,f.tenant_or_org_id,f.pack_id,
-                  s.enabled,s.engagement_id AS safety_engagement_id,s.workspace_ids_json,s.state_version,f.safety_revision
+                  s.enabled,s.engagement_id AS safety_engagement_id,s.workspace_ids_json,s.global_enabled,s.global_workspace_ids_json,s.state_version,f.safety_revision
                 FROM feature_commands c
                 JOIN feature_runs r ON r.run_id=c.run_id
                 JOIN managed_content_intents i ON i.intent_id=c.intent_id AND i.run_id=c.run_id AND i.plan_digest=c.plan_digest
@@ -1909,6 +1953,7 @@ export class FeaturePackageManager {
                 throw new AppError('FEATURE.RECEIPT_COMMAND_INVALID', 'Authoritative receipt is not bound to an eligible frozen Return command.');
               }
               const workspaceIds = JSON.parse(String(receiptRow.workspace_ids_json)) as string[];
+              const allowedWorkspaceIds = [...new Set([...workspaceIds,...(Number(receiptRow.global_enabled)===1?JSON.parse(String(receiptRow.global_workspace_ids_json)) as string[]:[])])];
               const authorityDigest = crypto.createHash('sha256').update(canonicalJson({
                 connectorId: receiptBinding?.connectorId,
                 sessionGeneration: Number(receiptBinding?.sessionGeneration),
@@ -1939,7 +1984,7 @@ export class FeaturePackageManager {
                 || Number(receiptRow.enabled) !== 1
                 || String(receiptRow.safety_engagement_id) !== String(receiptRow.engagement_id)
                 || Number(receiptRow.state_version) !== Number(receiptRow.safety_revision)
-                || !workspaceIds.includes(workspaceId)
+                || !allowedWorkspaceIds.includes(workspaceId)
                 || String(intended.workspace || '') !== workspaceId
               ) throw new AppError('FEATURE.RECEIPT_AUTHORITY_DRIFT', 'Authoritative receipt scope differs from the frozen authority, safety, or target identity.');
               if (!response || typeof response !== 'object' || Array.isArray(response)) {

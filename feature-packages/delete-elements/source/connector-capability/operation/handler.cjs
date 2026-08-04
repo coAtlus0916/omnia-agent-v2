@@ -21,6 +21,39 @@ function workspaceIds(mapping) {
   )).filter(Boolean))].sort();
 }
 
+function sectionDirectory(value) {
+  return rows(value).map((item) => ({
+    id: id(item && (item.sectionId || item.groupId || item.id)),
+    name: text(item && (item.name || item.title || item.displayName))
+  })).filter((item) => item.id && item.name);
+}
+
+function workspaceDirectory(value) {
+  return rows(value).filter((item) => item && item.isDeleted !== true && item.deleted !== true).map((item) => ({
+    id: id(item.workspaceFacetId || item.workspaceId || item.facetId || item.id),
+    name: text(item.name || item.title || item.displayName),
+    parentSectionId: id(item.parentSectionId || item.parentId || item.customWorkspaceGroupId || item.groupId)
+  })).filter((item) => item.id && item.name && item.parentSectionId);
+}
+
+const CUSTOM_WORKSPACE = 'd0c7e20c-1451-48d2-9dd5-8a6f2a51bfc0';
+const CUSTOM_WORKSPACE_GROUP = '5420131f-8ea2-4c3f-938f-a25745240cd0';
+function authorityDirectory(payload, engagementId) {
+  const directory = rows(payload).find((item) => id(item && item.engagementId) === id(engagementId));
+  const facets = rows(directory && directory.facets);
+  if (facets.some((item) => id(item && item.engagementId) !== id(engagementId))) {
+    throw new Error('Omnia authority directory contained a Facet outside the current Engagement.');
+  }
+  const sections = facets.filter((item) => id(item && item.facetTypeId) === CUSTOM_WORKSPACE_GROUP && item.isDeleted !== true && item.deleted !== true)
+    .map((item) => ({ id: id(item.id), name: text(item.name || item.value) })).filter((item) => item.id && item.name);
+  const sectionIds = new Set(sections.map((item) => item.id));
+  const workspaces = facets.filter((item) => id(item && item.facetTypeId) === CUSTOM_WORKSPACE && item.isDeleted !== true && item.deleted !== true)
+    .map((item) => ({ id: id(item.id), name: text(item.name || item.value), parentSectionId: sectionIds.has(id(item.parentId)) ? id(item.parentId) : '' }))
+    .filter((item) => item.id && item.name);
+  if (!workspaces.length) throw new Error('Omnia authority directory did not return a verifiable CustomWorkspace.');
+  return { sections, workspaces };
+}
+
 function blockers(payload, informationId) {
   const entity = rows(payload && payload.blockingEntities).find((item) =>
     id(item && (item.entityId || item.id)) === id(informationId)
@@ -80,19 +113,21 @@ function createOperationHandler() {
     async run(operationId, request, sdk) {
       if (operationId === 'omnia.delete.scope.read.v1') {
         await sdk.invokeStep('pack-hierarchy');
-        const [sections, workspaces] = await Promise.all([
-          sdk.invokeStep('workspace-sections'),
-          sdk.invokeStep('workspace-facets')
-        ]);
+        const directory = authorityDirectory(
+          await sdk.invokeStep('authority-directory', { engagementId: sdk.binding.engagementId }),
+          sdk.binding.engagementId
+        );
+        const normalizedWorkspaces = directory.workspaces;
         return {
           connectorId: sdk.binding.connectorId,
           sessionGeneration: sdk.binding.sessionGeneration,
           engagementId: sdk.binding.engagementId,
-          workspaceIds: rows(workspaces)
-            .filter((item) => item && item.isDeleted !== true && item.deleted !== true)
-            .map((item) => id(item.workspaceFacetId || item.workspaceId || item.facetId || item.id))
-            .filter(Boolean),
-          sections: rows(sections)
+          authorityInstanceId: sdk.binding.authorityInstanceId,
+          tenantOrOrgId: sdk.binding.tenantOrOrgId,
+          packId: sdk.binding.packId,
+          workspaceIds: normalizedWorkspaces.map((item) => item.id),
+          sections: directory.sections,
+          workspaces: normalizedWorkspaces
         };
       }
       if (operationId === 'omnia.delete.catalog.heavy-read.v1') {
@@ -117,15 +152,17 @@ function createOperationHandler() {
         };
       }
       if (operationId === 'omnia.delete.information.direct.v1') {
-        const target = request.target || {};
-        await sdk.invokeStep('soft-delete', { informationId: id(target.informationId) });
-        return { informationId: id(target.informationId), accepted: true };
+        const informationId = id(request.informationId || request.command && request.command.payload && request.command.payload.informationId);
+        if (!informationId) throw new Error('Signed Information delete target is missing.');
+        await sdk.invokeStep('soft-delete', { informationId });
+        return { informationId, accepted: true };
       }
       if (operationId === 'omnia.delete.information.reconcile.v1') {
-        const target = request.target || {};
-        const detail = await sdk.invokeStep('information-detail', { informationId: id(target.informationId) });
+        const informationId = id(request.informationId);
+        if (!informationId) throw new Error('Signed Information reconcile target is missing.');
+        const detail = await sdk.invokeStep('information-detail', { informationId });
         return {
-          informationId: id(detail && detail.id || target.informationId),
+          informationId: id(detail && detail.id || informationId),
           deleted: detail && (detail.isDeleted === true || detail.deleted === true)
         };
       }

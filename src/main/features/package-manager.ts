@@ -1037,6 +1037,13 @@ function applyPrivateMigration(store: DatabaseSync, migration: PrivateMigration)
   }
 }
 
+function effectiveActionDependencies(
+  action: import('../../shared/feature-contracts.js').DeclarativeFeatureAction
+): ReadonlyArray<'remote_connector' | 'safety_lock' | 'verified_canary'> {
+  if (action.dependencies !== undefined) return action.dependencies;
+  return action.effect === 'omnia_mutation' ? ['remote_connector', 'safety_lock'] : [];
+}
+
 function readEnvelope(filename: string): unknown {
   const stats = fs.statSync(filename);
   if (!stats.isFile() || stats.size < 1 || stats.size > 96 * 1024 * 1024) {
@@ -2081,7 +2088,7 @@ export class FeaturePackageManager {
     const runtimeReason = this.runtimeBlockReason(head);
     if (runtimeReason) return runtimeReason;
     if (!context) return '';
-    const dependencies = action.dependencies ?? [];
+    const dependencies = effectiveActionDependencies(action);
     if (dependencies.includes('remote_connector')) {
       if (!context.connection.connected) return '请先连接当前 Omnia Pack。';
       if (!context.connection.sessionGeneration || context.connection.sessionGeneration < 1) {
@@ -2151,7 +2158,7 @@ export class FeaturePackageManager {
     const surface = this.runtimeSurfaces.get(head.featureId) || installedSurface;
     if (surface.surfaceId !== request.surfaceId) return [];
     const surfaceAction = surface.actions.find((candidate) => candidate.actionId === request.actionId);
-    if (surfaceAction) return surfaceAction.dependencies ?? [];
+    if (surfaceAction) return effectiveActionDependencies(surfaceAction);
     const cardAction = this.messageCards().find((candidate) =>
       candidate.featureId === request.featureId
       && candidate.featureVersion === request.featureVersion
@@ -2159,7 +2166,7 @@ export class FeaturePackageManager {
       && candidate.runId === request.payload.runId
       && candidate.confirmationId === request.payload.confirmationId
     )?.actions.find((candidate) => candidate.actionId === request.actionId);
-    return cardAction?.dependencies ?? [];
+    return cardAction ? effectiveActionDependencies(cardAction) : [];
   }
 
   private messageCards(): import('../../shared/feature-contracts.js').FeatureMessageCard[] {

@@ -12,7 +12,7 @@
 | 删除聊天记录 | 未交付 | 仍处于产品设计阶段 |
 | 新建与关联 | `omnia.create-associate@0.2.9 / sequence 11`；authority 与安全锁/delete 共用真实 Facet 目录，无关 Facet 在 Engagement 校验后忽略；只接受精确 Engagement 下的 `CustomWorkspaceGroup → CustomWorkspace.parentId`，Workspace 名称必须唯一命中且处于安全锁范围 | 真实 SAP ECC mutation/readback canary 待完成；AI review port 待接通 |
 | Phase 1 母版 | 已冻结 V8 治理输入：9 sheets、187 字段、68 条关系、21 条 v4 证据、180/180 源字段追溯；运行时使用独立签名 base/TemplateInstance，不把 V8 当用户模板 | 真实 Omnia/目标 Pack canary 未通过；待发布首个获批 TemplateVersion |
-| Remote | Remote-only：Bridge `0.4.5` 下发在线更新；Connector `0.3.14 / sequence 17` 读取 Omnia 真实 `CustomWorkspaceGroup → CustomWorkspace.parentId`；无 Local fallback | 真实接口与层级响应已现场只读采样；stable 自动升级和安全锁保存读回按发布状态记录 |
+| Remote | Remote-only：Bridge `0.4.5` 下发在线更新；Connector `0.3.15 / sequence 18` 读取 Omnia 真实 Facet 权威目录，并保留跨 Realm 的具体 Operation 错误；无 Local fallback | stable 自动升级已现场确认；企业 SSO 恢复后继续 Pack mutation/readback canary |
 | Nova | 仅保留 OpenAI-compatible 配置路径 | Nova 专有协议尚未校验 |
 
 Feature 的原装/内置/后装/Operation/额外部署边界以 [Feature 包总览](implementation/FEATURE_PACKAGE_CATALOG.md) 为准；Shell 的实际代码映射以 [Shell 实现映射](implementation/SHELL_IMPLEMENTATION_MAP.md) 为准。

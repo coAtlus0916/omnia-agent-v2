@@ -17,7 +17,7 @@ Shell 原装平台包含 Core Store、Feature/Documentation Registry、通用 Wo
 | 连接 | 顶部 Connect/Cancel 与分阶段状态 | `ShellService` 持久 Remote-only connect state，最长 10 分钟只读 polling | Remote transport → Bridge → Remote Worker → `WorkstationOmniaSession` | 自动化收口中；真实 Omnia canary 待执行 |
 | 刷新 | 顶部刷新按钮与错误提示 | `ShellService.refresh` 更新 Core 状态 | Remote Worker 的 Session Core 重新加载页面、识别 Pack，并触发轻抓取 | 失败不覆盖成功 observation；真实 Pack 待 canary |
 | 保活 | 启停、运行/下次/错误状态 | Core DB `keepalive_state` + 后台 5 秒调度扫描 | 到期调用真实只读 refresh | 已实现；重启恢复 |
-| 安全锁 | 大弹窗、搜索、Omnia 真实所在部分折叠、组内全选、右侧完整已选列表、全局所在部分关联锁 | Core 解析 v2 原始 Facet 目录；`workspace_safety` 单事务 CAS 保存显式 Workspace IDs、Group GUID 与冻结成员；成员漂移失败关闭 | Connector 0.3.14 固定 POST `facets/byEngagementIds`；打开/保存重叠读取按完整 authority identity 单飞合并 | 真实端点与 17 Group/193 Workspace 层级已现场只读采样；缺真实 parentId 时明确未归属且不冒充全局授权 |
+| 安全锁 | 大弹窗、搜索、Omnia 真实所在部分折叠、组内全选、右侧完整已选列表、全局所在部分关联锁 | Core 解析 v2 原始 Facet 目录；`workspace_safety` 单事务 CAS 保存显式 Workspace IDs、Group GUID 与冻结成员；成员漂移失败关闭 | Connector 0.3.15 固定 POST `facets/byEngagementIds`；打开/保存重叠读取按完整 authority identity 单飞合并 | 真实端点与 17 Group/193 Workspace 层级已现场只读采样；缺真实 parentId 时明确未归属且不冒充全局授权 |
 | 对话 | 第三列消息列表与输入区 | `chat_sessions/chat_messages` 持久化状态 | Provider 只由 Main 受控调用；未配置则不调用 | 已实现；无假回复 |
 | 缩放 | 右上角/设置 `− 百分比 +`、快捷键 | `user_preferences` CAS；Main 对所有当前/新建 WebContents `setZoomFactor` | Feature view/window 继承同一值 | 0.4.1 已按实际 DPR/viewport/bounds 验证；重启恢复、无 CSS 双缩放 |
 | Splitter | Feature 菜单/Tabbed Host、Comments 内容/composer、设置导航/内容 | `layout_preferences` 与 `settings.main` CAS | 不适用 | 已实现；pointer/键盘；Rail 固定且无 splitter |
@@ -34,7 +34,7 @@ Electron Renderer（无 Node）
 Electron Main / Core（SQLite owner、AI broker、Remote binding owner）
   → authenticated RemoteConnectorTransport
 v5 Bridge 0.4.5（binding/generation/relay/heartbeat/update_check）
-  → v5 Remote Connector Worker 0.3.14 / sequence 17
+  → v5 Remote Connector Worker 0.3.15 / sequence 18
   → WorkstationOmniaSession（Omnia credential/session owner）
   → verified dedicated Edge CDP + signed OperationHost
 ```
@@ -50,7 +50,7 @@ v5 Bridge 0.4.5（binding/generation/relay/heartbeat/update_check）
 
 ## Remote
 
-`0.3.4` 至 `0.3.13` Remote Connector 和 Bridge `0.4.0` 至 `0.4.4` 均为不可变 historical previous。当前配套为 Remote Connector `0.3.14 / sequence 17` 与 Bridge `0.4.5`：0.3.14 保留 0.3.13 的版本无关托管启动与登录自启动，并将 Workspace authority 切换到 Omnia 页面实际使用的 `facets/byEngagementIds`。Bridge 连接时及每 60 秒下发 `update_check`，Supervisor 另以五分钟固定 stable 轮询兜底；正常升级不要求用户搬包或运行安装器。
+`0.3.4` 至 `0.3.14` Remote Connector 和 Bridge `0.4.0` 至 `0.4.4` 均为不可变 historical previous。当前配套为 Remote Connector `0.3.15 / sequence 18` 与 Bridge `0.4.5`：0.3.15 保留 0.3.14 的真实 Facet authority，并修复跨 Realm Operation 错误信息退化。Bridge 连接时及每 60 秒下发 `update_check`，Supervisor 另以五分钟固定 stable 轮询兜底；现场已确认 0.3.14 自动升级到 0.3.15，无需用户搬包或运行安装器。
 
 ## AI
 

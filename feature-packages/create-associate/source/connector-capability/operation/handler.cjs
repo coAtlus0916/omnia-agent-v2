@@ -436,11 +436,12 @@ function authorityFacetDirectory(payload, engagementId) {
   for (const value of directory.facets) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) fail('Facet authority item is invalid.');
     if (guid(value.engagementId, 'Facet engagementId') !== engagementId) fail('Facet authority contains an item outside the current Engagement.');
+    const facetTypeId = text(value.facetTypeId).toLowerCase();
+    if (facetTypeId !== CUSTOM_WORKSPACE_GROUP_FACET_TYPE_ID && facetTypeId !== CUSTOM_WORKSPACE_FACET_TYPE_ID) continue;
+    guid(facetTypeId, 'Workspace authority Facet facetTypeId');
     const facetId = guid(value.id, 'Facet id');
     if (observedIds.has(facetId)) fail(`Facet authority returned duplicate id ${facetId}.`);
     observedIds.add(facetId);
-    const facetTypeId = guid(value.facetTypeId, 'Facet facetTypeId');
-    if (facetTypeId !== CUSTOM_WORKSPACE_GROUP_FACET_TYPE_ID && facetTypeId !== CUSTOM_WORKSPACE_FACET_TYPE_ID) continue;
     if (value.isDeleted === true || value.deleted === true) continue;
     const name = text(value.name || value.value);
     if (!name) fail(`Workspace authority Facet ${facetId} has no name.`);

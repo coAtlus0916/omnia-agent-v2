@@ -1,43 +1,25 @@
-# 删除元素 Feature 包目录说明
+# 删除元素 Feature 包
 
-当前版本：`0.2.0 / sequence 7`
-当前状态：独立官方签名 Feature，随 Shell 0.4.12 内置并自动安装/升级，不要求用户运行单独安装包。
+当前版本：`0.2.1 / sequence 8`
 
-## 目录
+0.2.1 是不可变官方 Feature 候选，随 Shell builtin 自动安装/升级。Connector 只执行包内签名 Operation；删除图的计划、确认、逐步命令、证据和终态全部由 Worker 与 Core Run 管理。
 
-```text
-delete-elements/
-├─ candidates/                 # 已生成的不可变 .ofp 候选
-└─ source/
-   ├─ middle/worker.cjs        # 当前候选 Worker 状态机源
-   ├─ connector-capability/    # 签名 Operation handler 源
-   └─ docs/                    # 当前候选随包文档源
-```
+## 真实功能范围
 
-## 0.2.0 当前实现
+- 权威目录：Information、APP、DB、OS、TOOL。
+- Information：仅零 blocker 时直接 soft delete。
+- TOOL：仅零 blocker 时直接 IT Element soft delete。
+- APP/DB/OS：允许选择完整批次，计划显式展开其派生 GRA 和批内 DB/OS–APP 关系。
+- 图顺序：DB/OS–APP 解关联 → 派生 GRA → DB/OS/TOOL/Information → APP。先完成关系的双向读回，避免 GRA softdelete 可能产生的级联状态变化使显式关系步骤失去可执行身份。
+- 每个 GRA、关系和 IT Element 都拥有独立 Core intent、confirmation 下的命令、Operation receipt 和权威 readback；GRA/IT Element 删除成功后分别写入 tombstone。
+- GRA 预检冻结真实 Control 级联快照；关系解关联冻结每个 Infrastructure 的 tab-602 并发令牌（缺失时才使用 APP tab-502），写后从 APP 和 Infrastructure 两侧读回。
 
-0.1.0/0.1.1 是不可变历史候选，仍保持禁用。0.1.2 已补齐：
+Workpaper、独立 GRA、Control、Document 和 Deficiency 没有完整独立删除合同，因此保持禁用；不会上线假入口。
 
-- 通用 Feature Worker 子进程、双向 RPC 与 action/message-card 路由；
-- 私有 plan/evidence、Core Managed Content 和持久 Event ports；
-- Local Connector 对 `.ofop` 再验签并加载受限 handler；
-- 权威重抓取、单选、计划、右侧唯一确认、二次预检、一次性 permit、单次软删除、读回和刷新。
+## 安全边界
 
-0.2.0 在 0.1.5 安全边界上增加声明式两栏目录：真实 Section → Workspace → 元素类型层级、折叠、当前 snapshot 搜索、结果/可选计数、checkbox 多选、当前可选结果全选、禁用原因和固定底栏。选择写入持久 Surface，计划/确认/进度/终态仍只由 Comments 消息卡持有。
-
-首批写入闭环只开放零 blocker Information，并以逐目标持久 Command、receipt、独立 readback 和 tombstone 串行处理。APP/DB/OS/TOOL/Workpaper/GRA/Control/Documentation/Deficiency 只显示真实目录类型节点并禁用；没有完整签名 Operation 前不开放。Remote Operation host 已接通且不存在 Local fallback，最终现场删除仍待授权 Pack canary。
+目标必须命中显式 Workspace 安全锁，且所有影响 Workspace 必须在当前安全联合范围内。确认前和每次写入前都重新读取身份、Workspace、blocker、并发状态及 GRA Control 级联。任何漂移都会阻止写入。响应不确定时绝不重放 mutation，只允许只读 reconcile。
 
 ## 发布规则
 
-打包脚本只生成 0.2.0，不重写历史候选。0.2.0 正式冻结后，任何代码或文档变化必须
-提升 Feature patch 版本和 publisher sequence；不能用不同字节覆盖已发布版本。
-
-开发与安装遵循：
-
-- 不把 Windows 隔离认证作为安装、启用或本地测试门槛；
-- 用真实依赖原因报告不可用，例如 Connector 未连接、安全锁无效或 Remote host 未发布；
-- 不把 HTTP fixture/合同测试等同于目标 Pack 实机验证；
-- 由构建器自动签名/digest，安装器自动验证，不要求开发者手工计算 SHA。
-
-完整层级和部署状态见
-[v5 Shell 与 Feature 包总览](../../docs/implementation/FEATURE_PACKAGE_CATALOG.md)。
+打包脚本只生成 `0.2.1 / sequence 8`，不会覆盖任何历史 `.ofp`。本目录的源码和文档不等于目标 Pack 实机验证；真实授权 Pack 的回归结果必须单独记录。

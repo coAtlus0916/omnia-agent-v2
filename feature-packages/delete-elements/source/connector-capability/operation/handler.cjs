@@ -1,174 +1,41 @@
 'use strict';
 
-function rows(value) {
-  if (Array.isArray(value)) return value;
-  if (Array.isArray(value && value.items)) return value.items;
-  if (Array.isArray(value && value.data)) return value.data;
-  return [];
-}
+function rows(value){if(Array.isArray(value))return value;if(Array.isArray(value&&value.items))return value.items;if(Array.isArray(value&&value.data))return value.data;if(Array.isArray(value&&value.results))return value.results;return[];}
+function text(value){return String(value==null?'':value).trim();}
+function id(value){return text(value).toLowerCase();}
+function deleted(value){return Boolean(value&&(value.isDeleted===true||value.deleted===true||['deleted','softdeleted','recycled','recyclebin','trashed','removed'].includes(text(value.status||value.state).toLowerCase())));}
+function workspaceIds(mapping){return[...new Set(rows(mapping).map(item=>id(item&&(item.facetId||item.workspaceFacetId||item.workspaceId||item.id))).filter(Boolean))].sort();}
+function sectionDirectory(value){return rows(value).map(item=>({id:id(item&&(item.sectionId||item.groupId||item.id)),name:text(item&&(item.name||item.title||item.displayName))})).filter(item=>item.id&&item.name);}
+const CUSTOM_WORKSPACE='d0c7e20c-1451-48d2-9dd5-8a6f2a51bfc0';const CUSTOM_WORKSPACE_GROUP='5420131f-8ea2-4c3f-938f-a25745240cd0';
+function authorityDirectory(payload,engagementId){const directory=rows(payload).find(item=>id(item&&item.engagementId)===id(engagementId));const facets=rows(directory&&directory.facets);if(facets.some(item=>id(item&&item.engagementId)!==id(engagementId)))throw new Error('Omnia authority directory contained a Facet outside the current Engagement.');const sections=facets.filter(item=>id(item&&item.facetTypeId)===CUSTOM_WORKSPACE_GROUP&&!deleted(item)).map(item=>({id:id(item.id),name:text(item.name||item.value)})).filter(item=>item.id&&item.name);const sectionIds=new Set(sections.map(item=>item.id));const workspaces=facets.filter(item=>id(item&&item.facetTypeId)===CUSTOM_WORKSPACE&&!deleted(item)).map(item=>({id:id(item.id),name:text(item.name||item.value),parentSectionId:sectionIds.has(id(item.parentId))?id(item.parentId):''})).filter(item=>item.id&&item.name);if(!workspaces.length)throw new Error('Omnia authority directory did not return a verifiable CustomWorkspace.');return{sections,workspaces};}
+function blockingRows(value,ownerId){if(!value||typeof value!=='object'||Array.isArray(value))return[{type:'unknown-contract',id:'',workItemId:''}];const required=['blockingEntities','convertingEntities','blockingControlEntities','accountContents'];if(!required.every(key=>Array.isArray(value[key]))||value.showDeleteAccountProcedureMappingPrompt!==false)return[{type:'unknown-contract',id:'',workItemId:''}];const owners=rows(value.blockingEntities);if(owners.length>1||owners.length===1&&id(owners[0]&&(owners[0].entityId||owners[0].id))!==id(ownerId))return[{type:'unknown-contract',id:'',workItemId:''}];const related=owners.length?rows(owners[0]&&owners[0].relatedEntities):[];const additional=[...rows(value.convertingEntities),...rows(value.blockingControlEntities),...rows(value.accountContents)];const normalized=[...related,...additional].map(item=>({type:text(item&&(item.relatedEntityType||item.entityType||item.type||'relationship')),id:id(item&&(item.relatedEntityId||item.entityId||item.id)),workItemId:id(item&&item.workItemId),location:text(item&&item.navigationData&&item.navigationData.location)}));const identities=normalized.map(item=>`${item.type.toLowerCase()}|${item.id}|${item.workItemId}`);return normalized.some(item=>!item.id||!item.workItemId)||new Set(identities).size!==identities.length?[{type:'unknown-contract',id:'',workItemId:''}]:normalized;}
+async function mapLimit(values,concurrency,mapper){if(!Array.isArray(values)||values.length>2000)throw new Error('Authoritative catalog exceeds the 2000 item limit.');const result=new Array(values.length);let cursor=0;async function consume(){while(cursor<values.length){const index=cursor++;result[index]=await mapper(values[index],index);}}await Promise.all(Array.from({length:Math.min(concurrency,values.length)},()=>consume()));return result;}
+async function searchAll(sdk,stepId,sortField,extra={}){const found=[];let expected=null,observed=0;for(let page=1;page<=20;page+=1){const body={page,pageSize:500,filters:[],sortFields:[{field:sortField,direction:'asc'}],...extra};const payload=await sdk.invokeStep(stepId,{},body);const current=rows(payload&&payload.results);observed+=current.length;found.push(...current.filter(item=>!deleted(item)));const total=Number(payload&&payload.totalResults);if(!Number.isInteger(total)||total<0||total>2000)throw new Error('Authoritative IT Element search returned an invalid or unsafe total.');if(expected===null)expected=total;else if(expected!==total)throw new Error('Authoritative IT Element search total drifted.');if(observed>total)throw new Error('Authoritative IT Element search exceeded its total.');if(observed===total)return found;if(!current.length)throw new Error('Authoritative IT Element search ended before its total.');}throw new Error('Authoritative IT Element search exceeded the signed page bound.');}
+function objectKind(detail,indexed){const raw=text(detail&&(detail.itElementType||detail.elementType||detail.entityType||detail.type)||indexed&&(indexed.itElementType||indexed.elementType||indexed.entityType||indexed.type)).toLowerCase();const subtype=text(detail&&(detail.typeId||detail.itElementTypeId||detail.subtype||detail.infrastructureType)||indexed&&(indexed.typeId||indexed.itElementTypeId||indexed.subtype||indexed.infrastructureType)).toLowerCase();if(raw==='application')return'APP';if(['ittool','tool'].includes(raw)&&(!subtype||subtype==='tool'))return'TOOL';if(raw==='infrastructure'&&subtype==='database')return'DB';if(raw==='infrastructure'&&subtype==='operatingsystem')return'OS';return'';}
+function relationshipConcurrency(detail,tab){const candidates=rows(detail&&detail.concurrencyTabs).filter(item=>Number(item&&item.entityTabTypeId)===tab&&text(item.updatedOn)).map(item=>({updatedOn:text(item.updatedOn),stamp:Date.parse(item.updatedOn)})).filter(item=>Number.isFinite(item.stamp)).sort((a,b)=>b.stamp-a.stamp);return candidates[0]?{entityTabTypeId:tab,updatedOn:candidates[0].updatedOn}:null;}
+async function readInformation(sdk,information){const informationId=id(information&&(information.informationId||information.objectId||information.id));if(!informationId)throw new Error('Information target has no canonical ID.');const detail=await sdk.invokeStep('information-detail',{informationId});const workItemId=id(detail&&detail.workItemId||information&&information.workItemId);if(id(detail&&(detail.id||detail.informationId))!==informationId||!workItemId||deleted(detail))throw new Error('Information detail identity is missing, changed, or deleted.');const[workItem,mapping,blocking]=await Promise.all([sdk.invokeStep('work-item',{workItemId}),sdk.invokeStep('facet-mapping',{workItemId}),sdk.invokeStep('blocking-relationships',{informationId})]);return{objectId:informationId,informationId,workItemId,objectType:'Information',number:text(detail&&(detail.number||detail.referenceNumber)||workItem&&workItem.referenceNumber),name:text(detail&&detail.name||information&&information.name||workItem&&workItem.name),updatedAt:text(detail&&(detail.updatedAt||detail.updatedOn||detail.lastModifiedOn)||information&&information.updatedAt),workspaceIds:workspaceIds(mapping),blockers:blockingRows(blocking,informationId),deleted:false};}
+async function readItElement(sdk,indexed){const objectId=id(indexed&&(indexed.objectId||indexed.id||indexed.itElementId||indexed.applicationId||indexed.infrastructureId||indexed.toolId));if(!objectId)throw new Error('IT Element index row has no canonical ID.');const detail=await sdk.invokeStep('it-element-detail',{objectId});const actual=id(detail&&(detail.id||detail.itElementId));const workItemId=id(detail&&(detail.workItemId||detail.applicationWorkItemId||detail.infrastructureWorkItemId||detail.itToolWorkItemId)||indexed&&indexed.workItemId);if(actual!==objectId||!workItemId||deleted(detail))throw new Error('IT Element detail identity is missing, changed, or deleted.');const[mapping,blocking]=await Promise.all([sdk.invokeStep('it-element-facet-mapping',{workItemId}),sdk.invokeStep('it-element-blocking-relationships',{objectId})]);const kind=objectKind(detail,indexed);if(!kind)throw new Error('IT Element type/subtype is outside the signed APP/DB/OS/TOOL contract.');return{objectId,workItemId,objectType:kind,number:text(detail.number||detail.referenceNumber||indexed.number),name:text(detail.name||detail.displayName||indexed.name),updatedAt:text(detail.updatedAt||detail.updatedOn||indexed.updatedAt||indexed.updatedOn),workspaceIds:workspaceIds(mapping),blockers:blockingRows(blocking,objectId),riskAssessmentId:id(detail.riskAssessmentId||detail.graId||indexed.riskAssessmentId||indexed.graId),deleted:false};}
+function assertItTarget(target,request){if(!target||target.objectId!==id(request.objectId||request.target&&request.target.objectId)||target.workItemId!==id(request.workItemId||request.target&&request.target.workItemId)||target.objectType!==text(request.objectType||request.target&&request.target.objectType))throw new Error('Signed IT Element target identity drifted.');return target;}
+function validationClear(value){return value&&typeof value==='object'&&!Array.isArray(value)&&['blockingEntities','convertingEntities','blockingControlEntities','accountContents'].every(key=>Array.isArray(value[key])&&value[key].length===0)&&value.showDeleteAccountProcedureMappingPrompt===false;}
+function controlCascade(value){const ids=new Set(),workItems=new Set();return rows(value).filter(item=>!deleted(item)).map(item=>{const controlId=id(item&&(item.id||item.controlId)),workItemId=id(item&&item.workItemId);if(!controlId||!workItemId||ids.has(controlId)||workItems.has(workItemId))throw new Error('GRA control cascade identity is missing or duplicated.');ids.add(controlId);workItems.add(workItemId);return{id:controlId,workItemId,updatedAt:text(item.updatedAt||item.updatedOn)};}).sort((left,right)=>left.id.localeCompare(right.id));}
+function detailWorkspaceIds(value,indexed){return[...new Set([id(value&&(value.workspaceId||value.workspaceFacetId||value.facetId)),...rows(value&&value.workspaceFacets).map(item=>id(item&&(item.id||item.workspaceId||item.facetId))),id(indexed&&(indexed.workspaceId||indexed.workspaceFacetId||indexed.facetId))].filter(Boolean))].sort();}
+async function relationState(sdk,infrastructureId,applicationId){const apps=await searchAll(sdk,'relation-applications-search','number',{associatedWithInfrastructureId:infrastructureId});const infrastructures=await searchAll(sdk,'relation-infrastructures-search','number',{associatedWithApplicationId:applicationId});const applicationRow=apps.find(item=>id(item&&(item.id||item.applicationId||item.itElementId))===applicationId),infrastructureRow=infrastructures.find(item=>id(item&&(item.id||item.infrastructureId||item.itElementId))===infrastructureId);const fromInfrastructure=Boolean(applicationRow),fromApplication=Boolean(infrastructureRow);return{associated:fromInfrastructure&&fromApplication,inconsistent:fromInfrastructure!==fromApplication,fromInfrastructure,fromApplication,applicationWorkspaceIds:detailWorkspaceIds(null,applicationRow),infrastructureWorkspaceIds:detailWorkspaceIds(null,infrastructureRow)};}
 
-function text(value) {
-  return String(value == null ? '' : value).trim();
-}
-
-function id(value) {
-  return text(value).toLowerCase();
-}
-
-function workspaceIds(mapping) {
-  return [...new Set(rows(mapping).map((item) => id(
-    item && (item.facetId || item.workspaceFacetId || item.workspaceId || item.id)
-  )).filter(Boolean))].sort();
-}
-
-function sectionDirectory(value) {
-  return rows(value).map((item) => ({
-    id: id(item && (item.sectionId || item.groupId || item.id)),
-    name: text(item && (item.name || item.title || item.displayName))
-  })).filter((item) => item.id && item.name);
-}
-
-function workspaceDirectory(value) {
-  return rows(value).filter((item) => item && item.isDeleted !== true && item.deleted !== true).map((item) => ({
-    id: id(item.workspaceFacetId || item.workspaceId || item.facetId || item.id),
-    name: text(item.name || item.title || item.displayName),
-    parentSectionId: id(item.parentSectionId || item.parentId || item.customWorkspaceGroupId || item.groupId)
-  })).filter((item) => item.id && item.name && item.parentSectionId);
-}
-
-const CUSTOM_WORKSPACE = 'd0c7e20c-1451-48d2-9dd5-8a6f2a51bfc0';
-const CUSTOM_WORKSPACE_GROUP = '5420131f-8ea2-4c3f-938f-a25745240cd0';
-function authorityDirectory(payload, engagementId) {
-  const directory = rows(payload).find((item) => id(item && item.engagementId) === id(engagementId));
-  const facets = rows(directory && directory.facets);
-  if (facets.some((item) => id(item && item.engagementId) !== id(engagementId))) {
-    throw new Error('Omnia authority directory contained a Facet outside the current Engagement.');
-  }
-  const sections = facets.filter((item) => id(item && item.facetTypeId) === CUSTOM_WORKSPACE_GROUP && item.isDeleted !== true && item.deleted !== true)
-    .map((item) => ({ id: id(item.id), name: text(item.name || item.value) })).filter((item) => item.id && item.name);
-  const sectionIds = new Set(sections.map((item) => item.id));
-  const workspaces = facets.filter((item) => id(item && item.facetTypeId) === CUSTOM_WORKSPACE && item.isDeleted !== true && item.deleted !== true)
-    .map((item) => ({ id: id(item.id), name: text(item.name || item.value), parentSectionId: sectionIds.has(id(item.parentId)) ? id(item.parentId) : '' }))
-    .filter((item) => item.id && item.name);
-  if (!workspaces.length) throw new Error('Omnia authority directory did not return a verifiable CustomWorkspace.');
-  return { sections, workspaces };
-}
-
-function blockers(payload, informationId) {
-  const entity = rows(payload && payload.blockingEntities).find((item) =>
-    id(item && (item.entityId || item.id)) === id(informationId)
-  );
-  const direct = rows(entity && entity.relatedEntities);
-  const additional = [
-    ...rows(payload && payload.convertingEntities),
-    ...rows(payload && payload.blockingControlEntities),
-    ...rows(payload && payload.accountContents)
-  ];
-  return [...direct, ...additional].map((item) => ({
-    type: text(item && (item.relatedEntityType || item.entityType || item.type || 'relationship')),
-    id: id(item && (item.relatedEntityId || item.entityId || item.id)),
-    workItemId: id(item && item.workItemId)
-  }));
-}
-
-async function mapLimit(values, concurrency, mapper) {
-  if (!Array.isArray(values) || values.length > 2000) throw new Error('Authoritative catalog exceeds the 2000 item limit.');
-  const result = new Array(values.length);
-  let cursor = 0;
-  async function consume() {
-    while (cursor < values.length) {
-      const index = cursor++;
-      result[index] = await mapper(values[index], index);
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, () => consume()));
-  return result;
-}
-
-async function readTarget(sdk, information) {
-  const informationId = id(information && (information.informationId || information.id));
-  const detail = await sdk.invokeStep('information-detail', { informationId });
-  const workItemId = id(detail && detail.workItemId || information && information.workItemId);
-  const [workItem, mapping, blocking] = await Promise.all([
-    sdk.invokeStep('work-item', { workItemId }),
-    sdk.invokeStep('facet-mapping', { workItemId }),
-    sdk.invokeStep('blocking-relationships', { informationId })
-  ]);
-  return {
-    objectId: informationId,
-    informationId,
-    workItemId,
-    objectType: 'Information',
-    number: text(detail && (detail.number || detail.referenceNumber) || workItem && workItem.referenceNumber),
-    name: text(detail && detail.name || information && information.name || workItem && workItem.name),
-    updatedAt: text(detail && (detail.updatedAt || detail.updatedOn || detail.lastModifiedOn)),
-    workspaceIds: workspaceIds(mapping),
-    blockers: blockers(blocking, informationId),
-    deleted: detail && (detail.isDeleted === true || detail.deleted === true)
-  };
-}
-
-function createOperationHandler() {
-  return Object.freeze({
-    async run(operationId, request, sdk) {
-      if (operationId === 'omnia.delete.scope.read.v1') {
-        await sdk.invokeStep('pack-hierarchy');
-        const directory = authorityDirectory(
-          await sdk.invokeStep('authority-directory', { engagementId: sdk.binding.engagementId }),
-          sdk.binding.engagementId
-        );
-        const normalizedWorkspaces = directory.workspaces;
-        return {
-          connectorId: sdk.binding.connectorId,
-          sessionGeneration: sdk.binding.sessionGeneration,
-          engagementId: sdk.binding.engagementId,
-          authorityInstanceId: sdk.binding.authorityInstanceId,
-          tenantOrOrgId: sdk.binding.tenantOrOrgId,
-          packId: sdk.binding.packId,
-          workspaceIds: normalizedWorkspaces.map((item) => item.id),
-          sections: directory.sections,
-          workspaces: normalizedWorkspaces
-        };
-      }
-      if (operationId === 'omnia.delete.catalog.heavy-read.v1') {
-        const collection = rows(await sdk.invokeStep('information-collection'));
-        const allowed = new Set(rows(request.workspaceIds));
-        const targets = await mapLimit(collection, 4, (information) => readTarget(sdk, information));
-        const items = targets.filter((target) =>
-          !target.deleted
-          && target.workspaceIds.length > 0
-          && target.workspaceIds.every((workspaceId) => allowed.has(workspaceId))
-        );
-        return { engagementId: sdk.binding.engagementId, items };
-      }
-      if (operationId === 'omnia.delete.information.preflight.v1') {
-        const target = await readTarget(sdk, request.target || {});
-        return {
-          informationId: target.informationId,
-          workItemId: target.workItemId,
-          workspaceIds: target.workspaceIds,
-          updatedAt: target.updatedAt,
-          blockers: target.blockers
-        };
-      }
-      if (operationId === 'omnia.delete.information.direct.v1') {
-        const informationId = id(request.informationId || request.command && request.command.payload && request.command.payload.informationId);
-        if (!informationId) throw new Error('Signed Information delete target is missing.');
-        await sdk.invokeStep('soft-delete', { informationId });
-        return { informationId, accepted: true };
-      }
-      if (operationId === 'omnia.delete.information.reconcile.v1') {
-        const informationId = id(request.informationId);
-        if (!informationId) throw new Error('Signed Information reconcile target is missing.');
-        const detail = await sdk.invokeStep('information-detail', { informationId });
-        return {
-          informationId: id(detail && detail.id || informationId),
-          deleted: detail && (detail.isDeleted === true || detail.deleted === true)
-        };
-      }
-      throw new Error(`Unsupported signed Operation: ${operationId}`);
-    }
-  });
-}
-
-module.exports = Object.freeze({ createOperationHandler });
+function createOperationHandler(){return Object.freeze({async run(operationId,request,sdk){
+  if(operationId==='omnia.delete.scope.read.v1'){await sdk.invokeStep('pack-hierarchy');const directory=authorityDirectory(await sdk.invokeStep('authority-directory',{engagementId:sdk.binding.engagementId}),sdk.binding.engagementId);return{connectorId:sdk.binding.connectorId,sessionGeneration:sdk.binding.sessionGeneration,engagementId:sdk.binding.engagementId,authorityInstanceId:sdk.binding.authorityInstanceId,tenantOrOrgId:sdk.binding.tenantOrOrgId,packId:sdk.binding.packId,workspaceIds:directory.workspaces.map(item=>item.id),sections:directory.sections,workspaces:directory.workspaces};}
+  if(operationId==='omnia.delete.catalog.heavy-read.v1'){const information=rows(await sdk.invokeStep('information-collection'));const[applications,infrastructures,tools]=await Promise.all([searchAll(sdk,'application-search','number'),searchAll(sdk,'infrastructure-search','number'),searchAll(sdk,'tool-search','name',{itElementType:'ITTool'})]);const allowed=new Set(rows(request.workspaceIds).map(id));const targets=await mapLimit([...information.map(item=>({kind:'information',item})),...applications.map(item=>({kind:'it',item})),...infrastructures.map(item=>({kind:'it',item})),...tools.map(item=>({kind:'it',item}))],4,entry=>entry.kind==='information'?readInformation(sdk,entry.item):readItElement(sdk,entry.item));const unique=new Map();for(const target of targets){if(!target.deleted&&target.workspaceIds.length===1&&target.workspaceIds.every(workspace=>allowed.has(workspace))&&!unique.has(`${target.objectType}|${target.objectId}`))unique.set(`${target.objectType}|${target.objectId}`,target);}return{engagementId:sdk.binding.engagementId,items:[...unique.values()]};}
+  if(operationId==='omnia.delete.information.preflight.v1'){const target=await readInformation(sdk,request.target||{});return{informationId:target.informationId,objectId:target.objectId,objectType:'Information',workItemId:target.workItemId,workspaceIds:target.workspaceIds,updatedAt:target.updatedAt,blockers:target.blockers};}
+  if(operationId==='omnia.delete.information.direct.v1'){const informationId=id(request.command&&request.command.payload&&request.command.payload.informationId);if(!informationId||informationId!==id(request.informationId))throw new Error('Signed Information delete target drifted from the Core command.');await sdk.invokeStep('soft-delete',{informationId});return{informationId,objectId:informationId,objectType:'Information',accepted:true};}
+  if(operationId==='omnia.delete.information.reconcile.v1'){const informationId=id(request.informationId),workItemId=id(request.workItemId),workspaceId=id(request.workspaceId);const[detail,mapping]=await Promise.all([sdk.invokeStep('information-detail',{informationId}),sdk.invokeStep('facet-mapping',{workItemId})]);const mapped=workspaceIds(mapping);if(id(detail&&(detail.id||detail.informationId))!==informationId||mapped.length!==1||mapped[0]!==workspaceId)throw new Error('Information reconcile identity/Workspace drifted.');return{informationId,objectId:informationId,objectType:'Information',workspaceIds:[workspaceId],deleted:deleted(detail)};}
+  if(operationId==='omnia.delete.it-element.preflight.v1'){const target=assertItTarget(await readItElement(sdk,request.target||request),request);return{objectId:target.objectId,objectType:target.objectType,workItemId:target.workItemId,workspaceIds:target.workspaceIds,updatedAt:target.updatedAt,blockers:target.blockers,riskAssessmentId:target.riskAssessmentId};}
+  if(operationId==='omnia.delete.it-element.direct.v1'){const payload=request.command&&request.command.payload;const objectId=id(payload&&payload.objectId),objectType=text(payload&&payload.objectType);if(!objectId||objectId!==id(request.objectId)||objectType!==text(request.objectType)||!['APP','DB','OS','TOOL'].includes(objectType))throw new Error('Signed IT Element delete identity drifted from the Core command.');await sdk.invokeStep('it-element-soft-delete',{objectId});return{objectId,objectType,accepted:true};}
+  if(operationId==='omnia.delete.it-element.reconcile.v1'){const objectId=id(request.objectId),workItemId=id(request.workItemId),workspaceId=id(request.workspaceId);const objectType=text(request.objectType);const[detail,mapping]=await Promise.all([sdk.invokeStep('it-element-detail',{objectId}),sdk.invokeStep('it-element-facet-mapping',{workItemId})]);const mapped=workspaceIds(mapping);if(id(detail&&(detail.id||detail.itElementId))!==objectId||objectKind(detail)!==objectType||mapped.length!==1||mapped[0]!==workspaceId)throw new Error('IT Element reconcile identity/type/Workspace drifted.');return{objectId,objectType,workspaceIds:[workspaceId],deleted:deleted(detail)};}
+  if(operationId==='omnia.delete.gra.preflight.v1'){const riskAssessmentId=id(request.riskAssessmentId);const workspaceId=id(request.workspaceId);const detail=await sdk.invokeStep('gra-detail',{riskAssessmentId});const workItemId=id(detail&&(detail.workItemId||detail.riskAssessmentWorkItemId)),workspaces=detailWorkspaceIds(detail);if(id(detail&&(detail.id||detail.riskAssessmentId))!==riskAssessmentId||workspaces.length!==1||workspaces[0]!==workspaceId||deleted(detail)||!workItemId)throw new Error('GRA preflight identity/Workspace drifted.');const[relationship,validation,controls]=await Promise.all([sdk.invokeStep('gra-relationship',{workItemId}),sdk.invokeStep('gra-delete-validation',{riskAssessmentId}),sdk.invokeStep('gra-controls',{riskAssessmentId})]);if(id(relationship)!==riskAssessmentId||!validationClear(validation))throw new Error('GRA delete validation reported blockers or relationship drift.');return{objectId:riskAssessmentId,riskAssessmentId,objectType:'GRA',workItemId,workspaceIds:[workspaceId],updatedAt:text(detail.updatedOn||detail.updatedAt),blockers:[],controls:controlCascade(controls)};}
+  if(operationId==='omnia.delete.gra.direct.v1'){const riskAssessmentId=id(request.command&&request.command.payload&&request.command.payload.riskAssessmentId);if(!riskAssessmentId||riskAssessmentId!==id(request.riskAssessmentId))throw new Error('Signed GRA delete target drifted from the Core command.');await sdk.invokeStep('gra-soft-delete',{riskAssessmentId});return{objectId:riskAssessmentId,riskAssessmentId,objectType:'GRA',accepted:true};}
+  if(operationId==='omnia.delete.gra.reconcile.v1'){const riskAssessmentId=id(request.riskAssessmentId);const workspaceId=id(request.workspaceId);const detail=await sdk.invokeStep('gra-detail',{riskAssessmentId}),workspaces=detailWorkspaceIds(detail);if(id(detail&&(detail.id||detail.riskAssessmentId))!==riskAssessmentId||workspaces.length!==1||workspaces[0]!==workspaceId)throw new Error('GRA reconcile identity/Workspace drifted.');return{objectId:riskAssessmentId,riskAssessmentId,objectType:'GRA',workspaceIds:[workspaceId],deleted:deleted(detail)};}
+  if(operationId==='omnia.delete.infrastructure-application.preflight.v1'){const infrastructureId=id(request.infrastructureId),applicationId=id(request.applicationId),infrastructureWorkItemId=id(request.infrastructureWorkItemId),applicationWorkItemId=id(request.applicationWorkItemId),infrastructureWorkspaceId=id(request.infrastructureWorkspaceId),applicationWorkspaceId=id(request.applicationWorkspaceId);const[infrastructure,application,infrastructureMapping,applicationMapping]=await Promise.all([sdk.invokeStep('relation-object-detail',{objectId:infrastructureId}),sdk.invokeStep('relation-object-detail',{objectId:applicationId}),sdk.invokeStep('relation-facet-mapping',{workItemId:infrastructureWorkItemId}),sdk.invokeStep('relation-facet-mapping',{workItemId:applicationWorkItemId})]);const actualInfrastructureId=id(infrastructure&&(infrastructure.id||infrastructure.itElementId)),actualApplicationId=id(application&&(application.id||application.itElementId)),actualInfrastructureWorkItemId=id(infrastructure&&(infrastructure.workItemId||infrastructure.infrastructureWorkItemId)),actualApplicationWorkItemId=id(application&&(application.workItemId||application.applicationWorkItemId));const before=await relationState(sdk,infrastructureId,applicationId),infrastructureWorkspaces=workspaceIds(infrastructureMapping),applicationWorkspaces=workspaceIds(applicationMapping);if(actualInfrastructureId!==infrastructureId||actualApplicationId!==applicationId||actualInfrastructureWorkItemId!==infrastructureWorkItemId||actualApplicationWorkItemId!==applicationWorkItemId||objectKind(infrastructure)!==text(request.infrastructureType)||objectKind(application)!=='APP'||infrastructureWorkspaces.length!==1||infrastructureWorkspaces[0]!==infrastructureWorkspaceId||applicationWorkspaces.length!==1||applicationWorkspaces[0]!==applicationWorkspaceId||deleted(infrastructure)||deleted(application))throw new Error('Infrastructure/Application relation identity, type, Work Item, or Workspace drifted.');if(!before.associated||before.inconsistent)throw new Error('Infrastructure/Application relation is absent or inconsistent.');const infrastructureToken=relationshipConcurrency(infrastructure,602);const applicationToken=relationshipConcurrency(application,502);const concurrency=infrastructureToken?{owner:'INFRASTRUCTURE',...infrastructureToken}:applicationToken?{owner:'APP',...applicationToken}:null;if(!concurrency)throw new Error('Infrastructure/Application relation concurrency token is unavailable.');return{relationKey:`InfrastructureApplication|${infrastructureId}|${applicationId}`,infrastructureId,applicationId,infrastructureType:text(request.infrastructureType),workspaceIds:[infrastructureWorkspaceId,applicationWorkspaceId],concurrency,before};}
+  if(operationId==='omnia.delete.infrastructure-application.disassociate.v1'){const payload=request.command&&request.command.payload;if(!payload||id(payload.infrastructureId)!==id(request.infrastructureId)||id(payload.applicationId)!==id(request.applicationId)||!payload.concurrency)throw new Error('Frozen relation deletion payload drifted from the Core command.');const c=payload.concurrency;if(!['APP','INFRASTRUCTURE'].includes(c.owner)||!text(c.updatedOn)||Number(c.entityTabTypeId)!==(c.owner==='APP'?502:602))throw new Error('Frozen relation concurrency token is invalid.');const body=c.owner==='APP'?{ItElementId:id(payload.applicationId),AssociatingEntityIds:[id(payload.infrastructureId)],associationType:'ApplicationInfrastructure',ConcurrencyTabId:502,ConcurrencyTabUpdatedOn:text(c.updatedOn)}:{ItElementId:id(payload.infrastructureId),AssociatingEntityIds:[id(payload.applicationId)],associationType:'InfrastructureApplication',ConcurrencyTabId:602,ConcurrencyTabUpdatedOn:text(c.updatedOn)};await sdk.invokeStep('relation-disassociate',{},body);return{relationKey:`InfrastructureApplication|${id(payload.infrastructureId)}|${id(payload.applicationId)}`,accepted:true};}
+  if(operationId==='omnia.delete.infrastructure-application.reconcile.v1'){const infrastructureId=id(request.infrastructureId),applicationId=id(request.applicationId),infrastructureWorkItemId=id(request.infrastructureWorkItemId),applicationWorkItemId=id(request.applicationWorkItemId),infrastructureWorkspaceId=id(request.infrastructureWorkspaceId),applicationWorkspaceId=id(request.applicationWorkspaceId);const[infrastructure,application,infrastructureMapping,applicationMapping,after]=await Promise.all([sdk.invokeStep('relation-object-detail',{objectId:infrastructureId}),sdk.invokeStep('relation-object-detail',{objectId:applicationId}),sdk.invokeStep('relation-facet-mapping',{workItemId:infrastructureWorkItemId}),sdk.invokeStep('relation-facet-mapping',{workItemId:applicationWorkItemId}),relationState(sdk,infrastructureId,applicationId)]);const infrastructureWorkspaces=workspaceIds(infrastructureMapping),applicationWorkspaces=workspaceIds(applicationMapping);if(id(infrastructure&&(infrastructure.id||infrastructure.itElementId))!==infrastructureId||id(application&&(application.id||application.itElementId))!==applicationId||id(infrastructure&&(infrastructure.workItemId||infrastructure.infrastructureWorkItemId))!==infrastructureWorkItemId||id(application&&(application.workItemId||application.applicationWorkItemId))!==applicationWorkItemId||infrastructureWorkspaces.length!==1||infrastructureWorkspaces[0]!==infrastructureWorkspaceId||applicationWorkspaces.length!==1||applicationWorkspaces[0]!==applicationWorkspaceId)throw new Error('Relationship reconcile identity/Work Item/Workspace drifted.');return{relationKey:`InfrastructureApplication|${infrastructureId}|${applicationId}`,associated:after.associated,inconsistent:after.inconsistent,deleted:!after.associated&&!after.inconsistent};}
+  throw new Error(`Unsupported signed Operation: ${operationId}`);
+}});}
+module.exports=Object.freeze({createOperationHandler});

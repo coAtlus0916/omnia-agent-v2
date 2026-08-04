@@ -1285,33 +1285,62 @@ export class FeatureRuntimeStore {
     const intended = JSON.parse(String(command.intended_revision_json)) as Record<string,any>;
     const binding = object(request.binding, 'Deletion projection authority binding');
     const workspaceId = String(request.workspaceId || '');
-    const objectType = String(request.objectType || '');
-    const objectId = String(request.objectId || '');
     if (!workspaceId || workspaceId !== String(intended.workspace || '')
-      || objectType !== String(intended.objectType || '') || objectId !== String(intended.objectId || '')
       || String(command.target_key) !== String(intended.key || '')) throw new Error('Deletion projection differs from the frozen target.');
     const confirmation = this.core.prepare(`SELECT authority_instance_id,tenant_or_org_id,pack_id,engagement_id FROM feature_confirmations WHERE run_id=? AND plan_digest=? AND decision='approved' ORDER BY created_at DESC LIMIT 1`)
       .get(runId,String(command.plan_digest)) as Record<string,any>|undefined;
     if (!confirmation || confirmation.authority_instance_id !== binding.authorityInstanceId
       || confirmation.tenant_or_org_id !== binding.tenantOrOrgId || confirmation.pack_id !== binding.packId
       || confirmation.engagement_id !== binding.engagementId) throw new Error('Deletion projection authority drifted.');
-    const current = this.core.prepare(`SELECT current_revision FROM managed_objects WHERE authority_instance_id=? AND tenant_or_org_id=? AND pack_id=? AND engagement_id=? AND workspace_id=? AND object_type=? AND object_id=?`)
-      .get(binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,objectType,objectId) as {current_revision:number}|undefined;
     const occurredAt = now();
     const baseline = object(intended.baseline, 'Deletion adopted baseline');
+    const relationDeletion = String(intended.kind || '') === 'relation';
     this.core.exec('BEGIN IMMEDIATE;');
     try {
-      let revision = Number(current?.current_revision || 0);
-      if (!current) {
-        revision = 1;
+      if (relationDeletion) {
+        const relationType = String(request.relationType || '');
+        const relationKey = String(request.relationKey || '');
+        const sourceObjectId = String(request.sourceObjectId || '');
+        const targetObjectId = String(request.targetObjectId || '');
+        if (!relationType || relationType !== String(intended.relationType || '')
+          || relationKey !== String(intended.relationKey || '')
+          || sourceObjectId !== String(intended.sourceObjectId || '')
+          || targetObjectId !== String(intended.targetObjectId || '')) {
+          throw new Error('Relation deletion projection differs from the frozen relation identity.');
+        }
+        const current = this.core.prepare(`SELECT current_revision FROM managed_relations WHERE authority_instance_id=? AND tenant_or_org_id=? AND pack_id=? AND engagement_id=? AND workspace_id=? AND relation_type=? AND relation_key=?`)
+          .get(binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,relationType,relationKey) as {current_revision:number}|undefined;
+        let revision = Number(current?.current_revision || 0);
+        if (!current) {
+          revision = 1;
+          this.core.prepare(`INSERT INTO managed_relation_revisions(revision_id,authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,relation_type,relation_key,source_object_id,target_object_id,revision,run_id,intent_id,command_id,evidence_id,payload_json,verified_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+            .run(randomUUID(),binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,relationType,relationKey,sourceObjectId,targetObjectId,revision,runId,command.intent_id,commandId,evidence.evidence_id,JSON.stringify({source:'adopted_on_mutation',preflightDigest:String(intended.preflightDigest||''),baseline}),occurredAt);
+        }
+        revision += 1;
+        this.core.prepare(`INSERT INTO managed_relations(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,relation_type,relation_key,source_object_id,target_object_id,current_revision,lifecycle,freshness,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,'deleted','verified_current',?) ON CONFLICT(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,relation_type,relation_key) DO UPDATE SET source_object_id=excluded.source_object_id,target_object_id=excluded.target_object_id,current_revision=excluded.current_revision,lifecycle='deleted',freshness='verified_current',updated_at=excluded.updated_at`)
+          .run(binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,relationType,relationKey,sourceObjectId,targetObjectId,revision,occurredAt);
+        this.core.prepare(`INSERT INTO managed_relation_revisions(revision_id,authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,relation_type,relation_key,source_object_id,target_object_id,revision,run_id,intent_id,command_id,evidence_id,payload_json,verified_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+          .run(randomUUID(),binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,relationType,relationKey,sourceObjectId,targetObjectId,revision,runId,command.intent_id,commandId,evidence.evidence_id,JSON.stringify({deleted:true,tombstoneAt:occurredAt,baselineDigest:crypto.createHash('sha256').update(canonical(baseline)).digest('hex')}),occurredAt);
+      } else {
+        const objectType = String(request.objectType || '');
+        const objectId = String(request.objectId || '');
+        if (objectType !== String(intended.objectType || '') || objectId !== String(intended.objectId || '')) {
+          throw new Error('Object deletion projection differs from the frozen object identity.');
+        }
+        const current = this.core.prepare(`SELECT current_revision FROM managed_objects WHERE authority_instance_id=? AND tenant_or_org_id=? AND pack_id=? AND engagement_id=? AND workspace_id=? AND object_type=? AND object_id=?`)
+          .get(binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,objectType,objectId) as {current_revision:number}|undefined;
+        let revision = Number(current?.current_revision || 0);
+        if (!current) {
+          revision = 1;
+          this.core.prepare(`INSERT INTO managed_object_revisions(revision_id,authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,object_type,object_id,revision,run_id,intent_id,command_id,evidence_id,provenance_json,payload_json,verified_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+            .run(randomUUID(),binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,objectType,objectId,revision,runId,command.intent_id,commandId,evidence.evidence_id,JSON.stringify({source:'adopted_on_mutation',preflightDigest:String(intended.preflightDigest||'')}),JSON.stringify(baseline),occurredAt);
+        }
+        revision += 1;
+        this.core.prepare(`INSERT INTO managed_objects(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,object_type,object_id,current_revision,lifecycle,freshness,updated_at) VALUES(?,?,?,?,?,?,?,?,'deleted','verified_current',?) ON CONFLICT(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,object_type,object_id) DO UPDATE SET current_revision=excluded.current_revision,lifecycle='deleted',freshness='verified_current',updated_at=excluded.updated_at`)
+          .run(binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,objectType,objectId,revision,occurredAt);
         this.core.prepare(`INSERT INTO managed_object_revisions(revision_id,authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,object_type,object_id,revision,run_id,intent_id,command_id,evidence_id,provenance_json,payload_json,verified_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-          .run(randomUUID(),binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,objectType,objectId,revision,runId,command.intent_id,commandId,evidence.evidence_id,JSON.stringify({source:'adopted_on_mutation',preflightDigest:String(intended.preflightDigest||'')}),JSON.stringify(baseline),occurredAt);
+          .run(randomUUID(),binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,objectType,objectId,revision,runId,command.intent_id,commandId,evidence.evidence_id,JSON.stringify({source:'agent_verified_delete'}),JSON.stringify({deleted:true,tombstoneAt:occurredAt,baselineDigest:crypto.createHash('sha256').update(canonical(baseline)).digest('hex')}),occurredAt);
       }
-      revision += 1;
-      this.core.prepare(`INSERT INTO managed_objects(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,object_type,object_id,current_revision,lifecycle,freshness,updated_at) VALUES(?,?,?,?,?,?,?,?,'deleted','verified_current',?) ON CONFLICT(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,object_type,object_id) DO UPDATE SET current_revision=excluded.current_revision,lifecycle='deleted',freshness='verified_current',updated_at=excluded.updated_at`)
-        .run(binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,objectType,objectId,revision,occurredAt);
-      this.core.prepare(`INSERT INTO managed_object_revisions(revision_id,authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,object_type,object_id,revision,run_id,intent_id,command_id,evidence_id,provenance_json,payload_json,verified_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(randomUUID(),binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,objectType,objectId,revision,runId,command.intent_id,commandId,evidence.evidence_id,JSON.stringify({source:'agent_verified_delete'}),JSON.stringify({deleted:true,tombstoneAt:occurredAt,baselineDigest:crypto.createHash('sha256').update(canonical(baseline)).digest('hex')}),occurredAt);
       this.core.exec('COMMIT;');
     } catch (error) { this.core.exec('ROLLBACK;'); throw error; }
     return true;

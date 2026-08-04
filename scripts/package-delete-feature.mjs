@@ -108,6 +108,30 @@ function operationDescriptors() {
           method: 'POST',
           routeTemplate: '/rapr/v0/engagements/{engagementId}/information/getblockingrelationships',
           bodyMode: 'single_id_array'
+        },
+        {
+          stepId: 'application-search', method: 'POST',
+          routeTemplate: '/rapr/v0/engagements/{engagementId}/applications/search', bodyMode: 'signed_json'
+        },
+        {
+          stepId: 'infrastructure-search', method: 'POST',
+          routeTemplate: '/rapr/v0/engagements/{engagementId}/infrastructures/search', bodyMode: 'signed_json'
+        },
+        {
+          stepId: 'tool-search', method: 'POST',
+          routeTemplate: '/rapr/v0/engagements/{engagementId}/itelement/search', bodyMode: 'signed_json'
+        },
+        {
+          stepId: 'it-element-detail', method: 'GET',
+          routeTemplate: '/rapr/v0/engagements/{engagementId}/itelement/{objectId}', bodyMode: 'none'
+        },
+        {
+          stepId: 'it-element-facet-mapping', method: 'GET',
+          routeTemplate: '/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}', bodyMode: 'none'
+        },
+        {
+          stepId: 'it-element-blocking-relationships', method: 'POST',
+          routeTemplate: '/rapr/v0/engagements/{engagementId}/itelement/getBlockingRelationships', bodyMode: 'object_id_array'
         }
       ]
     },
@@ -171,14 +195,96 @@ function operationDescriptors() {
           method: 'GET',
           routeTemplate: '/rapr/v0/engagements/{engagementId}/information/{informationId}',
           bodyMode: 'none'
+        },
+        {
+          stepId: 'facet-mapping',
+          method: 'GET',
+          routeTemplate: '/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}',
+          bodyMode: 'none'
         }
+      ]
+    },
+    {
+      operationId: 'omnia.delete.it-element.preflight.v1', effect: 'read_only',
+      requestSchema: 'omnia.delete.it-element-preflight-request/v1', responseSchema: 'omnia.delete.it-element-preflight-response/v1',
+      enabledByDefault: true,
+      routes: [
+        { stepId: 'it-element-detail', method: 'GET', routeTemplate: '/rapr/v0/engagements/{engagementId}/itelement/{objectId}', bodyMode: 'none' },
+        { stepId: 'it-element-facet-mapping', method: 'GET', routeTemplate: '/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}', bodyMode: 'none' },
+        { stepId: 'it-element-blocking-relationships', method: 'POST', routeTemplate: '/rapr/v0/engagements/{engagementId}/itelement/getBlockingRelationships', bodyMode: 'object_id_array' }
+      ]
+    },
+    {
+      operationId: 'omnia.delete.it-element.direct.v1', effect: 'omnia_mutation',
+      requestSchema: 'omnia.delete.it-element-direct-request/v1', responseSchema: 'omnia.delete.it-element-direct-response/v1',
+      enabledByDefault: false,
+      routes: [{ stepId: 'it-element-soft-delete', method: 'PATCH', routeTemplate: '/rapr/v0/engagements/{engagementId}/itelement/{objectId}/softdelete', bodyMode: 'none' }]
+    },
+    {
+      operationId: 'omnia.delete.it-element.reconcile.v1', effect: 'read_only',
+      requestSchema: 'omnia.delete.it-element-reconcile-request/v1', responseSchema: 'omnia.delete.it-element-reconcile-response/v1',
+      enabledByDefault: true,
+      routes: [
+        { stepId: 'it-element-detail', method: 'GET', routeTemplate: '/rapr/v0/engagements/{engagementId}/itelement/{objectId}', bodyMode: 'none' },
+        { stepId: 'it-element-facet-mapping', method: 'GET', routeTemplate: '/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}', bodyMode: 'none' }
+      ]
+    },
+    {
+      operationId: 'omnia.delete.gra.preflight.v1', effect: 'read_only',
+      requestSchema: 'omnia.delete.gra-preflight-request/v1', responseSchema: 'omnia.delete.gra-preflight-response/v1', enabledByDefault: true,
+      routes: [
+        { stepId: 'gra-detail', method: 'GET', routeTemplate: '/rapr/v0/engagements/{engagementId}/riskassessments/{riskAssessmentId}', bodyMode: 'none' },
+        { stepId: 'gra-relationship', method: 'GET', routeTemplate: '/rapr/v0/engagements/{engagementId}/relationship/byWorkItemId/{workItemId}/workItemType/RiskFactorEvaluation', bodyMode: 'none' },
+        { stepId: 'gra-delete-validation', method: 'POST', routeTemplate: '/rapr/v0/engagements/{engagementId}/riskassessments/{riskAssessmentId}/validate-riskfactor-evaluation?op=Delete', bodyMode: 'none' },
+        { stepId: 'gra-controls', method: 'GET', routeTemplate: '/rapr/v0/engagements/{engagementId}/controls/byRiskAssessmentId/{riskAssessmentId}?includeContentDeleted=false', bodyMode: 'none' }
+      ]
+    },
+    {
+      operationId: 'omnia.delete.gra.direct.v1', effect: 'omnia_mutation',
+      requestSchema: 'omnia.delete.gra-direct-request/v1', responseSchema: 'omnia.delete.gra-direct-response/v1', enabledByDefault: false,
+      routes: [{ stepId: 'gra-soft-delete', method: 'PATCH', routeTemplate: '/rapr/v0/engagements/{engagementId}/riskassessments/{riskAssessmentId}/softdelete', bodyMode: 'none' }]
+    },
+    {
+      operationId: 'omnia.delete.gra.reconcile.v1', effect: 'read_only',
+      requestSchema: 'omnia.delete.gra-reconcile-request/v1', responseSchema: 'omnia.delete.gra-reconcile-response/v1', enabledByDefault: true,
+      routes: [{ stepId: 'gra-detail', method: 'GET', routeTemplate: '/rapr/v0/engagements/{engagementId}/riskassessments/{riskAssessmentId}', bodyMode: 'none' }]
+    },
+    {
+      operationId: 'omnia.delete.infrastructure-application.preflight.v1', effect: 'read_only',
+      requestSchema: 'omnia.delete.infrastructure-application-preflight-request/v1', responseSchema: 'omnia.delete.infrastructure-application-preflight-response/v1', enabledByDefault: true,
+      routes: [
+        { stepId: 'relation-object-detail', method: 'GET', routeTemplate: '/rapr/v0/engagements/{engagementId}/itelement/{objectId}', bodyMode: 'none' },
+        { stepId: 'relation-facet-mapping', method: 'GET', routeTemplate: '/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}', bodyMode: 'none' },
+        { stepId: 'relation-applications-search', method: 'POST', routeTemplate: '/rapr/v0/engagements/{engagementId}/applications/search', bodyMode: 'signed_json' },
+        { stepId: 'relation-infrastructures-search', method: 'POST', routeTemplate: '/rapr/v0/engagements/{engagementId}/infrastructures/search', bodyMode: 'signed_json' }
+      ]
+    },
+    {
+      operationId: 'omnia.delete.infrastructure-application.disassociate.v1', effect: 'omnia_mutation',
+      requestSchema: 'omnia.delete.infrastructure-application-disassociate-request/v1', responseSchema: 'omnia.delete.infrastructure-application-disassociate-response/v1', enabledByDefault: false,
+      routes: [{ stepId: 'relation-disassociate', method: 'POST', routeTemplate: '/rapr/v0/engagements/{engagementId}/itelement/disassociate', bodyMode: 'signed_json' }]
+    },
+    {
+      operationId: 'omnia.delete.infrastructure-application.reconcile.v1', effect: 'read_only',
+      requestSchema: 'omnia.delete.infrastructure-application-reconcile-request/v1', responseSchema: 'omnia.delete.infrastructure-application-reconcile-response/v1', enabledByDefault: true,
+      routes: [
+        { stepId: 'relation-object-detail', method: 'GET', routeTemplate: '/rapr/v0/engagements/{engagementId}/itelement/{objectId}', bodyMode: 'none' },
+        { stepId: 'relation-facet-mapping', method: 'GET', routeTemplate: '/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}', bodyMode: 'none' },
+        { stepId: 'relation-applications-search', method: 'POST', routeTemplate: '/rapr/v0/engagements/{engagementId}/applications/search', bodyMode: 'signed_json' },
+        { stepId: 'relation-infrastructures-search', method: 'POST', routeTemplate: '/rapr/v0/engagements/{engagementId}/infrastructures/search', bodyMode: 'signed_json' }
       ]
     }
   ].map((operation) => ({
     ...operation,
-    grantsMutationPermit: operation.operationId === 'omnia.delete.information.preflight.v1',
+    grantsMutationPermit: ['omnia.delete.information.preflight.v1', 'omnia.delete.it-element.preflight.v1', 'omnia.delete.gra.preflight.v1', 'omnia.delete.infrastructure-application.preflight.v1'].includes(operation.operationId),
     ...(operation.operationId === 'omnia.delete.information.preflight.v1'
       ? { permitsOperationId: 'omnia.delete.information.direct.v1' }
+      : operation.operationId === 'omnia.delete.it-element.preflight.v1'
+        ? { permitsOperationId: 'omnia.delete.it-element.direct.v1' }
+      : operation.operationId === 'omnia.delete.gra.preflight.v1'
+        ? { permitsOperationId: 'omnia.delete.gra.direct.v1' }
+      : operation.operationId === 'omnia.delete.infrastructure-application.preflight.v1'
+        ? { permitsOperationId: 'omnia.delete.infrastructure-application.disassociate.v1' }
       : {}),
     routes: operation.routes.map((route) => {
       const routeTemplate = route.routeTemplate.replace(
@@ -189,6 +295,7 @@ function operationDescriptors() {
         .map((match) => match[1])
         .filter((name) => name !== 'engagementId');
       if (route.bodyMode === 'single_id_array') parameterNames.push('informationId');
+      if (route.bodyMode === 'object_id_array') parameterNames.push('objectId');
       if (route.bodyMode === 'engagement_id_array') parameterNames.push('engagementId');
       const parameters = [...new Set(parameterNames)]
         .map((name) => ({ name, type: 'guid' }));
@@ -197,8 +304,8 @@ function operationDescriptors() {
         method: route.method,
         routeTemplate,
         parameters,
-        bodyMode: ['single_id_array', 'engagement_id_array'].includes(route.bodyMode) ? 'parameter_array' : route.bodyMode,
-        bodyParameter: route.bodyMode === 'single_id_array' ? 'informationId' : route.bodyMode === 'engagement_id_array' ? 'engagementId' : ''
+        bodyMode: ['single_id_array', 'object_id_array', 'engagement_id_array'].includes(route.bodyMode) ? 'parameter_array' : route.bodyMode,
+        bodyParameter: route.bodyMode === 'single_id_array' ? 'informationId' : route.bodyMode === 'object_id_array' ? 'objectId' : route.bodyMode === 'engagement_id_array' ? 'engagementId' : ''
       };
     })
   }));
@@ -252,7 +359,9 @@ async function buildVersion(version, sequence) {
       }, null, 2))
     ]
   });
-  const versionNote = version === '0.2.0'
+  const versionNote = version === '0.2.1'
+    ? '0.2.1 增加 APP、DB、OS、TOOL 真实删除闭环，并将派生 GRA、GRA Control 级联快照及 DB/OS–APP 双向解关联作为独立 Core 图步骤冻结、确认、提交和读回。'
+    : version === '0.2.0'
     ? '0.2.0 以声明式目录工作台恢复真实 Section、Workspace 与元素类型层级，提供当前权威快照搜索、复选多选和批量选择；计划确认、执行与终态仍只由 Comments 消息卡持有。'
     : version === '0.1.5'
     ? '0.1.5 将 0.1.4 的 Omnia 权威 Section 全局关联安全范围纳入 Shell builtin 自动升级；删除目标仍必须命中显式 Workspace 锁，Section 展开结果随安全快照冻结。'
@@ -284,7 +393,7 @@ async function buildVersion(version, sequence) {
     version,
     sequence,
     displayName: '删除元素',
-    minimumShellVersion: version === '0.2.0' ? '0.4.12' : version === '0.1.5' ? '0.4.10' : '0.4.0',
+    minimumShellVersion: ['0.2.0','0.2.1'].includes(version) ? '0.4.12' : version === '0.1.5' ? '0.4.10' : '0.4.0',
     requiredIsolation: 'process',
     storeNamespace: 'delete_elements',
     migrationPath: 'backend/migrations/001.json',
@@ -450,5 +559,5 @@ async function buildVersion(version, sequence) {
 }
 
 const results = [];
-results.push(await buildVersion('0.2.0', 7));
+results.push(await buildVersion('0.2.1', 8));
 for (const result of results) console.log(`${path.relative(root, result.filename)} ${result.digest}`);

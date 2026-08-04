@@ -1,6 +1,7 @@
 import type {
   DeclarativeFeatureAction,
   DeclarativeFeatureReview,
+  DeclarativeFeatureScope,
   DeclarativeFeatureSurface,
   DeclarativeReviewElementKind,
   DeclarativeReviewField
@@ -18,6 +19,10 @@ let hostPlacement: 'docked' | 'detached' | 'minimized' | 'closed' = 'docked';
 let recorderProjectedAt = Date.now();
 let renderedSurface = '';
 let renderedError = '';
+let selectionUiIdentity = '';
+let selectionQuery = '';
+let selectedScopeId = '';
+let collapsedScopeIds = new Set<string>();
 const busyDisabledState = new WeakMap<HTMLInputElement | HTMLButtonElement | HTMLSelectElement | HTMLTextAreaElement, boolean>();
 const backgroundActionAttempts = new Set<string>();
 const backgroundActionScheduled = new Set<string>();
@@ -71,6 +76,126 @@ export function reconcileBootstrapReviewDrafts(
 
 function actionButton(action: DeclarativeFeatureAction, extra = ''): string {
   return `<button data-action="${esc(action.actionId)}" data-selection="${esc(action.selectionMode || 'none')}" ${extra} ${action.enabled ? '' : 'disabled'} title="${esc(action.reason)}">${esc(action.label)}</button>`;
+}
+
+function syncSelectionBrowserUi(): void {
+  if (!surface?.selectionBrowser) return;
+  const identity = `${surface.featureId}\u0000${surface.featureVersion}\u0000${surface.surfaceId}`;
+  const scopeIds = new Set(surface.scopes.map((scope) => scope.id));
+  if (identity !== selectionUiIdentity) {
+    selectionUiIdentity = identity;
+    selectionQuery = surface.search;
+    selectedScopeId = surface.scopes.find((scope) => scope.selected)?.id || '';
+    collapsedScopeIds = new Set(surface.scopes.filter((scope) => scope.initialExpanded === false).map((scope) => scope.id));
+    return;
+  }
+  if (selectedScopeId && !scopeIds.has(selectedScopeId)) selectedScopeId = '';
+  collapsedScopeIds = new Set([...collapsedScopeIds].filter((scopeId) => scopeIds.has(scopeId)));
+}
+
+function descendantScopeIds(scopeId: string): Set<string> {
+  const descendants = new Set<string>([scopeId]);
+  if (!surface) return descendants;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const scope of surface.scopes) {
+      if (scope.parentId && descendants.has(scope.parentId) && !descendants.has(scope.id)) {
+        descendants.add(scope.id);
+        changed = true;
+      }
+    }
+  }
+  return descendants;
+}
+
+function visibleSelectionItems() {
+  if (!surface) return [];
+  const allowedScopes = selectedScopeId ? descendantScopeIds(selectedScopeId) : null;
+  const normalizedQuery = selectionQuery.trim().toLocaleLowerCase('zh-CN');
+  const scopeById = new Map(surface.scopes.map((scope) => [scope.id, scope]));
+  return surface.items.filter((item) => {
+    if (allowedScopes && !allowedScopes.has(item.scopeId)) return false;
+    if (!normalizedQuery) return true;
+    const labels: string[] = [];
+    const visited = new Set<string>();
+    let current = scopeById.get(item.scopeId);
+    while (current && !visited.has(current.id)) {
+      visited.add(current.id);
+      labels.push(current.label, current.parentLabel);
+      current = current.parentId ? scopeById.get(current.parentId) : undefined;
+    }
+    return [item.id, item.type, item.title, item.subtitle, ...labels]
+      .some((value) => value.toLocaleLowerCase('zh-CN').includes(normalizedQuery));
+  });
+}
+
+function selectionBrowserUnavailable(): boolean {
+  return !surface || ['loading', 'blocked', 'error', 'stale'].includes(surface.status);
+}
+
+function renderSelectionBrowser(): string {
+  if (!surface?.selectionBrowser) return '';
+  syncSelectionBrowserUi();
+  const browser = surface.selectionBrowser;
+  const scopes = surface.scopes;
+  const scopeById = new Map(scopes.map((scope) => [scope.id, scope]));
+  const children = new Map<string, DeclarativeFeatureScope[]>();
+  const roots: DeclarativeFeatureScope[] = [];
+  for (const scope of scopes) {
+    if (scope.parentId && scopeById.has(scope.parentId)) {
+      const siblings = children.get(scope.parentId) || [];
+      siblings.push(scope);
+      children.set(scope.parentId, siblings);
+    } else roots.push(scope);
+  }
+  const scopeCounts = (scopeId: string) => {
+    const ids = descendantScopeIds(scopeId);
+    const items = surface!.items.filter((item) => ids.has(item.scopeId));
+    return {total: items.length, selectable: items.filter((item) => item.selectable).length};
+  };
+  const renderScope = (scope: DeclarativeFeatureScope, ancestors: ReadonlySet<string>): string => {
+    if (ancestors.has(scope.id)) return '';
+    const nested = children.get(scope.id) || [];
+    const collapsed = collapsedScopeIds.has(scope.id);
+    const counts = scopeCounts(scope.id);
+    const nextAncestors = new Set(ancestors).add(scope.id);
+    const disabled = Boolean(scope.disabledReason);
+    return `<li class="catalog-scope level-${scope.level || 1} ${selectedScopeId === scope.id ? 'selected' : ''} ${disabled ? 'disabled' : ''}"><div class="catalog-scope-row" style="--scope-level:${scope.level || 1}" title="${esc(scope.disabledReason || '')}">${nested.length ? `<button type="button" class="catalog-collapse" data-catalog-collapse="${esc(scope.id)}" aria-expanded="${String(!collapsed)}" aria-label="${collapsed ? '展开' : '折叠'} ${esc(scope.label)}">${collapsed ? '›' : '⌄'}</button>` : '<span class="catalog-collapse-spacer"></span>'}<button type="button" class="catalog-scope-select" data-catalog-scope="${esc(scope.id)}" ${disabled ? 'aria-disabled="true"' : ''}><span class="catalog-scope-kind">${esc(scope.kind || '')}</span><strong>${esc(scope.label)}</strong><small>${counts.total} / ${counts.selectable}</small></button></div>${disabled ? `<small class="catalog-scope-disabled-reason">${esc(scope.disabledReason || '')}</small>` : ''}${nested.length && !collapsed ? `<ul>${nested.map((child) => renderScope(child, nextAncestors)).join('')}</ul>` : ''}</li>`;
+  };
+  const visibleItems = visibleSelectionItems();
+  const visibleSelectable = visibleItems.filter((item) => item.selectable);
+  const selectedIds = new Set(surface.selectedItemIds);
+  const allVisibleSelected = visibleSelectable.length > 0 && visibleSelectable.every((item) => selectedIds.has(item.id));
+  const selectionDisabled = selectionBrowserUnavailable();
+  const itemRows = visibleItems.map((item) => {
+    const reason = item.selectable ? '' : item.disabledReason;
+    return `<label class="catalog-item ${item.selectable ? '' : 'disabled'}" title="${esc(reason)}"><input type="checkbox" name="selection" value="${esc(item.id)}" ${selectedIds.has(item.id) ? 'checked' : ''} ${item.selectable && !selectionDisabled ? '' : 'disabled'}><span><strong>${esc(item.title)}</strong><small>${esc(item.subtitle)}</small>${reason ? `<small class="catalog-disabled-reason">${esc(reason)}</small>` : ''}</span><em>${esc(item.type)}</em></label>`;
+  }).join('');
+  const statusPanel = surface.status === 'loading'
+    ? `<div class="catalog-state loading" role="status"><strong>正在读取权威目录</strong><span>${esc(surface.statusMessage)}</span></div>`
+    : surface.status === 'error'
+      ? `<div class="catalog-state error" role="alert"><strong>目录读取失败</strong><span>${esc(surface.statusMessage)}</span></div>`
+      : surface.status === 'stale'
+        ? `<div class="catalog-state stale" role="alert"><strong>当前目录已过期</strong><span>${esc(surface.statusMessage)}</span></div>`
+        : surface.status === 'blocked'
+          ? `<div class="catalog-state blocked" role="status"><strong>当前不可选择</strong><span>${esc(surface.statusMessage)}</span></div>`
+          : '';
+  const empty = surface.status === 'empty' || visibleItems.length === 0
+    ? `<div class="catalog-empty"><strong>${esc(browser.emptyMessage)}</strong><span>${surface.status === 'empty' ? esc(surface.statusMessage) : '当前搜索或目录范围没有匹配项。'}</span></div>`
+    : '';
+  const footerActions = browser.footerActionIds.map((actionId) => surface!.actions.find((action) => action.actionId === actionId)).filter((action): action is DeclarativeFeatureAction => Boolean(action)).map((action) => {
+    const needsSelection = (action.selectionMode || 'none') !== 'none';
+    const missingSelection = needsSelection && selectedIds.size === 0;
+    const unavailable = needsSelection && selectionDisabled;
+    const effective = {
+      ...action,
+      enabled: action.enabled && !missingSelection && !unavailable,
+      reason: unavailable ? surface!.statusMessage : missingSelection ? '请先选择至少一项。' : action.reason
+    };
+    return actionButton(effective, `class="${action.actionId === browser.primaryActionId ? 'primary' : ''}"`);
+  }).join('');
+  return `<section class="selection-browser" aria-label="${esc(browser.resultsLabel)}"><div class="catalog-toolbar"><label><span>搜索</span><input type="search" data-catalog-search value="${esc(selectionQuery)}" placeholder="${esc(browser.searchPlaceholder)}" ${selectionDisabled ? 'disabled' : ''}></label><div><strong>${visibleItems.length}</strong> 个结果 · <strong>${visibleSelectable.length}</strong> 个可选</div></div>${statusPanel}<div class="catalog-layout"><nav class="catalog-hierarchy" aria-label="${esc(browser.hierarchyLabel)}"><header><strong>${esc(browser.hierarchyLabel)}</strong><small>${scopes.length} 个目录节点</small></header><button type="button" class="catalog-all-scopes ${selectedScopeId ? '' : 'selected'}" data-catalog-scope="">${esc(browser.allScopesLabel)}<small>${surface.items.length}</small></button><ul>${roots.map((scope) => renderScope(scope, new Set())).join('')}</ul></nav><section class="catalog-results"><header><strong>${esc(browser.resultsLabel)}</strong><div><button type="button" data-catalog-select-visible ${visibleSelectable.length && !selectionDisabled ? '' : 'disabled'}>${esc(allVisibleSelected ? browser.clearSelectionLabel : browser.selectVisibleLabel)}</button></div></header><div class="catalog-item-list">${empty || itemRows}</div></section></div><footer class="catalog-footer"><span>已选 <strong>${selectedIds.size}</strong> 项</span><div>${footerActions}</div></footer></section>`;
 }
 
 function recorderTime(elapsedMs: number): string {
@@ -228,10 +353,11 @@ function render(): void {
   const steps = workflow?.steps.map((step, index) => `<li class="workflow-step ${esc(step.state)}" ${step.stepId === workflow.currentStepId ? 'aria-current="step"' : ''}><span>${index + 1}</span><div><strong>${esc(step.label)}</strong>${step.detail ? `<small>${esc(step.detail)}</small>` : ''}</div></li>`).join('') || '';
   const activeLayer = workflow?.currentStepId === 'upload' ? 'upload' : workflow?.currentStepId === 'return' ? 'return' : surface.review ? 'review' : 'default';
   const visibleReview = activeLayer === 'review' ? surface.review : undefined;
+  const selectionBrowser = !visibleReview ? renderSelectionBrowser() : '';
   const restartAction = surface.actions.find((action) => action.presentation === 'restart');
   const railRestart = restartAction ? actionButton(restartAction, 'class="workflow-restart"') : '';
-  const items = !visibleReview ? surface.items.map((item) => `<label class="item ${item.selectable ? '' : 'disabled'}"><input type="radio" name="selection" value="${esc(item.id)}" ${surface!.selectedItemIds.includes(item.id) ? 'checked' : ''} ${item.selectable ? '' : 'disabled'}><span><strong>${esc(item.title)}</strong><small>${esc(item.subtitle)}</small></span><em>${esc(item.type)}</em></label>`).join('') : '';
-  const actions = !visibleReview && !surface.recorder ? surface.actions.filter((action) => {
+  const items = !visibleReview && !surface.selectionBrowser ? surface.items.map((item) => `<label class="item ${item.selectable ? '' : 'disabled'}"><input type="radio" name="selection" value="${esc(item.id)}" ${surface!.selectedItemIds.includes(item.id) ? 'checked' : ''} ${item.selectable ? '' : 'disabled'}><span><strong>${esc(item.title)}</strong><small>${esc(item.subtitle)}</small></span><em>${esc(item.type)}</em></label>`).join('') : '';
+  const actions = !visibleReview && !surface.recorder && !surface.selectionBrowser ? surface.actions.filter((action) => {
     if (['restart', 'file_input', 'background'].includes(action.presentation || '')) return false;
     return activeLayer === 'upload' ? action.presentation === 'upload' : action.presentation !== 'upload';
   }).map((action) => actionButton(action)).join('') : '';
@@ -251,7 +377,7 @@ function render(): void {
   const header = `<span class="status">${esc(surface.status)}</span><h1>${esc(surface.title)}</h1><p>${esc(surface.description)}</p>${surface.statusMessage ? `<p class="state">${esc(surface.statusMessage)}</p>` : ''}`;
   const layerContent = activeLayer === 'upload' && inputAction
     ? `<section class="surface-layer upload-layer" data-surface-layer="upload">${header}<div class="upload-card"><h2>上传资料</h2><p class="state">选择或拖入官方 .xlsx 只会暂存文件；点击“确认上传”后才进入校验。</p>${drop}${artifacts ? `<div class="artifacts">${artifacts}</div>` : ''}${actions ? `<div class="actions">${actions}</div>` : ''}</div></section>`
-    : `<section class="surface-layer ${activeLayer === 'review' ? 'review-layer' : activeLayer === 'return' ? 'return-layer' : 'default-layer'}" data-surface-layer="${activeLayer}">${header}${recorder}${progress}${issues ? `<section class="issues">${issues}</section>` : ''}${review}${items ? `<div class="items">${items}</div>` : ''}${editors ? `<div class="editors">${editors}</div>` : ''}${artifacts ? `<div class="artifacts">${artifacts}</div>` : ''}${actions ? `<div class="actions">${actions}</div>` : ''}</section>`;
+    : `<section class="surface-layer ${activeLayer === 'review' ? 'review-layer' : activeLayer === 'return' ? 'return-layer' : 'default-layer'}" data-surface-layer="${activeLayer}">${header}${selectionBrowser}${recorder}${progress}${issues ? `<section class="issues">${issues}</section>` : ''}${review}${items ? `<div class="items">${items}</div>` : ''}${editors ? `<div class="editors">${editors}</div>` : ''}${artifacts ? `<div class="artifacts">${artifacts}</div>` : ''}${actions ? `<div class="actions">${actions}</div>` : ''}</section>`;
   root.innerHTML = `${errorMessage ? `<p class="error page-error" role="alert">${esc(errorMessage)}</p>` : ''}<div class="feature-layout">${workflow ? `<nav class="workflow-rail" aria-label="步骤"><ol>${steps}</ol>${railRestart}</nav>` : ''}<section class="operation-pane">${layerContent}</section></div>`;
   renderedSurface = surfaceProjection(surface);
   renderedError = errorMessage;
@@ -299,7 +425,49 @@ async function chooseAndStageInput(inputAction: DeclarativeFeatureAction): Promi
 }
 
 function bindInteractions(inputAction: DeclarativeFeatureAction | undefined): void {
-  root.querySelectorAll<HTMLInputElement>('input[name=selection]').forEach((input) => input.addEventListener('change', () => void invoke('runtime.set-selection', {selectedItemIds: [input.value]})));
+  root.querySelectorAll<HTMLInputElement>('input[name=selection]').forEach((input) => input.addEventListener('change', () => {
+    if (!surface) return;
+    if (!surface.selectionBrowser) {
+      void invoke('runtime.set-selection', {selectedItemIds: [input.value]});
+      return;
+    }
+    const selected = new Set(surface.selectedItemIds);
+    if (input.checked) selected.add(input.value); else selected.delete(input.value);
+    void invoke('runtime.set-selection', {selectedItemIds: [...selected]});
+  }));
+  root.querySelector<HTMLInputElement>('[data-catalog-search]')?.addEventListener('input', (event) => {
+    const control = event.currentTarget as HTMLInputElement;
+    selectionQuery = control.value;
+    const selectionStart = control.selectionStart;
+    render();
+    requestAnimationFrame(() => {
+      const next = root.querySelector<HTMLInputElement>('[data-catalog-search]');
+      next?.focus();
+      if (next && selectionStart !== null) next.setSelectionRange(selectionStart, selectionStart);
+    });
+  });
+  root.querySelectorAll<HTMLButtonElement>('[data-catalog-scope]').forEach((button) => button.addEventListener('click', () => {
+    if (button.getAttribute('aria-disabled') === 'true') return;
+    selectedScopeId = button.dataset.catalogScope || '';
+    render();
+  }));
+  root.querySelectorAll<HTMLButtonElement>('[data-catalog-collapse]').forEach((button) => button.addEventListener('click', () => {
+    const scopeId = button.dataset.catalogCollapse || '';
+    if (!scopeId) return;
+    if (collapsedScopeIds.has(scopeId)) collapsedScopeIds.delete(scopeId); else collapsedScopeIds.add(scopeId);
+    render();
+  }));
+  root.querySelector<HTMLButtonElement>('[data-catalog-select-visible]')?.addEventListener('click', () => {
+    if (!surface?.selectionBrowser || selectionBrowserUnavailable()) return;
+    const visibleIds = visibleSelectionItems().filter((item) => item.selectable).map((item) => item.id);
+    if (!visibleIds.length) return;
+    const selected = new Set(surface.selectedItemIds);
+    const remove = visibleIds.every((itemId) => selected.has(itemId));
+    for (const itemId of visibleIds) {
+      if (remove) selected.delete(itemId); else selected.add(itemId);
+    }
+    void invoke('runtime.set-selection', {selectedItemIds: [...selected]});
+  });
   root.querySelectorAll<HTMLButtonElement>('[data-review-kind]').forEach((button) => button.addEventListener('click', () => {
     if (!surface?.review) return;
     selectReviewKind(surface.review, button.dataset.reviewKind as DeclarativeReviewElementKind);
@@ -344,7 +512,9 @@ function bindInteractions(inputAction: DeclarativeFeatureAction | undefined): vo
   }));
   root.querySelectorAll<HTMLButtonElement>('[data-action]').forEach((button) => button.addEventListener('click', async () => {
     const selection = button.dataset.selection;
-    const selected = [...root.querySelectorAll<HTMLInputElement>('input[name=selection]:checked')].map((item) => item.value);
+    const selected = surface?.selectionBrowser
+      ? [...surface.selectedItemIds]
+      : [...root.querySelectorAll<HTMLInputElement>('input[name=selection]:checked')].map((item) => item.value);
     const action = surface?.actions.find((candidate) => candidate.actionId === button.dataset.action);
     if (surface?.workflow?.currentStepId !== 'upload' && surface?.review && action?.input?.kind === 'open_file') { errorMessage = '请先返回上传步骤，再重新选择资料。'; render(); return; }
     let payload: Record<string, unknown> = selection && selection !== 'none' ? {targetIds: selected} : {};

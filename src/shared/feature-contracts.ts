@@ -40,10 +40,29 @@ export interface DeclarativeFeatureItem {
 
 export interface DeclarativeFeatureScope {
   id: string;
-  parentId: string;
+  parentId: string | null;
   label: string;
   parentLabel: string;
   selected: boolean;
+  /** Present for hierarchical authority catalogs such as Section → Workspace → element type. */
+  kind?: 'section' | 'workspace' | 'element_type';
+  level?: 1 | 2 | 3;
+  initialExpanded?: boolean;
+  disabledReason?: string;
+}
+
+export interface DeclarativeSelectionBrowser {
+  schemaVersion: 'omnia.declarative-selection-browser/v1';
+  hierarchyLabel: string;
+  resultsLabel: string;
+  searchPlaceholder: string;
+  emptyMessage: string;
+  allScopesLabel: string;
+  selectVisibleLabel: string;
+  clearSelectionLabel: string;
+  /** Ordered, real Feature actions rendered in the sticky workbench footer. */
+  footerActionIds: string[];
+  primaryActionId: string;
 }
 
 export interface DeclarativeFeatureAction {
@@ -251,6 +270,7 @@ export interface DeclarativeFeatureSurface {
   selectedItemIds: string[];
   search: string;
   actions: DeclarativeFeatureAction[];
+  selectionBrowser?: DeclarativeSelectionBrowser;
   recorder?: DeclarativeRecorder;
   workflow?: DeclarativeWorkflow;
   progress?: DeclarativeProgress;

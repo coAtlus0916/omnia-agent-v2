@@ -169,7 +169,7 @@ Omnia Agent v5 是一个本地优先、契约驱动、模板优先、功能包�
 ### 5.7 Workspace 轻抓取与重抓取
 
 1. 进入需要 Workspace 的 Feature 时先执行轻抓取：从当前 Pack 权威读取 Section/部分及其直接 Workspace identity、实时名称、层级和最小 capability。
-2. 安全锁和 Workspace 选择只使用轻抓取；没有权威父级 identity 时显示“无法取得权威层级”并失败关闭，不用名称猜测。
+2. 安全锁和 Workspace 选择只使用轻抓取；授权只接受当前 Pack 返回的精确 Workspace Facet ID。Section/父级 identity 缺失时在未分组区域展示，不用名称猜测，也不把展示元数据缺失误判为授权失败。
 3. 删除、新建元素、关联或编辑底稿需要元素目录时，再对用户选定 Workspace 执行重抓取。
 4. 重抓取只读取当前 Feature capability 声明的元素类型和必要字段，必须分页、可取消、可观测并有 deadline；禁止默认爬完整 Pack 的全部正文/关系。
 5. 历史读取结果可以带新鲜度复用，但 Sync 只是可选性能优化。生成 mutation 计划和提交前仍分别执行窄范围实时检查。

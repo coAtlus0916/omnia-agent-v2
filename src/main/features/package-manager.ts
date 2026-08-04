@@ -26,7 +26,7 @@ import { FeatureRuntimeStore } from './feature-runtime-store.js';
 import { FeatureWorkerSupervisor } from './worker-supervisor.js';
 import type { InteractionLogService } from '../services/interaction-log-service.js';
 
-const PRODUCT_VERSION = '0.4.7';
+const PRODUCT_VERSION = '0.4.8';
 const REQUIRED_FEATURE_MEMBERS = [
   'SIGNATURE.json',
   'backend/migrations/001.json',
@@ -375,7 +375,7 @@ function parseSurface(envelope: OfficialPackageEnvelope, manifest: FeatureManife
       || !['read_only', 'local_state_write', 'omnia_mutation'].includes(action.effect)
       || typeof action.enabled !== 'boolean'
       || typeof action.reason !== 'string'
-      || (action.presentation !== undefined && !['default', 'record', 'pause', 'stop', 'export', 'refresh'].includes(action.presentation))
+      || (action.presentation !== undefined && !['default', 'record', 'pause', 'stop', 'export', 'refresh', 'restart'].includes(action.presentation))
       || (action.selectionMode !== undefined && !['none', 'single', 'multiple'].includes(action.selectionMode))
     ) throw new Error('Declarative Feature action is invalid.');
     const actionKeys = ['actionId', 'label', 'effect', 'enabled', 'reason'];
@@ -1828,6 +1828,7 @@ export class FeaturePackageManager {
       feature_version: string; surface_id: string; state_revision: number; payload_json: string;
     } | undefined;
     let restored = installed.surface;
+    let restoredPersistedState = false;
     if (persisted && persisted.feature_version === head.featureVersion && persisted.surface_id === installed.surface.surfaceId) {
       try {
         const candidate = JSON.parse(persisted.payload_json) as DeclarativeFeatureSurface;
@@ -1837,9 +1838,13 @@ export class FeaturePackageManager {
           && candidate.surfaceId === installed.surface.surfaceId
           && candidate.stateVersion === persisted.state_revision
           && candidate.stateVersion >= installed.surface.stateVersion
-        ) restored = candidate;
+        ) {
+          restored = candidate;
+          restoredPersistedState = true;
+        }
       } catch { /* corrupted state fails closed to the immutable package surface */ }
     }
+    if (!restoredPersistedState) this.persistSurface(restored);
     if (health.recoveredSurfacePatch) {
       const patch = health.recoveredSurfacePatch as Record<string, unknown>;
       if (patch.status !== 'stale' || typeof patch.statusMessage !== 'string' || !Array.isArray(patch.scopes) || !Array.isArray(patch.items)) {
@@ -2201,6 +2206,14 @@ export class FeaturePackageManager {
         commandId: request.payload.commandId, effect: action.effect }
     }, invokeWorker) : await invokeWorker();
     if (result?.surfacePatch) {
+      const clearFields = result.surfacePatch.clearFields;
+      const clearable = new Set(['recorder', 'workflow', 'progress', 'issues', 'review', 'artifacts', 'editors']);
+      if (clearFields !== undefined && (
+        !Array.isArray(clearFields)
+        || clearFields.length > clearable.size
+        || new Set(clearFields).size !== clearFields.length
+        || clearFields.some((field: unknown) => typeof field !== 'string' || !clearable.has(field))
+      )) throw new AppError('FEATURE.SURFACE_PATCH_INVALID', 'Feature worker requested invalid Surface field clearing.');
       const patchedActions = Array.isArray(result.surfacePatch.actions)
         ? surface.actions.map((declared) => {
           const patch = result.surfacePatch.actions.find((candidate: Record<string, unknown>) => candidate?.actionId === declared.actionId);
@@ -2212,9 +2225,10 @@ export class FeaturePackageManager {
           } : declared;
         })
         : surface.actions;
+      const { clearFields: _clearFields, ...surfacePatch } = result.surfacePatch;
       const next = {
         ...surface,
-        ...result.surfacePatch,
+        ...surfacePatch,
         schemaVersion: surface.schemaVersion,
         featureId: surface.featureId,
         featureVersion: surface.featureVersion,
@@ -2222,6 +2236,7 @@ export class FeaturePackageManager {
         stateVersion: surface.stateVersion + 1,
         actions: patchedActions
       } as DeclarativeFeatureSurface;
+      for (const field of clearFields || []) delete (next as unknown as Record<string, unknown>)[field];
       this.runtimeSurfaces.set(head.featureId, next);
       this.persistSurface(next);
     }

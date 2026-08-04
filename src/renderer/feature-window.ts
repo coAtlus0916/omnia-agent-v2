@@ -173,24 +173,27 @@ function render(): void {
   if (!surface) { root.innerHTML = '<p class="state">等待 Feature bootstrap…</p>'; return; }
   const workflow = surface.workflow;
   const steps = workflow?.steps.map((step, index) => `<li class="workflow-step ${esc(step.state)}" ${step.stepId === workflow.currentStepId ? 'aria-current="step"' : ''}><span>${index + 1}</span><div><strong>${esc(step.label)}</strong>${step.detail ? `<small>${esc(step.detail)}</small>` : ''}</div></li>`).join('') || '';
-  const items = !surface.review ? surface.items.map((item) => `<label class="item ${item.selectable ? '' : 'disabled'}"><input type="radio" name="selection" value="${esc(item.id)}" ${surface!.selectedItemIds.includes(item.id) ? 'checked' : ''} ${item.selectable ? '' : 'disabled'}><span><strong>${esc(item.title)}</strong><small>${esc(item.subtitle)}</small></span><em>${esc(item.type)}</em></label>`).join('') : '';
-  const actions = !surface.review && !surface.recorder ? surface.actions.map((action) => actionButton(action)).join('') : '';
+  const activeLayer = workflow?.currentStepId === 'upload' ? 'upload' : workflow?.currentStepId === 'return' ? 'return' : surface.review ? 'review' : 'default';
+  const visibleReview = activeLayer === 'review' ? surface.review : undefined;
+  const restartAction = surface.actions.find((action) => action.presentation === 'restart');
+  const railRestart = restartAction ? actionButton(restartAction, 'class="workflow-restart"') : '';
+  const items = !visibleReview ? surface.items.map((item) => `<label class="item ${item.selectable ? '' : 'disabled'}"><input type="radio" name="selection" value="${esc(item.id)}" ${surface!.selectedItemIds.includes(item.id) ? 'checked' : ''} ${item.selectable ? '' : 'disabled'}><span><strong>${esc(item.title)}</strong><small>${esc(item.subtitle)}</small></span><em>${esc(item.type)}</em></label>`).join('') : '';
+  const actions = !visibleReview && !surface.recorder ? surface.actions.filter((action) => action.presentation !== 'restart').map((action) => actionButton(action)).join('') : '';
   const recorder = renderRecorder();
   const artifacts = (surface.artifacts || []).map((artifact) => `<div class="artifact"><span><strong>${esc(artifact.name)}</strong><small>sha256:${esc(artifact.sha256.slice(0, 12))}… · ${artifact.sizeBytes} bytes</small></span><button data-download="${esc(artifact.artifactId)}" ${artifact.available && !busy ? '' : 'disabled'} title="${esc(artifact.reason)}">下载</button></div>`).join('');
-  const editors = !surface.review ? (surface.editors || []).map((editor) => `<label class="editor"><span>${esc(editor.label)}</span>${editor.inputKind === 'enum'
+  const editors = !visibleReview ? (surface.editors || []).map((editor) => `<label class="editor"><span>${esc(editor.label)}</span>${editor.inputKind === 'enum'
     ? `<select data-editor="${esc(editor.issueId)}" data-field="${esc(editor.fieldKey)}" data-revision="${editor.expectedRevision}">${editor.allowedValues.map((value) => `<option value="${esc(value)}" ${value === editor.currentValue ? 'selected' : ''}>${esc(value)}</option>`).join('')}</select>`
     : `<input data-editor="${esc(editor.issueId)}" data-field="${esc(editor.fieldKey)}" data-revision="${editor.expectedRevision}" value="${esc(editor.currentValue)}" maxlength="${editor.maxLength}" ${editor.required ? 'required' : ''}>`}</label>`).join('') : '';
   const progress = surface.progress ? `<section class="progress-panel" aria-label="${esc(surface.progress.label)}"><div class="progress-heading"><strong>${esc(surface.progress.label)}</strong><span>${surface.progress.completed}/${surface.progress.total} · ${surface.progress.percent}%</span></div><progress max="100" value="${surface.progress.percent}">${surface.progress.percent}%</progress><p class="state">${esc(surface.progress.message)}</p><div class="checks">${surface.progress.items.map((item) => `<div class="check ${esc(item.state)}"><span>${esc(item.state)}</span><div><strong>${esc(item.label)}</strong><small>${esc(item.detail)}</small></div></div>`).join('')}</div></section>` : '';
-  const issues = !surface.review ? (surface.issues || []).map((issue) => `<div class="issue ${esc(issue.severity)}"><strong>${esc(issue.scope === 'global' ? '全局' : issue.scope === 'element' ? `元素 ${issue.elementId}` : '字段')}</strong><span>${esc(issue.message)}</span></div>`).join('') : '';
-  const inputAction = !surface.review ? surface.actions.find((action) => action.input?.kind === 'open_file') : undefined;
+  const issues = !visibleReview ? (surface.issues || []).map((issue) => `<div class="issue ${esc(issue.severity)}"><strong>${esc(issue.scope === 'global' ? '全局' : issue.scope === 'element' ? `元素 ${issue.elementId}` : '字段')}</strong><span>${esc(issue.message)}</span></div>`).join('') : '';
+  const inputAction = activeLayer === 'upload' || !visibleReview ? surface.actions.find((action) => action.input?.kind === 'open_file') : undefined;
   const drop = inputAction ? `<section class="drop-zone" data-drop-action="${esc(inputAction.actionId)}" tabindex="0"><strong>上传 .xlsx 资料</strong><span>点击“${esc(inputAction.label)}”选择，或将第一个非空 .xlsx 文件拖到这里</span></section>` : '';
-  const review = surface.review ? renderReview(surface.review) : '';
+  const review = visibleReview ? renderReview(visibleReview) : '';
   const header = `<span class="status">${esc(surface.status)}</span><h1>${esc(surface.title)}</h1><p>${esc(surface.description)}</p>${surface.statusMessage ? `<p class="state">${esc(surface.statusMessage)}</p>` : ''}`;
-  const activeLayer = workflow?.currentStepId === 'upload' ? 'upload' : workflow?.currentStepId === 'return' ? 'return' : surface.review ? 'review' : 'default';
   const layerContent = activeLayer === 'upload' && inputAction
-    ? `<section class="surface-layer upload-layer" data-surface-layer="upload">${header}<div class="upload-card"><h2>上传资料</h2><p class="state">选择新的官方 .xlsx 后将在同一 Run 合同下重新解析和校验；当前 Artifact 在新上传成功前保留。</p>${drop}${artifacts ? `<div class="artifacts">${artifacts}</div>` : ''}${actions ? `<div class="actions">${actions}</div>` : ''}</div></section>`
+    ? `<section class="surface-layer upload-layer" data-surface-layer="upload">${header}<div class="upload-card"><h2>上传资料</h2><p class="state">选择新的官方 .xlsx 后，后台将建立新的受管 Run 并执行解析和校验；已有 Artifact 在新上传成功前不会被删除。</p>${drop}${artifacts ? `<div class="artifacts">${artifacts}</div>` : ''}${actions ? `<div class="actions">${actions}</div>` : ''}</div></section>`
     : `<section class="surface-layer ${activeLayer === 'review' ? 'review-layer' : activeLayer === 'return' ? 'return-layer' : 'default-layer'}" data-surface-layer="${activeLayer}">${header}${recorder}${progress}${issues ? `<section class="issues">${issues}</section>` : ''}${review}${items ? `<div class="items">${items}</div>` : ''}${editors ? `<div class="editors">${editors}</div>` : ''}${artifacts ? `<div class="artifacts">${artifacts}</div>` : ''}${actions ? `<div class="actions">${actions}</div>` : ''}</section>`;
-  root.innerHTML = `${errorMessage ? `<p class="error page-error" role="alert">${esc(errorMessage)}</p>` : ''}<div class="feature-layout">${workflow ? `<nav class="workflow-rail" aria-label="步骤"><ol>${steps}</ol></nav>` : ''}<section class="operation-pane">${layerContent}</section></div>`;
+  root.innerHTML = `${errorMessage ? `<p class="error page-error" role="alert">${esc(errorMessage)}</p>` : ''}<div class="feature-layout">${workflow ? `<nav class="workflow-rail" aria-label="步骤"><ol>${steps}</ol>${railRestart}</nav>` : ''}<section class="operation-pane">${layerContent}</section></div>`;
   renderHostToolbar();
   bindInteractions(inputAction);
 }
@@ -243,7 +246,7 @@ function bindInteractions(inputAction: DeclarativeFeatureAction | undefined): vo
     const selection = button.dataset.selection;
     const selected = [...root.querySelectorAll<HTMLInputElement>('input[name=selection]:checked')].map((item) => item.value);
     const action = surface?.actions.find((candidate) => candidate.actionId === button.dataset.action);
-    if (surface?.review && action?.input?.kind === 'open_file') { errorMessage = '请先返回上传步骤，再重新选择资料。'; render(); return; }
+    if (surface?.workflow?.currentStepId !== 'upload' && surface?.review && action?.input?.kind === 'open_file') { errorMessage = '请先返回上传步骤，再重新选择资料。'; render(); return; }
     let payload: Record<string, unknown> = selection && selection !== 'none' ? {targetIds: selected} : {};
     if (action?.actionId === 'apply-revisions') {
       payload = {revisions: (surface?.review?.fields || []).filter((field) => dirtyReviewValues.has(field.fieldKey)).map((field) => ({

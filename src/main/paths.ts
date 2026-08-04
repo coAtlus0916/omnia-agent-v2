@@ -10,6 +10,13 @@ export interface ProductPaths {
   database: string;
 }
 
+export interface ProtectedDataRecovery {
+  schemaVersion: 'omnia.protected-data-recovery/v1';
+  reasonCode: 'SECRET.INSTANCE_KEY_UNREADABLE';
+  occurredAt: string;
+  previousDataRelativePath: string;
+}
+
 export function assertPortableProductRoot(root: string): string {
   const resolved = path.resolve(root);
   const marker = path.join(resolved, 'portable-root.json');
@@ -65,4 +72,31 @@ export function resolveProductPaths(rootOverride = process.env.OMNIA_AGENT_PRODU
     paths.temp
   ]) fs.mkdirSync(directory, { recursive: true });
   return paths;
+}
+
+export function quarantineUnreadableDataRoot(paths: ProductPaths): ProtectedDataRecovery {
+  const root = assertPortableProductRoot(paths.root);
+  const expectedData = path.resolve(root, 'data');
+  if (path.resolve(paths.data) !== expectedData || !fs.existsSync(expectedData)) {
+    throw new Error('Protected data recovery target is outside the portable product data root.');
+  }
+  const recoveryRoot = path.resolve(root, 'recovery');
+  if (path.dirname(recoveryRoot) !== root) throw new Error('Protected data recovery root is invalid.');
+  fs.mkdirSync(recoveryRoot, { recursive: true });
+  const suffix = `${new Date().toISOString().replace(/[:.]/gu, '-')}-${process.pid}`;
+  const recoveredData = path.join(recoveryRoot, `unreadable-data-${suffix}`);
+  fs.renameSync(expectedData, recoveredData);
+  const replacement = resolveProductPaths(root);
+  const record: ProtectedDataRecovery = {
+    schemaVersion: 'omnia.protected-data-recovery/v1',
+    reasonCode: 'SECRET.INSTANCE_KEY_UNREADABLE',
+    occurredAt: new Date().toISOString(),
+    previousDataRelativePath: path.relative(root, recoveredData).split(path.sep).join('/')
+  };
+  fs.writeFileSync(
+    path.join(replacement.logs, 'protected-data-recovery.json'),
+    `${JSON.stringify(record, null, 2)}\n`,
+    { encoding: 'utf8', flag: 'wx', mode: 0o600 }
+  );
+  return record;
 }

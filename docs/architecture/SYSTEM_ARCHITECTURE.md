@@ -314,7 +314,7 @@ Bridge 只知道路由所需逻辑身份和密文/受控摘要。一次性链接
 13. Agent 管理内容的 current 只来自已验证 Evidence；create/update/delete intent、AI 输出或前端状态不能直接覆盖。
 14. Phase 2/其他 Feature 通过版本化 Managed Content 查询读取 schema/freshness/provenance，不直连共享 Store，也不以本地投影替代危险操作的实时 Omnia 预检。
 15. Workspace 所属 Section/部分只来自 Omnia 权威 identity；显示名称不决定分类、权限、operation 或缓存复用。
-16. 轻抓取仅含带权威 `parentSectionId` 的 Section + Workspace；重抓取仅含当前 Pack、选定 Workspace 和 Feature capability 的声明元素，并受对象/关系/页/字节/时长硬预算约束，禁止全包无界 dump。
+16. 轻抓取只把当前 Pack 的精确 Workspace Facet ID 作为授权身份；Section/`parentSectionId` 仅在 Omnia 实际返回时用于展示分组，缺失时不得猜测关系，也不得阻断精确 Workspace 授权。重抓取仅含当前 Pack、选定 Workspace 和 Feature capability 的声明元素，并受对象/关系/页/字节/时长硬预算约束，禁止全包无界 dump。
 17. 不可变 release 与可变 `data` 分离；更新、回滚、旧 release 清理不能覆盖 data。含客户正文的数据做实例级静态保护，外部 Secret/Remote 注册/服务进入 instance external inventory。
 
 ## 11. 部署与升级边界

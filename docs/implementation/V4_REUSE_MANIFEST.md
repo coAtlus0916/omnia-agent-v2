@@ -11,7 +11,7 @@
 | `connector/src/omnia-origin-policy.js` | `src/connector/omnia-origin.ts` | Retain + namespace rewrite | 保留 HTTPS host allowlist；v5 使用独立合同和错误 |
 | `connector/src/omnia-id.js` | `src/connector/omnia-origin.ts` | Retain + correction | 接受精确、非零的 .NET GUID；不强制 RFC version/variant |
 | `connector/src/omnia-session-host.js` 的 Edge/CDP 经验 | `src/connector/workstation-omnia-session.ts` | Narrow rewrite | 作为 Remote Worker 唯一宿主的工作站 Session Core；动态空闲端口、profile/port identity、instance lock、多 Pack 失败关闭、退出不关闭 Edge；没有 Local 产品模式 |
-| `connector/src/omnia-gateway.js` 的 pack hierarchy/Workspace facet 只读路由 | `WorkstationOmniaSession.identify/workspaceLightRead` | Narrow rewrite | 只保留 allowlisted GET；增加权威 `parentSectionId` 必填与错误分类；Shell 不直接调用 |
+| `connector/src/omnia-gateway.js` 的 pack hierarchy/Workspace facet 只读路由 | `WorkstationOmniaSession.identify/workspaceLightRead` | Narrow rewrite | 只保留 allowlisted GET；沿用 v4 的 Pack + 精确 Workspace Facet ID 授权，Section 仅作可选展示分组；Shell 不直接调用 |
 | `src/server.js` 与 Connector client 的 pairing/heartbeat | `src/bridge/binding-store.ts`、`src/bridge/server.ts`、`src/main/connector/remote-connector-transport.ts`、`src/remote-connector/*` | Contract rewrite | 保留“服务端生成链接码、用户在公司电脑 Connector 输入、成功后持久设备凭据”的方向；去除 Room、匿名 discovery 和自动认领，增加 role/session/generation、撤销、heartbeat 与 repair |
 | v4 keepalive timer | `ShellService.backgroundTick/runKeepalive` | Refactor | v5 Core 持久化调度事实；失败原因可观测；只调用只读 refresh |
 | v4 Provider/Agent runtime | `ChatService` | Retire / minimal replacement | 不复制 Agent 路由或提示；只做持久消息与可选 HTTPS Provider，无假回复 |

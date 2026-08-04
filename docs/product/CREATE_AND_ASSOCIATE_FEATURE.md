@@ -1,6 +1,6 @@
 # Feature 详细设计：新建与关联
 
-> 2026-08-04 current implementation: `omnia.create-associate@0.2.1` / sequence 3 candidate source uses a two-column, three-step Surface—“上传资料 → 校验 → 回传”。It exports the exact signed `Phase1-用户填写模板V3.xlsx`, accepts picker/drop through one managed Artifact chain, shows APP/DB/OS/Tool review with 11 canonical checks, permits direct revision of official user fields, and reruns all local/live checks after a CAS save. `isDataAvailable` is not user input; new APPs freeze the signed `false` default and existing APPs may only preserve an authoritative live boolean. APP create/resume/reuse/recycle-bin disposition comes from a signed read-only identity Operation; only a second create-only preflight can grant the one-time object-create permit. AI review remains an honest `not_evaluable` warning until a typed Feature AI port is released. Packaging, portable user testing and the real SAP ECC Omnia canary remain pending and are not claimed here.
+> 2026-08-04 current implementation: `omnia.create-associate@0.2.2` / sequence 4 on Shell 0.4.8 uses a two-column, three-step Surface—“上传资料 → 校验 → 回传”。It exports the exact signed `Phase1-用户填写模板V3.xlsx`, accepts picker/drop through one managed Artifact chain, shows APP/DB/OS/Tool review with 11 canonical checks, permits direct revision of official user fields, and reruns all local/live checks after a CAS save. 返回上传 explicitly clears persisted Review/Progress state while retaining the current Run; the left-rail 重新开始 action cancels only an editable Run through Core CAS, preserves audit history and projects a fresh upload layer. Neither action calls Connector mutation. `isDataAvailable` is not user input; new APPs freeze the signed `false` default and existing APPs may only preserve an authoritative live boolean. APP create/resume/reuse/recycle-bin disposition comes from a signed read-only identity Operation; only a second create-only preflight can grant the one-time object-create permit. AI review remains an honest `not_evaluable` warning until a typed Feature AI port is released. The real SAP ECC Omnia canary remains pending and is not claimed here.
 
 > 2026-08-03 implementation update: `omnia.create-associate@0.1.0` sequence 1 now implements the four-stage Remote control loop and is bundled as an auto-installed signed Feature in Shell 0.4.3. Production mutation remains disabled because a real target Omnia/Pack canary has not been executed; automated Connector-harness evidence is not a canary. The product is Remote-only and never falls back to Local transport.
 
@@ -9,7 +9,7 @@
 状态：Accepted Product Scope / Detailed Design Draft  
 用户可见名称：新建与关联  
 首批定位：第四开发切片；首批四 Plane 综合验收  
-DoR 状态：0.2.1 源码与签名 Operation 已完成定向自动化；候选打包、0.4.6 便携用户测试和真实 SAP ECC Pack canary 待完成，见[0.2.1 验收记录](../reviews/CREATE_ASSOCIATE_0_2_1_ACCEPTANCE.md)
+DoR 状态：0.2.2 源码与签名 Operation 已完成；候选打包与 Shell 0.4.8 用户入口验证在本轮发布阶段执行，真实 SAP ECC Pack canary 待完成；0.2.1 历史证据见[0.2.1 验收记录](../reviews/CREATE_ASSOCIATE_0_2_1_ACCEPTANCE.md)
 v4 对应能力：ITGC Toolbox 的 Phase 1
 
 ## 1. 用户目标

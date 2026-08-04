@@ -5,11 +5,17 @@ import { pathToFileURL } from 'node:url';
 import { RemoteConnectorTransport } from './connector/remote-connector-transport.js';
 import { CoreDatabase } from './database.js';
 import { createWindowsProtectedContentCipher } from './windows-content-cipher.js';
-import { findPortableProductRoot, resolveProductPaths } from './paths.js';
+import type { ContentCipher } from './content-cipher.js';
+import {
+  findPortableProductRoot,
+  quarantineUnreadableDataRoot,
+  resolveProductPaths,
+  type ProtectedDataRecovery
+} from './paths.js';
 import { ChatService } from './services/chat-service.js';
 import { AttachmentService } from './services/attachment-service.js';
 import { ShellService } from './services/shell-service.js';
-import { publicError } from '../shared/errors.js';
+import { AppError, publicError } from '../shared/errors.js';
 import { FeaturePackageManager } from './features/package-manager.js';
 import { installBuiltinFeaturePackages } from './features/builtin-features.js';
 import type { FeatureActionRequest, FeatureArtifactBytesInputRequest, FeatureArtifactInputRequest } from '../shared/feature-contracts.js';
@@ -24,6 +30,16 @@ let connector: RemoteConnectorTransport | null = null;
 let surfaceWindows: SurfaceWindowManager | null = null;
 let featurePackages: FeaturePackageManager | null = null;
 let interactionLogs: InteractionLogService | null = null;
+let startupRecovery: ProtectedDataRecovery | null = null;
+
+const ownsSingleInstance = app.requestSingleInstanceLock();
+if (!ownsSingleInstance) app.quit();
+app.on('second-instance', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+});
 
 function rendererPath(filename: string): string {
   return path.resolve(__dirname, '..', 'renderer', filename);
@@ -257,10 +273,19 @@ function registerIpc(service: ShellService, packages: FeaturePackageManager, log
 }
 
 app.whenReady().then(async () => {
+  if (!ownsSingleInstance) return;
   const productRoot = process.env.OMNIA_AGENT_PRODUCT_ROOT
     || (app.isPackaged ? findPortableProductRoot(path.dirname(process.execPath)) : app.getAppPath());
-  const paths = resolveProductPaths(productRoot);
-  const contentCipher = createWindowsProtectedContentCipher(paths.stores);
+  let paths = resolveProductPaths(productRoot);
+  let contentCipher: ContentCipher;
+  try {
+    contentCipher = createWindowsProtectedContentCipher(paths.stores);
+  } catch (error) {
+    if (!(error instanceof AppError) || error.code !== 'SECRET.INSTANCE_KEY_UNREADABLE' || !app.isPackaged) throw error;
+    startupRecovery = quarantineUnreadableDataRoot(paths);
+    paths = resolveProductPaths(productRoot);
+    contentCipher = createWindowsProtectedContentCipher(paths.stores);
+  }
   database = new CoreDatabase(paths.database, contentCipher);
   interactionLogs = new InteractionLogService(database.db);
   connector = new RemoteConnectorTransport(() => {
@@ -287,11 +312,24 @@ app.whenReady().then(async () => {
   registerIpc(shell, featurePackages, interactionLogs);
   await shell.initialize();
   await createWindow();
+  if (startupRecovery && mainWindow && !mainWindow.isDestroyed()) {
+    void dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      title: '本地数据保护已恢复',
+      message: '旧实例的数据保护密钥已无法读取。应用已创建新的数据根，并完整保留旧数据。',
+      detail: `旧数据保留在产品根内：${startupRecovery.previousDataRelativePath}`,
+      buttons: ['知道了'],
+      defaultId: 0,
+      noLink: true
+    });
+  }
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) void createWindow();
   });
 }).catch((error) => {
-  console.error('Omnia Agent v5 startup failed:', error instanceof Error ? error.message : 'unknown error');
+  const message = error instanceof Error ? error.message : '发生未知启动错误。';
+  console.error('Omnia Agent v5 startup failed:', message);
+  if (app.isReady()) dialog.showErrorBox('Omnia Agent v5 启动失败', message);
   app.quit();
 });
 

@@ -19,7 +19,7 @@ v4 的 Workspace 分类曾根据 `TEST`、`20xxx`、`IT` 等显示名称推断�
 3. 若当前 Omnia 读取合同不能提供可信 Section/父级 identity，该记录标为 `unclassified/authority_hierarchy_unavailable`，相关依赖层级的 Feature 失败关闭。系统不得退回名称猜测。未来手工映射如确有需要，必须另立合同并按 `authority + tenant + pack + workspace` 隔离，不能污染权威来源。
 4. 重抓取必须有界：
    - scope 冻结为当前 authority/tenant、Pack、用户选择的 Workspace 集合、Feature/capability 和声明对象类型；
-   - 请求和结果必须显式保存 `Section → Workspace` 父子映射；每个 Workspace 携带权威 `parentSectionId`，不得靠数组顺序或名称重建；
+   - 请求和结果必须保存当前 Pack 返回的精确 Workspace Facet ID；`Section → Workspace` 父子映射仅在 Omnia 明确返回时作为展示元数据保存，缺失或歧义时保持未分组，不得靠数组顺序或名称重建；
    - 支持分页、限流、deadline、取消、checkpoint、计数和 progress；
    - 每次请求必须具有 `maxWorkspaces/maxObjects/maxRelations/maxPages/maxBytes/maxDuration` 硬预算；有效值取官方签名 capability、平台策略与请求三者的最小值，用户选择不能放大；
    - 触达预算返回明确 partial/limit 状态、coverage 和 checkpoint，不得静默截断并声称完整；
@@ -65,7 +65,7 @@ v4 的 Workspace 分类曾根据 `TEST`、`20xxx`、`IT` 等显示名称推断�
 - 无父级 identity 时返回 `authority_hierarchy_unavailable`，不落入“其他”或任意默认分类；
 - 轻抓取响应不包含 Workspace 下元素正文；
 - 重抓取只能访问冻结 Pack/Workspace/type scope，分页、取消、限流、partial 和 progress 可恢复；
-- Workspace 都有权威 `parentSectionId`，硬预算无法由用户或 Feature 提高；任一预算超限不会返回伪完整成功；
+- Workspace 都有当前 Pack 下的权威 Facet ID；Section/`parentSectionId` 仅是可选展示元数据。硬预算无法由用户或 Feature 提高；任一预算超限不会返回伪完整成功；
 - 大 Pack 不执行默认全包无界 dump；
 - Local/Remote 对同一 fixture 产生等价 Section/Workspace/coverage/digest；
 - 删除计划和 mutation 前实时检查都能使陈旧目标/锁/关系/并发状态失败关闭；

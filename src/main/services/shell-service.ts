@@ -267,7 +267,7 @@ export class ShellService {
     return {
       schemaVersion: 'omnia.shell-home/v1',
       generatedAt: utcNow(),
-      productVersion: '0.4.7',
+      productVersion: '0.4.8',
       featureCount: this.database.activeFeatureCount(),
       features: featureRuntime,
       connection: this.connection,
@@ -374,7 +374,13 @@ export class ShellService {
     }
     this.recoveryRunning = (async () => {
       await this.features?.initializeRuntime();
-      await this.refreshWorkspaceDirectory();
+      try {
+        await this.refreshWorkspaceDirectory();
+      } catch {
+        // Directory refresh already projected its real failure into
+        // workspaceDirectory. A Connector/capability failure must not prevent
+        // Shell startup or turn a valid transport session into a fake outage.
+      }
       if (this.connectedSessionKey() === targetKey) this.recoveredSessionKey = targetKey;
     })();
     try {

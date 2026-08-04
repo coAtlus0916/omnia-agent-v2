@@ -656,19 +656,20 @@ function recomputeLocalIssues(parsed){
   parsed.issues=issues;return issues;
 }
 function reviewSurface(latest,plan,compiled,message){const parsed=plan.parsed,progress=progressSurface(latest,parsed),validation=validationPresentation(parsed,plan.liveValidation||{}),blocker=reviewBlocked(parsed,plan.liveValidation||{}),activeCount=activeRows(parsed).length;return{stateVersion:Number(latest.run.state_revision),status:blocker?'blocked':'ready',statusMessage:message,scopes:progress.scopes,items:progress.items,workflow:progress.workflow,progress:validation.progress,issues:validation.issues,review:reviewPresentation(parsed),editors:[],artifacts:compiled?[{artifactId:compiled.output.artifactId,kind:'template_instance',name:`create-associate-${latest.run.run_id}.xlsx`,sha256:compiled.output.sha256,sizeBytes:compiled.output.sizeBytes,available:true,reason:''}]:(latest.artifacts||[]).filter((item)=>String(item.kind)==='template_instance').slice(-1).map((item)=>({artifactId:String(item.artifact_id),kind:'template_instance',name:String(item.original_name),sha256:String(item.sha256),sizeBytes:Number(item.size_bytes),available:true,reason:''})),actions:[
-  {actionId:'back-to-upload',enabled:true,reason:'离开 Review 后才允许重新选择资料。'},{actionId:'apply-revisions',enabled:true,reason:'保存所有 dirty 字段并完整重跑校验。'},{actionId:'remove-batch-row',enabled:activeCount>1,reason:activeCount>1?'仅移出本批，不调用 Connector，不删除 Omnia。':'批次仅剩一行，禁止移除。'},{actionId:'revalidate-all',enabled:true,reason:'在原 Run 上重跑全部本地与可用实时校验。'},{actionId:'prepare-return',enabled:!blocker,reason:blocker?'存在 error、未执行实时项或全局 blocker。':''}]};}
-function uploadSurface(latest,message){
+  {actionId:'back-to-upload',enabled:true,reason:'离开 Review 后才允许重新选择资料。'},{actionId:'restart-run',enabled:true,reason:'取消当前可编辑 Run；旧 Artifact、修订和事件保留审计。'},{actionId:'apply-revisions',enabled:true,reason:'保存所有 dirty 字段并完整重跑校验。'},{actionId:'remove-batch-row',enabled:activeCount>1,reason:activeCount>1?'仅移出本批，不调用 Connector，不删除 Omnia。':'批次仅剩一行，禁止移除。'},{actionId:'revalidate-all',enabled:true,reason:'在原 Run 上重跑全部本地与可用实时校验。'},{actionId:'prepare-return',enabled:!blocker,reason:blocker?'存在 error、未执行实时项或全局 blocker。':''}]};}
+function uploadSurface(latest,message,fresh=false){
   const workflow=workflowSurface(latest);workflow.currentStepId='upload';workflow.steps[0].state='current';workflow.steps[1].state='pending';
-  return{stateVersion:Number(latest.run.state_revision),status:'ready',statusMessage:message,scopes:[],items:[],workflow,progress:undefined,issues:[],review:undefined,editors:[],artifacts:(latest.artifacts||[]).filter((item)=>String(item.kind)==='template_instance').slice(-1).map((item)=>({artifactId:String(item.artifact_id),kind:'template_instance',name:String(item.original_name),sha256:String(item.sha256),sizeBytes:Number(item.size_bytes),available:true,reason:''})),actions:[{actionId:'import-source-workbook',enabled:true,reason:''},{actionId:'download-source-template',enabled:true,reason:''},{actionId:'revalidate-all',enabled:true,reason:'使用当前受管 Artifact 回到 Review 并重跑全部校验。'}]};
+  return{stateVersion:Number(latest.run.state_revision),status:'ready',statusMessage:message,scopes:[],items:[],workflow,clearFields:['progress','review'],issues:[],editors:[],artifacts:fresh?[]:(latest.artifacts||[]).filter((item)=>String(item.kind)==='template_instance').slice(-1).map((item)=>({artifactId:String(item.artifact_id),kind:'template_instance',name:String(item.original_name),sha256:String(item.sha256),sizeBytes:Number(item.size_bytes),available:true,reason:''})),actions:[{actionId:'import-source-workbook',enabled:true,reason:''},{actionId:'download-source-template',enabled:true,reason:''},{actionId:'restart-run',enabled:!fresh,reason:fresh?'当前没有可重置的可编辑 Run。':'取消当前可编辑 Run；下一次上传建立新 Run。'},{actionId:'revalidate-all',enabled:!fresh,reason:fresh?'当前没有可重新校验的 Run。':'使用当前受管 Artifact 回到 Review 并重跑全部校验。'}]};
 }
 function returnSurface(latest,message){
   const run=latest?.run;const progress=progressSurface(latest);const state=String(run?.state||'');
   const terminal=['succeeded','failed','cancelled'].includes(state);const status=state==='succeeded'?'ready':state==='failed'?'error':state==='uncertain'?'stale':'loading';
   const intents=latest?.returnProgress||[]; const completed=intents.filter((item)=>item.state==='verified'||['readback_verified','closed_not_applied'].includes(item.command_state)).length; const percent=state==='succeeded'?100:intents.length?Math.floor(completed*100/intents.length):0;
-  return {stateVersion:Number(run?.state_revision||1),status,statusMessage:message||`回传阶段 ${state} / revision ${Number(run?.state_revision||0)}`,workflow:progress.workflow,
+  return {stateVersion:Number(run?.state_revision||1),status,statusMessage:message||`回传阶段 ${state} / revision ${Number(run?.state_revision||0)}`,workflow:progress.workflow,clearFields:['review'],
     progress:{label:'回传进度',completed:state==='succeeded'?intents.length:completed,total:intents.length,percent,state:state==='uncertain'?'uncertain':state==='failed'?'failed':state==='succeeded'?'passed':'running',message:state==='succeeded'?'已完成；停留在回传页面。':state==='uncertain'?'响应未知，禁止重放；请执行只读核验。':message||`当前阶段 ${state}`,items:intents.map((item,index)=>({itemId:`return-${index}`,label:String(item.target_key),state:item.state==='verified'?'passed':item.state==='uncertain'?'uncertain':item.state==='failed'?'failed':item.command_state==='submitted'||item.command_state==='committed'?'running':'pending',detail:`${item.target_kind} · intent=${item.state} · command=${item.command_state}`}))},
     scopes:progress.scopes,items:progress.items,editors:[],issues:[],artifacts:(latest?.artifacts||[]).filter((item)=>String(item.kind)!=='source').map((item)=>({artifactId:String(item.artifact_id),kind:String(item.kind),name:String(item.original_name),sha256:String(item.sha256),sizeBytes:Number(item.size_bytes),available:true,reason:''})),actions:[
       {actionId:'import-source-workbook',enabled:terminal,reason:terminal?'':'回传计划已冻结；请先完成、核验或终止当前 Run。'},
+      {actionId:'restart-run',enabled:false,reason:'回传计划已冻结；重新开始不能掩盖确认、写入或 uncertain 状态。'},
       {actionId:'apply-revisions',enabled:false,reason:'回传阶段不接受字段修订。'},
       {actionId:'prepare-return',enabled:false,reason:'回传计划已冻结或已完成。'}]};
 }
@@ -985,7 +986,7 @@ function createFeatureWorker(dependencies) {
         recoveredSurfacePatch={stateVersion:Number(revision),status:'stale',statusMessage:`检测到离线处理在 ${interruptedStage} 阶段中断；Run 已持久化转为 failed（revision ${revision}），未自动重放。请通过“选择用户资料”重新导入原文件以建立新 Run。`,
           scopes:progress.scopes,items:progress.items,
           artifacts:(latest.artifacts||[]).filter((item)=>String(item.kind)!=='source').map((item)=>({artifactId:String(item.artifact_id),kind:String(item.kind),name:String(item.original_name),sha256:String(item.sha256),sizeBytes:Number(item.size_bytes),available:true,reason:''})),editors:[],actions:[
-            {actionId:'import-source-workbook',enabled:true,reason:''},{actionId:'apply-revisions',enabled:false,reason:'中断 Run 不允许原地修订。'},{actionId:'prepare-return',enabled:false,reason:'离线处理未完成；必须重新导入并生成新 Run。'}]};
+            {actionId:'import-source-workbook',enabled:true,reason:''},{actionId:'restart-run',enabled:false,reason:'中断 Run 已失败关闭。'},{actionId:'apply-revisions',enabled:false,reason:'中断 Run 不允许原地修订。'},{actionId:'prepare-return',enabled:false,reason:'离线处理未完成；必须重新导入并生成新 Run。'}]};
       }
       if(run?.state==='uncertain'){
         const checkpoint=await store.call('loadPlan',String(run.run_id));
@@ -1005,6 +1006,13 @@ function createFeatureWorker(dependencies) {
       return {ready:true,featureId:FEATURE_ID,featureVersion:FEATURE_VERSION,transport:'remote-only',recoveredMessageCard,recoveredSurfacePatch};
     },
     handleAction: async (input) => {
+      if(input?.actionId==='restart-run'){
+        const latest=await store.call('loadLatestRun',{}),run=latest?.run;
+        if(!run||!['needs_input','ready_for_review'].includes(run.state))fail('RUN.RESTART_BLOCKED','Only the current editable Run can restart.');
+        await store.call('transitionRun',{runId:String(run.run_id),expectedRevision:Number(run.state_revision),toState:'cancelled',eventType:'run.restart_requested',details:{preserveArtifacts:true,preserveRevisions:true,nextUploadCreatesNewRun:true}});
+        const cancelled=await store.call('loadLatestRun',{});
+        return{surfacePatch:uploadSurface(cancelled,'当前 Run 已取消并保留审计；下一次上传将建立新的 Run。',true)};
+      }
       if (input?.actionId === 'reconcile-return') {
         const runId=String(input.payload?.runId||''); const latest=await store.call('loadLatestRun',{}); const run=latest?.run;
         if(!run||String(run.run_id)!==runId||run.state!=='uncertain') fail('RETURN.RECONCILE_STATE','Only the current uncertain Run can reconcile.');
@@ -1530,7 +1538,7 @@ function createFeatureWorker(dependencies) {
           }],
           editors: [],review:reviewPresentation(parsed),
           actions: [
-            {actionId:'back-to-upload',enabled:true,reason:''},{ actionId: 'apply-revisions', label:'保存修改并重新检查',enabled:true, reason:'保存 dirty 字段后完整重跑。' },
+            {actionId:'back-to-upload',enabled:true,reason:''},{actionId:'restart-run',enabled:true,reason:'取消当前可编辑 Run；下一次上传建立新 Run。'},{ actionId: 'apply-revisions', label:'保存修改并重新检查',enabled:true, reason:'保存 dirty 字段后完整重跑。' },
             {actionId:'remove-batch-row',enabled:activeRows(parsed).length>1,reason:activeRows(parsed).length>1?'仅移出本批，不删除 Omnia。':'最后一行不可移除。'},{actionId:'revalidate-all',enabled:true,reason:'在原 Run 重试实时校验。'},
             { actionId: 'prepare-return', enabled: !validation.progress.items.some((item)=>item.state==='failed'||item.state==='pending'), reason: validation.progress.items.some((item)=>item.state==='failed'||item.state==='pending') ? '存在 error、pending 实时项或全局 blocker。' : '' }
           ]

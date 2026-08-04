@@ -1,6 +1,6 @@
 # 官方内置录制 Feature
 
-`omnia.recording` 0.3.0 / sequence 4 已生成官方签名候选，并内置到本地 Shell 0.4.7 不可变包。0.2.0 与更早候选保持不可变，可作为历史 rollback 目标。本轮没有部署外部下载站，也没有完成公司电脑真实 Omnia canary，因此这里只声明“本地候选已打包”，不声明生产上线。
+`omnia.recording` 0.3.0 / sequence 4 已生成官方签名候选，并内置到本地 Shell 0.4.8 不可变包。0.2.0 与更早候选保持不可变，可作为历史 rollback 目标。本轮没有完成公司电脑真实 Omnia canary，因此不宣称现场录制已经通过。
 
 0.3.0 保持同一 Feature ID 和 Remote-only recording command，新增播放器式 `recorder` 声明合同、真实 pause/resume/stop/export 状态、当前页 Risk/Control 自动采集和跨 Bridge 分块 Artifact 交付。旧 `stop_export` 与手工 catalog command 只为已安装旧包保留 Connector 兼容性；0.3.0 Surface 不再声明这些按钮。
 
@@ -10,7 +10,7 @@
 - Middle：`feature-packages/recording/source/middle/worker.cjs` 调用 start/pause/resume/stop/export/export_chunk，写入 Feature evidence，并把真实文件提交到 Core Artifact Store。
 - Core/Data：`FeatureRuntimeStore.commitStandaloneArtifact` 为没有用户上传源文件的 Connector evidence 创建独立 succeeded Run 和受管 Artifact；下载使用既有 `surface:save-feature-artifact`。
 - Connector：`src/connector/recording/recording-service.ts` 与 `WorkstationOmniaSession` 负责 CDP、暂停恢复、graceful drain、当前页自动目录采集、持久 manifest 和 512 KiB 导出分块。
-- Package：`scripts/package-recording-feature.mjs` 已生成并验签 0.3.0 / sequence 4 `.ofp`；Shell 0.4.7 release manifest 固定引用该候选。
+- Package：`scripts/package-recording-feature.mjs` 已生成并验签 0.3.0 / sequence 4 `.ofp`；Shell 0.4.8 release manifest 固定引用该候选。
 
 ## v4 复用与重构
 

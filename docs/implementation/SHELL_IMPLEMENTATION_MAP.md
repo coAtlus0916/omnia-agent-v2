@@ -1,19 +1,19 @@
 # Shell Baseline 实现映射
 
-版本：`0.4.6`
-状态：Remote-only 候选源码；内置 recording 0.2.0 与 create-associate 0.2.1。功能栏直接显示 Feature，不再投影业务分级；通用 Feature Surface 提供两列式三步流程、持久 revision、真实进度/问题、同一 artifact chain 的选择/拖放上传和签名受管资产导出。设置的独立“日志”菜单查询真实 Core 交互记录并按 trace 展示失败阶段。`releases/` 仍是唯一产品根；0.4.6 便携用户测试和真实 Remote Pack canary 待完成。
+版本：`0.4.8`
+状态：Remote-only 发布源码；内置 recording 0.3.0 与 create-associate 0.2.2。0.4.8 基于 0.4.7 修复 portable data 的 Windows 保护密钥不可读导致静默退出、安全锁错误依赖 Section、Surface JSON 无法删除旧层，以及通用 restart presentation。功能栏直接显示 Feature；`releases/` 仍是唯一产品根。真实 Remote Pack canary 待完成。
 
 ## 范围
 
-Shell 原装平台包含 Core Store、Feature/Documentation Registry、通用 Worker/Store/Event/Managed Content ports 和唯一 RemoteConnectorTransport。Shell 不包含 Local Connector、Transport router 或 fallback。业务不硬编码进 Shell：recording、删除元素与 `omnia.create-associate@0.2.1` 均是独立签名 Feature；新建与关联首次真实回传必须经过确认、逐命令权威读回，只在完整成功后记录精确 scope 的限时 capability evidence。删除聊天记录仍未交付。
+Shell 原装平台包含 Core Store、Feature/Documentation Registry、通用 Worker/Store/Event/Managed Content ports 和唯一 RemoteConnectorTransport。Shell 不包含 Local Connector、Transport router 或 fallback。业务不硬编码进 Shell：recording、删除元素与 `omnia.create-associate@0.2.2` 均是独立签名 Feature；新建与关联首次真实回传必须经过确认、逐命令权威读回，只在完整成功后记录精确 scope 的限时 capability evidence。删除聊天记录仍未交付。
 
 | 能力 | Delivery | Control & Data | Integration | 真实状态 |
 |---|---|---|---|---|
-| 首次配对 | 顶部 Connect 引导显示短期链接码/expiry | Core pairing session、safeStorage credential、Remote binding/generation/audit | Bridge 0.4.2 → Remote Connector 0.3.7 消费链接码 | 候选实现；真实公司电脑配对待 canary |
+| 首次配对 | 顶部 Connect 引导显示短期链接码/expiry | Core pairing session、safeStorage credential、Remote binding/generation/audit | Bridge 0.4.4 → Remote Connector 0.3.10 消费链接码 | 候选实现；真实公司电脑配对待 canary |
 | 连接 | 顶部 Connect/Cancel 与分阶段状态 | `ShellService` 持久 Remote-only connect state，最长 10 分钟只读 polling | Remote transport → Bridge → Remote Worker → `WorkstationOmniaSession` | 自动化收口中；真实 Omnia canary 待执行 |
 | 刷新 | 顶部刷新按钮与错误提示 | `ShellService.refresh` 更新 Core 状态 | Remote Worker 的 Session Core 重新加载页面、识别 Pack，并触发轻抓取 | 失败不覆盖成功 observation；真实 Pack 待 canary |
 | 保活 | 启停、运行/下次/错误状态 | Core DB `keepalive_state` + 后台 5 秒调度扫描 | 到期调用真实只读 refresh | 已实现；重启恢复 |
-| 安全锁 | 权威 Section/Workspace 树与保存 | `workspace_observations`、`workspace_safety`、CAS 与目标校验 | `workspace_light_read` 只读 Operation | 已实现；缺 `parentSectionId` 失败关闭 |
+| 安全锁 | 当前 Pack 的精确 Workspace Facet 列表；Section 仅用于可选分组展示 | `workspace_observations`、`workspace_safety`、CAS 与精确 ID 校验 | `workspace_light_read` 只读 Operation | 已实现；零 Workspace 失败关闭，缺 Section 不再阻断 |
 | 对话 | 第三列消息列表与输入区 | `chat_sessions/chat_messages` 持久化状态 | Provider 只由 Main 受控调用；未配置则不调用 | 已实现；无假回复 |
 | 缩放 | 右上角/设置 `− 百分比 +`、快捷键 | `user_preferences` CAS；Main 对所有当前/新建 WebContents `setZoomFactor` | Feature view/window 继承同一值 | 0.4.1 已按实际 DPR/viewport/bounds 验证；重启恢复、无 CSS 双缩放 |
 | Splitter | Feature 菜单/Tabbed Host、Comments 内容/composer、设置导航/内容 | `layout_preferences` 与 `settings.main` CAS | 不适用 | 已实现；pointer/键盘；Rail 固定且无 splitter |
@@ -30,7 +30,7 @@ Electron Renderer（无 Node）
 Electron Main / Core（SQLite owner、AI broker、Remote binding owner）
   → authenticated RemoteConnectorTransport
 v5 Bridge 0.4.2（binding/generation/relay/heartbeat）
-  → v5 Remote Connector Worker 0.3.7 / sequence 10
+  → v5 Remote Connector Worker 0.3.10 / sequence 13
   → WorkstationOmniaSession（Omnia credential/session owner）
   → verified dedicated Edge CDP + signed OperationHost
 ```
@@ -46,7 +46,7 @@ v5 Bridge 0.4.2（binding/generation/relay/heartbeat）
 
 ## Remote
 
-`0.3.4 / sequence 7`、`0.3.5 / sequence 8`、`0.3.6 / sequence 9` Remote Connector 和 `0.4.0`、`0.4.1` Bridge 均为不可变 historical previous。0.4.3 配套候选为 Remote Connector `0.3.7 / sequence 10` 与 Bridge `0.4.2`：保持链接码/长期受保护 binding，并补入固定签名 JSON Operation、权威 tenant/Pack identity、mutation 响应丢失语义及安全手工升级。普通重启/断线不重新配对；撤销/不可恢复进入 `repair_required`。具体真实 Pack、录制与 mutation 仍待公司电脑 canary。
+`0.3.4` 至 `0.3.9` Remote Connector 和 Bridge `0.4.0` 至 `0.4.3` 均为不可变 historical previous。当前配套为 Remote Connector `0.3.10 / sequence 13` 与 Bridge `0.4.4`：保持链接码/长期受保护 binding、固定签名 JSON Operation、权威 tenant/Pack identity、mutation 响应丢失语义及安全在线升级，并把安全锁授权恢复为 v4 已验证的 Pack + 精确 Workspace Facet ID；Section 仅作展示。普通重启/断线不重新配对；撤销/不可恢复进入 `repair_required`。具体真实 Pack、录制与 mutation 仍待公司电脑 canary。
 
 ## AI
 
@@ -60,7 +60,7 @@ Windows 当前用户保护；Renderer 只看到 `hasApiKey`。连通性测试真
 真实 canary 前仍需验证：
 
 1. 目标 Omnia 版本的真实 hierarchy 与授权请求捕获；
-2. `liveindex/menu/sections` 是否为每个 Workspace 提供可证明的 Section identity；
+2. `liveindex/menu/sections` 在目标 Pack 上是否提供完整的可选展示分组；无分组时仍须验证 Workspace Facet 精确 ID 与安全锁保存；
 3. Windows 10/11 代表性 ThinkPad 的 Edge、杀软、系统缩放与资源表现；
 4. 用户真实 Provider Key 下的模型清单、附件能力、超时、错误分类和数据处理边界。
 

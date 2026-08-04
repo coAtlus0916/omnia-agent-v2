@@ -157,7 +157,7 @@ Connector 只提供两个业务无关、签名 allowlist 的读取 profile：
 
 - Section/Workspace identity 必须来自 Omnia 权威字段；`TEST`、`20000`、`IT Elements` 等显示名称不能决定层级、权限或 operation；
 - 无父级 identity 时返回稳定错误 `authority_hierarchy_unavailable`，不得在 Connector 内猜测；
-- 结果必须返回 `sections[]` 与携带 `parentSectionId` 的 `workspaces[]`；不得靠名称或数组顺序重建父子关系；
+- 结果必须返回当前 Pack 的精确 `workspaces[].id`；`sections[]` 与 `parentSectionId` 是可选展示元数据，只能使用 Omnia 实际返回的关系，不得靠名称或数组顺序重建；缺 Section 不得替代或阻断 Pack + Workspace Facet ID 授权；
 - 重抓取请求冻结 authority/tenant/Pack/Workspace/Feature/capability/type scope，并支持分页、deadline、取消、checkpoint、计数和 Evidence；
 - 每次重抓取必须携带 Workspace/Object/Relation/Page/Byte/Duration 硬预算；有效预算取签名 capability、平台策略和请求三者最小值，超限返回 partial/limit + coverage/checkpoint；
 - `full` 只表示声明 scope 完整；无 authority snapshot/cursor/watermark 时标记 `non_atomic_observation`；

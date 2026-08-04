@@ -36,17 +36,14 @@ test('workspace light read requires explicit Section to Workspace identities', (
   assert.equal(result.profile, 'workspace_light_read');
 });
 
-test('workspace light read fails closed when only names are available', () => {
-  assert.throws(
-    () => _test.normalizeLightRead(
-      engagementId,
-      [{ id: sectionId, label: '20000 IT Elements' }],
-      [{ id: workspaceId, name: 'TEST' }]
-    ),
-    (error: any) =>
-      error.code === 'WORKSPACE.AUTHORITY_HIERARCHY_UNAVAILABLE'
-      && /缺少权威 parentSectionId/.test(error.message)
+test('workspace light read keeps exact Facet identity when Section display metadata is absent', () => {
+  const result = _test.normalizeLightRead(
+    engagementId,
+    [{ id: sectionId, label: '20000 IT Elements' }],
+    [{ id: workspaceId, name: 'TEST' }]
   );
+  assert.equal(result.workspaces[0]?.id, workspaceId);
+  assert.equal(result.workspaces[0]?.parentSectionId, '');
 });
 
 test('target binding rejects multiple Pack pages instead of selecting the first', () => {

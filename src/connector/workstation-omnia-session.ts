@@ -15,7 +15,7 @@ import {
 } from './recording/recording-service.js';
 
 const DEFAULT_HOME = 'https://deloitteomnia.deloitte.com.cn/';
-const CONNECTOR_VERSION = '0.3.9';
+const CONNECTOR_VERSION = '0.3.10';
 const WORKSPACE_FACET_TYPE = '8dba1267-9c45-4d88-a2e3-a1619bd905c2';
 
 type FetchLike = typeof fetch;
@@ -192,12 +192,6 @@ function normalizeLightRead(
     order: Number.isFinite(Number(section?.order)) ? Number(section.order) : order
   })).filter((section) => section.id && section.name);
   const sectionIds = new Set(sections.map((section) => section.id));
-  if (sections.length === 0) {
-    throw new ConnectorOperationError(
-      'WORKSPACE.AUTHORITY_HIERARCHY_UNAVAILABLE',
-      'Omnia 未返回可核验的 Section identity。'
-    );
-  }
   const rawWorkspaces = list(workspacePayload)
     .filter((workspace) => workspace?.isDeleted !== true && workspace?.deleted !== true)
     .map((workspace) => {
@@ -216,18 +210,20 @@ function normalizeLightRead(
     sectionPayload,
     new Set(rawWorkspaces.map((workspace) => workspace.id))
   );
-  const workspaces = rawWorkspaces.map(({ explicitParentSectionId, ...workspace }) => ({
-    ...workspace,
-    parentSectionId: explicitParentSectionId || membership.parents.get(workspace.id) || ''
-  }));
-  if (
-    workspaces.length === 0
-    || membership.ambiguous.size > 0
-    || workspaces.some((workspace) => !workspace.parentSectionId || !sectionIds.has(workspace.parentSectionId))
-  ) {
+  const workspaces = rawWorkspaces.map(({ explicitParentSectionId, ...workspace }) => {
+    const inferredParent = membership.ambiguous.has(workspace.id) ? '' : membership.parents.get(workspace.id) || '';
+    const candidateParent = explicitParentSectionId || inferredParent;
+    return {
+      ...workspace,
+      // Section membership is display metadata only. Safety authorization is
+      // always based on this exact Workspace Facet ID and the current Pack.
+      parentSectionId: sectionIds.has(candidateParent) ? candidateParent : ''
+    };
+  });
+  if (workspaces.length === 0) {
     throw new ConnectorOperationError(
-      'WORKSPACE.AUTHORITY_HIERARCHY_UNAVAILABLE',
-      'Omnia 返回的 Workspace 缺少权威 parentSectionId；已拒绝按显示名称推断。'
+      'WORKSPACE.AUTHORITY_DIRECTORY_EMPTY',
+      'Omnia 未返回可核验的 Workspace Facet ID。'
     );
   }
   return {

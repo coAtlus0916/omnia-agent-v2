@@ -287,12 +287,24 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
   useEffect(() => setSelected(new Set(snapshot.safety.workspaceIds)), [snapshot.safety.stateVersion]);
   const directory = snapshot.workspaceDirectory.observation;
   const save = (enabled: boolean) => run('safety', () => window.omnia.saveSafety({ enabled, workspaceIds: [...selected], expectedStateVersion: snapshot.safety.stateVersion }));
+  const toggle = (workspaceId: string) => {
+    const next = new Set(selected);
+    next.has(workspaceId) ? next.delete(workspaceId) : next.add(workspaceId);
+    setSelected(next);
+  };
+  const workspaceList = (key: string, label: string, workspaces: NonNullable<typeof directory>['workspaces']) => workspaces.length > 0
+    ? <div key={key}><strong>{label}</strong>{workspaces.map((item) => <label key={item.id}>
+      <input type="checkbox" checked={selected.has(item.id)} onChange={() => toggle(item.id)} />
+      {item.name}
+    </label>)}</div>
+    : null;
+  const knownSectionIds = new Set(directory?.sections.map((section) => section.id) || []);
+  const ungrouped = directory?.workspaces.filter((item) => !item.parentSectionId || !knownSectionIds.has(item.parentSectionId)) || [];
   return <section className="settings-section" aria-label="安全锁设置"><h3>安全锁</h3>
-    {!directory ? <p className="reason">{snapshot.workspaceDirectory.reason}</p> : <div className="settings-workspaces">{directory.sections.map((section) => <div key={section.id}>
-      <strong>{section.name}</strong>{directory.workspaces.filter((item) => item.parentSectionId === section.id).map((item) => <label key={item.id}>
-        <input type="checkbox" checked={selected.has(item.id)} onChange={() => { const next = new Set(selected); next.has(item.id) ? next.delete(item.id) : next.add(item.id); setSelected(next); }} />
-        {item.name}
-      </label>)}</div>)}</div>}
+    {!directory ? <p className="reason">{snapshot.workspaceDirectory.reason}</p> : <div className="settings-workspaces">
+      {directory.sections.map((section) => workspaceList(`section:${section.id}`, section.name, directory.workspaces.filter((item) => item.parentSectionId === section.id)))}
+      {workspaceList('ungrouped', '当前 Pack Workspace', ungrouped)}
+    </div>}
     <div className="button-row no-border"><button type="button" onClick={() => run('workspaces', () => window.omnia.refreshWorkspaceDirectory())} disabled={!snapshot.connection.connected}>刷新 Workspace</button>
       <button type="button" className="primary" disabled={!selected.size || !directory} onClick={() => save(true)}>保存并启用（{selected.size}）</button>
       {snapshot.safety.enabled ? <button type="button" onClick={() => save(false)}>关闭安全锁</button> : null}</div>

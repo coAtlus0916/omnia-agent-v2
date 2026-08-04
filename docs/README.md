@@ -6,13 +6,13 @@
 
 | 项目 | 当前状态 | 仍待完成 |
 |---|---|---|
-| Shell | `0.4.6` Remote-only 候选源码：功能栏扁平显示 Feature；通用两列式三步 Surface 支持真实进度/问题、拖拽上传和签名资产下载；设置内有查询 Core 真实记录的独立“日志”菜单；内置 recording 0.2.0 与 create-associate 0.2.1 | 0.4.6 便携包与真实 Pack canary 待完成 |
-| 录制 | 官方签名独立 Feature `omnia.recording 0.2.0 / sequence 3`，使用同一三步 Surface 投影实时 Connector/录制证据状态 | 真实 Pack/Remote 现场 canary |
+| Shell | `0.4.8` Remote-only 发布源码：基于 0.4.7 修复双击启动的 protected-data 恢复、安全锁精确 Workspace Facet 授权、通用 Surface 显式字段清除与 restart presentation；内置 recording 0.3.0 与 create-associate 0.2.2 | 真实 Pack canary 待完成 |
+| 录制 | 官方签名独立 Feature `omnia.recording 0.3.0 / sequence 4`，播放器式真实 start/pause/resume/stop/export 并自动采集当前页 Risk/Control | 真实 Pack/Remote 现场 canary |
 | 删除元素 | 独立后装 Feature `0.1.2`；Remote-only 前的 Local 自动化仅保留为历史合同证据 | 目标 Pack 的真实 Remote mutation 待公司电脑 canary；不允许 fallback Local |
 | 删除聊天记录 | 未交付 | 仍处于产品设计阶段 |
-| 新建与关联 | `omnia.create-associate@0.2.1 / sequence 3` 候选源码；上传、校验、回传三步；V3 模板的 APP/DB/OS/Tool 分栏、11 项 canonical checks、字段修订后完整重检；APP 身份、回收站、resume/reuse/create 由签名只读 Operation 解析，只有 create-only 即时预检可授予一次性写许可 | 0.2.1 包、便携用户测试及真实 SAP ECC mutation/readback canary 待完成；AI review 暂为 `not_evaluable` warning，不冒充已执行 |
+| 新建与关联 | `omnia.create-associate@0.2.2 / sequence 4`；上传、校验、回传三步；返回上传显式清除 Review；重新开始真实取消可编辑 Run；V3 模板 APP/DB/OS/Tool 分栏、11 项检查与真实签名 Return Operation 保持 | 真实 SAP ECC mutation/readback canary 待完成；AI review 暂为 `not_evaluable` warning，不冒充已执行 |
 | Phase 1 母版 | 已冻结 V8 治理输入：9 sheets、187 字段、68 条关系、21 条 v4 证据、180/180 源字段追溯；运行时使用独立签名 base/TemplateInstance，不把 V8 当用户模板 | 真实 Omnia/目标 Pack canary 未通过；待发布首个获批 TemplateVersion |
-| Remote | Remote-only：Bridge `0.4.4` 使用 4 位、2 分钟、一次性链接码；Connector `0.3.8 / sequence 11` 已发布 stable 在线更新通道，已有长期 protected binding 后不再输入链接码；无 Local fallback | 公司电脑上的 0.3.7 是否已在安全窗口自动激活 0.3.8 仍需现场读回；真实 Pack canary 待完成 |
+| Remote | Remote-only：Bridge `0.4.4` 使用 4 位、2 分钟、一次性链接码；Connector `0.3.10 / sequence 13` 已发布 v5 stable 并修复安全锁目录解析，已有长期 protected binding 后不再输入链接码；无 Local fallback | 公司电脑自动激活和真实 Pack canary 待现场读回 |
 | Nova | 仅保留 OpenAI-compatible 配置路径 | Nova 专有协议尚未校验 |
 
 Feature 的原装/内置/后装/Operation/额外部署边界以 [Feature 包总览](implementation/FEATURE_PACKAGE_CATALOG.md) 为准；Shell 的实际代码映射以 [Shell 实现映射](implementation/SHELL_IMPLEMENTATION_MAP.md) 为准。

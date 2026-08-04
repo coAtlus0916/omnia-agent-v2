@@ -70,7 +70,7 @@ flowchart LR
 17. Feature 文档与代码同签名、同版本、崩溃安全 staging，并由单一 activation record 一致激活/回滚；每个 capability 的四 Plane 映射必须与真实包内容双向一致。
 18. Agent Managed Content current 只由已验证 Evidence 推进；删除写 tombstone，partial/uncertain 不覆盖未证明字段，Phase 2 不直连 Store。
 19. Workspace Section/部分归属只来自 Omnia 权威 identity；禁止通过 `TEST`、`20000`、`IT Elements` 或其他名称推断。
-20. 重抓取只访问当前 Pack、用户选定 Workspace 和 Feature capability 声明范围；Workspace 必须带权威 parentSectionId，并受对象/关系/页/字节/时长硬预算限制；禁止默认全 Pack 无界 dump。
+20. 重抓取只访问当前 Pack、用户选定的精确 Workspace Facet ID 和 Feature capability 声明范围；Section/parentSectionId 只作已证实的展示分组，不参与授权，且读取受对象/关系/页/字节/时长硬预算限制；禁止默认全 Pack 无界 dump。
 21. 历史 Workspace observation 展示前重新证明当前 principal 的 Pack 访问；无法验证时不展示缓存业务名称。
 22. 详细录制使用字段级正向白名单、落盘前源头净化、二层扫描/quarantine、硬预算和实例 DEK 静态保护。
 23. 生产 Feature/Operation 只接受官方信任根；第三方、未签名、测试根和任意离线包失败关闭。
@@ -345,7 +345,7 @@ Remote Connector 在线发布还必须：
 - [ ] Remote Shell/Bridge/Worker 合同与 uncertain 故障注入通过，并证明无 Local fallback。
 - [ ] Remote Connector 在线更新的篡改/降级/中断/A-B/阻断/probation/previous/不 fallback 测试通过。
 - [ ] 生产第三方/未签名/测试根/任意离线包全部被拒绝，且无关闭签名或撤销的设置。
-- [ ] Workspace 轻/重抓取通过 parentSectionId、硬预算、访问撤销、分页/取消和 Remote 重连一致性测试，无名称推断或越权缓存展示。
+- [ ] Workspace 轻/重抓取通过 Pack + 精确 Workspace Facet ID、可选 Section 展示、硬预算、访问撤销、分页/取消和 Remote 重连一致性测试，无名称推断或越权缓存展示。
 - [ ] 更新/回滚/删除旧 release 不改变稳定 `data`；复制便携根不会复制可用 Secret 或绕过敏感正文静态保护。
 - [ ] 受控移除实例能核对 OS Secret、Remote 注册/租约、产品根外 PendingRevocationCapsule 和 Supervisor/服务；直接删除文件夹不会被标记为完整卸载。
 - [ ] 详细录制的字段白名单、源头净化、二层扫描/quarantine、硬预算、导出授权和真实清理通过负面样本。

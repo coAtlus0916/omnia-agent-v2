@@ -15,8 +15,16 @@ export function createWindowsProtectedContentCipher(storesDirectory: string): Co
   const keyPath = path.join(storesDirectory, 'instance-dek.protected');
   let key: Buffer;
   if (fs.existsSync(keyPath)) {
-    const wrapped = fs.readFileSync(keyPath);
-    key = Buffer.from(safeStorage.decryptString(wrapped), 'base64');
+    try {
+      const wrapped = fs.readFileSync(keyPath);
+      key = Buffer.from(safeStorage.decryptString(wrapped), 'base64');
+      if (key.length !== 32) throw new Error('Invalid protected instance key length.');
+    } catch {
+      throw new AppError(
+        'SECRET.INSTANCE_KEY_UNREADABLE',
+        '当前 Windows 用户无法解包本实例的数据保护密钥。'
+      );
+    }
   } else {
     key = randomBytes(32);
     const wrapped = safeStorage.encryptString(key.toString('base64'));

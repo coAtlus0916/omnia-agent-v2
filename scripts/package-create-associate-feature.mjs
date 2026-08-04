@@ -140,7 +140,7 @@ const runtimeBaseBytes = workerModule.buildRuntimeWorkbook(
 
 const userTemplateBytes = await readFile(userTemplatePath);
 if (userTemplateBytes.length < 1 || userTemplateBytes.length > 64 * 1024 * 1024) throw new Error('Phase1 user template V3 size is invalid.');
-const version = '0.2.1'; const sequence = 3;
+const version = '0.2.2'; const sequence = 4;
 const route = (stepId, method, routeTemplate, parameters, bodyMode = 'none') => ({ stepId, method, routeTemplate, parameters, bodyMode, bodyParameter: '' });
 const applicationIdentityRoutes = () => [
   route('workitem-directory', 'POST', '/work/v1/WorkQueries/getWorkitemDetails', [], 'signed_json'),
@@ -233,7 +233,7 @@ const docsManifest = { schemaVersion: 'omnia.feature-documentation/v1', featureI
 const testIds=['v8-governance-ooxml','signed-v3-source-template','v3-no-user-is-data-available','v4-is-data-available-false-rule','canonical-eleven-checks','canonical-four-kind-review-matrix','four-kind-derived-description','excluded-row-no-issue-order','empty-kind-disabled','review-reimport-dirty-guard','save-and-full-revalidate','remove-row-full-live-revalidate','remove-row-cas-persistence','live-revalidate-recovery','warnings-do-not-block-return','unexecuted-checks-not-passed','app-identity-recycle-resolution','non-app-identity-state-resolution','app-create-only-permit','uncertain-identity-reconcile-no-replay','three-step-durable-workflow','full-return-operation-loop','bootstrap-capability-evidence','crash-recovery-monotonic'];
 const runtimeContract={schemaVersion:'omnia.feature-runtime-contract/v1',featureId:'omnia.create-associate',featureVersion:version,
   inputs:['xlsx_artifact','issue_revisions','return_confirmation','connector_binding','workspace_safety'],outputs:['template_instance_xlsx','surface_patch','confirmation_card','managed_object_revisions','managed_relation_revisions'],
-  events:['run.transition','run.offline_crash_recovered','return.confirmed_in_comments','return.readback_verified','return.uncertain'],
+  events:['run.transition','run.offline_crash_recovered','run.restart_requested','return.confirmed_in_comments','return.readback_verified','return.uncertain'],
   errors:['WORKBOOK.*','GOVERNANCE.*','RETURN.*','CONNECTOR.RESPONSE_LOST'],
   storePorts:['createRun','readArtifactBytes','readManagedAssetBytes','commitArtifact','transitionRun','recordFieldRevisions','recordIssues','loadRunReview','commitReviewValidation','prepareReturnIntent','approveReturnIntent','prepareReturnCommand','freezeReturnEvidenceSpec','recordReturnEvidence','projectVerifiedReturn','recordBootstrapCapabilityEvidence','getCapabilityEvidenceState','finishReturn','savePlan','loadPlan']};
 const implementationMap={schemaVersion:'omnia.feature-implementation-map/v1',featureId:'omnia.create-associate',featureVersion:version,planes:{
@@ -248,7 +248,7 @@ const packagedSelfTest=selfTest
   .replace("governance.derivationRules?.[2]?.ruleId!=='v4.app-is-data-available-false.v1'||governance.derivationRules?.[2]?.constantValue!==false", "governance.derivationRules?.find((rule)=>rule.ruleId==='v4.app-is-data-available-false.v1')?.constantValue!==false")
   .replace("governance.derivationRules?.[3]?.ruleId!=='v4.phase1-gra-name-from-element-id.v1'||governance.derivationRules?.[3]?.prefix!=='GRA-'", "governance.derivationRules?.find((rule)=>rule.ruleId==='v4.phase1-gra-name-from-element-id.v1')?.prefix!=='GRA-'");
 const featureManifest = {
-  schemaVersion: 'omnia.feature-manifest/v1', featureId: 'omnia.create-associate', version, sequence, displayName: '新建与关联', minimumShellVersion: '0.4.6',
+  schemaVersion: 'omnia.feature-manifest/v1', featureId: 'omnia.create-associate', version, sequence, displayName: '新建与关联', minimumShellVersion: '0.4.8',
   requiredIsolation: 'process', storeNamespace: 'create_associate', migrationPath: 'backend/migrations/001.json', surfacePath: 'frontend/surface.json', workerPath: 'middle/worker.cjs', operationPackagePath: 'connector-capability/operation.ofop',
   contractsPath:'contracts/feature-runtime.json',implementationMapPath:'contracts/implementation-map.json',testsManifestPath:'tests/manifest.json',
   assets: [
@@ -270,6 +270,7 @@ const surface = {
     { actionId: 'remove-batch-row', label: '仅从本批移除当前行', effect: 'local_state_write', enabled: false, reason: '等待 Review。', selectionMode: 'none', dependencies: [] },
     { actionId: 'revalidate-all', label: '重新检查全部', effect: 'local_state_write', enabled: false, reason: '等待 Review。', selectionMode: 'none', dependencies: [] },
     { actionId: 'back-to-upload', label: '返回上传', effect: 'local_state_write', enabled: false, reason: '等待 Review。', selectionMode: 'none', dependencies: [] },
+    { actionId: 'restart-run', label: '重新开始', effect: 'local_state_write', enabled: false, reason: '当前没有可重置的可编辑 Run。', presentation: 'restart', selectionMode: 'none', dependencies: [] },
     { actionId: 'prepare-return', label: '提交到 Comments 审核', effect: 'local_state_write', enabled: false, reason: '完成处理与问题修订后可用。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock'] }
   ]
 };

@@ -85,7 +85,7 @@
 3. 刷新会话/Pack 动作，仅在后台允许时启用；
 4. 当前 Pack 的真实名称及必要的短 ID；没有权威身份时显示“未读取”或“状态未知”，禁止沿用旧名称；
 5. 保活开关/状态及最近成功时间；
-6. 安全锁状态与入口；没有连接、Pack 或权威 Workspace 层级时禁用并显示原因；
+6. 安全锁状态与入口；没有连接、Pack 或任何权威 Workspace Facet ID 时禁用并显示原因；Section 缺失时显示未分组 Workspace；
 7. 右侧弹性空间；
 8. 全局 `− / 百分比 / +`。
 
@@ -265,7 +265,7 @@ Feature 视觉上可 dock 在第三列，但安全架构不变：
 | 刷新 | 会话/Pack read action | 已连接且没有互斥操作 | 标记失败与最近成功值，不制造新名称 |
 | 保活 | Keepalive state/action | 已连接、Transport 支持 | 显示关闭/失败及后台原因 |
 | 当前 Pack | 权威会话快照 | 取得 Pack identity | 未读取/未知；禁止沿用 v4 名称分类 |
-| 安全锁 | 权威轻抓取 + lock action | 已连接、Pack ready、Section/Workspace 层级完整 | 禁用并显示缺失条件 |
+| 安全锁 | 权威轻抓取 + lock action | 已连接、Pack ready、至少一个精确 Workspace Facet ID | 禁用并显示缺失条件；Section 只影响分组展示 |
 | 功能树 | Feature Registry/Navigation | 节点真实注册 | 未安装不显示；不健康禁用并显示原因 |
 | Feature 标签入口 | Feature Registry + SurfaceHost | installed + enabled + compatible + healthy + authorized + route registered | 禁用或报真实打开错误；不渲染假 Surface |
 | Feature docked/detached Surface | Feature Runtime + Core bootstrap | FeatureContext、会话版本与 capability 一致 | 保持加载错误或只读阻断；不使用缓存冒充可运行 |

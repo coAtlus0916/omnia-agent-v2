@@ -52,7 +52,7 @@ export interface DeclarativeFeatureAction {
   effect: 'read_only' | 'local_state_write' | 'omnia_mutation';
   enabled: boolean;
   reason: string;
-  presentation?: 'default' | 'record' | 'pause' | 'stop' | 'export' | 'refresh';
+  presentation?: 'default' | 'record' | 'pause' | 'stop' | 'export' | 'refresh' | 'restart';
   selectionMode?: 'none' | 'single' | 'multiple';
   dependencies?: Array<'remote_connector' | 'safety_lock' | 'verified_canary'>;
   canaryCapability?: {

@@ -5,7 +5,7 @@ import { packageDigest, verifyOfficialPackage } from './official-package.js';
 
 export const BUILTIN_FEATURES = Object.freeze([
   { featureId: 'omnia.recording', version: '0.3.0', filename: 'recording-0.3.0.ofp', sourceDirectory: 'recording' },
-  { featureId: 'omnia.create-associate', version: '0.2.1', filename: 'create-associate-0.2.1.ofp', sourceDirectory: 'create-associate' }
+  { featureId: 'omnia.create-associate', version: '0.2.2', filename: 'create-associate-0.2.2.ofp', sourceDirectory: 'create-associate' }
 ]);
 
 export interface BuiltinFeatureBootstrapResult {

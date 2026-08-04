@@ -15,7 +15,7 @@ import {
 } from './recording/recording-service.js';
 
 const DEFAULT_HOME = 'https://deloitteomnia.deloitte.com.cn/';
-const CONNECTOR_VERSION = '0.3.14';
+const CONNECTOR_VERSION = '0.3.15';
 const WORKSPACE_AUTHORITY_DIRECTORY_ROUTE = '/engagements/v1/facets/byEngagementIds';
 const WORKSPACE_AUTHORITY_MAX_ENGAGEMENT_ENTRIES = 1;
 const WORKSPACE_AUTHORITY_MAX_FACET_ENTRIES = 2_000;

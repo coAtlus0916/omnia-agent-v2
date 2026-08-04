@@ -170,7 +170,9 @@ export class RemoteCommandGate {
       return failed(
         request.id,
         typeof candidate?.code === 'string' ? candidate.code : 'CONNECTOR.OPERATION_FAILED',
-        error instanceof Error ? error.message : 'Remote Connector 操作失败。',
+        typeof candidate?.message === 'string' && candidate.message.trim()
+          ? candidate.message
+          : 'Remote Connector 操作失败。',
         candidate?.retryable === true
       );
     } finally {

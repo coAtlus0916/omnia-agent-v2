@@ -1,6 +1,6 @@
 export const REMOTE_CONNECTOR_PRODUCT = 'omnia-agent-v5-remote-connector';
-export const REMOTE_CONNECTOR_VERSION = '0.3.14';
-export const REMOTE_CONNECTOR_SEQUENCE = 17;
+export const REMOTE_CONNECTOR_VERSION = '0.3.15';
+export const REMOTE_CONNECTOR_SEQUENCE = 18;
 export const REMOTE_CONNECTOR_SUPERVISOR_VERSION = '0.1.0';
 export const REMOTE_CONNECTOR_CHANNEL = 'stable';
 export const REMOTE_CONNECTOR_PLATFORM = 'win32-x64';

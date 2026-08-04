@@ -78,6 +78,11 @@ const bridgeVersionCompatible = (value: string): boolean => {
   );
 };
 
+const CONNECTOR_OFFLINE_ERROR_CODES = new Set([
+  'REMOTE.CONNECTOR_OFFLINE',
+  'REMOTE.CONNECTOR_DISCONNECTED'
+]);
+
 const bridgeInspection = (
   status: BridgePairingCapabilityInspection['status'],
   reasonCode: string,
@@ -474,10 +479,20 @@ export class RemoteConnectorTransport implements ConnectorTransport {
     if (!pending) return;
     clearTimeout(pending.timer);
     this.pending.delete(response.id);
-    if (response.ok) pending.resolve(response.value);
-    else pending.reject(new AppError(
-      response.error?.code || 'REMOTE.CONNECTOR_ERROR',
-      response.error?.message || 'Remote Connector 操作失败。',
+    if (response.ok) {
+      pending.resolve(response.value);
+      return;
+    }
+    const errorCode = response.error?.code || 'REMOTE.CONNECTOR_ERROR';
+    const errorMessage = response.error?.message || 'Remote Connector 操作失败。';
+    if (CONNECTOR_OFFLINE_ERROR_CODES.has(errorCode)) {
+      this.connectorOnline = false;
+      this.stateMessage = errorMessage;
+      this.events.emit('state');
+    }
+    pending.reject(new AppError(
+      errorCode,
+      errorMessage,
       response.error?.retryable === true
     ));
   }

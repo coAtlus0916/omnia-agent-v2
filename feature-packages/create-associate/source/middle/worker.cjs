@@ -1012,7 +1012,23 @@ function createFeatureWorker(dependencies) {
       if(run?.state==='acquiring'){
         await ensureStagedPlan(latest);
         recoveredSurfacePatch=uploadSurface(latest,'已恢复待确认的系统信息文件；确认上传后才会开始校验。');
-      }else if(run&&['processing','converting','validating_output'].includes(run.state)){
+      }else if(run?.state==='processing'){
+        const checkpoint=await store.call('loadPlan',String(run.run_id));const descriptor=checkpoint?.descriptor;
+        const resumable=checkpoint?.stageState==='processing'
+          && String(checkpoint.runId||'')===String(run.run_id)
+          && String(checkpoint.traceId||'')===String(run.trace_id)
+          && descriptor?.kind==='source'
+          && String(descriptor.runId||'')===String(run.run_id)
+          && String(descriptor.traceId||'')===String(run.trace_id)
+          && String(descriptor.artifactId||'')===String(run.source_artifact_id||'');
+        if(resumable){
+          recoveredSurfacePatch=processingSurface(latest,'已恢复已确认的系统信息文件；后台校验将从尚未提交的 processing 阶段安全启动。');
+        }else{
+          const revision=await store.call('transitionRun',{runId:String(run.run_id),expectedRevision:Number(run.state_revision),toState:'failed',eventType:'run.processing_recovery_rejected',error:'Persisted processing Run and staged plan identity drifted; background validation was not replayed.',details:{interruptedStage:'processing',stageState:String(checkpoint?.stageState||''),replay:false}});
+          latest=await store.call('loadLatestRun',{});run=latest.run;const progress=progressSurface(latest);
+          recoveredSurfacePatch={stateVersion:Number(revision),status:'stale',statusMessage:`processing Run 与持久化上传计划不一致；Run 已失败关闭（revision ${revision}），未启动后台校验。请重新上传原文件建立新 Run。`,scopes:progress.scopes,items:progress.items,artifacts:(latest.artifacts||[]).filter((item)=>String(item.kind)!=='source').map((item)=>({artifactId:String(item.artifact_id),kind:String(item.kind),name:String(item.original_name),sha256:String(item.sha256),sizeBytes:Number(item.size_bytes),available:true,reason:''})),editors:[],actions:[{actionId:'stage-source-workbook',enabled:true,reason:''},{actionId:'validate-staged-upload',enabled:false,reason:'不一致的 Run 已失败关闭，禁止后台重放。'},{actionId:'restart-run',enabled:false,reason:'不一致的 Run 已失败关闭。'},{actionId:'apply-revisions',enabled:false,reason:'不一致的 Run 不允许原地修订。'},{actionId:'prepare-return',enabled:false,reason:'必须重新导入并生成新 Run。'}]};
+        }
+      }else if(run&&['converting','validating_output'].includes(run.state)){
         const interruptedStage=String(run.state); const revision=await store.call('transitionRun',{runId:String(run.run_id),expectedRevision:Number(run.state_revision),toState:'failed',eventType:'run.offline_crash_recovered',error:`Offline ${interruptedStage} stage was interrupted; no processing was replayed.`,details:{interruptedStage,replay:false}});
         latest=await store.call('loadLatestRun',{}); run=latest.run; const progress=progressSurface(latest);
         recoveredSurfacePatch={stateVersion:Number(revision),status:'stale',statusMessage:`检测到离线处理在 ${interruptedStage} 阶段中断；Run 已持久化转为 failed（revision ${revision}），未自动重放。请通过“选择用户资料”重新导入原文件以建立新 Run。`,

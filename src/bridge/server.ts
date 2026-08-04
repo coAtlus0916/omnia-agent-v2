@@ -41,6 +41,7 @@ export interface BridgeServerOptions {
   buildIdentity?: string;
   heartbeatIntervalMs?: number;
   staleSocketTimeoutMs?: number;
+  updateCheckIntervalMs?: number;
   pairingFailureWindowMs?: number;
   pairingFailurePerScope?: number;
   pairingFailureGlobal?: number;
@@ -106,9 +107,11 @@ export function createBridgeServer(options: BridgeServerOptions) {
   const buildIdentity = options.buildIdentity || process.env.OMNIA_V5_BRIDGE_BUILD_ID || `bridge-${BRIDGE_VERSION}`;
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 15_000;
   const staleSocketTimeoutMs = options.staleSocketTimeoutMs ?? 45_000;
+  const updateCheckIntervalMs = options.updateCheckIntervalMs ?? 60_000;
   if (heartbeatIntervalMs < 10 || staleSocketTimeoutMs <= heartbeatIntervalMs) {
     throw new Error('Bridge heartbeat timing is invalid.');
   }
+  if (updateCheckIntervalMs < 1_000) throw new Error('Bridge update-check timing is invalid.');
   const statePath = options.statePath || path.join(os.tmpdir(), `omnia-v5-bridge-${process.pid}-${randomUUID()}.json`);
   const store = new BridgeBindingStore(statePath);
   const wss = new WebSocketServer({ noServer: true, maxPayload: 2 * 1024 * 1024 });
@@ -131,6 +134,9 @@ export function createBridgeServer(options: BridgeServerOptions) {
   );
   const bindingState = (pairId: string, online = socketFresh(connectors.get(pairId))) => {
     const binding = store.binding(pairId);
+    const liveIdentity = online
+      ? ((connectors.get(pairId) as any)?.identity as SocketIdentity | undefined)
+      : undefined;
     return {
       schemaVersion: BRIDGE_SCHEMA,
       kind: 'state' as const,
@@ -138,7 +144,7 @@ export function createBridgeServer(options: BridgeServerOptions) {
       bridgeVersion: BRIDGE_VERSION,
       protocol: BRIDGE_PROTOCOL,
       connectorId: binding?.connectorId || '',
-      connectorVersion: binding?.connectorVersion || '',
+      connectorVersion: liveIdentity?.connectorVersion || binding?.connectorVersion || '',
       generation: binding?.generation || 0,
       message: online ? 'Remote Connector 在线。' : 'Remote Connector 离线。'
     };
@@ -452,6 +458,11 @@ export function createBridgeServer(options: BridgeServerOptions) {
       if (!activated && currentBinding?.lifecycle !== 'active') { ws.close(4003, 'binding inactive'); return; }
       connectors.get(identity.pairId)?.close(4001, 'replaced');
       connectors.set(identity.pairId, ws);
+      ws.send(JSON.stringify({
+        schemaVersion: BRIDGE_SCHEMA,
+        kind: 'update_check',
+        requestedAt: new Date().toISOString()
+      }));
       if (currentBinding?.lifecycle === 'active') notifyConnectorCommitted(currentBinding.pairId, currentBinding.generation);
       notifyShells(identity.pairId);
     } else {
@@ -554,6 +565,18 @@ export function createBridgeServer(options: BridgeServerOptions) {
   }, heartbeatIntervalMs);
   heartbeat.unref();
 
+  const updateCheck = setInterval(() => {
+    const envelope = JSON.stringify({
+      schemaVersion: BRIDGE_SCHEMA,
+      kind: 'update_check',
+      requestedAt: new Date().toISOString()
+    });
+    for (const connector of connectors.values()) {
+      if (socketFresh(connector)) connector.send(envelope);
+    }
+  }, updateCheckIntervalMs);
+  updateCheck.unref();
+
   return {
     server,
     async listen(): Promise<{ host: string; port: number }> {
@@ -567,6 +590,7 @@ export function createBridgeServer(options: BridgeServerOptions) {
     },
     async close(): Promise<void> {
       clearInterval(heartbeat);
+      clearInterval(updateCheck);
       for (const pending of requestOwners.values()) clearTimeout(pending.timer);
       requestOwners.clear();
       for (const socket of wss.clients) socket.terminate();

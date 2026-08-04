@@ -46,7 +46,7 @@ v5 Bridge 0.4.2（binding/generation/relay/heartbeat）
 
 ## Remote
 
-`0.3.4` 至 `0.3.9` Remote Connector 和 Bridge `0.4.0` 至 `0.4.3` 均为不可变 historical previous。当前配套为 Remote Connector `0.3.10 / sequence 13` 与 Bridge `0.4.4`：保持链接码/长期受保护 binding、固定签名 JSON Operation、权威 tenant/Pack identity、mutation 响应丢失语义及安全在线升级，并把安全锁授权恢复为 v4 已验证的 Pack + 精确 Workspace Facet ID；Section 仅作展示。普通重启/断线不重新配对；撤销/不可恢复进入 `repair_required`。具体真实 Pack、录制与 mutation 仍待公司电脑 canary。
+`0.3.4` 至 `0.3.10` Remote Connector 和 Bridge `0.4.0` 至 `0.4.4` 均为不可变 historical previous。当前配套为 Remote Connector `0.3.11 / sequence 14` 与 Bridge `0.4.5`：保持链接码/长期受保护 binding、固定签名 JSON Operation、权威 tenant/Pack identity、mutation 响应丢失语义及安全在线升级，并把安全锁授权恢复为 v4 已验证的 Pack + 精确 Workspace Facet ID；Section 仅作展示。Bridge 仅能发送无 URL、无脚本、无执行参数的 `update_check` 控制信号，Connector 只把它转换为本机 Supervisor 的 pinned stable 检查请求；真实下载、版本序列、安全窗口、probation 和回滚仍由 Supervisor owner。普通重启/断线不重新配对；撤销/不可恢复进入 `repair_required`。具体真实 Pack、录制与 mutation 仍待公司电脑 canary。
 
 ## AI
 

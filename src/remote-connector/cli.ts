@@ -164,7 +164,9 @@ function stop(): void {
 }
 
 function checkUpdate(): void {
-  install();
+  ensureRemoteConnectorDirectories(paths);
+  const state = readManagedState(paths);
+  if (!state.current) install();
   const command = supervisorCommand();
   const result = spawnSync(command.node, [command.script, '--once'], {
     windowsHide: true,

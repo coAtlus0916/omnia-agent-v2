@@ -15,7 +15,7 @@ import {
 } from './recording/recording-service.js';
 
 const DEFAULT_HOME = 'https://deloitteomnia.deloitte.com.cn/';
-const CONNECTOR_VERSION = '0.3.10';
+const CONNECTOR_VERSION = '0.3.11';
 const WORKSPACE_FACET_TYPE = '8dba1267-9c45-4d88-a2e3-a1619bd905c2';
 
 type FetchLike = typeof fetch;

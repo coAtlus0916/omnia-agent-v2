@@ -3,7 +3,7 @@ import type { ConnectorRequest, ConnectorResponse } from '../connector/contracts
 export const BRIDGE_SCHEMA = 'omnia.v5.bridge/v1' as const;
 export const BRIDGE_PRODUCT = 'omnia-agent-v5' as const;
 export const BRIDGE_PROTOCOL = 'omnia.v5.remote-connector/v2' as const;
-export const BRIDGE_VERSION = '0.4.4' as const;
+export const BRIDGE_VERSION = '0.4.5' as const;
 export const BRIDGE_PAIRING_CODE_PATTERN = /^\d{4}$/u;
 export const BRIDGE_PAIRING_CODE_TTL_MS = 2 * 60_000;
 export const BRIDGE_HEALTH_PRODUCT = 'omnia-agent-v5-bridge' as const;
@@ -139,4 +139,10 @@ export interface BridgeBindingCommittedEnvelope {
   generation: number;
 }
 
-export type BridgeEnvelope = BridgeCommandEnvelope | BridgeCancelEnvelope | BridgeResultEnvelope | BridgeStateEnvelope | BridgeBindingCommittedEnvelope;
+export interface BridgeUpdateCheckEnvelope {
+  schemaVersion: typeof BRIDGE_SCHEMA;
+  kind: 'update_check';
+  requestedAt: string;
+}
+
+export type BridgeEnvelope = BridgeCommandEnvelope | BridgeCancelEnvelope | BridgeResultEnvelope | BridgeStateEnvelope | BridgeBindingCommittedEnvelope | BridgeUpdateCheckEnvelope;

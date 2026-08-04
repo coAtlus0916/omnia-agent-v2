@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { WebSocket } from 'ws';
 import { WorkstationOmniaSession, ConnectorOperationError } from '../connector/workstation-omnia-session.js';
 import type { ConnectorRequest } from '../connector/contracts.js';
@@ -78,6 +79,10 @@ function status(): void {
   });
 }
 
+function requestOnlineUpdate(): void {
+  fs.writeFileSync(paths.updateRequest, new Date().toISOString(), { encoding: 'utf8', mode: 0o600 });
+}
+
 async function dispatch(request: ConnectorRequest): Promise<unknown> {
   switch (request.operation) {
     case 'health': return connector.health();
@@ -151,6 +156,10 @@ async function runSocket(): Promise<void> {
               candidateFailureCount = 0;
             }
           }
+          return;
+        }
+        if (envelope.kind === 'update_check') {
+          requestOnlineUpdate();
           return;
         }
         if (envelope.kind === 'cancel') {

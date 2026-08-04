@@ -91,7 +91,8 @@ function createFeatureWorker(ports){
         if(observed.deleted!==true)fail('DELETE.READBACK_PENDING','Authoritative readback does not yet prove deletion; the committed command will not be replayed.');
         await store.call('recordReturnEvidence',{runId:plan.runId,commandId:command.commandId,evidenceType:'readback',commandState:'readback_verified',payload:observed,receiptId:observed.__operationReceiptId});
       }catch(error){return markUncertain(plan,index,command.commandId,intent,error);}
-      await store.call('projectVerifiedDeletion',{runId:plan.runId,commandId:command.commandId,binding:b,workspaceId:t.workspace,objectType:'Information',objectId:t.objectId});
+      try{await store.call('projectVerifiedDeletion',{runId:plan.runId,commandId:command.commandId,binding:b,workspaceId:t.workspace,objectType:'Information',objectId:t.objectId});}
+      catch(error){plan.results.push({objectId:t.objectId,state:'deleted_projection_failed',commandId:command.commandId});await failPlan(plan,error);return plan;}
       plan.results.push({objectId:t.objectId,state:'deleted',commandId:command.commandId});plan.nextIndex=index+1;await save(plan);
     }
     await store.call('finishReturn',{runId:plan.runId,outcome:'succeeded'});plan.state='completed';plan.stateVersion+=1;await save(plan);
@@ -112,7 +113,8 @@ function createFeatureWorker(ports){
       if(!observed||String(observed.informationId)!==t.informationId)fail('DELETE.READBACK_IDENTITY_DRIFT','Authoritative reconcile returned another target.');
       if(observed.deleted!==true)fail('DELETE.READBACK_PENDING','Authoritative reconcile does not yet prove deletion; the committed command will not be replayed.');
       await store.call('recordReturnEvidence',{runId:plan.runId,commandId,evidenceType:'reconcile',commandState:'readback_verified',payload:observed,receiptId:observed.__operationReceiptId});
-      await store.call('projectVerifiedDeletion',{runId:plan.runId,commandId,binding:b,workspaceId:t.workspace,objectType:'Information',objectId:t.objectId});
+      try{await store.call('projectVerifiedDeletion',{runId:plan.runId,commandId,binding:b,workspaceId:t.workspace,objectType:'Information',objectId:t.objectId});}
+      catch(error){plan.results.push({objectId:t.objectId,state:'deleted_projection_failed',commandId});await failPlan(plan,error);return plan;}
       plan.results.push({objectId:t.objectId,state:'deleted',commandId});const next=index+1;delete plan.uncertain;
       await store.call('transitionRun',{runId:plan.runId,expectedRevision:Number(run.state_revision)+1,toState:'returning',eventType:'delete.reconcile_applied'});
       return execute(plan,context,next);

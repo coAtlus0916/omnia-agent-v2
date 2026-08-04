@@ -317,6 +317,10 @@ function parseManifest(envelope: OfficialPackageEnvelope): FeatureManifest {
 
 function parseSurface(envelope: OfficialPackageEnvelope, manifest: FeatureManifest): DeclarativeFeatureSurface {
   const value = parseJson(packageFile(envelope, manifest.surfacePath), 'Declarative Feature surface');
+  return validateSurface(value, manifest);
+}
+
+function validateSurface(value: unknown, manifest: FeatureManifest): DeclarativeFeatureSurface {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Declarative Feature surface is invalid.');
   exactKeys(value, [
     'schemaVersion',
@@ -339,7 +343,8 @@ function parseSurface(envelope: OfficialPackageEnvelope, manifest: FeatureManife
     ...(Object.hasOwn(value, 'editors') ? ['editors'] : []),
     ...(Object.hasOwn(value, 'workflow') ? ['workflow'] : []),
     ...(Object.hasOwn(value, 'progress') ? ['progress'] : []),
-    ...(Object.hasOwn(value, 'issues') ? ['issues'] : [])
+    ...(Object.hasOwn(value, 'issues') ? ['issues'] : []),
+    ...(Object.hasOwn(value, 'review') ? ['review'] : [])
   ], 'Declarative Feature surface');
   const surface = value as DeclarativeFeatureSurface;
   if (
@@ -364,6 +369,7 @@ function parseSurface(envelope: OfficialPackageEnvelope, manifest: FeatureManife
     || (surface.artifacts !== undefined && !Array.isArray(surface.artifacts))
     || (surface.editors !== undefined && !Array.isArray(surface.editors))
     || (surface.issues !== undefined && !Array.isArray(surface.issues))
+    || (surface.review !== undefined && (!surface.review || typeof surface.review !== 'object' || Array.isArray(surface.review)))
   ) throw new Error('Declarative Feature surface contract is invalid.');
   for (const action of surface.actions) {
     if (
@@ -506,6 +512,71 @@ function parseSurface(envelope: OfficialPackageEnvelope, manifest: FeatureManife
       || !['warning', 'error'].includes(issue.severity) || typeof issue.elementId !== 'string'
       || typeof issue.fieldKey !== 'string' || typeof issue.message !== 'string' || issue.message.length < 1 || issue.message.length > 500) throw new Error('Declarative issue fields are invalid.');
   }
+  if (surface.review !== undefined) {
+    const review = surface.review;
+    exactKeys(review, ['selectedKind', 'selectedRowKey', 'elementTypes', 'elements', 'fields', 'issueOrder'], 'Declarative review');
+    if (!['APP', 'DB', 'OS', 'TOOL'].includes(review.selectedKind)
+      || typeof review.selectedRowKey !== 'string'
+      || !Array.isArray(review.elementTypes) || review.elementTypes.length > 4
+      || !Array.isArray(review.elements) || review.elements.length > 2_000
+      || !Array.isArray(review.fields) || review.fields.length > 20_000
+      || !Array.isArray(review.issueOrder) || review.issueOrder.length > 2_000) throw new Error('Declarative review fields are invalid.');
+    const kinds = new Set<string>();
+    for (const type of review.elementTypes) {
+      exactKeys(type, ['kind', 'label', 'count', 'issueCount', 'warningCount', 'disabled', 'reason'], 'Declarative review element type');
+      if (!['APP', 'DB', 'OS', 'TOOL'].includes(type.kind) || kinds.has(type.kind)
+        || typeof type.label !== 'string' || type.label.length < 1 || type.label.length > 80
+        || !Number.isSafeInteger(type.count) || type.count < 0
+        || !Number.isSafeInteger(type.issueCount) || type.issueCount < 0
+        || !Number.isSafeInteger(type.warningCount) || type.warningCount < 0
+        || typeof type.disabled !== 'boolean' || typeof type.reason !== 'string' || type.reason.length > 500) throw new Error('Declarative review element type fields are invalid.');
+      kinds.add(type.kind);
+    }
+    const rowKeys = new Set<string>();
+    for (const element of review.elements) {
+      exactKeys(element, ['rowKey', 'kind', 'elementId', 'label', 'sourceSheet', 'sourceRow', 'issueCount', 'warningCount', 'derivedDisplay', 'blocking', 'excluded'], 'Declarative review element');
+      if (typeof element.rowKey !== 'string' || element.rowKey.length < 1 || rowKeys.has(element.rowKey)
+        || !['APP', 'DB', 'OS', 'TOOL'].includes(element.kind)
+        || typeof element.elementId !== 'string' || element.elementId.length > 200
+        || typeof element.label !== 'string' || element.label.length < 1 || element.label.length > 500
+        || typeof element.sourceSheet !== 'string' || element.sourceSheet.length > 200
+        || !Number.isSafeInteger(element.sourceRow) || element.sourceRow < 0
+        || !Number.isSafeInteger(element.issueCount) || element.issueCount < 0
+        || !Number.isSafeInteger(element.warningCount) || element.warningCount < 0
+        || typeof element.derivedDisplay !== 'string' || element.derivedDisplay.length > 500
+        || typeof element.blocking !== 'boolean' || typeof element.excluded !== 'boolean') throw new Error('Declarative review element fields are invalid.');
+      rowKeys.add(element.rowKey);
+    }
+    if (review.selectedRowKey && !rowKeys.has(review.selectedRowKey)) throw new Error('Declarative review selected row is invalid.');
+    const fieldKeys = new Set<string>();
+    for (const field of review.fields) {
+      exactKeys(field, ['rowKey', 'kind', 'fieldKey', 'rawFieldKey', 'label', 'expectedRevision', 'inputKind', 'currentValue', 'allowedValues', 'required', 'maxLength', 'editable', 'message', 'sourceSheet', 'sourceRow', 'derivation'], 'Declarative review field');
+      if (!rowKeys.has(field.rowKey) || !['APP', 'DB', 'OS', 'TOOL'].includes(field.kind)
+        || typeof field.fieldKey !== 'string' || field.fieldKey.length < 1 || field.fieldKey.length > 500 || fieldKeys.has(field.fieldKey)
+        || typeof field.rawFieldKey !== 'string' || field.rawFieldKey.length > 200
+        || typeof field.label !== 'string' || field.label.length < 1 || field.label.length > 200
+        || !Number.isSafeInteger(field.expectedRevision) || field.expectedRevision < 0
+        || !['text', 'enum', 'textarea', 'readonly'].includes(field.inputKind)
+        || typeof field.currentValue !== 'string' || field.currentValue.length > 10_000
+        || !Array.isArray(field.allowedValues) || field.allowedValues.length > 200
+        || field.allowedValues.some((item) => typeof item !== 'string' || item.length > 200)
+        || typeof field.required !== 'boolean' || !Number.isSafeInteger(field.maxLength) || field.maxLength < 1 || field.maxLength > 10_000
+        || typeof field.editable !== 'boolean' || typeof field.message !== 'string' || field.message.length > 1_000
+        || typeof field.sourceSheet !== 'string' || field.sourceSheet.length > 200
+        || !Number.isSafeInteger(field.sourceRow) || field.sourceRow < 0
+        || typeof field.derivation !== 'string' || field.derivation.length > 500) throw new Error('Declarative review field fields are invalid.');
+      fieldKeys.add(field.fieldKey);
+    }
+    const reviewIssueIds = new Set<string>();
+    for (const issue of review.issueOrder) {
+      exactKeys(issue, ['issueId', 'rowKey', 'fieldKey', 'severity', 'message'], 'Declarative review issue');
+      if (typeof issue.issueId !== 'string' || issue.issueId.length < 1 || reviewIssueIds.has(issue.issueId)
+        || (issue.rowKey !== '' && !rowKeys.has(issue.rowKey)) || typeof issue.fieldKey !== 'string'
+        || !['warning', 'error'].includes(issue.severity)
+        || typeof issue.message !== 'string' || issue.message.length < 1 || issue.message.length > 500) throw new Error('Declarative review issue fields are invalid.');
+      reviewIssueIds.add(issue.issueId);
+    }
+  }
   const scopeIds = new Set<string>();
   for (const scope of surface.scopes) {
     if (!scope || typeof scope !== 'object' || Array.isArray(scope)) throw new Error('Declarative Feature scope is invalid.');
@@ -613,6 +684,72 @@ function parseSurface(envelope: OfficialPackageEnvelope, manifest: FeatureManife
     ) throw new Error('Declarative Feature editor fields are invalid.');
   }
   return surface;
+}
+
+const CLEARABLE_SURFACE_FIELDS = new Set(['recorder', 'workflow', 'progress', 'issues', 'review', 'artifacts', 'editors']);
+const WORKER_SURFACE_PATCH_FIELDS = new Set([
+  'stateVersion', 'status', 'statusMessage', 'scopes', 'items', 'selectedItemIds', 'search', 'actions',
+  'recorder', 'workflow', 'progress', 'issues', 'review', 'artifacts', 'editors', 'clearFields'
+]);
+
+function applyWorkerSurfacePatch(
+  base: DeclarativeFeatureSurface,
+  input: unknown,
+  manifest: FeatureManifest
+): DeclarativeFeatureSurface {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Feature worker Surface patch is invalid.');
+  const patch = input as Record<string, unknown>;
+  if (Object.keys(patch).some((key) => !WORKER_SURFACE_PATCH_FIELDS.has(key))) {
+    throw new Error('Feature worker Surface patch contains a forbidden field.');
+  }
+  const clearFields = patch.clearFields;
+  if (clearFields !== undefined && (
+    !Array.isArray(clearFields)
+    || clearFields.length > CLEARABLE_SURFACE_FIELDS.size
+    || new Set(clearFields).size !== clearFields.length
+    || clearFields.some((field) => typeof field !== 'string' || !CLEARABLE_SURFACE_FIELDS.has(field))
+  )) throw new Error('Feature worker requested invalid Surface field clearing.');
+  let actions = base.actions;
+  if (patch.actions !== undefined) {
+    if (!Array.isArray(patch.actions) || patch.actions.length > base.actions.length) throw new Error('Feature worker action patch is invalid.');
+    const seen = new Set<string>();
+    const actionPatches = patch.actions.map((candidate) => {
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) throw new Error('Feature worker action patch is invalid.');
+      const actionPatch = candidate as Record<string, unknown>;
+      if (Object.keys(actionPatch).some((key) => !['actionId', 'enabled', 'reason', 'label'].includes(key))
+        || typeof actionPatch.actionId !== 'string' || seen.has(actionPatch.actionId)
+        || !base.actions.some((declared) => declared.actionId === actionPatch.actionId)
+        || typeof actionPatch.enabled !== 'boolean' || typeof actionPatch.reason !== 'string'
+        || (actionPatch.label !== undefined && (typeof actionPatch.label !== 'string' || actionPatch.label.length < 1))) {
+        throw new Error('Feature worker action patch is invalid.');
+      }
+      seen.add(actionPatch.actionId);
+      return actionPatch;
+    });
+    actions = base.actions.map((declared) => {
+      const actionPatch = actionPatches.find((candidate) => candidate.actionId === declared.actionId);
+      return actionPatch ? {
+        ...declared,
+        enabled: actionPatch.enabled as boolean,
+        reason: actionPatch.reason as string,
+        ...(actionPatch.label !== undefined ? { label: actionPatch.label as string } : {})
+      } : declared;
+    });
+  }
+  const { clearFields: _clearFields, actions: _actions, stateVersion: requestedStateVersion, ...surfacePatch } = patch;
+  const next = {
+    ...base,
+    ...surfacePatch,
+    schemaVersion: base.schemaVersion,
+    featureId: base.featureId,
+    featureVersion: base.featureVersion,
+    surfaceId: base.surfaceId,
+    stateVersion: Math.max(base.stateVersion + 1, Number(requestedStateVersion || 0)),
+    actions
+  } as DeclarativeFeatureSurface;
+  const cleared = Array.isArray(clearFields) ? clearFields as string[] : [];
+  for (const field of cleared) delete (next as unknown as Record<string, unknown>)[field];
+  return validateSurface(next, manifest);
 }
 
 function validateDocumentation(envelope: OfficialPackageEnvelope, manifest: FeatureManifest): string {
@@ -1831,7 +1968,7 @@ export class FeaturePackageManager {
     let restoredPersistedState = false;
     if (persisted && persisted.feature_version === head.featureVersion && persisted.surface_id === installed.surface.surfaceId) {
       try {
-        const candidate = JSON.parse(persisted.payload_json) as DeclarativeFeatureSurface;
+        const candidate = validateSurface(JSON.parse(persisted.payload_json) as unknown, installed.manifest);
         if (
           candidate.featureId === head.featureId
           && candidate.featureVersion === head.featureVersion
@@ -1842,57 +1979,16 @@ export class FeaturePackageManager {
           restored = candidate;
           restoredPersistedState = true;
         }
-      } catch { /* corrupted state fails closed to the immutable package surface */ }
+      } catch { /* incompatible/corrupt projection is discarded; durable Run and evidence remain untouched */ }
     }
-    if (!restoredPersistedState) this.persistSurface(restored);
     if (health.recoveredSurfacePatch) {
-      const patch = health.recoveredSurfacePatch as Record<string, unknown>;
-      if (patch.status !== 'stale' || typeof patch.statusMessage !== 'string' || !Array.isArray(patch.scopes) || !Array.isArray(patch.items)) {
-        throw new Error('Recovered Feature surface patch is invalid.');
-      }
-      const recoveryScopes=patch.scopes as Array<Record<string,unknown>>; const recoveryItems=patch.items as Array<Record<string,unknown>>;
-      const recoveryActionPatches=Array.isArray(patch.actions)?patch.actions as Array<unknown>:null;
-      const scopeIds=new Set(recoveryScopes.map((scope)=>String(scope.id||'')));
-      if(scopeIds.has('')||scopeIds.size!==recoveryScopes.length||recoveryScopes.some((scope)=>typeof scope.label!=='string'||typeof scope.parentLabel!=='string'||typeof scope.parentId!=='string'||typeof scope.selected!=='boolean')
-        ||recoveryItems.some((item)=>!scopeIds.has(String(item.scopeId||''))||typeof item.id!=='string'||typeof item.title!=='string'||typeof item.subtitle!=='string'||typeof item.selectable!=='boolean'||typeof item.disabledReason!=='string'||typeof item.concurrencyToken!=='string')) throw new Error('Recovered Feature surface structure is invalid.');
-      const patchedActions = recoveryActionPatches
-        ? restored.actions.map((declared) => {
-          const actionPatch = recoveryActionPatches.find((candidate: unknown) => (
-            typeof candidate === 'object' && candidate !== null
-            && (candidate as Record<string, unknown>).actionId === declared.actionId
-          )) as Record<string, unknown> | undefined;
-          return actionPatch ? {
-            ...declared,
-            enabled: actionPatch.enabled === true,
-            reason: typeof actionPatch.reason === 'string' ? actionPatch.reason : declared.reason
-          } : declared;
-        })
-        : restored.actions;
-      const recoveryPayload = {
-        status: patch.status,
-        statusMessage: patch.statusMessage,
-        scopes: recoveryScopes as unknown as DeclarativeFeatureSurface['scopes'],
-        items: recoveryItems as unknown as DeclarativeFeatureSurface['items'],
-        artifacts: Array.isArray(patch.artifacts) ? patch.artifacts : [],
-        editors: Array.isArray(patch.editors) ? patch.editors : [],
-        actions: patchedActions
-      };
-      const alreadyRestored = restored.status === recoveryPayload.status
-        && restored.statusMessage === recoveryPayload.statusMessage
-        && canonicalJson(restored.scopes) === canonicalJson(recoveryPayload.scopes)
-        && canonicalJson(restored.items) === canonicalJson(recoveryPayload.items)
-        && canonicalJson(restored.artifacts || []) === canonicalJson(recoveryPayload.artifacts)
-        && canonicalJson(restored.editors || []) === canonicalJson(recoveryPayload.editors)
-        && canonicalJson(restored.actions) === canonicalJson(recoveryPayload.actions);
-      if (!alreadyRestored) {
-        restored = {
-          ...restored,
-          ...recoveryPayload,
-          selectedItemIds: [],
-          stateVersion: Math.max(restored.stateVersion + 1, Number(patch.stateVersion || 0))
-        } as DeclarativeFeatureSurface;
-        this.persistSurface(restored);
-      }
+      // A persisted Surface is only a disposable projection. Rebuild it from the immutable
+      // package declaration plus the worker's current durable Run projection so an old UI
+      // shape can never poison Feature activation or overwrite Run/Artifact/evidence state.
+      restored = applyWorkerSurfacePatch(installed.surface, health.recoveredSurfacePatch, installed.manifest);
+      this.persistSurface(restored);
+    } else if (!restoredPersistedState) {
+      this.persistSurface(restored);
     }
     if (health.recoveredMessageCard) {
       const message=health.recoveredMessageCard as import('../../shared/feature-contracts.js').FeatureMessageCard;

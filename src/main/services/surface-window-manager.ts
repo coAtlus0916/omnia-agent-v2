@@ -75,6 +75,17 @@ export class SurfaceWindowManager {
     target.send('feature:bootstrap', surface);
   }
 
+  private bootstrapMatching(surface: DeclarativeFeatureSurface): void {
+    for (const state of this.states.values()) {
+      if (
+        state.placement !== 'closed'
+        && state.featureId === surface.featureId
+        && state.featureVersion === surface.featureVersion
+        && state.surfaceId === surface.surfaceId
+      ) this.bootstrap(state, surface);
+    }
+  }
+
   private async load(state: SurfaceWindowState, surface: DeclarativeFeatureSurface): Promise<void> {
     const contents = state.view?.webContents || state.window?.webContents;
     if (!contents) return;
@@ -186,7 +197,17 @@ export class SurfaceWindowManager {
       state.featureVersion !== request.featureVersion || state.surfaceId !== request.surfaceId) {
       throw new Error('Feature Surface context is not authorized or has drifted.');
     }
-    return this.invokeFeatureAction(request);
+    try {
+      const snapshot = await this.invokeFeatureAction(request);
+      const next = snapshot.features.surface;
+      if (next && next.featureId === request.featureId && next.featureVersion === request.featureVersion
+        && next.surfaceId === request.surfaceId) this.bootstrapMatching(next);
+      return snapshot;
+    } catch (error) {
+      const latest = this.currentSurface(state);
+      if (latest) this.bootstrapMatching(latest);
+      throw error;
+    }
   }
 
   selfContext(senderId: number): SurfaceSelfContext {
@@ -224,6 +245,13 @@ export class SurfaceWindowManager {
     if (!state || state.placement === 'closed' || state.featureId !== request.featureId
       || state.featureVersion !== request.featureVersion || state.surfaceId !== request.surfaceId) {
       throw new Error('Feature artifact input context is not authorized or has drifted.');
+    }
+    const current = this.currentSurface(state);
+    const action = current?.actions.find((candidate) => candidate.actionId === request.actionId);
+    if (!current || !action || action.input?.kind !== 'open_file' || !action.enabled
+      || (current.workflow && current.workflow.currentStepId !== 'upload')) {
+      if (current) this.bootstrapMatching(current);
+      throw new Error('当前 Feature 已进入校验或回传步骤；请先点击“返回上传”再选择文件。');
     }
   }
 

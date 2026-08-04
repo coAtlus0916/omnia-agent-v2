@@ -30,6 +30,8 @@ interface SurfaceWindowState extends Omit<SurfaceOpenInput, 'placement'> {
 export class SurfaceWindowManager {
   private readonly states = new Map<string, SurfaceWindowState>();
   private readonly senderInstances = new Map<number, string>();
+  private readonly backgroundActionAttempts = new Set<string>();
+  private readonly backgroundActionsInFlight = new Map<string, Promise<ShellSnapshot>>();
   private readonly featureHtml: string;
   private activeDockedInstanceId: string | null = null;
   private overlayActive = false;
@@ -51,6 +53,8 @@ export class SurfaceWindowManager {
     for (const state of this.states.values()) this.close(state.instanceId);
     this.states.clear();
     this.senderInstances.clear();
+    this.backgroundActionAttempts.clear();
+    this.backgroundActionsInFlight.clear();
   }
 
   private selectedSurface(input: Pick<SurfaceOpenInput, 'featureId' | 'featureVersion' | 'surfaceId'>): DeclarativeFeatureSurface | null {
@@ -70,6 +74,21 @@ export class SurfaceWindowManager {
       throw new Error('Feature Surface cached authorization identity has drifted.');
     }
     return state.authorizedSurface;
+  }
+
+  private backgroundActionKey(surface: DeclarativeFeatureSurface, actionId: string): string {
+    return `${surface.featureId}\u0000${surface.featureVersion}\u0000${surface.surfaceId}\u0000${surface.stateVersion}\u0000${actionId}`;
+  }
+
+  private rememberBackgroundActionAttempt(key: string): void {
+    this.backgroundActionAttempts.add(key);
+    // A Feature can advance through many revisions in a long-lived Shell. Keep
+    // enough history to reject stale duplicate renderer deliveries without
+    // allowing this process-local guard to grow without bound.
+    if (this.backgroundActionAttempts.size > 512) {
+      const oldest = this.backgroundActionAttempts.values().next().value as string | undefined;
+      if (oldest) this.backgroundActionAttempts.delete(oldest);
+    }
   }
 
   private webPreferences(partition: string): Electron.WebPreferences {
@@ -224,17 +243,42 @@ export class SurfaceWindowManager {
       throw new Error('Feature Surface is not the current Core-selected instance; focus it before running an action.');
     }
     state.authorizedSurface = authoritative;
-    try {
-      const snapshot = await this.invokeFeatureAction(request);
-      const next = snapshot.features.surface;
-      if (!next || !this.matches(state, next)) {
-        throw new Error('Feature action returned a drifted Surface identity.');
+    const declaredAction = authoritative.actions.find((action) => action.actionId === request.actionId);
+    const backgroundKey = request.expectedStateVersion === authoritative.stateVersion
+      && declaredAction?.presentation === 'background'
+      && declaredAction.enabled
+      && declaredAction.effect !== 'omnia_mutation'
+      ? this.backgroundActionKey(authoritative, request.actionId)
+      : '';
+    if (backgroundKey) {
+      const pending = this.backgroundActionsInFlight.get(backgroundKey);
+      if (pending) return pending;
+      if (this.backgroundActionAttempts.has(backgroundKey)) return this.getSnapshot();
+    }
+    const execute = async (): Promise<ShellSnapshot> => {
+      try {
+        const snapshot = await this.invokeFeatureAction(request);
+        const next = snapshot.features.surface;
+        if (!next || !this.matches(state, next)) {
+          throw new Error('Feature action returned a drifted Surface identity.');
+        }
+        this.bootstrapMatching(next);
+        return snapshot;
+      } catch (error) {
+        this.bootstrapMatching(this.cachedSurface(state));
+        throw error;
       }
-      this.bootstrapMatching(next);
-      return snapshot;
-    } catch (error) {
-      this.bootstrapMatching(this.cachedSurface(state));
-      throw error;
+    };
+    if (!backgroundKey) return execute();
+    this.rememberBackgroundActionAttempt(backgroundKey);
+    const pending = execute();
+    this.backgroundActionsInFlight.set(backgroundKey, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this.backgroundActionsInFlight.get(backgroundKey) === pending) {
+        this.backgroundActionsInFlight.delete(backgroundKey);
+      }
     }
   }
 

@@ -334,11 +334,15 @@ function syncBusyState(): void {
 function setBusy(next: boolean): void {
   busy = next;
   syncBusyState();
+  if (!next) scheduleBackgroundActions();
 }
 
 function renderIfChanged(): void {
   if (renderedSurface !== surfaceProjection(surface) || renderedError !== errorMessage) render();
-  else syncBusyState();
+  else {
+    syncBusyState();
+    scheduleBackgroundActions();
+  }
 }
 
 function render(): void {
@@ -384,29 +388,41 @@ function render(): void {
   renderHostToolbar();
   bindInteractions(inputAction);
   syncBusyState();
-  scheduleBackgroundAction();
+  scheduleBackgroundActions();
 }
 
-function scheduleBackgroundAction(): void {
+function backgroundActionKey(
+  projection: Pick<DeclarativeFeatureSurface, 'featureId' | 'featureVersion' | 'surfaceId' | 'stateVersion'>,
+  actionId: string
+): string {
+  return `${projection.featureId}\u0000${projection.featureVersion}\u0000${projection.surfaceId}\u0000${projection.stateVersion}\u0000${actionId}`;
+}
+
+function scheduleBackgroundActions(): void {
   if (!surface || busy) return;
-  const action = surface.actions.find((candidate) => candidate.presentation === 'background' && candidate.enabled);
-  if (!action || action.effect === 'omnia_mutation') return;
   const projection = {featureId:surface.featureId,featureVersion:surface.featureVersion,surfaceId:surface.surfaceId,stateVersion:surface.stateVersion};
-  const key = `${projection.featureId}\u0000${projection.featureVersion}\u0000${projection.surfaceId}\u0000${projection.stateVersion}\u0000${action.actionId}`;
-  if (backgroundActionAttempts.has(key) || backgroundActionScheduled.has(key)) return;
-  backgroundActionScheduled.add(key);
-  requestAnimationFrame(() => {
-    backgroundActionScheduled.delete(key);
-    if (!surface
-      || surface.featureId !== projection.featureId
-      || surface.featureVersion !== projection.featureVersion
-      || surface.surfaceId !== projection.surfaceId
-      || surface.stateVersion !== projection.stateVersion
-      || surface.actions.find((candidate) => candidate.actionId === action.actionId)?.enabled !== true) return;
-    if (busy) { requestAnimationFrame(scheduleBackgroundAction); return; }
-    backgroundActionAttempts.add(key);
-    void invoke(action.actionId, {});
-  });
+  for (const action of surface.actions.filter((candidate) => candidate.presentation === 'background' && candidate.enabled && candidate.effect !== 'omnia_mutation')) {
+    const key = backgroundActionKey(projection, action.actionId);
+    if (backgroundActionAttempts.has(key) || backgroundActionScheduled.has(key)) continue;
+    backgroundActionScheduled.add(key);
+    requestAnimationFrame(() => {
+      backgroundActionScheduled.delete(key);
+      const currentAction = surface?.actions.find((candidate) => candidate.actionId === action.actionId);
+      if (!surface
+        || surface.featureId !== projection.featureId
+        || surface.featureVersion !== projection.featureVersion
+        || surface.surfaceId !== projection.surfaceId
+        || surface.stateVersion !== projection.stateVersion
+        || currentAction?.presentation !== 'background'
+        || currentAction.enabled !== true
+        || currentAction.effect === 'omnia_mutation') return;
+      // Busy work will call scheduleBackgroundActions again when it releases the
+      // renderer. Do not consume this revision/action attempt before that point.
+      if (busy) return;
+      backgroundActionAttempts.add(key);
+      void invoke(action.actionId, {});
+    });
+  }
 }
 
 async function chooseAndStageInput(inputAction: DeclarativeFeatureAction): Promise<void> {

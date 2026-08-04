@@ -140,8 +140,8 @@ const runtimeBaseBytes = workerModule.buildRuntimeWorkbook(
 
 const userTemplateBytes = await readFile(userTemplatePath);
 if (userTemplateBytes.length < 1 || userTemplateBytes.length > 64 * 1024 * 1024) throw new Error('Phase1 user template V3 size is invalid.');
-const version = '0.2.7'; const sequence = 9;
-const route = (stepId, method, routeTemplate, parameters, bodyMode = 'none') => ({ stepId, method, routeTemplate, parameters, bodyMode, bodyParameter: '' });
+const version = '0.2.8'; const sequence = 10;
+const route = (stepId, method, routeTemplate, parameters, bodyMode = 'none', bodyParameter = '') => ({ stepId, method, routeTemplate, parameters, bodyMode, bodyParameter });
 const applicationIdentityRoutes = () => [
   route('workitem-directory', 'POST', '/work/v1/WorkQueries/getWorkitemDetails', [], 'signed_json'),
   route('gra-directory', 'POST', '/rapr/v0/engagements/{engagementId}/riskassessments/commonAccounts', [], 'signed_json'),
@@ -153,8 +153,7 @@ const applicationIdentityRoutes = () => [
 const operations = [
   { operationId: 'omnia.create-associate.authority.resolve.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.authority-resolve-request/v1', responseSchema: 'omnia.create-associate.authority-resolve-response/v1', enabledByDefault: true, grantsMutationPermit: false, routes: [
     route('authority-hierarchy', 'GET', '/engagements/v1/{engagementId}/headers/hierarchy', []),
-    route('authority-sections', 'GET', '/work/v1/engagements/{engagementId}/liveindex/menu/sections', []),
-    route('authority-workspaces', 'GET', '/engagements/v1/engagements/{engagementId}/facets/byFacetType/d0c7e20c-1451-48d2-9dd5-8a6f2a51bfc0/?includeDeleted=true', []),
+    route('authority-directory', 'POST', '/engagements/v1/facets/byEngagementIds', [{ name: 'engagementId', type: 'guid' }], 'parameter_array', 'engagementId'),
     route('authority-gra-directory', 'POST', '/rapr/v0/engagements/{engagementId}/riskassessments/commonAccounts', [], 'signed_json')
   ] },
   { operationId: 'omnia.create-associate.risk-control.catalog.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.risk-control-catalog-request/v1', responseSchema: 'omnia.create-associate.risk-control-catalog-response/v1', enabledByDefault: true, grantsMutationPermit: false, routes: [

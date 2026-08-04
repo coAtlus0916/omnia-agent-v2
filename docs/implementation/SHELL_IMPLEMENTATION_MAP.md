@@ -1,7 +1,7 @@
 # Shell Baseline 实现映射
 
 版本：`0.4.12`
-状态：Remote-only 发布源码；内置 recording 0.3.0、create-associate 0.2.7 与 delete-elements 0.2.0，均由 builtin bootstrap 自动安装/升级。0.4.12 固定宿主加载启动器构建的工作区代码；安全锁展示与全局范围只使用 Omnia 真实 `CustomWorkspaceGroup → CustomWorkspace.parentId`。Connector 仅执行固定读取和签名 Operation；Core/Worker 处理校验、规则与持久化。
+状态：Remote-only 发布源码；内置 recording 0.3.0、create-associate 0.2.8 与 delete-elements 0.2.0，均由 builtin bootstrap 自动安装/升级。0.4.12 固定宿主加载启动器构建的工作区代码；安全锁与 create-associate authority 只使用 Omnia 真实 `CustomWorkspaceGroup → CustomWorkspace.parentId`。Connector 仅执行固定读取和签名 Operation；Core/Worker 处理校验、规则与持久化。
 
 SurfaceWindowManager 在 Feature action 成功或失败后向所有同 Feature/版本/Surface 实例广播 Core 最新投影。每个已授权实例保存自己的最后一份 `DeclarativeFeatureSurface`；聚焦、dock、minimize、restore 和已有实例再次 open 只能使用身份匹配的实例缓存，不得从全局 selected Surface 借用另一 Feature 的投影。Artifact 输入授权在打开文件选择器前复核当前 workflow，仅上传步骤接受 `open_file`；旧 WebContents 不能在后台已进入校验后继续导入。
 

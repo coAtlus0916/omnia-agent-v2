@@ -422,34 +422,69 @@ function uniqueExact(items, predicate, label) {
   if (matches.length !== 1) fail(`${label} is absent or ambiguous in the authoritative directory.`);
   return matches[0];
 }
+const CUSTOM_WORKSPACE_FACET_TYPE_ID = 'd0c7e20c-1451-48d2-9dd5-8a6f2a51bfc0';
+const CUSTOM_WORKSPACE_GROUP_FACET_TYPE_ID = '5420131f-8ea2-4c3f-938f-a25745240cd0';
+function authorityFacetDirectory(payload, engagementId) {
+  if (!Array.isArray(payload) || payload.length !== 1) fail('Facet authority must contain exactly the current Engagement directory.');
+  const directory = payload[0];
+  if (!directory || typeof directory !== 'object' || Array.isArray(directory)) fail('Facet authority directory is invalid.');
+  if (guid(directory.engagementId, 'authority directory engagementId') !== engagementId) fail('Facet authority directory belongs to another Engagement.');
+  if (!Array.isArray(directory.facets) || directory.facets.length > 2000) fail('Facet authority inventory is invalid or exceeds the signed bound.');
+  const observedIds = new Set();
+  const groups = new Map();
+  const workspaceRows = [];
+  for (const value of directory.facets) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) fail('Facet authority item is invalid.');
+    if (guid(value.engagementId, 'Facet engagementId') !== engagementId) fail('Facet authority contains an item outside the current Engagement.');
+    const facetId = guid(value.id, 'Facet id');
+    if (observedIds.has(facetId)) fail(`Facet authority returned duplicate id ${facetId}.`);
+    observedIds.add(facetId);
+    const facetTypeId = guid(value.facetTypeId, 'Facet facetTypeId');
+    if (facetTypeId !== CUSTOM_WORKSPACE_GROUP_FACET_TYPE_ID && facetTypeId !== CUSTOM_WORKSPACE_FACET_TYPE_ID) continue;
+    if (value.isDeleted === true || value.deleted === true) continue;
+    const name = text(value.name || value.value);
+    if (!name) fail(`Workspace authority Facet ${facetId} has no name.`);
+    if (facetTypeId === CUSTOM_WORKSPACE_GROUP_FACET_TYPE_ID) {
+      groups.set(facetId, { id: facetId, name });
+      continue;
+    }
+    workspaceRows.push({ id: facetId, name, parentSectionId: guid(value.parentId, `CustomWorkspace ${facetId} parentId`) });
+  }
+  if (workspaceRows.length < 1) fail('Facet authority did not return a verifiable CustomWorkspace.');
+  const workspaces = workspaceRows.map((workspace) => {
+    if (!groups.has(workspace.parentSectionId)) fail(`CustomWorkspace ${workspace.id} does not reference a live CustomWorkspaceGroup parentId.`);
+    return workspace;
+  });
+  return { groups, workspaces };
+}
 async function resolveAuthority(request, sdk) {
   const query = exact(request.query, ['workspaceNames', 'graContents'], 'Authority resolution query');
   if (!Array.isArray(query.workspaceNames) || query.workspaceNames.length < 1 || query.workspaceNames.length > 50
     || !Array.isArray(query.graContents) || query.graContents.length < 1 || query.graContents.length > 50) {
     fail('Authority resolution inventory is invalid.');
   }
+  const engagementId = guid(sdk.binding.engagementId, 'binding.engagementId');
   const allowed = [...new Set(rows(request.allowedWorkspaceIds).map((value) => guid(value, 'allowedWorkspaceIds[]')))].sort();
   if (allowed.length < 1 || allowed.length !== rows(request.allowedWorkspaceIds).length) fail('Authority resolution safety scope is invalid.');
-  const [hierarchy, sections, workspaces, graDirectory] = await Promise.all([
-    sdk.invokeStep('authority-hierarchy'), sdk.invokeStep('authority-sections'), sdk.invokeStep('authority-workspaces'),
+  const [hierarchy, facetPayload, graDirectory] = await Promise.all([
+    sdk.invokeStep('authority-hierarchy'), sdk.invokeStep('authority-directory', { engagementId }),
     sdk.invokeStep('authority-gra-directory', {}, { riskAssessmentType: [] })
   ]);
-  const authorityPayload = { hierarchy, sections, workspaces };
+  if (hierarchy === null || hierarchy === undefined) fail('Pack hierarchy authority is unavailable.');
+  const directory = authorityFacetDirectory(facetPayload, engagementId);
+  const workspaceById = new Map(directory.workspaces.map((workspace) => [workspace.id, workspace]));
+  if (allowed.some((workspaceId) => !workspaceById.has(workspaceId))) fail('Workspace safety scope is stale or outside the current CustomWorkspace authority directory.');
+  const normalizedRequestedNames = query.workspaceNames.map((rawName) => normalizedLabel(rawName));
+  if (normalizedRequestedNames.some((name) => !name) || new Set(normalizedRequestedNames).size !== normalizedRequestedNames.length) {
+    fail('Workspace display-name requests are empty or ambiguous after normalization.');
+  }
   const resolvedWorkspaces = query.workspaceNames.map((rawName) => {
     const name = text(rawName); if (!name) fail('Workspace display name is empty.');
-    const matches = flattenObjects(authorityPayload).filter((candidate) => {
-      const candidateName = candidate.name || candidate.title || candidate.displayName || candidate.label;
-      const candidateId = candidate.id || candidate.facetId || candidate.workspaceId;
-      return normalizedLabel(candidateName) === normalizedLabel(name) && /^[0-9a-f-]{36}$/iu.test(text(candidateId));
-    });
-    const byId = new Map(matches.map((item) => {
-      const workspaceId = guid(item.id || item.facetId || item.workspaceId, 'resolved Workspace id');
-      return [workspaceId, item];
-    }));
-    if (byId.size !== 1) fail(`Workspace ${name} is absent or maps to multiple canonical GUIDs.`);
-    const workspaceId = [...byId.keys()][0];
+    const matches = directory.workspaces.filter((candidate) => normalizedLabel(candidate.name) === normalizedLabel(name));
+    if (matches.length !== 1) fail(`Workspace ${name} is absent or ambiguous in the CustomWorkspace Facet directory.`);
+    const workspaceId = matches[0].id;
     if (!allowed.includes(workspaceId)) fail(`Resolved Workspace ${name} is outside the exact safety lock.`);
-    return { name, workspaceId };
+    return { name, workspaceId, parentSectionId: matches[0].parentSectionId };
   });
   const resolvedGraContents = query.graContents.map((raw) => {
     const spec = exact(raw, ['contentName', 'objectType'], 'GRA content request');
@@ -466,7 +501,7 @@ async function resolveAuthority(request, sdk) {
       itElementTypeId: catalogId(item.itElementTypeId || item.applicationTypeId || item.entityTypeId,'resolved IT Element type id')
     };
   });
-  return { engagementId: guid(sdk.binding.engagementId, 'binding.engagementId'), workspaces: resolvedWorkspaces, graContents: resolvedGraContents };
+  return { engagementId, workspaces: resolvedWorkspaces, graContents: resolvedGraContents };
 }
 
 function catalogEntryId(item, names, label) {

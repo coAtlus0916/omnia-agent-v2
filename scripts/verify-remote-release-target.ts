@@ -26,7 +26,7 @@ export async function verifyRemoteConnectorArchiveTarget(
   const manifest = validateUpdateManifest(manifestInput);
   const response = await fetchImpl(manifest.url, {
     headers: { Accept: 'application/zip' },
-    signal: AbortSignal.timeout(60_000)
+    signal: AbortSignal.timeout(180_000)
   });
   if (!response.ok) {
     throw new Error(`Remote Connector target ZIP is unavailable (HTTP ${response.status}).`);

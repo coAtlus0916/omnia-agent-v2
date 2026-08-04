@@ -25,6 +25,8 @@ export interface RemoteConnectorPaths {
   installRoot: string;
   versions: string;
   bootstrap: string;
+  managedStart: string;
+  startupEntry: string;
   updates: string;
   dataRoot: string;
   state: string;
@@ -64,6 +66,12 @@ export function resolveRemoteConnectorPaths(overrides: {
     installRoot,
     versions: path.join(installRoot, 'versions'),
     bootstrap: path.join(installRoot, 'bootstrap'),
+    managedStart: path.join(installRoot, 'StartManagedRemoteConnector.cmd'),
+    startupEntry: path.join(
+      requiredEnvironmentPath('APPDATA'),
+      'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup',
+      'Omnia Agent v5 Remote Connector.cmd'
+    ),
     updates: path.join(installRoot, 'updates'),
     dataRoot,
     state: path.join(dataRoot, 'managed-state.json'),
@@ -133,3 +141,35 @@ export function versionRoot(paths: RemoteConnectorPaths, version: string): strin
   return path.join(paths.versions, `v${version}`);
 }
 
+function cmd(value: string): string {
+  return value.replaceAll('%', '%%').replaceAll('"', '""');
+}
+
+function writeTextAtomic(filename: string, value: string): void {
+  fs.mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 });
+  const temporary = `${filename}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(temporary, value, { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(temporary, filename);
+}
+
+export function ensureManagedLaunchers(paths: RemoteConnectorPaths): void {
+  const runtime = path.join(paths.bootstrap, 'node.exe');
+  const supervisor = path.join(paths.bootstrap, 'supervisor.cjs');
+  if (!fs.existsSync(runtime) || !fs.existsSync(supervisor)) {
+    throw new Error('v5 Remote Connector managed bootstrap is incomplete.');
+  }
+  writeTextAtomic(paths.managedStart, [
+    '@echo off',
+    'setlocal',
+    `set "OMNIA_V5_REMOTE_CONNECTOR_INSTALL_ROOT=${cmd(paths.installRoot)}"`,
+    `set "OMNIA_V5_REMOTE_CONNECTOR_DATA_ROOT=${cmd(paths.dataRoot)}"`,
+    `start "" /min "${cmd(runtime)}" "${cmd(supervisor)}"`,
+    'exit /b 0',
+    ''
+  ].join('\r\n'));
+  writeTextAtomic(paths.startupEntry, [
+    '@echo off',
+    `call "${cmd(paths.managedStart)}"`,
+    ''
+  ].join('\r\n'));
+}

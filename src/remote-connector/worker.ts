@@ -10,6 +10,7 @@ import {
 } from './constants.js';
 import {
   ensureRemoteConnectorDirectories,
+  ensureManagedLaunchers,
   resolveRemoteConnectorPaths,
   writeJsonAtomic
 } from './managed-state.js';
@@ -39,6 +40,9 @@ if (process.argv.includes('--health-probe')) {
 
 const paths = resolveRemoteConnectorPaths();
 ensureRemoteConnectorDirectories(paths);
+// Repair the stable managed entry for installations created before 0.3.13.
+// Startup and future updates must never depend on an extracted version folder.
+ensureManagedLaunchers(paths);
 const deviceIdentity = readOrCreateConnectorDeviceIdentity(paths.dataRoot);
 const connector = new WorkstationOmniaSession(paths.dataRoot, fetch, {
   id: deviceIdentity.connectorId,

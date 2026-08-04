@@ -30,7 +30,7 @@ v5 便携产品根
 
 | 能力 | 真实状态 | Remote-only 实现 | 额外配置/边界 |
 |---|---|---|---|
-| 连接、刷新、保活、安全锁 | Shell 0.4.9：安全锁绑定完整 Connector/authority/tenant/Pack/engagement/Workspace 身份，保存及 Feature action 前实时复核 | 顶部 Connect → Bridge 0.4.5 → Remote Worker 0.3.12 固定读取 → Core 解析/持久化 | 公司电脑真实 Pack 授权 canary 仍待执行；缺 Section 不阻断精确 Workspace 授权 |
+| 连接、刷新、保活、安全锁 | Shell 0.4.9：安全锁绑定完整 Connector/authority/tenant/Pack/engagement/Workspace 身份，保存及 Feature action 前实时复核 | 顶部 Connect → Bridge 0.4.5 → Remote Worker 0.3.13 固定读取 → Core 解析/持久化 | 公司电脑真实 Pack 授权 canary 仍待执行；缺 Section 不阻断精确 Workspace 授权 |
 | 三列聊天、附件、输入区 | 已实现 | 不依赖 Connector | Provider 未配置时只保存，不造假回复 |
 | DeepSeek / OpenAI-compatible Custom | 已实现 | 不依赖 Connector | Nova 专有协议未校验 |
 | 全局缩放、可拖动分隔线 | Shell 0.4.1 已验证并由 0.4.2 回归 | 不适用 | Shell/Settings/docked/detached/新建窗口一致；偏好写入 Core 数据库 |
@@ -92,4 +92,4 @@ Candidate package: `feature-packages/create-associate/candidates/create-associat
 
 ## omnia.create-associate 0.2.3 / omnia.recording 0.3.0 / Shell 0.4.9
 
-0.2.3 是当前开发版本。它保留 0.2.2 的返回上传、重新开始、APP/DB/OS/Tool Review 与真实 Return 闭环，并把 authority Workspace 查询修正为 v4 已验证 Facet Type。Shell 0.4.9/Connector 0.3.12 同时把安全锁改为 Connector 原始读取、Core 处理和实时复核。源码实现、候选包、远程发布和真实 canary 的证据必须分别记录；真实 Pack canary 仍待执行。
+0.2.3 是当前开发版本。它保留 0.2.2 的返回上传、重新开始、APP/DB/OS/Tool Review 与真实 Return 闭环，并把 authority Workspace 查询修正为 v4 已验证 Facet Type。Shell 0.4.9/Connector 0.3.13 同时把安全锁改为 Connector 原始读取、Core 处理和实时复核，并恢复 v4 稳定托管启动入口。源码实现、候选包、远程发布和真实 canary 的证据必须分别记录；真实 Pack canary 仍待执行。

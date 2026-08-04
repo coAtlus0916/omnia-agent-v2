@@ -30,7 +30,7 @@ Electron Renderer（无 Node）
 Electron Main / Core（SQLite owner、AI broker、Remote binding owner）
   → authenticated RemoteConnectorTransport
 v5 Bridge 0.4.5（binding/generation/relay/heartbeat/update_check）
-  → v5 Remote Connector Worker 0.3.12 / sequence 15
+  → v5 Remote Connector Worker 0.3.13 / sequence 16
   → WorkstationOmniaSession（Omnia credential/session owner）
   → verified dedicated Edge CDP + signed OperationHost
 ```
@@ -46,7 +46,7 @@ v5 Bridge 0.4.5（binding/generation/relay/heartbeat/update_check）
 
 ## Remote
 
-`0.3.4` 至 `0.3.11` Remote Connector 和 Bridge `0.4.0` 至 `0.4.4` 均为不可变 historical previous。当前配套为 Remote Connector `0.3.12 / sequence 15` 与 Bridge `0.4.5`：保持链接码/长期受保护 binding、固定签名 JSON Operation、权威 tenant/Pack identity、mutation 响应丢失语义及安全在线升级。0.3.12 使用 v4 已验证的 Workspace Facet Type，只负责固定 GET、会话/Pack 绑定和受限原始响应回传；Core 负责目录解析、CAS、安全锁身份持久化，以及保存和 Feature 执行前的实时复核。Bridge 仅能发送无 URL、无脚本、无执行参数的 `update_check` 控制信号。具体真实 Pack、录制与 mutation 仍待公司电脑 canary。
+`0.3.4` 至 `0.3.12` Remote Connector 和 Bridge `0.4.0` 至 `0.4.4` 均为不可变 historical previous。当前配套为 Remote Connector `0.3.13 / sequence 16` 与 Bridge `0.4.5`：0.3.13 保留 0.3.12 的安全锁 authority 修复，并恢复 v4 的版本无关托管启动器、登录自启动和“旧便携包不覆盖较新 current”语义。Bridge 连接时及每 60 秒下发 `update_check`，Supervisor 另以五分钟固定 stable 轮询兜底；正常升级不要求用户搬包或运行安装器。具体真实 Pack、录制与 mutation 仍待公司电脑 canary。
 
 ## AI
 

@@ -14,6 +14,7 @@ import {
 } from './release-contract.js';
 import {
   ensureRemoteConnectorDirectories,
+  ensureManagedLaunchers,
   readManagedState,
   resolveRemoteConnectorPaths,
   versionRoot,
@@ -89,20 +90,28 @@ function assertManualActivationSafe(): void {
 
 function install(): void {
   const installed = copyPortableVersion();
-  installBootstrap(installed.destination);
-  const state = readManagedState(paths);
+  let state = readManagedState(paths);
   if (state.current && compareVersions(state.current, installed.version) > 0) {
-    throw new Error('Manual bootstrap refuses to downgrade the managed v5 Remote Connector.');
+    const currentRoot = versionRoot(paths, state.current);
+    verifyPortableRoot(currentRoot);
+    installBootstrap(currentRoot);
+    ensureManagedLaunchers(paths);
+    process.stdout.write(
+      `托管 Remote Connector ${state.current} 高于便携包 ${installed.version}；保留并启动托管最新版。\n`
+    );
+    return;
   }
+  installBootstrap(installed.destination);
   const promotesNewVersion = !state.current || compareVersions(installed.version, state.current) > 0;
   if (state.current && promotesNewVersion) assertManualActivationSafe();
-  writeManagedState(paths, {
+  state = writeManagedState(paths, {
     ...state,
     current: promotesNewVersion ? installed.version : state.current,
     previous: state.current && promotesNewVersion ? state.current : state.previous,
     pending: promotesNewVersion ? null : state.pending,
     highestSequence: Math.max(state.highestSequence, installed.sequence)
   });
+  ensureManagedLaunchers(paths);
   process.stdout.write(`v5 Remote Connector ${installed.version} 已安装并激活到独立目录：${paths.installRoot}\n`);
 }
 
@@ -128,7 +137,15 @@ function workerEnvironment(): NodeJS.ProcessEnv {
 }
 
 function start(): void {
-  install();
+  ensureRemoteConnectorDirectories(paths);
+  const state = readManagedState(paths);
+  if (!state.current) install();
+  else {
+    const currentRoot = versionRoot(paths, state.current);
+    verifyPortableRoot(currentRoot);
+    installBootstrap(currentRoot);
+    ensureManagedLaunchers(paths);
+  }
   const command = supervisorCommand();
   const child = spawn(command.node, [command.script], {
     detached: true,

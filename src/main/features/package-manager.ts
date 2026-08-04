@@ -388,9 +388,12 @@ function validateSurface(value: unknown, manifest: FeatureManifest): Declarative
       || !['read_only', 'local_state_write', 'omnia_mutation'].includes(action.effect)
       || typeof action.enabled !== 'boolean'
       || typeof action.reason !== 'string'
-      || (action.presentation !== undefined && !['default', 'record', 'pause', 'stop', 'export', 'refresh', 'restart'].includes(action.presentation))
+      || (action.presentation !== undefined && !['default', 'record', 'pause', 'stop', 'export', 'refresh', 'restart', 'upload', 'file_input', 'background'].includes(action.presentation))
       || (action.selectionMode !== undefined && !['none', 'single', 'multiple'].includes(action.selectionMode))
     ) throw new Error('Declarative Feature action is invalid.');
+    if (action.presentation === 'background' && action.effect === 'omnia_mutation') {
+      throw new Error('Declarative Feature background actions cannot perform Omnia mutations.');
+    }
     const actionKeys = ['actionId', 'label', 'effect', 'enabled', 'reason'];
     if (Object.hasOwn(action, 'presentation')) actionKeys.push('presentation');
     if (Object.hasOwn(action, 'selectionMode')) actionKeys.push('selectionMode');
@@ -1119,14 +1122,33 @@ export class FeaturePackageManager {
     const runId = randomUUID();
     const traceId = randomUUID();
     const startedAt = utcNow();
+    const engagementId = String(request.engagementId || '');
+    if (engagementId.length > 200) throw new AppError('FEATURE.ENGAGEMENT_ID_INVALID', 'Feature artifact engagement identity is invalid.');
     this.database.exec('BEGIN IMMEDIATE;');
     try {
+      const stagedRuns = this.database.prepare(`
+        SELECT run_id, state_revision FROM feature_runs
+        WHERE feature_id=? AND feature_version=? AND engagement_id=? AND state='acquiring'
+        ORDER BY created_at
+      `).all(request.featureId, request.featureVersion, engagementId) as Array<{ run_id: string; state_revision: number }>;
+      for (const stagedRun of stagedRuns) {
+        const nextRevision = Number(stagedRun.state_revision) + 1;
+        const cancelled = this.database.prepare(`
+          UPDATE feature_runs SET state='cancelled', state_revision=?, last_error='', updated_at=?
+          WHERE run_id=? AND feature_id=? AND feature_version=? AND state='acquiring' AND state_revision=?
+        `).run(nextRevision, startedAt, stagedRun.run_id, request.featureId, request.featureVersion, stagedRun.state_revision);
+        if (cancelled.changes !== 1) throw new Error('Staged Feature Run changed before replacement cancellation.');
+        this.database.prepare(`
+          INSERT INTO feature_run_events(event_id, run_id, revision, from_state, to_state, event_type, details_json, occurred_at)
+          VALUES(?, ?, ?, 'acquiring', 'cancelled', 'artifact.staging_replaced', ?, ?)
+        `).run(randomUUID(), stagedRun.run_id, nextRevision, JSON.stringify({ replacementRunId: runId, preserveArtifact: true }), startedAt);
+      }
       this.database.prepare(`
         INSERT INTO feature_runs(
           run_id, trace_id, feature_id, feature_version, engagement_id, state, state_revision,
           source_artifact_id, template_version_id, output_artifact_id, plan_digest, last_error, created_at, updated_at
-        ) VALUES(?, ?, ?, ?, '', 'draft', 1, '', '', '', '', '', ?, ?)
-      `).run(runId, traceId, request.featureId, request.featureVersion, startedAt, startedAt);
+        ) VALUES(?, ?, ?, ?, ?, 'draft', 1, '', '', '', '', '', ?, ?)
+      `).run(runId, traceId, request.featureId, request.featureVersion, engagementId, startedAt, startedAt);
       this.database.prepare(`
         INSERT INTO feature_run_events(event_id, run_id, revision, from_state, to_state, event_type, details_json, occurred_at)
         VALUES(?, ?, 1, '', 'draft', 'intake.prepared', '{}', ?)

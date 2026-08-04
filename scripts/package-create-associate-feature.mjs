@@ -140,7 +140,7 @@ const runtimeBaseBytes = workerModule.buildRuntimeWorkbook(
 
 const userTemplateBytes = await readFile(userTemplatePath);
 if (userTemplateBytes.length < 1 || userTemplateBytes.length > 64 * 1024 * 1024) throw new Error('Phase1 user template V3 size is invalid.');
-const version = '0.2.6'; const sequence = 8;
+const version = '0.2.7'; const sequence = 9;
 const route = (stepId, method, routeTemplate, parameters, bodyMode = 'none') => ({ stepId, method, routeTemplate, parameters, bodyMode, bodyParameter: '' });
 const applicationIdentityRoutes = () => [
   route('workitem-directory', 'POST', '/work/v1/WorkQueries/getWorkitemDetails', [], 'signed_json'),
@@ -230,10 +230,10 @@ const operationPackage = envelope({
 const docs = ['FEATURE', 'IMPLEMENTATION_MAP', 'PRODUCT', 'TECHNICAL', 'CONTRACT', 'TESTING', 'OPERATIONS', 'VERSION'];
 const documentationFiles = await Promise.all(docs.map(async (name) => ({ path: `docs/${name}.md`, bytes: await readFile(path.join(source, 'docs', `${name}.md`)), purpose: name.toLowerCase() })));
 const docsManifest = { schemaVersion: 'omnia.feature-documentation/v1', featureId: 'omnia.create-associate', featureVersion: version, documents: documentationFiles.map((document) => ({ path: document.path, sha256: sha256(document.bytes), purpose: document.purpose })) };
-const testIds=['v8-governance-ooxml','signed-v3-source-template','v3-no-user-is-data-available','v4-is-data-available-false-rule','canonical-eleven-checks','canonical-four-kind-review-matrix','four-kind-derived-description','excluded-row-no-issue-order','empty-kind-disabled','review-reimport-dirty-guard','save-and-full-revalidate','remove-row-full-live-revalidate','remove-row-cas-persistence','live-revalidate-recovery','warnings-do-not-block-return','unexecuted-checks-not-passed','app-identity-recycle-resolution','non-app-identity-state-resolution','app-create-only-permit','uncertain-identity-reconcile-no-replay','three-step-durable-workflow','full-return-operation-loop','bootstrap-capability-evidence','crash-recovery-monotonic'];
+const testIds=['v8-governance-ooxml','signed-v3-source-template','staged-source-acquiring','confirm-before-background-validation','background-action-non-mutation','acquiring-recovery','staged-replacement-audit','v3-no-user-is-data-available','v4-is-data-available-false-rule','canonical-eleven-checks','canonical-four-kind-review-matrix','four-kind-derived-description','excluded-row-no-issue-order','empty-kind-disabled','review-reimport-dirty-guard','save-and-full-revalidate','remove-row-full-live-revalidate','remove-row-cas-persistence','live-revalidate-recovery','warnings-do-not-block-return','unexecuted-checks-not-passed','app-identity-recycle-resolution','non-app-identity-state-resolution','app-create-only-permit','uncertain-identity-reconcile-no-replay','three-step-durable-workflow','full-return-operation-loop','bootstrap-capability-evidence','crash-recovery-monotonic'];
 const runtimeContract={schemaVersion:'omnia.feature-runtime-contract/v1',featureId:'omnia.create-associate',featureVersion:version,
-  inputs:['xlsx_artifact','issue_revisions','return_confirmation','connector_binding','workspace_safety'],outputs:['template_instance_xlsx','surface_patch','confirmation_card','managed_object_revisions','managed_relation_revisions'],
-  events:['run.transition','run.offline_crash_recovered','run.restart_requested','return.confirmed_in_comments','return.readback_verified','return.uncertain'],
+  inputs:['staged_xlsx_artifact','upload_confirmation','background_validation','issue_revisions','return_confirmation','connector_binding','workspace_safety'],outputs:['template_instance_xlsx','surface_patch','confirmation_card','managed_object_revisions','managed_relation_revisions'],
+  events:['artifact.staging_replaced','workbook.upload_confirmed','run.transition','run.offline_crash_recovered','run.restart_requested','return.confirmed_in_comments','return.readback_verified','return.uncertain'],
   errors:['WORKBOOK.*','GOVERNANCE.*','RETURN.*','CONNECTOR.RESPONSE_LOST'],
   storePorts:['createRun','readArtifactBytes','readManagedAssetBytes','commitArtifact','transitionRun','recordFieldRevisions','recordIssues','loadRunReview','commitReviewValidation','prepareReturnIntent','approveReturnIntent','prepareReturnCommand','freezeReturnEvidenceSpec','recordReturnEvidence','projectVerifiedReturn','recordBootstrapCapabilityEvidence','getCapabilityEvidenceState','finishReturn','savePlan','loadPlan']};
 const implementationMap={schemaVersion:'omnia.feature-implementation-map/v1',featureId:'omnia.create-associate',featureVersion:version,planes:{
@@ -262,10 +262,12 @@ const featureManifest = {
 const surface = {
   schemaVersion: 'omnia.declarative-feature-surface/v1', featureId: 'omnia.create-associate', featureVersion: version, surfaceId: 'create-associate.workbench', stateVersion: 1,
   title: '新建与关联', description: '导入真实 Phase 1 用户资料，完成本地校验后按确认回传当前 Pack。', density: 'compact', status: 'idle', statusMessage: '上传与本地校验无需 Remote 或安全锁；只有回传写入需要连接与安全锁。', scopes: [], items: [], selectedItemIds: [], search: '', artifacts: [], editors: [], issues: [],
-  workflow:{revision:1,currentStepId:'upload',steps:[{stepId:'upload',label:'上传资料',state:'current',detail:'下载 V3 模板或选择/拖入 .xlsx'},{stepId:'validate',label:'校验',state:'pending',detail:'等待上传'},{stepId:'return',label:'回传',state:'pending',detail:'等待校验通过'}]},
+  workflow:{revision:1,currentStepId:'upload',steps:[{stepId:'upload',label:'上传资料',state:'current',detail:'上传系统信息'},{stepId:'validate',label:'校验',state:'pending',detail:'等待上传'},{stepId:'return',label:'回传',state:'pending',detail:'等待校验通过'}]},
   actions: [
-    { actionId: 'download-source-template', label: '下载模板', effect: 'read_only', enabled: true, reason: '', selectionMode: 'none', dependencies: [], output: { kind: 'save_managed_asset', memberPath: 'backend/Phase1-用户填写模板V3.xlsx', suggestedName: 'Phase1-用户填写模板V3.xlsx' } },
-    { actionId: 'import-source-workbook', label: '选择用户资料', effect: 'local_state_write', enabled: true, reason: '', selectionMode: 'none', dependencies: [], input: { kind: 'open_file', accept: ['.xlsx'], label: '选择 Phase 1 用户资料' } },
+    { actionId: 'download-source-template', label: '下载模板', effect: 'read_only', enabled: true, reason: '', presentation: 'upload', selectionMode: 'none', dependencies: [], output: { kind: 'save_managed_asset', memberPath: 'backend/Phase1-用户填写模板V3.xlsx', suggestedName: 'Phase1-用户填写模板V3.xlsx' } },
+    { actionId: 'stage-source-workbook', label: '选择系统信息', effect: 'local_state_write', enabled: true, reason: '', presentation: 'file_input', selectionMode: 'none', dependencies: [], input: { kind: 'open_file', accept: ['.xlsx'], label: '选择 Phase 1 系统信息' } },
+    { actionId: 'confirm-upload', label: '确认上传', effect: 'local_state_write', enabled: false, reason: '请先选择或拖入一个 .xlsx 文件。', presentation: 'upload', selectionMode: 'none', dependencies: [] },
+    { actionId: 'validate-staged-upload', label: '后台校验', effect: 'local_state_write', enabled: false, reason: '等待确认上传。', presentation: 'background', selectionMode: 'none', dependencies: [] },
     { actionId: 'apply-revisions', label: '保存修改并重新检查', effect: 'local_state_write', enabled: false, reason: '等待 Review。', selectionMode: 'none', dependencies: [] },
     { actionId: 'remove-batch-row', label: '仅从本批移除当前行', effect: 'local_state_write', enabled: false, reason: '等待 Review。', selectionMode: 'none', dependencies: [] },
     { actionId: 'revalidate-all', label: '重新检查全部', effect: 'local_state_write', enabled: false, reason: '等待 Review。', selectionMode: 'none', dependencies: [] },

@@ -252,13 +252,13 @@ function registerIpc(service: ShellService, packages: FeaturePackageManager, log
         filters: [{ name: 'Feature input', extensions: input.accept.map((value) => value.slice(1)) }]
       });
       if (selected.canceled || selected.filePaths.length !== 1) return null;
-      return packages.importArtifact(input, selected.filePaths[0]!);
+      return packages.importArtifact({ ...input, engagementId: service.snapshot().connection.engagementId || '' }, selected.filePaths[0]!);
   });
   register('surface:import-feature-input-bytes', async (event, input: FeatureArtifactBytesInputRequest) => {
       if (!surfaceWindows) throw new Error('Feature Surface host is not ready.');
       surfaceWindows.authorizeArtifactInput(event.sender.id, input);
       const bytes = input.bytes instanceof Uint8Array ? input.bytes : new Uint8Array(input.bytes as ArrayBuffer);
-      return packages.importArtifactBytes(input, input.name, bytes);
+      return packages.importArtifactBytes({ ...input, engagementId: service.snapshot().connection.engagementId || '' }, input.name, bytes);
   });
   register('surface:save-feature-managed-asset', async (event, input: { featureId: string; featureVersion: string; actionId: string; memberPath: string }) => {
       if (!surfaceWindows) throw new Error('Feature Surface host is not ready.');

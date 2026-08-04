@@ -32,6 +32,10 @@ Renderer treats `back-to-upload` and `revalidate-all` as draft-safe actions. Rev
 
 Live validation fails closed before Connector invocation when the binding or explicit Workspace safety scope is absent. All three live checks carry the exact missing-prerequisite reason. When an older durable checkpoint contains pending identity/relationship checks beside a failed Workspace live check, presentation upgrades those pending states to failed with the persisted Workspace reason; it does not invent execution evidence. Once both prerequisites exist, authority, APP identity/recycle and non-APP object preflight continue through the existing signed Operations; no direct passed state and no safety-lock bypass were introduced.
 
+## 0.2.7 staged upload
+
+`stage-source-workbook` verifies the Core-owned descriptor and persists it with an `acquiring` Run without parsing. `confirm-upload` performs the single CAS transition to `processing` and returns a 0/11 running projection immediately. `validate-staged-upload` is a declared `background`/`local_state_write` action; the generic Renderer invokes it once per exact Feature/version/Surface/stateVersion only after rendering, while package validation rejects mutation background actions. `acquiring` is recoverable; later processing stages remain fail-closed and are never replayed.
+
 The package contains a process-isolated CommonJS Worker, declarative Surface, private migration, managed V8-derived governance IR, signed runtime-template base XLSX, and a signed Operation package. Core passes base64 bytes (64 MiB maximum), never filesystem paths. Runtime output patches only declared OOXML worksheet/core parts and verifies every undeclared part digest.
 
 The governance IR contains 187 fields, 68 relation rules, and 15 scoring items. TemplateVersion semantic identity is stable across Runs; instance semantic/patch/output/governance digests are per Run.

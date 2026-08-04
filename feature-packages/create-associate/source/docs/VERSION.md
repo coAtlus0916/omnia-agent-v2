@@ -1,6 +1,8 @@
-# 0.2.6 / sequence 8
+# 0.2.7 / sequence 9
 
-Shell 0.4.12 hot-update builtin release. `返回上传` is no longer blocked by dirty drafts; `重新检查全部` commits the same CAS revision batch as apply before the full live recheck. Review no longer projects the internal TemplateInstance download. Missing binding or Workspace safety scope fails all three live checks with the exact reason; an available scope continues through the existing signed Connector Operations. The v4-verified Workspace Facet Type and the real `重新开始` Core transition are unchanged. Minimum Shell remains 0.4.9. Real Omnia mutation/readback canary is pending.
+Shell 0.4.12 hot-update builtin release. File selection/drag now stages a real source Artifact and recoverable `acquiring` Run without navigating or parsing. Explicit 确认上传 advances to `processing` and immediately renders a 0/11 running Validate projection; a generic declared background action starts the existing validation only after render and can never be an Omnia mutation. Upload shows only 下载模板 and 确认上传, source/Internal TemplateInstance downloads remain hidden, and step 1 detail is “上传系统信息”. Minimum Shell remains 0.4.9. Real Omnia mutation/readback canary is pending.
+
+# 0.2.6 / sequence 8 history
 
 # 0.2.1 history / sequence 3
 

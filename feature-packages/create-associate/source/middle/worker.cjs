@@ -596,7 +596,7 @@ function workflowSurface(latest){
   const validationDone=['ready_for_review','waiting_confirmation','returning','verifying','uncertain','reconciling','succeeded'].includes(state);
   const failed=state==='failed'; const currentStepId=returning?'return':validationStarted?'validate':'upload';
   return {revision,currentStepId,steps:[
-    {stepId:'upload',label:'上传资料',state:run?'completed':'current',detail:run?`受管源文件已绑定 Run ${run.run_id}`:'下载模板或选择/拖入 .xlsx'},
+    {stepId:'upload',label:'上传资料',state:run?'completed':'current',detail:'上传系统信息'},
     {stepId:'validate',label:'校验',state:failed&&!returning?'failed':validationDone?'completed':validationStarted?'current':'pending',detail:validationDone?'解析、规则与输出校验已持久化':validationStarted?'正在按 Run 事件推进':'等待上传'},
     {stepId:'return',label:'回传',state:state==='succeeded'?'completed':state==='uncertain'?'warning':failed&&returning?'failed':returning?'current':'pending',detail:state==='succeeded'?'全部命令读回完成':state==='uncertain'?'响应未知，仅允许只读核验':returning?`持久 Run 状态：${state}`:'等待校验通过'}
   ]};
@@ -662,14 +662,24 @@ function recomputeLocalIssues(parsed){
   parsed.issues=issues;return issues;
 }
 function reviewSurface(latest,plan,compiled,message){const parsed=plan.parsed,progress=progressSurface(latest,parsed),validation=validationPresentation(parsed,plan.liveValidation||{}),blocker=reviewBlocked(parsed,plan.liveValidation||{}),activeCount=activeRows(parsed).length;return{stateVersion:Number(latest.run.state_revision),status:blocker?'blocked':'ready',statusMessage:message,scopes:progress.scopes,items:progress.items,workflow:progress.workflow,progress:validation.progress,issues:validation.issues,review:reviewPresentation(parsed),editors:[],artifacts:[],actions:[
+  {actionId:'download-source-template',enabled:false,reason:'校验步骤不显示上传动作。'},{actionId:'stage-source-workbook',enabled:false,reason:'请先返回上传。'},{actionId:'confirm-upload',enabled:false,reason:'当前资料已经确认。'},{actionId:'validate-staged-upload',enabled:false,reason:'当前校验已经完成。'},
   {actionId:'back-to-upload',enabled:true,reason:'离开 Review 后才允许重新选择资料。'},{actionId:'restart-run',enabled:true,reason:'取消当前可编辑 Run；旧 Artifact、修订和事件保留审计。'},{actionId:'apply-revisions',enabled:true,reason:'保存所有 dirty 字段并完整重跑校验。'},{actionId:'remove-batch-row',enabled:activeCount>1,reason:activeCount>1?'仅移出本批，不调用 Connector，不删除 Omnia。':'批次仅剩一行，禁止移除。'},{actionId:'revalidate-all',enabled:true,reason:'在原 Run 上重跑全部本地与可用实时校验。'},{actionId:'prepare-return',enabled:!blocker,reason:blocker?'存在 error、未执行实时项或全局 blocker。':''}]};}
 function uploadSurface(latest,message,fresh=false){
+  const run=latest?.run;const staged=run?.state==='acquiring';const editable=staged||['needs_input','ready_for_review'].includes(String(run?.state||''));
   const workflow={revision:Math.max(1,Number(latest?.run?.state_revision||1)),currentStepId:'upload',steps:[
-    {stepId:'upload',label:'上传资料',state:'current',detail:latest?.run?`当前受管源文件绑定 Run ${latest.run.run_id}`:'下载模板或选择/拖入 .xlsx'},
+    {stepId:'upload',label:'上传资料',state:'current',detail:'上传系统信息'},
     {stepId:'validate',label:'校验',state:'pending',detail:'等待上传'},
     {stepId:'return',label:'回传',state:'pending',detail:'等待校验通过'}
   ]};
-  return{stateVersion:Number(latest.run.state_revision),status:'ready',statusMessage:message,scopes:[],items:[],workflow,clearFields:['progress','review'],issues:[],editors:[],artifacts:fresh?[]:(latest.artifacts||[]).filter((item)=>String(item.kind)==='template_instance').slice(-1).map((item)=>({artifactId:String(item.artifact_id),kind:'template_instance',name:String(item.original_name),sha256:String(item.sha256),sizeBytes:Number(item.size_bytes),available:true,reason:''})),actions:[{actionId:'import-source-workbook',enabled:true,reason:''},{actionId:'download-source-template',enabled:true,reason:''},{actionId:'restart-run',enabled:!fresh,reason:fresh?'当前没有可重置的可编辑 Run。':'取消当前可编辑 Run；下一次上传建立新 Run。'},{actionId:'revalidate-all',enabled:!fresh,reason:fresh?'当前没有可重新校验的 Run。':'使用当前受管 Artifact 回到 Review 并重跑全部校验。'}]};
+  const source=staged?(latest.artifacts||[]).filter((item)=>String(item.kind)==='source').slice(-1):[];
+  return{stateVersion:Number(run?.state_revision||1),status:'ready',statusMessage:message,scopes:[],items:[],workflow,clearFields:['progress','review'],issues:[],editors:[],artifacts:source.map((item)=>({artifactId:String(item.artifact_id),kind:'source',name:String(item.original_name),sha256:String(item.sha256),sizeBytes:Number(item.size_bytes),available:false,reason:'待确认上传'})),actions:[
+    {actionId:'download-source-template',enabled:true,reason:''},{actionId:'stage-source-workbook',enabled:true,reason:''},{actionId:'confirm-upload',enabled:staged,reason:staged?'':'请先选择或拖入一个 .xlsx 文件。'},{actionId:'validate-staged-upload',enabled:false,reason:'等待确认上传。'},
+    {actionId:'restart-run',enabled:editable,reason:editable?'取消当前可编辑 Run；下一次上传建立新 Run。':'当前没有可重置的可编辑 Run。'},{actionId:'apply-revisions',enabled:false,reason:'等待校验。'},{actionId:'remove-batch-row',enabled:false,reason:'等待校验。'},{actionId:'revalidate-all',enabled:false,reason:'等待校验。'},{actionId:'back-to-upload',enabled:false,reason:'当前已在上传步骤。'},{actionId:'prepare-return',enabled:false,reason:'等待校验通过。'}]};
+}
+function processingSurface(latest,message){
+  const labels=[['template_structure','模板结构可识别'],['required_fields','必填项目已填写'],['valid_values','名称与填写内容合法'],['unique_names','批次内元素 ID 与 GRA 名称唯一'],['omnia_id_conflicts','已核验当前 Pack 与回收站中的同名元素影响'],['infrastructure_links','基础设施已关联系统'],['infrastructure_rait','多系统关联的 RAIT 一致'],['relationship_targets','关联目标存在且类型正确'],['workspace_presence','Omnia 工作区已填写'],['factors_considered_ai_review','Factors Considered 智能复核'],['workspace_live','Omnia 工作区名称实时有效']];
+  return{stateVersion:Number(latest.run.state_revision),status:'loading',statusMessage:message,scopes:[],items:[],workflow:workflowSurface(latest),progress:{label:'校验进度',completed:0,total:labels.length,percent:0,state:'running',message:'正在校验 0/11',items:labels.map(([itemId,label])=>({itemId,label,state:'pending',detail:'等待后台校验。'}))},issues:[],editors:[],artifacts:[],clearFields:['review'],actions:[
+    {actionId:'download-source-template',enabled:false,reason:'正在校验。'},{actionId:'stage-source-workbook',enabled:false,reason:'正在校验。'},{actionId:'confirm-upload',enabled:false,reason:'已确认上传。'},{actionId:'validate-staged-upload',enabled:true,reason:''},{actionId:'restart-run',enabled:false,reason:'后台校验已开始，不允许重放或取消中间状态。'},{actionId:'apply-revisions',enabled:false,reason:'正在校验。'},{actionId:'remove-batch-row',enabled:false,reason:'正在校验。'},{actionId:'revalidate-all',enabled:false,reason:'正在校验。'},{actionId:'back-to-upload',enabled:false,reason:'正在校验。'},{actionId:'prepare-return',enabled:false,reason:'正在校验。'}]};
 }
 function returnSurface(latest,message){
   const run=latest?.run;const progress=progressSurface(latest);const state=String(run?.state||'');
@@ -678,7 +688,7 @@ function returnSurface(latest,message){
   return {stateVersion:Number(run?.state_revision||1),status,statusMessage:message||`回传阶段 ${state} / revision ${Number(run?.state_revision||0)}`,workflow:progress.workflow,clearFields:['review'],
     progress:{label:'回传进度',completed:state==='succeeded'?intents.length:completed,total:intents.length,percent,state:state==='uncertain'?'uncertain':state==='failed'?'failed':state==='succeeded'?'passed':'running',message:state==='succeeded'?'已完成；停留在回传页面。':state==='uncertain'?'响应未知，禁止重放；请执行只读核验。':message||`当前阶段 ${state}`,items:intents.map((item,index)=>({itemId:`return-${index}`,label:String(item.target_key),state:item.state==='verified'?'passed':item.state==='uncertain'?'uncertain':item.state==='failed'?'failed':item.command_state==='submitted'||item.command_state==='committed'?'running':'pending',detail:`${item.target_kind} · intent=${item.state} · command=${item.command_state}`}))},
     scopes:progress.scopes,items:progress.items,editors:[],issues:[],artifacts:(latest?.artifacts||[]).filter((item)=>String(item.kind)!=='source').map((item)=>({artifactId:String(item.artifact_id),kind:String(item.kind),name:String(item.original_name),sha256:String(item.sha256),sizeBytes:Number(item.size_bytes),available:true,reason:''})),actions:[
-      {actionId:'import-source-workbook',enabled:terminal,reason:terminal?'':'回传计划已冻结；请先完成、核验或终止当前 Run。'},
+      {actionId:'stage-source-workbook',enabled:terminal,reason:terminal?'':'回传计划已冻结；请先完成、核验或终止当前 Run。'},
       {actionId:'restart-run',enabled:false,reason:'回传计划已冻结；重新开始不能掩盖确认、写入或 uncertain 状态。'},
       {actionId:'apply-revisions',enabled:false,reason:'回传阶段不接受字段修订。'},
       {actionId:'prepare-return',enabled:false,reason:'回传计划已冻结或已完成。'}]};
@@ -696,6 +706,15 @@ function createFeatureWorker(dependencies) {
   const governanceSemanticDigest = digest(Buffer.from(canonical({
     fields: governance.fields, relations: governance.relations, scoringItems: governance.scoringItems, derivationRules: governance.derivationRules
   })));
+  const ensureStagedPlan=async(latest)=>{
+    const run=latest?.run;if(!run||run.state!=='acquiring'||!run.source_artifact_id)fail('RUN.NOT_STAGED','The latest Run has no recoverable staged source.');
+    const existing=await store.call('loadPlan',String(run.run_id));if(existing?.descriptor)return existing;
+    const artifact=await store.call('readArtifactBytes',{artifactId:String(run.source_artifact_id)});
+    if(String(artifact.runId)!==String(run.run_id)||String(artifact.traceId)!==String(run.trace_id)||artifact.kind!=='source')fail('ARTIFACT.RUN_BINDING_MISMATCH','Recovered staged artifact binding drifted.');
+    const descriptor={schemaVersion:'omnia.feature-artifact/v1',artifactId:String(artifact.artifactId),runId:String(artifact.runId),traceId:String(artifact.traceId),featureId:FEATURE_ID,featureVersion:FEATURE_VERSION,surfaceId:'create-associate.workbench',kind:'source',originalName:String(artifact.originalName),mediaType:String(artifact.mediaType),sizeBytes:Number(artifact.sizeBytes),sha256:String(artifact.sha256),importedAt:String(artifact.importedAt)};
+    const recovered={schemaVersion:'omnia.create-associate.staged-upload/v1',planId:String(run.run_id),runId:String(run.run_id),traceId:String(run.trace_id),descriptor,stageState:'acquiring',updatedAt:new Date().toISOString()};
+    await store.call('savePlan',recovered);return recovered;
+  };
   if (!Array.isArray(governance.fields) || governance.fields.length !== 187
     || !Array.isArray(governance.relations) || governance.relations.length !== 68
     || !Array.isArray(governance.scoringItems) || governance.scoringItems.length !== 15
@@ -990,13 +1009,16 @@ function createFeatureWorker(dependencies) {
     health: async () => {
       let latest=await store.call('loadLatestRun',{}); let run=latest?.run;
       let recoveredMessageCard=null,recoveredSurfacePatch=null;
-      if(run&&['acquiring','processing','converting','validating_output'].includes(run.state)){
+      if(run?.state==='acquiring'){
+        await ensureStagedPlan(latest);
+        recoveredSurfacePatch=uploadSurface(latest,'已恢复待确认的系统信息文件；确认上传后才会开始校验。');
+      }else if(run&&['processing','converting','validating_output'].includes(run.state)){
         const interruptedStage=String(run.state); const revision=await store.call('transitionRun',{runId:String(run.run_id),expectedRevision:Number(run.state_revision),toState:'failed',eventType:'run.offline_crash_recovered',error:`Offline ${interruptedStage} stage was interrupted; no processing was replayed.`,details:{interruptedStage,replay:false}});
         latest=await store.call('loadLatestRun',{}); run=latest.run; const progress=progressSurface(latest);
         recoveredSurfacePatch={stateVersion:Number(revision),status:'stale',statusMessage:`检测到离线处理在 ${interruptedStage} 阶段中断；Run 已持久化转为 failed（revision ${revision}），未自动重放。请通过“选择用户资料”重新导入原文件以建立新 Run。`,
           scopes:progress.scopes,items:progress.items,
           artifacts:(latest.artifacts||[]).filter((item)=>String(item.kind)!=='source').map((item)=>({artifactId:String(item.artifact_id),kind:String(item.kind),name:String(item.original_name),sha256:String(item.sha256),sizeBytes:Number(item.size_bytes),available:true,reason:''})),editors:[],actions:[
-            {actionId:'import-source-workbook',enabled:true,reason:''},{actionId:'restart-run',enabled:false,reason:'中断 Run 已失败关闭。'},{actionId:'apply-revisions',enabled:false,reason:'中断 Run 不允许原地修订。'},{actionId:'prepare-return',enabled:false,reason:'离线处理未完成；必须重新导入并生成新 Run。'}]};
+            {actionId:'stage-source-workbook',enabled:true,reason:''},{actionId:'restart-run',enabled:false,reason:'中断 Run 已失败关闭。'},{actionId:'apply-revisions',enabled:false,reason:'中断 Run 不允许原地修订。'},{actionId:'prepare-return',enabled:false,reason:'离线处理未完成；必须重新导入并生成新 Run。'}]};
       }
       if(run?.state==='uncertain'){
         const checkpoint=await store.call('loadPlan',String(run.run_id));
@@ -1018,7 +1040,7 @@ function createFeatureWorker(dependencies) {
     handleAction: async (input) => {
       if(input?.actionId==='restart-run'){
         const latest=await store.call('loadLatestRun',{}),run=latest?.run;
-        if(!run||!['needs_input','ready_for_review'].includes(run.state))fail('RUN.RESTART_BLOCKED','Only the current editable Run can restart.');
+        if(!run||!['acquiring','needs_input','ready_for_review'].includes(run.state))fail('RUN.RESTART_BLOCKED','Only the current staged or editable Run can restart.');
         await store.call('transitionRun',{runId:String(run.run_id),expectedRevision:Number(run.state_revision),toState:'cancelled',eventType:'run.restart_requested',details:{preserveArtifacts:true,preserveRevisions:true,nextUploadCreatesNewRun:true}});
         const cancelled=await store.call('loadLatestRun',{});
         return{surfacePatch:uploadSurface(cancelled,'当前 Run 已取消并保留审计；下一次上传将建立新的 Run。',true)};
@@ -1503,20 +1525,35 @@ function createFeatureWorker(dependencies) {
         const committed=await store.call('commitReviewValidation',{runId:run.run_id,expectedRunRevision:Number(run.state_revision),revisions,derivedRevisions,issues:plan.parsed.issues,nextState:blocker?'needs_input':'ready_for_review',eventType:input.actionId==='remove-batch-row'?'review.row_excluded':input.actionId==='revalidate-all'?'review.revalidated':'review.saved_and_revalidated',excludedRowKey,templateInstanceId:compiled.templateInstanceId});
         plan.updatedAt=new Date().toISOString();await store.call('savePlan',plan);const current=await store.call('loadLatestRun',{});return{surfacePatch:reviewSurface(current,plan,compiled,`已保存并重跑 11 项校验；Run revision ${committed.stateRevision}。`)};
       }
-      if (input?.actionId !== 'import-source-workbook') fail('ACTION.NOT_AVAILABLE', 'This action is not available for the current Run state.');
-      {const latest=await store.call('loadLatestRun',{}),run=latest?.run;if(run&&['needs_input','ready_for_review'].includes(run.state)){const checkpoint=await store.call('loadPlan',String(run.run_id));if(checkpoint?.reviewNavigation!=='upload')fail('REVIEW.REIMPORT_REQUIRES_UPLOAD_STEP','Review cannot replace the source workbook directly; use back-to-upload first.');}}
-      const descriptor = input.payload?.artifact;
-      if (!descriptor || descriptor.schemaVersion !== 'omnia.feature-artifact/v1' || descriptor.featureId !== FEATURE_ID
-        || descriptor.featureVersion !== FEATURE_VERSION || descriptor.kind !== 'source') {
-        fail('ARTIFACT.IDENTITY_MISMATCH', 'The selected managed artifact identity is invalid.');
+      if(input?.actionId==='stage-source-workbook'){
+        const descriptor=input.payload?.artifact;
+        if(!descriptor||descriptor.schemaVersion!=='omnia.feature-artifact/v1'||descriptor.featureId!==FEATURE_ID||descriptor.featureVersion!==FEATURE_VERSION||descriptor.kind!=='source')fail('ARTIFACT.IDENTITY_MISMATCH','The selected managed artifact identity is invalid.');
+        const artifact=await store.call('readArtifactBytes',{artifactId:descriptor.artifactId});
+        if(artifact.runId!==descriptor.runId||artifact.traceId!==descriptor.traceId||artifact.artifactId!==descriptor.artifactId)fail('ARTIFACT.RUN_BINDING_MISMATCH','Core-managed artifact Run/trace binding drifted.');
+        const latest=await store.call('loadLatestRun',{}),run=latest?.run;
+        if(!run||run.state!=='acquiring'||String(run.run_id)!==String(descriptor.runId)||String(run.source_artifact_id)!==String(descriptor.artifactId))fail('RUN.STAGED_SOURCE_MISMATCH','The staged source is not the current acquiring Run.');
+        await store.call('savePlan',{schemaVersion:'omnia.create-associate.staged-upload/v1',planId:String(run.run_id),runId:String(run.run_id),traceId:String(run.trace_id),descriptor,stageState:'acquiring',updatedAt:new Date().toISOString()});
+        return{surfacePatch:uploadSurface(latest,'系统信息文件已暂存；请确认上传后开始校验。')};
       }
-      const artifact = await store.call('readArtifactBytes', { artifactId: descriptor.artifactId });
-      if (artifact.runId !== descriptor.runId || artifact.traceId !== descriptor.traceId || artifact.artifactId !== descriptor.artifactId) {
-        fail('ARTIFACT.RUN_BINDING_MISMATCH', 'Core-managed artifact Run/trace binding drifted.');
+      if(input?.actionId==='confirm-upload'){
+        const latest=await store.call('loadLatestRun',{}),run=latest?.run;
+        if(!run||run.state!=='acquiring')fail('RUN.NOT_STAGED','Only the current acquiring Run can be confirmed.');
+        const checkpoint=await ensureStagedPlan(latest);
+        if(!checkpoint?.descriptor||String(checkpoint.descriptor.runId)!==String(run.run_id)||String(checkpoint.descriptor.artifactId)!==String(run.source_artifact_id))fail('RUN.STAGED_SOURCE_MISMATCH','The durable staged descriptor does not match the acquiring Run.');
+        const revision=await store.call('transitionRun',{runId:String(run.run_id),expectedRevision:Number(run.state_revision),toState:'processing',eventType:'workbook.upload_confirmed',details:{sourceArtifactId:String(run.source_artifact_id)}});
+        await store.call('savePlan',{...checkpoint,stageState:'processing',confirmedAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
+        const processing=await store.call('loadLatestRun',{});
+        if(Number(processing?.run?.state_revision)!==Number(revision)||processing?.run?.state!=='processing')fail('RUN.PROCESSING_PROJECTION_DRIFT','Confirmed Run did not project the processing state.');
+        return{surfacePatch:processingSurface(processing,'正在校验系统信息。')};
       }
-      const runId = artifact.runId;
-      const traceId = artifact.traceId;
-      let revision = await store.call('transitionRun', { runId, expectedRevision: 2, toState: 'processing', eventType: 'workbook.processing' });
+      if(input?.actionId!=='validate-staged-upload')fail('ACTION.NOT_AVAILABLE','This action is not available for the current Run state.');
+      const latest=await store.call('loadLatestRun',{}),run=latest?.run;
+      if(!run||run.state!=='processing')fail('RUN.NOT_PROCESSING','Background validation requires the current processing Run.');
+      const stagedPlan=await store.call('loadPlan',String(run.run_id));const descriptor=stagedPlan?.descriptor;
+      if(stagedPlan?.stageState!=='processing'||!descriptor||String(descriptor.runId)!==String(run.run_id)||String(descriptor.artifactId)!==String(run.source_artifact_id))fail('RUN.STAGED_SOURCE_MISMATCH','The processing Run has no matching durable staged descriptor.');
+      const artifact=await store.call('readArtifactBytes',{artifactId:descriptor.artifactId});
+      if(artifact.runId!==descriptor.runId||artifact.traceId!==descriptor.traceId||artifact.artifactId!==descriptor.artifactId)fail('ARTIFACT.RUN_BINDING_MISMATCH','Core-managed artifact Run/trace binding drifted.');
+      const runId=artifact.runId;const traceId=artifact.traceId;let revision=Number(run.state_revision);
       let parsed;
       try { parsed = parseUserWorkbook(Buffer.from(artifact.contentBase64, 'base64'), descriptor.artifactId, governance);recomputeLocalIssues(parsed); }
       catch (error) {
@@ -1524,33 +1561,20 @@ function createFeatureWorker(dependencies) {
         throw error;
       }
       revision = await store.call('transitionRun', { runId, expectedRevision: revision, toState: 'converting', eventType: 'workbook.contract_verified' });
-      let compiled,output,unresolved,review;
+      let compiled,output,unresolved;
       try{
         compiled = await compileInstance(parsed, descriptor, runId, traceId); output=compiled.output;
-        const checkpoint={planId:runId,runId,traceId,descriptor,parsed,reviewNavigation:'review',createdAt:new Date().toISOString()};checkpoint.liveValidation=await runReviewLiveValidation(checkpoint,input.context);
+        const checkpoint={...stagedPlan,planId:runId,runId,traceId,descriptor,parsed,stageState:'validated',reviewNavigation:'review',createdAt:stagedPlan.createdAt||new Date().toISOString(),updatedAt:new Date().toISOString()};checkpoint.liveValidation=await runReviewLiveValidation(checkpoint,input.context);
         await store.call('recordFieldRevisions', { runId, templateInstanceId: compiled.templateInstanceId, fields: parsed.candidates });
         await store.call('recordIssues', { runId, issues: parsed.issues });
         await store.call('savePlan', checkpoint);
         const initialValidation=validationPresentation(parsed,checkpoint.liveValidation);const initialBlocker=initialValidation.progress.items.some((item)=>item.state==='failed'||item.state==='pending');
         unresolved = parsed.issues.filter((issue) => issue.state === 'needs_input' || issue.state === 'blocking');
-        review = await store.call('loadRunReview', { runId });
         revision = await store.call('transitionRun', { runId, expectedRevision: revision, toState: 'validating_output', eventType: 'output.created' });
         revision = await store.call('transitionRun', {runId,expectedRevision:revision,toState:unresolved.length||initialBlocker?'needs_input':'ready_for_review',eventType:unresolved.length||initialBlocker?'issues.persisted':'output.ready'});
       }catch(error){await store.call('transitionRun',{runId,expectedRevision:revision,toState:'failed',eventType:'output.failed',error:String(error.message||error)});throw error;}
-      const current=await store.call('loadLatestRun',{});const plan=await store.call('loadPlan',runId);const progress=progressSurface(current,parsed); const validation=validationPresentation(parsed,plan.liveValidation||{});
-      return {
-        surfacePatch: {
-          status: validation.progress.items.some((item)=>item.state==='failed'||item.state==='pending') ? 'error' : 'ready',
-          statusMessage: `已从用户资料解析 ${parsed.rows.length} 行、${parsed.candidates.length} 个候选值；blocking/error ${unresolved.length}，warning ${parsed.issues.filter((issue)=>issue.state==='waived').length}。`,
-          scopes:progress.scopes,items:progress.items,workflow:progress.workflow,progress:validation.progress,issues:validation.issues,artifacts: [],
-          editors: [],review:reviewPresentation(parsed),
-          actions: [
-            {actionId:'back-to-upload',enabled:true,reason:''},{actionId:'restart-run',enabled:true,reason:'取消当前可编辑 Run；下一次上传建立新 Run。'},{ actionId: 'apply-revisions', label:'保存修改并重新检查',enabled:true, reason:'保存 dirty 字段后完整重跑。' },
-            {actionId:'remove-batch-row',enabled:activeRows(parsed).length>1,reason:activeRows(parsed).length>1?'仅移出本批，不删除 Omnia。':'最后一行不可移除。'},{actionId:'revalidate-all',enabled:true,reason:'在原 Run 重试实时校验。'},
-            { actionId: 'prepare-return', enabled: !validation.progress.items.some((item)=>item.state==='failed'||item.state==='pending'), reason: validation.progress.items.some((item)=>item.state==='failed'||item.state==='pending') ? '存在 error、pending 实时项或全局 blocker。' : '' }
-          ]
-        }
-      };
+      const current=await store.call('loadLatestRun',{});const plan=await store.call('loadPlan',runId);
+      return{surfacePatch:reviewSurface(current,plan,compiled,`已从系统信息解析 ${parsed.rows.length} 行、${parsed.candidates.length} 个候选值；blocking/error ${unresolved.length}，warning ${parsed.issues.filter((issue)=>issue.state==='waived').length}。`)};
     }
   });
 }

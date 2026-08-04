@@ -52,7 +52,7 @@ export interface DeclarativeFeatureAction {
   effect: 'read_only' | 'local_state_write' | 'omnia_mutation';
   enabled: boolean;
   reason: string;
-  presentation?: 'default' | 'record' | 'pause' | 'stop' | 'export' | 'refresh' | 'restart';
+  presentation?: 'default' | 'record' | 'pause' | 'stop' | 'export' | 'refresh' | 'restart' | 'upload' | 'file_input' | 'background';
   selectionMode?: 'none' | 'single' | 'multiple';
   dependencies?: Array<'remote_connector' | 'safety_lock' | 'verified_canary'>;
   canaryCapability?: {
@@ -211,6 +211,8 @@ export interface FeatureArtifactInputRequest {
   surfaceId: string;
   actionId: string;
   accept: string[];
+  /** Main-process authority scope; Renderer input is ignored and overwritten at the IPC boundary. */
+  engagementId?: string;
 }
 
 export interface FeatureArtifactBytesInputRequest extends FeatureArtifactInputRequest {

@@ -1,6 +1,6 @@
 # Feature 详细设计：新建与关联
 
-> 2026-08-05 current implementation: `omnia.create-associate@0.2.6` / sequence 8 is a Shell 0.4.12 hot-update builtin and uses a two-column, three-step Surface—“上传资料 → 校验 → 回传”。Dirty drafts no longer block 返回上传; 重新检查全部 atomically saves the same CAS revision payload before full revalidation; Review no longer exposes the internal TemplateInstance download. Missing Connector binding or current-Pack Workspace safety scope makes all three live checks failed with an exact reason. Once available, the existing signed Operations still perform APP identity/recycle, non-APP active-object and relationship checks. No safety-lock bypass or direct passed shortcut is allowed. The SAP ECC Omnia mutation/readback canary remains pending.
+> 2026-08-05 current implementation: `omnia.create-associate@0.2.7` / sequence 9 is a Shell 0.4.12 hot-update builtin. Picker/drop creates a real recoverable `acquiring` Run and source Artifact but stays on step 1, displaying the real file. Only 确认上传 atomically enters `processing`; step 2 renders immediately at 0/11 before a generic declared non-mutation background action starts validation. Upload shows only 下载模板 and 确认上传, and neither source nor internal TemplateInstance artifacts expose downloads. Existing signed Operations and safety-lock requirements are unchanged. The SAP ECC Omnia mutation/readback canary remains pending.
 
 > 2026-08-03 implementation update: `omnia.create-associate@0.1.0` sequence 1 now implements the four-stage Remote control loop and is bundled as an auto-installed signed Feature in Shell 0.4.3. Production mutation remains disabled because a real target Omnia/Pack canary has not been executed; automated Connector-harness evidence is not a canary. The product is Remote-only and never falls back to Local transport.
 
@@ -9,7 +9,7 @@
 状态：Accepted Product Scope / Detailed Design Draft  
 用户可见名称：新建与关联  
 首批定位：第四开发切片；首批四 Plane 综合验收  
-DoR 状态：0.2.6 源码与 Operation 已完成，按 Shell 0.4.12 启动器热更新方式内置；真实 SAP ECC Pack mutation/readback canary 待完成；0.2.1 历史证据见[0.2.1 验收记录](../reviews/CREATE_ASSOCIATE_0_2_1_ACCEPTANCE.md)
+DoR 状态：0.2.7 源码与 Operation 已完成，按 Shell 0.4.12 启动器热更新方式内置；真实 SAP ECC Pack mutation/readback canary 待完成；0.2.1 历史证据见[0.2.1 验收记录](../reviews/CREATE_ASSOCIATE_0_2_1_ACCEPTANCE.md)
 v4 对应能力：ITGC Toolbox 的 Phase 1
 
 ## 1. 用户目标

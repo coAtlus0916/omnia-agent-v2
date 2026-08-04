@@ -19,6 +19,8 @@ let recorderProjectedAt = Date.now();
 let renderedSurface = '';
 let renderedError = '';
 const busyDisabledState = new WeakMap<HTMLInputElement | HTMLButtonElement | HTMLSelectElement | HTMLTextAreaElement, boolean>();
+const backgroundActionAttempts = new Set<string>();
+const backgroundActionScheduled = new Set<string>();
 
 function renderHostToolbar(): void {
   const toolbar = document.getElementById('surface-window-toolbar');
@@ -229,9 +231,14 @@ function render(): void {
   const restartAction = surface.actions.find((action) => action.presentation === 'restart');
   const railRestart = restartAction ? actionButton(restartAction, 'class="workflow-restart"') : '';
   const items = !visibleReview ? surface.items.map((item) => `<label class="item ${item.selectable ? '' : 'disabled'}"><input type="radio" name="selection" value="${esc(item.id)}" ${surface!.selectedItemIds.includes(item.id) ? 'checked' : ''} ${item.selectable ? '' : 'disabled'}><span><strong>${esc(item.title)}</strong><small>${esc(item.subtitle)}</small></span><em>${esc(item.type)}</em></label>`).join('') : '';
-  const actions = !visibleReview && !surface.recorder ? surface.actions.filter((action) => action.presentation !== 'restart').map((action) => actionButton(action)).join('') : '';
+  const actions = !visibleReview && !surface.recorder ? surface.actions.filter((action) => {
+    if (['restart', 'file_input', 'background'].includes(action.presentation || '')) return false;
+    return activeLayer === 'upload' ? action.presentation === 'upload' : action.presentation !== 'upload';
+  }).map((action) => actionButton(action)).join('') : '';
   const recorder = renderRecorder();
-  const artifacts = (surface.artifacts || []).map((artifact) => `<div class="artifact"><span><strong>${esc(artifact.name)}</strong><small>sha256:${esc(artifact.sha256.slice(0, 12))}… · ${artifact.sizeBytes} bytes</small></span><button data-download="${esc(artifact.artifactId)}" ${artifact.available ? '' : 'disabled'} title="${esc(artifact.reason)}">下载</button></div>`).join('');
+  const artifacts = (surface.artifacts || []).map((artifact) => artifact.kind === 'source'
+    ? `<div class="artifact staged-source"><span><strong>${esc(artifact.name)}</strong><small>${artifact.sizeBytes} bytes</small></span><em>${esc(artifact.reason || '待确认上传')}</em></div>`
+    : `<div class="artifact"><span><strong>${esc(artifact.name)}</strong><small>sha256:${esc(artifact.sha256.slice(0, 12))}… · ${artifact.sizeBytes} bytes</small></span>${artifact.available ? `<button data-download="${esc(artifact.artifactId)}">下载</button>` : `<em>${esc(artifact.reason)}</em>`}</div>`).join('');
   const editors = !visibleReview ? (surface.editors || []).map((editor) => `<label class="editor"><span>${esc(editor.label)}</span>${editor.inputKind === 'enum'
     ? `<select data-editor="${esc(editor.issueId)}" data-field="${esc(editor.fieldKey)}" data-revision="${editor.expectedRevision}">${editor.allowedValues.map((value) => `<option value="${esc(value)}" ${value === editor.currentValue ? 'selected' : ''}>${esc(value)}</option>`).join('')}</select>`
     : `<input data-editor="${esc(editor.issueId)}" data-field="${esc(editor.fieldKey)}" data-revision="${editor.expectedRevision}" value="${esc(editor.currentValue)}" maxlength="${editor.maxLength}" ${editor.required ? 'required' : ''}>`}</label>`).join('') : '';
@@ -250,6 +257,44 @@ function render(): void {
   renderHostToolbar();
   bindInteractions(inputAction);
   syncBusyState();
+  scheduleBackgroundAction();
+}
+
+function scheduleBackgroundAction(): void {
+  if (!surface || busy) return;
+  const action = surface.actions.find((candidate) => candidate.presentation === 'background' && candidate.enabled);
+  if (!action || action.effect === 'omnia_mutation') return;
+  const projection = {featureId:surface.featureId,featureVersion:surface.featureVersion,surfaceId:surface.surfaceId,stateVersion:surface.stateVersion};
+  const key = `${projection.featureId}\u0000${projection.featureVersion}\u0000${projection.surfaceId}\u0000${projection.stateVersion}\u0000${action.actionId}`;
+  if (backgroundActionAttempts.has(key) || backgroundActionScheduled.has(key)) return;
+  backgroundActionScheduled.add(key);
+  requestAnimationFrame(() => {
+    backgroundActionScheduled.delete(key);
+    if (!surface
+      || surface.featureId !== projection.featureId
+      || surface.featureVersion !== projection.featureVersion
+      || surface.surfaceId !== projection.surfaceId
+      || surface.stateVersion !== projection.stateVersion
+      || surface.actions.find((candidate) => candidate.actionId === action.actionId)?.enabled !== true) return;
+    if (busy) { requestAnimationFrame(scheduleBackgroundAction); return; }
+    backgroundActionAttempts.add(key);
+    void invoke(action.actionId, {});
+  });
+}
+
+async function chooseAndStageInput(inputAction: DeclarativeFeatureAction): Promise<void> {
+  if (!surface || busy || inputAction.input?.kind !== 'open_file') return;
+  setBusy(true);
+  let artifact;
+  try {
+    artifact = await window.featureSurface.chooseInput({featureId: surface.featureId, featureVersion: surface.featureVersion, surfaceId: surface.surfaceId, actionId: inputAction.actionId, accept: inputAction.input.accept});
+  } catch (error) {
+    errorMessage = error instanceof Error ? error.message : '文件导入失败';
+  } finally {
+    setBusy(false);
+  }
+  if (artifact) await invoke(inputAction.actionId, {artifact});
+  else renderIfChanged();
 }
 
 function bindInteractions(inputAction: DeclarativeFeatureAction | undefined): void {
@@ -342,7 +387,10 @@ function bindInteractions(inputAction: DeclarativeFeatureAction | undefined): vo
   }));
   const dropZone = root.querySelector<HTMLElement>('[data-drop-action]');
   if (dropZone && inputAction) {
-    dropZone.addEventListener('click', () => root.querySelector<HTMLButtonElement>(`[data-action="${CSS.escape(inputAction.actionId)}"]`)?.click());
+    dropZone.addEventListener('click', () => void chooseAndStageInput(inputAction));
+    dropZone.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); void chooseAndStageInput(inputAction); }
+    });
     dropZone.addEventListener('dragover', (event) => { event.preventDefault(); dropZone.classList.add('dragging'); });
     dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragging'));
     dropZone.addEventListener('drop', async (event) => {

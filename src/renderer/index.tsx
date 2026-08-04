@@ -87,18 +87,19 @@ function GlobalSessionBar({ snapshot, run, fail, openSafety, openConnection, bus
   </header>;
 }
 
-function FeatureNavigation({ snapshot, collapsed, run, openFeature }: {
+function FeatureNavigation({ snapshot, collapsed, run, openFeature, selectedFeatureId }: {
   snapshot: ShellSnapshot;
   collapsed: boolean;
   run: Run;
   openFeature?: (featureId: string) => void;
+  selectedFeatureId?: string;
 }) {
   return <aside id="feature-navigation" className={`feature-navigation ${collapsed ? 'collapsed' : ''}`} aria-label="FeatureNavigation">
     <div className="navigation-scroll">
       {!snapshot.features.navigation.length
         ? <div className="navigation-empty"><strong>没有可用 Feature</strong><p>Registry 尚未返回已安装且兼容的功能。</p></div>
         : [...snapshot.features.navigation].sort((left, right) => left.order - right.order || left.label.localeCompare(right.label, 'zh-CN')).map((leaf) =>
-          <NavigationLeaf key={`${leaf.featureId}:${leaf.id}`} leaf={leaf} selected={snapshot.features.selectedFeatureId === leaf.featureId} run={run} {...(openFeature ? { openFeature } : {})} />)}
+          <NavigationLeaf key={`${leaf.featureId}:${leaf.id}`} leaf={leaf} selected={(selectedFeatureId || snapshot.features.selectedFeatureId) === leaf.featureId} run={run} {...(openFeature ? { openFeature } : {})} />)}
     </div>
   </aside>;
 }
@@ -199,7 +200,6 @@ function MessageCard({ card, run }: { card: FeatureMessageCard; run: Run }) {
 /** Docked Feature content is a main-process WebContentsView, never Shell DOM. */
 function FeatureSurfaceFrame({ instance, surface }: { instance: SurfaceInstance<DeclarativeFeatureSurface>; surface: DeclarativeFeatureSurface }) {
   const slot = useRef<HTMLDivElement>(null);
-  const [reason, setReason] = useState('');
   useEffect(() => {
     const measure = () => {
       const rect = slot.current?.getBoundingClientRect();
@@ -208,16 +208,7 @@ function FeatureSurfaceFrame({ instance, surface }: { instance: SurfaceInstance<
       };
     };
     const initialBounds = measure();
-    if (initialBounds) {
-      void window.omnia.openFeatureSurface?.({
-        instanceId: instance.instanceId,
-        featureId: surface.featureId,
-        featureVersion: surface.featureVersion,
-        surfaceId: surface.surfaceId,
-        placement: 'docked',
-        bounds: initialBounds
-      }).then((result) => { if (result && !result.attached) setReason(result.reason); });
-    }
+    if (initialBounds) void window.omnia.resizeFeatureSurface?.({ instanceId: instance.instanceId, bounds: initialBounds });
     const observer = new ResizeObserver(() => {
       const bounds = measure();
       if (bounds) void window.omnia.resizeFeatureSurface?.({ instanceId: instance.instanceId, bounds });
@@ -225,9 +216,7 @@ function FeatureSurfaceFrame({ instance, surface }: { instance: SurfaceInstance<
     if (slot.current) observer.observe(slot.current);
     return () => observer.disconnect();
   }, [instance.instanceId, surface.featureId, surface.featureVersion, surface.surfaceId]);
-  return <div ref={slot} className="feature-surface-frame" data-surface-instance-id={instance.instanceId}>
-    {reason ? <p className="feature-empty">{reason}</p> : null}
-  </div>;
+  return <div ref={slot} className="feature-surface-frame" data-surface-instance-id={instance.instanceId} />;
 }
 function SurfaceActions({ onDetach, onMinimize, onClose }: {
   onDetach(): void; onMinimize(): void; onClose(): void;
@@ -248,33 +237,12 @@ function FeatureHost({ instance, onDetach, onMinimize, onClose }: {
     <FeatureSurfaceFrame instance={instance} surface={instance.value} /></div>;
 }
 
-function TabStrip({ snapshot, host, activeTab, setActiveTab, run, onChange }: {
+function TabStrip({ snapshot, host, activeTab, activateFeature, activateComments, run }: {
   snapshot: ShellSnapshot; host: SurfaceHost<DeclarativeFeatureSurface>; activeTab: string;
-  setActiveTab(value: string): void; run: Run; onChange(): void;
+  activateFeature(featureId: string, instanceId?: string): void; activateComments(): void; run: Run;
 }) {
   const featureLabels = useMemo(() => new Map(snapshot.features.navigation.map((leaf) => [leaf.featureId, leaf.label])), [snapshot.features.navigation]);
   const instances = host.snapshot().instances.filter((instance) => instance.placement === 'docked');
-  const activateFeature = (instance: SurfaceInstance<DeclarativeFeatureSurface>) => {
-    const existing = host.get(instance.instanceId);
-    if (existing?.placement === 'minimized') {
-      host.restore(instance.instanceId);
-      void window.omnia.restoreFeatureSurface?.(instance.instanceId);
-    } else if (existing?.placement === 'detached') {
-      host.focus(instance.instanceId);
-      const surface = existing.value;
-      if (surface) void window.omnia.openFeatureSurface?.({ instanceId: existing.instanceId, featureId: surface.featureId, featureVersion: surface.featureVersion, surfaceId: surface.surfaceId, placement: 'detached' });
-    }
-    if (existing?.placement === 'docked') {
-      setActiveTab(instance.instanceId);
-      onChange();
-    }
-    run(`select-tab:${instance.featureId}`, () => window.omnia.selectFeature({ featureId: instance.featureId }), (next: ShellSnapshot) => {
-      const surface = next.features.surface;
-      if (surface) host.update(surface.featureId, `${surface.featureVersion}:${surface.surfaceId}`, surface);
-      setActiveTab(instance.instanceId);
-      onChange();
-    });
-  };
   return <nav className="tab-strip" aria-label="会话标签">
     <button type="button" className="collapse-button" aria-controls="feature-navigation"
       aria-expanded={!snapshot.layout.collapsedPanels['feature-menu']} title={snapshot.layout.collapsedPanels['feature-menu'] ? '展开功能栏' : '收起功能栏'}
@@ -283,10 +251,10 @@ function TabStrip({ snapshot, host, activeTab, setActiveTab, run, onChange }: {
         featureNavigationCollapsed: !Boolean(snapshot.layout.collapsedPanels['feature-menu']),
         expectedStateVersion: snapshot.layout.stateVersion
       }))}>☰</button>
-    <button type="button" className={`tab comments-tab ${activeTab === 'comments' ? 'active' : ''}`} onClick={() => setActiveTab('comments')}>Comments</button>
+    <button type="button" className={`tab comments-tab ${activeTab === 'comments' ? 'active' : ''}`} onClick={activateComments}>Comments</button>
     {instances.map((instance) => <button type="button" key={instance.instanceId}
       className={`tab feature-tab ${activeTab === instance.instanceId ? 'active' : ''} ${instance.placement === 'minimized' ? 'minimized' : ''}`}
-      onClick={() => activateFeature(instance)} title={featureLabels.get(instance.featureId) || instance.featureId}>
+      onClick={() => activateFeature(instance.featureId, instance.instanceId)} title={featureLabels.get(instance.featureId) || instance.featureId}>
       <span>{featureLabels.get(instance.featureId) || instance.featureId}</span>
       {instance.placement === 'minimized' ? <small>最小化</small> : null}
     </button>)}
@@ -613,36 +581,64 @@ function ShellApp() {
   const [hostVersion, setHostVersion] = useState(0);
   const hostRef = useRef(new SurfaceHost<DeclarativeFeatureSurface>());
   const host = hostRef.current;
+  const selectionEpochRef = useRef(0);
+  const latestTargetRef = useRef<string | null>(null);
+  const latestFeatureIntentRef = useRef<string | null>(null);
+  const selectionReconcileTokenRef = useRef(0);
+  const pendingActivationRef = useRef(false);
+  const openedInstanceIdsRef = useRef(new Set<string>());
+  const overlayWasActiveRef = useRef(false);
+  const activateComments = useCallback(() => {
+    selectionEpochRef.current += 1;
+    latestTargetRef.current = null;
+    latestFeatureIntentRef.current = null;
+    pendingActivationRef.current = false;
+    setActiveTab('comments');
+  }, []);
   const run = useCallback<Run>((name, action, onSuccess) => {
     setBusy(name); setError('');
     void action().then((value) => {
       if (value?.schemaVersion) {
         setSnapshot(value);
-        if (value.features?.messageCards?.some((card: FeatureMessageCard) => card.state === 'pending_confirmation')) setActiveTab('comments');
+        if (value.features?.messageCards?.some((card: FeatureMessageCard) => card.state === 'pending_confirmation')) activateComments();
       }
       onSuccess?.(value);
     }).catch((reason) => setError(reason instanceof Error ? reason.message : '操作失败')).finally(() => setBusy(''));
-  }, []);
+  }, [activateComments]);
   useEffect(() => {
     void window.omnia.getSnapshot().then(setSnapshot).catch((reason) => setError(reason instanceof Error ? reason.message : '读取 Core 状态失败'));
     const offChanged = window.omnia.onChanged((next) => {
-      setSnapshot(next);
+      setSnapshot((current) => {
+        const intendedFeatureId = latestFeatureIntentRef.current;
+        if (!current || !intendedFeatureId || next.features.selectedFeatureId === intendedFeatureId) return next;
+        return {
+          ...next,
+          features: {
+            ...next.features,
+            selectedFeatureId: current.features.selectedFeatureId,
+            surface: current.features.surface
+          }
+        };
+      });
       const surface = next.features.surface;
       if (surface) {
         const key = `${surface.featureVersion}:${surface.surfaceId}`;
-        if (!host.get(`${surface.featureId}::${key}`)) host.open(surface.featureId, key, surface);
+        if (!host.get(`${surface.featureId}::${key}`)) host.ensure(surface.featureId, key, surface);
         else host.update(surface.featureId, key, surface);
         setHostVersion((value) => value + 1);
       }
-      if (next.features.messageCards.some((card) => card.state === 'pending_confirmation')) setActiveTab('comments');
+      if (next.features.messageCards.some((card) => card.state === 'pending_confirmation')) activateComments();
     });
     const offDocked = window.omnia.onFeatureDocked?.((instanceId) => {
       if (!host.dock(instanceId)) return;
+      openedInstanceIdsRef.current.add(instanceId);
+      selectionEpochRef.current += 1;
+      latestTargetRef.current = instanceId;
       setActiveTab(instanceId);
       setHostVersion((value) => value + 1);
     });
     return () => { offChanged(); offDocked?.(); };
-  }, [host]);
+  }, [activateComments, host]);
   useEffect(() => {
     if (snapshot?.remotePairing.state === 'waiting') setConnectionDetails(true);
   }, [snapshot?.remotePairing.state]);
@@ -652,11 +648,27 @@ function ShellApp() {
     return () => window.clearInterval(timer);
   }, [snapshot?.remotePairing.state, run]);
   useEffect(() => {
-    const active = activeTab === 'comments' ? null : host.get(activeTab);
-    void window.omnia.setDockedSurfaceVisibility?.({
-      activeInstanceId: !settings && !safety && !connectionDetails && active?.placement === 'docked' ? active.instanceId : null,
-      overlayActive: settings || safety || connectionDetails
-    });
+    const overlayActive = settings || safety || connectionDetails;
+    const wasOverlayActive = overlayWasActiveRef.current;
+    overlayWasActiveRef.current = overlayActive;
+    if (overlayActive) {
+      const hidden = window.omnia.setDockedSurfaceVisibility?.({ activeInstanceId: null, overlayActive: true });
+      if (hidden) void hidden.catch((reason) => setError(reason instanceof Error ? reason.message : '隐藏 Feature Surface 失败'));
+      return;
+    }
+    if (pendingActivationRef.current) return;
+    if (activeTab === 'comments') {
+      const hidden = window.omnia.setDockedSurfaceVisibility?.({ activeInstanceId: null, overlayActive: false });
+      if (hidden) void hidden.catch((reason) => setError(reason instanceof Error ? reason.message : '切换到 Comments 失败'));
+      return;
+    }
+    if (wasOverlayActive) {
+      const active = host.get(activeTab);
+      if (active?.placement === 'docked') {
+        const restored = window.omnia.focusFeatureSurface?.(active.instanceId);
+        if (restored) void restored.catch((reason) => setError(reason instanceof Error ? reason.message : '恢复 Feature Surface 失败'));
+      }
+    }
   }, [activeTab, settings, safety, connectionDetails, host, hostVersion]);
   useEffect(() => {
     if (!snapshot) return;
@@ -681,31 +693,191 @@ function ShellApp() {
     run('layout', () => window.omnia.saveLayout({ featureNavigationBasisPoints: middle,
       featureNavigationCollapsed: Boolean(snapshot.layout.collapsedPanels['feature-menu']), expectedStateVersion: snapshot.layout.stateVersion }));
   };
-  const openFeature = (featureId: string) => {
-    const existing = host.getByFeature(featureId)[0];
-    const shouldActivateNewSurface = !existing || existing.placement === 'closed';
-    if (existing && existing.placement !== 'closed') {
-      if (existing.placement === 'minimized') {
-        host.restore(existing.instanceId); void window.omnia.restoreFeatureSurface?.(existing.instanceId);
-      } else if (existing.placement === 'detached') {
-        host.focus(existing.instanceId);
-      } else {
-        setActiveTab(existing.instanceId);
+  const activateFeature = (featureId: string, preferredInstanceId?: string) => {
+    const epoch = ++selectionEpochRef.current;
+    latestFeatureIntentRef.current = featureId;
+    pendingActivationRef.current = true;
+    setError('');
+    const refocusLatest = () => {
+      const latest = latestTargetRef.current;
+      if (!latest) return;
+      const restored = window.omnia.focusFeatureSurface?.(latest);
+      if (restored) void restored.catch(() => undefined);
+    };
+    const reconcileLatestCoreSelection = () => {
+      const desired = latestFeatureIntentRef.current;
+      if (!desired) return;
+      const token = ++selectionReconcileTokenRef.current;
+      void window.omnia.selectFeature({ featureId: desired }).then((next) => {
+        if (token !== selectionReconcileTokenRef.current) return;
+        if (latestFeatureIntentRef.current !== desired) {
+          reconcileLatestCoreSelection();
+          return;
+        }
+        if (next.features.selectedFeatureId !== desired || next.features.surface?.featureId !== desired) {
+          throw new Error('Core Feature 选择结果与最新用户操作不一致。');
+        }
+        setSnapshot(next);
+        const surface = next.features.surface;
+        const key = `${surface.featureVersion}:${surface.surfaceId}`;
+        if (!host.get(`${surface.featureId}::${key}`)) host.ensure(surface.featureId, key, surface);
+        else host.update(surface.featureId, key, surface);
         setHostVersion((value) => value + 1);
-      }
+      }).catch((reason) => {
+        if (token === selectionReconcileTokenRef.current) setError(reason instanceof Error ? reason.message : '恢复最新 Feature 选择失败');
+      });
+    };
+    const preferred = preferredInstanceId ? host.get(preferredInstanceId) : undefined;
+    const existing = preferred && preferred.featureId === featureId && preferred.placement !== 'closed'
+      ? preferred
+      : host.getByFeature(featureId).find((candidate) => candidate.placement !== 'closed');
+    const previousActiveId = activeTab !== 'comments' ? activeTab : null;
+    if (existing && openedInstanceIdsRef.current.has(existing.instanceId)) {
+      latestTargetRef.current = existing.instanceId;
+      let switchedInMain = false;
+      void (async () => {
+        if (!window.omnia.focusFeatureSurface) throw new Error('Shell 未提供 Feature Surface 聚焦合同。');
+        const result = await window.omnia.focusFeatureSurface(existing.instanceId);
+        if (epoch !== selectionEpochRef.current) {
+          refocusLatest();
+          return;
+        }
+        if (result.instanceId !== existing.instanceId) throw new Error('Feature Surface 聚焦返回了错误的实例。');
+        switchedInMain = true;
+        if (result.placement === 'docked') {
+          if (!result.attached || result.manager.activeInstanceId !== existing.instanceId
+            || result.manager.attachedInstanceIds.length !== 1
+            || result.manager.attachedInstanceIds[0] !== existing.instanceId) {
+            throw new Error('Feature Surface 聚焦后未建立唯一原生附着。');
+          }
+          host.dock(existing.instanceId);
+          setActiveTab(existing.instanceId);
+        } else {
+          host.detach(existing.instanceId);
+          setActiveTab('comments');
+        }
+        pendingActivationRef.current = false;
+        setHostVersion((value) => value + 1);
+        const next = await window.omnia.selectFeature({ featureId });
+        if (epoch !== selectionEpochRef.current) {
+          refocusLatest();
+          reconcileLatestCoreSelection();
+          return;
+        }
+        const surface = next.features.surface;
+        if (next.features.selectedFeatureId !== featureId || !surface
+          || surface.featureId !== existing.featureId
+          || surface.featureVersion !== existing.value?.featureVersion
+          || surface.surfaceId !== existing.value?.surfaceId) {
+          throw new Error('Core 返回的 Feature Surface 身份与已打开实例不一致。');
+        }
+        host.update(surface.featureId, `${surface.featureVersion}:${surface.surfaceId}`, surface);
+        setSnapshot(next);
+        setHostVersion((value) => value + 1);
+      })().catch(async (reason) => {
+        if (epoch === selectionEpochRef.current) {
+          pendingActivationRef.current = false;
+          let rollbackError = '';
+          if (switchedInMain && previousActiveId !== existing.instanceId) {
+            try {
+              const previous = previousActiveId ? host.get(previousActiveId) : undefined;
+              if (previous && previous.placement !== 'closed') {
+                const restored = await window.omnia.focusFeatureSurface?.(previous.instanceId);
+                if (!restored) throw new Error('Shell 未提供 Feature Surface 聚焦合同。');
+                latestTargetRef.current = previous.instanceId;
+                latestFeatureIntentRef.current = previous.featureId;
+                if (restored.placement === 'docked') {
+                  host.dock(previous.instanceId);
+                  setActiveTab(previous.instanceId);
+                } else {
+                  host.detach(previous.instanceId);
+                  setActiveTab('comments');
+                }
+                const rolledBack = await window.omnia.selectFeature({ featureId: previous.featureId });
+                if (rolledBack.features.selectedFeatureId !== previous.featureId) throw new Error('Core 拒绝恢复前一个 Feature。');
+                setSnapshot(rolledBack);
+              } else {
+                latestTargetRef.current = null;
+                latestFeatureIntentRef.current = null;
+                setActiveTab('comments');
+                await window.omnia.setDockedSurfaceVisibility?.({ activeInstanceId: null, overlayActive: false });
+              }
+            } catch (rollbackReason) {
+              rollbackError = rollbackReason instanceof Error ? rollbackReason.message : '回退失败';
+            }
+          }
+          const message = reason instanceof Error ? reason.message : '切换 Feature 失败';
+          setError(rollbackError ? `${message}；安全回退失败：${rollbackError}` : message);
+          setHostVersion((value) => value + 1);
+        }
+      });
+      return;
     }
-    run(`select-feature:${featureId}`, () => window.omnia.selectFeature({ featureId }), (next: ShellSnapshot) => {
-      const surface = next.features.surface;
-      if (!surface) return;
-      const key = `${surface.featureVersion}:${surface.surfaceId}`;
-      const current = host.get(surface.featureId + '::' + key);
-      const instance = current && current.placement !== 'closed' ? current : host.open(surface.featureId, key, surface);
-      host.update(surface.featureId, key, surface);
-      if (instance.placement === 'detached') {
-        void window.omnia.openFeatureSurface?.({ instanceId: instance.instanceId, featureId: surface.featureId, featureVersion: surface.featureVersion, surfaceId: surface.surfaceId, placement: 'detached' });
+    latestTargetRef.current = null;
+    void (async () => {
+      const next = await window.omnia.selectFeature({ featureId });
+      if (epoch !== selectionEpochRef.current) {
+        reconcileLatestCoreSelection();
+        return;
       }
-      if (shouldActivateNewSurface || instance.placement === 'docked') setActiveTab(instance.instanceId);
-      setHostVersion((v) => v + 1);
+      const surface = next.features.surface;
+      if (!surface || surface.featureId !== featureId) throw new Error('Core 未返回所选 Feature 的真实 Surface。');
+      const key = `${surface.featureVersion}:${surface.surfaceId}`;
+      const instance = host.open(surface.featureId, key, surface);
+      latestTargetRef.current = instance.instanceId;
+      setHostVersion((value) => value + 1);
+      if (!window.omnia.openFeatureSurface) throw new Error('Shell 未提供 Feature Surface 打开合同。');
+      const opened = await window.omnia.openFeatureSurface({
+        instanceId: instance.instanceId,
+        featureId: surface.featureId,
+        featureVersion: surface.featureVersion,
+        surfaceId: surface.surfaceId,
+        placement: 'docked'
+      });
+      if (epoch !== selectionEpochRef.current) {
+        refocusLatest();
+        reconcileLatestCoreSelection();
+        return;
+      }
+      if (opened.instanceId !== instance.instanceId || opened.placement !== 'docked' || !opened.attached) {
+        throw new Error(opened.reason || 'Feature Surface 未能附着到 Shell。');
+      }
+      openedInstanceIdsRef.current.add(instance.instanceId);
+      host.dock(instance.instanceId);
+      pendingActivationRef.current = false;
+      setSnapshot(next);
+      setActiveTab(instance.instanceId);
+      setHostVersion((value) => value + 1);
+    })().catch(async (reason) => {
+      if (epoch !== selectionEpochRef.current) return;
+      pendingActivationRef.current = false;
+      let rollbackError = '';
+      if (previousActiveId) {
+        try {
+          const previous = host.get(previousActiveId);
+          if (!previous || previous.placement === 'closed') throw new Error('前一个 Feature Surface 已不可恢复。');
+          const restored = await window.omnia.focusFeatureSurface?.(previousActiveId);
+          if (!restored) throw new Error('Shell 未提供 Feature Surface 聚焦合同。');
+          latestTargetRef.current = previous.instanceId;
+          latestFeatureIntentRef.current = previous.featureId;
+          const rolledBack = await window.omnia.selectFeature({ featureId: previous.featureId });
+          if (rolledBack.features.selectedFeatureId !== previous.featureId) throw new Error('Core 拒绝恢复前一个 Feature。');
+          setSnapshot(rolledBack);
+        } catch (rollbackReason) {
+          rollbackError = rollbackReason instanceof Error ? rollbackReason.message : '回退失败';
+        }
+      } else {
+        latestTargetRef.current = null;
+        latestFeatureIntentRef.current = null;
+        try {
+          await window.omnia.setDockedSurfaceVisibility?.({ activeInstanceId: null, overlayActive: false });
+        } catch (rollbackReason) {
+          rollbackError = rollbackReason instanceof Error ? rollbackReason.message : '回退失败';
+        }
+      }
+      const message = reason instanceof Error ? reason.message : '打开 Feature 失败';
+      setError(rollbackError ? `${message}；安全回退失败：${rollbackError}` : message);
+      setHostVersion((value) => value + 1);
     });
   };
   const activeFeatureInstance = activeTab !== 'comments' ? host.get(activeTab) : undefined;
@@ -721,10 +893,10 @@ function ShellApp() {
   };
   const closeFeature = (instance: SurfaceInstance<DeclarativeFeatureSurface>) => {
     host.close(instance.instanceId); setActiveTab('comments'); setHostVersion((v) => v + 1);
+    openedInstanceIdsRef.current.delete(instance.instanceId);
     void window.omnia.closeFeatureSurface?.(instance.instanceId);
   };
   const openSettings = () => {
-    void window.omnia.setDockedSurfaceVisibility?.({ activeInstanceId: null, overlayActive: true });
     setSettings(true);
   };
   const closeSettings = () => setSettings(false);
@@ -733,14 +905,16 @@ function ShellApp() {
       <button type="button" className="rail-settings" aria-label="设置" title="设置" onClick={openSettings}>⚙</button></aside>
     <section className="workspace-shell"><GlobalSessionBar snapshot={snapshot} run={run} fail={setError} busy={busy} openSafety={() => setSafety(true)} openConnection={() => setConnectionDetails(true)} />
       <div className="content-grid" style={{ gridTemplateColumns: snapshot.layout.collapsedPanels['feature-menu'] ? '0 minmax(0, 1fr)' : `${layout.featureNavigationBasisPoints / 100}% 7px minmax(0, 1fr)` }}>
-        <FeatureNavigation snapshot={snapshot} collapsed={snapshot.layout.collapsedPanels['feature-menu']} run={run} openFeature={openFeature} />
+        <FeatureNavigation snapshot={snapshot} collapsed={snapshot.layout.collapsedPanels['feature-menu']} run={run} openFeature={activateFeature}
+          selectedFeatureId={activeFeatureInstance?.featureId} />
         {!snapshot.layout.collapsedPanels['feature-menu'] ? <div className="navigation-splitter" role="separator" aria-label="调整 FeatureNavigation 宽度" onPointerDown={(event) => {
           const hostElement = event.currentTarget.parentElement!; const start = event.clientX; const base = layout.featureNavigationBasisPoints;
           const move = (next: PointerEvent) => { const delta = next.clientX - start; const nextBasis = clamp(Math.round(base + delta / hostElement.clientWidth * 10000), 1800, 4800); setPreview({ ...layout, featureNavigationBasisPoints: nextBasis }); };
           const up = (next: PointerEvent) => { const delta = next.clientX - start; const nextBasis = clamp(Math.round(base + delta / hostElement.clientWidth * 10000), 1800, 4800); window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); commit(nextBasis); };
           window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
         }} /> : null}
-        <main className="tabbed-host"><TabStrip snapshot={snapshot} host={host} activeTab={activeTab} setActiveTab={setActiveTab} run={run} onChange={() => setHostVersion((v) => v + 1)} />
+        <main className="tabbed-host"><TabStrip snapshot={snapshot} host={host} activeTab={activeTab}
+          activateFeature={activateFeature} activateComments={activateComments} run={run} />
           <div className="host-content">{activeTab === 'comments' || !activeFeatureInstance || activeFeatureInstance.placement !== 'docked'
             ? <CommentsPanel snapshot={snapshot} run={run} />
             : <FeatureHost instance={activeFeatureInstance} onDetach={() => detach(activeFeatureInstance)} onMinimize={() => minimize(activeFeatureInstance)} onClose={() => closeFeature(activeFeatureInstance)} />}</div>

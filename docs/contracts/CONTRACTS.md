@@ -124,7 +124,7 @@ Shell/Core 使用统一实例合同管理第三列标签与独立窗口，Render
 - `openFeatureSurface(featureId, contextVersion, placement="docked")`：新建或聚焦同一 `featureId + contextId` 实例；
 - `setFeatureSurfacePlacement(surfaceInstanceId, placement, expectedStateVersion)`：实现 `↗` 或 `−`，失败保持原宿主；
 - `closeFeatureSurface(surfaceInstanceId, expectedStateVersion)`：关闭 UI 实例，不卸载 Feature、不隐式终止 Run；dirty 时返回需要标准确认；
-- `focusFeatureSurface(surfaceInstanceId)`：激活 docked 标签或恢复/聚焦 detached/minimized 窗口；
+- `focusFeatureSurface(surfaceInstanceId)`：激活 docked 标签或恢复/聚焦 detached/minimized 窗口；成功返回 `instanceId/placement/attached` 及完整 manager snapshot，unknown、closed、identity drift 或非法 placement 必须显式失败。docked 成功时 `activeInstanceId` 必须等于目标且 `attachedInstanceIds` 只能包含目标；
 - `setFeatureMenuCollapsed(collapsed, expectedLayoutStateVersion)`：由 Core 持久化折叠状态，折叠时菜单与 Splitter 同时归零。
 
 迁移 placement 不改变 `surfaceInstanceId/contextId/activeRunId`，也不允许重放 mutation。minimized 必须先建立 detached 宿主并完成状态接续，再调用 Windows 原生最小化。

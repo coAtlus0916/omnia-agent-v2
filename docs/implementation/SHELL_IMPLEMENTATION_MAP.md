@@ -3,7 +3,9 @@
 版本：`0.4.12`
 状态：Remote-only 发布源码；内置 recording 0.3.0、create-associate 0.2.6 与 delete-elements 0.1.5，均由 builtin bootstrap 自动安装/升级。0.4.12 固定宿主加载启动器构建的工作区代码；安全锁展示与全局范围只使用 Omnia 真实 `CustomWorkspaceGroup → CustomWorkspace.parentId`。Connector 仅执行固定读取和签名 Operation；Core/Worker 处理校验、规则与持久化。
 
-SurfaceWindowManager 在 Feature action 成功或失败后向所有同 Feature/版本/Surface 实例广播 Core 最新投影。Artifact 输入授权在打开文件选择器前复核当前 workflow，仅上传步骤接受 `open_file`；旧 WebContents 不能在后台已进入校验后继续导入。
+SurfaceWindowManager 在 Feature action 成功或失败后向所有同 Feature/版本/Surface 实例广播 Core 最新投影。每个已授权实例保存自己的最后一份 `DeclarativeFeatureSurface`；聚焦、dock、minimize、restore 和已有实例再次 open 只能使用身份匹配的实例缓存，不得从全局 selected Surface 借用另一 Feature 的投影。Artifact 输入授权在打开文件选择器前复核当前 workflow，仅上传步骤接受 `open_file`；旧 WebContents 不能在后台已进入校验后继续导入。
+
+Shell 顶部标签与左侧 FeatureNavigation 共用同一激活实现。已打开实例先调用 Main `surface:focus` 原子切换 native attachment，再用同一 selection epoch 同步 Core `selectFeature`；新实例只在 Core 返回真实且身份匹配的 Surface 后调用一次 `surface:open`。旧异步 completion 必须重新聚焦最新实例并把 Core selection 收敛到最新用户意图，不能覆盖当前标签。`shell:changed` 只 `ensure/update` 实例投影，不得隐式 open 或抢焦点；Comments/overlay 仅通过 visibility 合同隐藏，overlay 关闭后通过 focus 恢复。
 
 ## 范围
 

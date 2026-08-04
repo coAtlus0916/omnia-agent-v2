@@ -2,7 +2,7 @@ import { BrowserWindow, WebContentsView } from 'electron';
 import path from 'node:path';
 import type { DeclarativeFeatureSurface, FeatureActionRequest, FeatureArtifactInputRequest } from '../../shared/feature-contracts.js';
 import type { ShellSnapshot } from '../../shared/contracts.js';
-import type { DockedSurfaceManagerSnapshot, DockedSurfaceVisibilityInput } from '../../shared/contracts.js';
+import type { DockedSurfaceManagerSnapshot, DockedSurfaceVisibilityInput, FeatureSurfaceFocusResult } from '../../shared/contracts.js';
 
 export type SurfacePlacement = 'docked' | 'detached' | 'minimized' | 'closed';
 export interface SurfaceOpenInput {
@@ -23,6 +23,7 @@ interface SurfaceWindowState extends Omit<SurfaceOpenInput, 'placement'> {
   window: BrowserWindow | null;
   attached: boolean;
   bounds: { x: number; y: number; width: number; height: number };
+  authorizedSurface: DeclarativeFeatureSurface;
 }
 
 /** Main-process owner of isolated Feature WebContents and native windows. */
@@ -52,10 +53,23 @@ export class SurfaceWindowManager {
     this.senderInstances.clear();
   }
 
-  private currentSurface(input: Pick<SurfaceOpenInput, 'featureId' | 'featureVersion' | 'surfaceId'>): DeclarativeFeatureSurface | null {
+  private selectedSurface(input: Pick<SurfaceOpenInput, 'featureId' | 'featureVersion' | 'surfaceId'>): DeclarativeFeatureSurface | null {
     const surface = this.getSnapshot().features.surface;
-    if (!surface || surface.featureId !== input.featureId || surface.featureVersion !== input.featureVersion || surface.surfaceId !== input.surfaceId) return null;
+    if (!surface || !this.matches(input, surface)) return null;
     return surface;
+  }
+
+  private matches(input: Pick<SurfaceOpenInput, 'featureId' | 'featureVersion' | 'surfaceId'>, surface: DeclarativeFeatureSurface): boolean {
+    return surface.featureId === input.featureId
+      && surface.featureVersion === input.featureVersion
+      && surface.surfaceId === input.surfaceId;
+  }
+
+  private cachedSurface(state: SurfaceWindowState): DeclarativeFeatureSurface {
+    if (!this.matches(state, state.authorizedSurface)) {
+      throw new Error('Feature Surface cached authorization identity has drifted.');
+    }
+    return state.authorizedSurface;
   }
 
   private webPreferences(partition: string): Electron.WebPreferences {
@@ -82,8 +96,16 @@ export class SurfaceWindowManager {
         && state.featureId === surface.featureId
         && state.featureVersion === surface.featureVersion
         && state.surfaceId === surface.surfaceId
-      ) this.bootstrap(state, surface);
+      ) {
+        state.authorizedSurface = surface;
+        this.bootstrap(state, surface);
+      }
     }
+  }
+
+  /** Refresh only already-authorized matching instances; never creates or focuses one. */
+  refreshAuthorizedSurface(surface: DeclarativeFeatureSurface | null): void {
+    if (surface) this.bootstrapMatching(surface);
   }
 
   private async load(state: SurfaceWindowState, surface: DeclarativeFeatureSurface): Promise<void> {
@@ -200,12 +222,13 @@ export class SurfaceWindowManager {
     try {
       const snapshot = await this.invokeFeatureAction(request);
       const next = snapshot.features.surface;
-      if (next && next.featureId === request.featureId && next.featureVersion === request.featureVersion
-        && next.surfaceId === request.surfaceId) this.bootstrapMatching(next);
+      if (!next || !this.matches(state, next)) {
+        throw new Error('Feature action returned a drifted Surface identity.');
+      }
+      this.bootstrapMatching(next);
       return snapshot;
     } catch (error) {
-      const latest = this.currentSurface(state);
-      if (latest) this.bootstrapMatching(latest);
+      this.bootstrapMatching(this.cachedSurface(state));
       throw error;
     }
   }
@@ -228,8 +251,8 @@ export class SurfaceWindowManager {
   }
 
   private async performDock(state: SurfaceWindowState): Promise<void> {
-    const surface = this.currentSurface(state);
-    if (!surface || state.placement === 'closed') return;
+    if (state.placement === 'closed') return;
+    const surface = this.cachedSurface(state);
     this.destroyDetached(state);
     if (!state.view) await this.createDocked(state, surface, state.bounds);
     else state.placement = 'docked';
@@ -246,11 +269,11 @@ export class SurfaceWindowManager {
       || state.featureVersion !== request.featureVersion || state.surfaceId !== request.surfaceId) {
       throw new Error('Feature artifact input context is not authorized or has drifted.');
     }
-    const current = this.currentSurface(state);
+    const current = this.cachedSurface(state);
     const action = current?.actions.find((candidate) => candidate.actionId === request.actionId);
     if (!current || !action || action.input?.kind !== 'open_file' || !action.enabled
       || (current.workflow && current.workflow.currentStepId !== 'upload')) {
-      if (current) this.bootstrapMatching(current);
+      this.bootstrapMatching(current);
       throw new Error('当前 Feature 已进入校验或回传步骤；请先点击“返回上传”再选择文件。');
     }
   }
@@ -264,18 +287,17 @@ export class SurfaceWindowManager {
   }
 
   async open(input: SurfaceOpenInput): Promise<{ instanceId: string; placement: SurfacePlacement; attached: boolean; reason: string }> {
-    const surface = this.currentSurface(input);
-    if (!surface) return { instanceId: input.instanceId, placement: 'closed', attached: false, reason: 'FeatureContext 已漂移，请从 Registry 重新打开。' };
     const existing = this.states.get(input.instanceId);
     if (existing) {
       const identityChanged = existing.featureId !== input.featureId
         || existing.featureVersion !== input.featureVersion
         || existing.surfaceId !== input.surfaceId;
+      if (identityChanged) throw new Error('Feature Surface instance identity has drifted.');
+      const surface = this.cachedSurface(existing);
       const wasDocked = existing.placement === 'docked';
-      existing.featureId = input.featureId;
-      existing.featureVersion = input.featureVersion;
-      existing.surfaceId = input.surfaceId;
       if (input.placement === 'docked') {
+        this.activeDockedInstanceId = existing.instanceId;
+        this.overlayActive = false;
         if (existing.window) this.destroyDetached(existing);
         if (!existing.view) await this.createDocked(existing, surface, input.bounds);
         else {
@@ -286,28 +308,79 @@ export class SurfaceWindowManager {
           this.reconcileDockedViews();
         }
       } else if (input.placement === 'detached') {
+        if (this.activeDockedInstanceId === existing.instanceId) this.activeDockedInstanceId = null;
         if (existing.view) this.destroyDocked(existing);
         if (!existing.window) await this.createDetached(existing, surface);
         else { existing.window.show(); existing.window.focus(); existing.placement = 'detached'; this.bootstrap(existing, surface); }
       } else {
+        if (this.activeDockedInstanceId === existing.instanceId) this.activeDockedInstanceId = null;
         if (existing.view) this.destroyDocked(existing);
         if (!existing.window) await this.createDetached(existing, surface, true);
         else { existing.window.show(); existing.window.minimize(); existing.placement = 'minimized'; this.bootstrap(existing, surface); }
       }
       return { instanceId: existing.instanceId, placement: existing.placement, attached: existing.placement !== 'docked' || existing.attached, reason: '' };
     }
+    const surface = this.selectedSurface(input);
+    if (!surface) return { instanceId: input.instanceId, placement: 'closed', attached: false, reason: 'Feature context is no longer selected or authorized; reopen it from the registry.' };
     const state: SurfaceWindowState = {
       ...input,
       placement: input.placement,
       view: null,
       window: null,
       attached: false,
-      bounds: input.bounds || { x: 0, y: 0, width: 1, height: 1 }
+      bounds: input.bounds || { x: 0, y: 0, width: 1, height: 1 },
+      authorizedSurface: surface
     };
     this.states.set(input.instanceId, state);
-    if (input.placement === 'docked') await this.createDocked(state, surface, input.bounds);
+    if (input.placement === 'docked') {
+      this.activeDockedInstanceId = state.instanceId;
+      this.overlayActive = false;
+      await this.createDocked(state, surface, input.bounds);
+    }
     else await this.createDetached(state, surface, input.placement === 'minimized');
     return { instanceId: state.instanceId, placement: state.placement, attached: state.placement !== 'docked' || state.attached, reason: '' };
+  }
+
+  async focus(instanceId: string): Promise<FeatureSurfaceFocusResult> {
+    const state = this.states.get(instanceId);
+    if (!state) throw new Error('Feature Surface instance is unknown.');
+    if (state.placement === 'closed') throw new Error('Feature Surface instance is closed.');
+    const surface = this.cachedSurface(state);
+    if (state.placement === 'docked') {
+      if (state.window) throw new Error('Docked Feature Surface has an invalid detached host.');
+      this.activeDockedInstanceId = state.instanceId;
+      this.overlayActive = false;
+      for (const other of this.states.values()) {
+        if (other !== state) this.detachDocked(other);
+      }
+      if (!state.view) await this.createDocked(state, surface, state.bounds);
+      else {
+        this.bootstrap(state, surface);
+        this.attachDocked(state);
+      }
+      const attached = [...this.states.values()].filter((candidate) => candidate.attached);
+      if (!state.attached || attached.length !== 1 || attached[0] !== state) {
+        throw new Error('Feature Surface focus failed to establish a unique native attachment.');
+      }
+      return { instanceId, placement: 'docked', attached: true, manager: this.snapshot() };
+    }
+    if (state.placement === 'detached' || state.placement === 'minimized') {
+      if (state.view) throw new Error('Detached Feature Surface has an invalid docked host.');
+      if (!state.window || state.window.isDestroyed()) await this.createDetached(state, surface);
+      else {
+        if (state.window.isMinimized()) state.window.restore();
+        state.window.show();
+        state.window.focus();
+        state.placement = 'detached';
+        this.bootstrap(state, surface);
+      }
+      if (!state.window || state.window.isDestroyed() || state.placement !== 'detached') {
+        throw new Error('Feature Surface focus failed to restore the detached window.');
+      }
+      if (this.activeDockedInstanceId === instanceId) this.activeDockedInstanceId = null;
+      return { instanceId, placement: 'detached', attached: false, manager: this.snapshot() };
+    }
+    throw new Error('Feature Surface has an invalid placement.');
   }
 
   resize(instanceId: string, bounds: { x: number; y: number; width: number; height: number }): void {
@@ -320,6 +393,11 @@ export class SurfaceWindowManager {
   }
 
   setDockedVisibility(input: DockedSurfaceVisibilityInput): DockedSurfaceManagerSnapshot {
+    if (input.activeInstanceId) {
+      const state = this.states.get(input.activeInstanceId);
+      if (!state) throw new Error('Docked visibility references an unknown Feature Surface.');
+      if (state.placement !== 'docked') throw new Error('Docked visibility references a non-docked Feature Surface.');
+    }
     this.activeDockedInstanceId = input.activeInstanceId;
     this.overlayActive = Boolean(input.overlayActive);
     this.reconcileDockedViews();
@@ -373,17 +451,12 @@ export class SurfaceWindowManager {
     const state = this.states.get(instanceId);
     if (!state) return;
     if (state.window && !state.window.isDestroyed()) { state.window.minimize(); state.placement = 'minimized'; return; }
-    const surface = this.currentSurface(state);
-    if (!surface) { state.placement = 'closed'; return; }
+    const surface = this.cachedSurface(state);
     this.destroyDocked(state);
     await this.createDetached(state, surface, true);
   }
 
-  restore(instanceId: string): void {
-    const state = this.states.get(instanceId);
-    if (!state) return;
-    if (state.window && !state.window.isDestroyed()) { state.window.restore(); state.window.show(); state.window.focus(); state.placement = 'detached'; return; }
-    state.placement = 'docked';
-    this.reconcileDockedViews();
+  async restore(instanceId: string): Promise<void> {
+    await this.focus(instanceId);
   }
 }

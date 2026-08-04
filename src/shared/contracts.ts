@@ -241,6 +241,13 @@ export interface DockedSurfaceManagerSnapshot {
   zoomFactor: number;
 }
 
+export interface FeatureSurfaceFocusResult {
+  instanceId: string;
+  placement: 'docked' | 'detached';
+  attached: boolean;
+  manager: DockedSurfaceManagerSnapshot;
+}
+
 export interface ShellSnapshot {
   schemaVersion: 'omnia.shell-home/v1';
   generatedAt: string;
@@ -316,6 +323,7 @@ export interface ShellApi {
     placement: 'docked' | 'detached' | 'minimized';
     bounds?: { x: number; y: number; width: number; height: number };
   }): Promise<{ instanceId: string; placement: 'docked' | 'detached' | 'minimized' | 'closed'; attached: boolean; reason: string }>;
+  focusFeatureSurface?(instanceId: string): Promise<FeatureSurfaceFocusResult>;
   resizeFeatureSurface?(input: { instanceId: string; bounds: { x: number; y: number; width: number; height: number } }): Promise<void>;
   closeFeatureSurface?(instanceId: string): Promise<void>;
   minimizeFeatureSurface?(instanceId: string): Promise<void>;

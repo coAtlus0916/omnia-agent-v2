@@ -216,6 +216,10 @@ function registerIpc(service: ShellService, packages: FeaturePackageManager, log
     if (!surfaceWindows) throw new Error('Feature Surface host is not ready.');
     return surfaceWindows.open(input);
   });
+  handle('surface:focus', (instanceId: string) => {
+    if (!surfaceWindows) throw new Error('Feature Surface host is not ready.');
+    return surfaceWindows.focus(instanceId);
+  });
   handle('surface:resize', (input: { instanceId: string; bounds: { x: number; y: number; width: number; height: number } }) => {
     if (!surfaceWindows) throw new Error('Feature Surface host is not ready.');
     surfaceWindows.resize(input.instanceId, input.bounds);
@@ -284,6 +288,7 @@ function registerIpc(service: ShellService, packages: FeaturePackageManager, log
       mainWindow.webContents.setZoomFactor(factor);
       mainWindow.webContents.send('shell:changed', snapshot);
     }
+    surfaceWindows?.refreshAuthorizedSurface(snapshot.features.surface);
     surfaceWindows?.setZoomFactor(factor);
   });
 }

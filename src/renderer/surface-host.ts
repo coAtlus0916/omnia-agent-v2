@@ -60,6 +60,28 @@ export class SurfaceHost<T = unknown> {
     return instance;
   }
 
+  /** Register a Core-authorized projection without changing the active instance. */
+  ensure(featureId: string, contextKey: string, value: T): SurfaceInstance<T> {
+    const instanceId = this.key(featureId, contextKey);
+    const existing = this.instances.get(instanceId);
+    if (existing) {
+      existing.value = value;
+      return existing;
+    }
+    const timestamp = now();
+    const instance: SurfaceInstance<T> = {
+      instanceId,
+      featureId,
+      contextKey,
+      placement: 'docked',
+      value,
+      openedAt: timestamp,
+      lastFocusedAt: timestamp
+    };
+    this.instances.set(instanceId, instance);
+    return instance;
+  }
+
   /** Update the latest declarative snapshot without changing placement. */
   update(featureId: string, contextKey: string, value: T): SurfaceInstance<T> | undefined {
     const instance = this.instances.get(this.key(featureId, contextKey));
@@ -71,7 +93,7 @@ export class SurfaceHost<T = unknown> {
   focus(instanceId: string): SurfaceInstance<T> | undefined {
     const instance = this.instances.get(instanceId);
     if (!instance) return undefined;
-    if (instance.placement === 'closed' || instance.placement === 'minimized') instance.placement = 'docked';
+    if (instance.placement === 'closed') return undefined;
     instance.lastFocusedAt = now();
     this.activeInstanceId = instanceId;
     return instance;

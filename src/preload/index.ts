@@ -49,6 +49,7 @@ const api: ShellApi = {
   queryInteractionLogs: (input) => invoke('shell:query-interaction-logs', input),
   getInteractionTrace: (traceId) => invoke('shell:get-interaction-trace', traceId),
   openFeatureSurface: (input) => invoke('surface:open', input),
+  focusFeatureSurface: (instanceId) => invoke('surface:focus', instanceId),
   resizeFeatureSurface: (input) => invoke('surface:resize', input),
   closeFeatureSurface: (instanceId) => invoke('surface:close', instanceId),
   minimizeFeatureSurface: (instanceId) => invoke('surface:minimize', instanceId),

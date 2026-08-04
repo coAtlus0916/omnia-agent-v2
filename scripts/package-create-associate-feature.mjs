@@ -140,7 +140,7 @@ const runtimeBaseBytes = workerModule.buildRuntimeWorkbook(
 
 const userTemplateBytes = await readFile(userTemplatePath);
 if (userTemplateBytes.length < 1 || userTemplateBytes.length > 64 * 1024 * 1024) throw new Error('Phase1 user template V3 size is invalid.');
-const version = '0.2.2'; const sequence = 4;
+const version = '0.2.3'; const sequence = 5;
 const route = (stepId, method, routeTemplate, parameters, bodyMode = 'none') => ({ stepId, method, routeTemplate, parameters, bodyMode, bodyParameter: '' });
 const applicationIdentityRoutes = () => [
   route('workitem-directory', 'POST', '/work/v1/WorkQueries/getWorkitemDetails', [], 'signed_json'),
@@ -154,7 +154,7 @@ const operations = [
   { operationId: 'omnia.create-associate.authority.resolve.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.authority-resolve-request/v1', responseSchema: 'omnia.create-associate.authority-resolve-response/v1', enabledByDefault: true, grantsMutationPermit: false, routes: [
     route('authority-hierarchy', 'GET', '/engagements/v1/{engagementId}/headers/hierarchy', []),
     route('authority-sections', 'GET', '/work/v1/engagements/{engagementId}/liveindex/menu/sections', []),
-    route('authority-workspaces', 'GET', '/engagements/v1/engagements/{engagementId}/facets/byFacetType/8dba1267-9c45-4d88-a2e3-a1619bd905c2/?includeDeleted=true', []),
+    route('authority-workspaces', 'GET', '/engagements/v1/engagements/{engagementId}/facets/byFacetType/d0c7e20c-1451-48d2-9dd5-8a6f2a51bfc0/?includeDeleted=true', []),
     route('authority-gra-directory', 'POST', '/rapr/v0/engagements/{engagementId}/riskassessments/commonAccounts', [], 'signed_json')
   ] },
   { operationId: 'omnia.create-associate.risk-control.catalog.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.risk-control-catalog-request/v1', responseSchema: 'omnia.create-associate.risk-control-catalog-response/v1', enabledByDefault: true, grantsMutationPermit: false, routes: [
@@ -248,7 +248,7 @@ const packagedSelfTest=selfTest
   .replace("governance.derivationRules?.[2]?.ruleId!=='v4.app-is-data-available-false.v1'||governance.derivationRules?.[2]?.constantValue!==false", "governance.derivationRules?.find((rule)=>rule.ruleId==='v4.app-is-data-available-false.v1')?.constantValue!==false")
   .replace("governance.derivationRules?.[3]?.ruleId!=='v4.phase1-gra-name-from-element-id.v1'||governance.derivationRules?.[3]?.prefix!=='GRA-'", "governance.derivationRules?.find((rule)=>rule.ruleId==='v4.phase1-gra-name-from-element-id.v1')?.prefix!=='GRA-'");
 const featureManifest = {
-  schemaVersion: 'omnia.feature-manifest/v1', featureId: 'omnia.create-associate', version, sequence, displayName: '新建与关联', minimumShellVersion: '0.4.8',
+  schemaVersion: 'omnia.feature-manifest/v1', featureId: 'omnia.create-associate', version, sequence, displayName: '新建与关联', minimumShellVersion: '0.4.9',
   requiredIsolation: 'process', storeNamespace: 'create_associate', migrationPath: 'backend/migrations/001.json', surfacePath: 'frontend/surface.json', workerPath: 'middle/worker.cjs', operationPackagePath: 'connector-capability/operation.ofop',
   contractsPath:'contracts/feature-runtime.json',implementationMapPath:'contracts/implementation-map.json',testsManifestPath:'tests/manifest.json',
   assets: [

@@ -89,8 +89,8 @@ async function dispatch(request: ConnectorRequest): Promise<unknown> {
     case 'connect': return connector.connect();
     case 'refresh': return connector.refresh();
     case 'status': return connector.status();
-    case 'workspace_light_read':
-      return connector.workspaceLightRead(String(request.payload.expectedEngagementId || ''));
+    case 'workspace_authority_read':
+      return connector.workspaceAuthorityRead(String(request.payload.expectedEngagementId || ''));
     case 'recording_command':
       return connector.recordingCommand(request.payload as any);
     case 'operation_register':

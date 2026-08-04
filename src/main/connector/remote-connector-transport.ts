@@ -4,8 +4,7 @@ import { WebSocket } from 'ws';
 import type {
   ConnectorConnection,
   ConnectorRequest,
-  RecordingCommandRequest,
-  ConnectorWorkspaceLightRead
+  RecordingCommandRequest
 } from '../../connector/contracts.js';
 import {
   BRIDGE_HEALTH_PRODUCT,
@@ -24,12 +23,13 @@ import {
 } from '../../shared/bridge-contracts.js';
 import type { ConnectionSnapshot, WorkspaceObservation } from '../../shared/contracts.js';
 import { AppError } from '../../shared/errors.js';
-import type { ConnectorTransport } from './connector-transport.js';
+import type { ConnectorTransport, WorkspaceAuthorityExpectation } from './connector-transport.js';
 import type {
   OperationInvocationRequest,
   OperationRegistrationRequest,
   OperationRegistrationResult
 } from '../../shared/operation-contracts.js';
+import { normalizeWorkspaceAuthorityRead } from '../services/workspace-authority.js';
 
 export interface RemoteTransportConfig {
   bridgeUrl: string;
@@ -577,16 +577,9 @@ export class RemoteConnectorTransport implements ConnectorTransport {
     }
   }
   async refresh(): Promise<ConnectionSnapshot> { return this.map(await this.call('refresh', {}, 90_000)); }
-  async lightRead(expectedEngagementId: string): Promise<WorkspaceObservation> {
-    const raw = await this.call('workspace_light_read', { expectedEngagementId }, 90_000) as ConnectorWorkspaceLightRead;
-    if (raw.schemaVersion !== 'omnia.workspace-light-read/v1' || raw.profile !== 'workspace_light_read') {
-      throw new AppError('WORKSPACE.INVALID_CONTRACT', 'Remote Connector 返回了不兼容的轻抓取合同。');
-    }
-    return {
-      observationId: randomUUID(), profile: 'workspace_light_read', authorityId: raw.authorityId,
-      engagementId: raw.engagementId, capturedAt: new Date().toISOString(), source: raw.source,
-      coverage: 'full', sections: raw.sections, workspaces: raw.workspaces
-    };
+  async lightRead(expected: WorkspaceAuthorityExpectation): Promise<WorkspaceObservation> {
+    const raw = await this.call('workspace_authority_read', { expectedEngagementId: expected.engagementId }, 90_000);
+    return normalizeWorkspaceAuthorityRead(raw, expected);
   }
   async recordingCommand(input: RecordingCommandRequest): Promise<unknown> {
     return this.call('recording_command', input as unknown as Record<string, unknown>, 180_000);

@@ -5,7 +5,7 @@ export type ConnectorOperation =
   | 'connect'
   | 'refresh'
   | 'status'
-  | 'workspace_light_read'
+  | 'workspace_authority_read'
   | 'recording_command'
   | 'operation_register'
   | 'operation_invoke';
@@ -82,12 +82,19 @@ export interface ConnectorConnection {
 
 export type ConnectorOperationPayload = OperationRegistrationRequest | OperationInvocationRequest;
 
-export interface ConnectorWorkspaceLightRead {
-  schemaVersion: 'omnia.workspace-light-read/v1';
-  profile: 'workspace_light_read';
-  authorityId: string;
+export interface ConnectorWorkspaceAuthorityRead {
+  schemaVersion: 'omnia.workspace-authority-read/v1';
+  profile: 'workspace_authority_read';
   engagementId: string;
   source: 'omnia_authority_api';
-  sections: Array<{ id: string; name: string; order: number }>;
-  workspaces: Array<{ id: string; parentSectionId: string; name: string; status: string }>;
+  connectorBinding: {
+    connectorId: string;
+    sessionGeneration: number;
+    engagementId: string;
+    authorityInstanceId: string;
+    tenantOrOrgId: string;
+    packId: string;
+  };
+  sectionsPayload: unknown;
+  workspaceFacetsPayload: unknown;
 }

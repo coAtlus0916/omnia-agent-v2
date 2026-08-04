@@ -3,9 +3,10 @@
 V8 digest 固定为 `1ED937A50253CEDF431CE02A0CC7A3B3E576597BBD6CAA6C967738D7B2DA4538`；必须是 9/187/68/180/21，SAP Higher/Lower 为 18/17，SAP.03 Higher-only，评分为 15/14/1 N/A。
 
 用户值每条保存 sourceArtifactId/sourceSheet/sourceRow/rowKey/rawFieldKey/canonical field_id/sourceTraceId/valueKind/revision。任一 blocking/error 缺失、冲突、歧义持久化为 `needs_input`。APP/DB/OS/Tool 四种区段都使用真实预检、写入与读回；批外 APP 引用仍明确阻断。
+
 # Contracts
 
-Version 0.2.2 defines 11 check identities: `template_structure`, `required_fields`, `valid_values`, `unique_names`, `omnia_id_conflicts`, `infrastructure_links`, `infrastructure_rait`, `relationship_targets`, `workspace_presence`, `factors_considered_ai_review`, and `workspace_live`. States are passed/failed/warning/pending/skipped with a reason. Disconnected live validation is a retryable global blocker on the same Run. Factors review is warning/not_evaluable when APP rows exist and skipped otherwise. `omnia_id_conflicts` passes only when the signed APP identity resolver proves an exact `create|resume|reuse` disposition; `skip`, ambiguity, drift, incomplete pagination or unavailable evidence blocks Return.
+Version 0.2.3 defines 11 check identities: `template_structure`, `required_fields`, `valid_values`, `unique_names`, `omnia_id_conflicts`, `infrastructure_links`, `infrastructure_rait`, `relationship_targets`, `workspace_presence`, `factors_considered_ai_review`, and `workspace_live`. States are passed/failed/warning/pending/skipped with a reason. Disconnected live validation is a retryable global blocker on the same Run. Factors review is warning/not_evaluable when APP rows exist and skipped otherwise. `omnia_id_conflicts` passes only when the signed APP identity resolver proves an exact `create|resume|reuse` disposition; `skip`, ambiguity, drift, incomplete pagination or unavailable evidence blocks Return.
 
 Canonical GRA names are `GRA-${elementId}` and participate with element IDs in batch uniqueness checks. DB/OS must reference exactly one in-batch APP in the same normalized Workspace. The InfrastructureApplication relation is written and read from both directions before Infrastructure GRA creation; DB/OS RAIT is then inherited from the exact live APP GRA. Tool has no relationship input in the template, so no Tool relationship is fabricated.
 

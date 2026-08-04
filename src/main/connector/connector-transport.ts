@@ -6,6 +6,15 @@ import type {
 } from '../../shared/operation-contracts.js';
 import type { RecordingCommandRequest } from '../../connector/contracts.js';
 
+export interface WorkspaceAuthorityExpectation {
+  connectorId: string;
+  sessionGeneration: number;
+  authorityInstanceId: string;
+  tenantOrOrgId: string;
+  packId: string;
+  engagementId: string;
+}
+
 export interface ConnectorTransport {
   readonly mode: 'remote';
   start(): Promise<void>;
@@ -15,7 +24,7 @@ export interface ConnectorTransport {
   connect(): Promise<ConnectionSnapshot>;
   cancelConnect(): Promise<void>;
   refresh(): Promise<ConnectionSnapshot>;
-  lightRead(expectedEngagementId: string): Promise<WorkspaceObservation>;
+  lightRead(expected: WorkspaceAuthorityExpectation): Promise<WorkspaceObservation>;
   recordingCommand(input: RecordingCommandRequest): Promise<unknown>;
   registerOperation(input: OperationRegistrationRequest): Promise<OperationRegistrationResult>;
   invokeOperation(input: OperationInvocationRequest): Promise<unknown>;

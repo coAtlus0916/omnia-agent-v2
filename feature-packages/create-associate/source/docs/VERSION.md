@@ -1,6 +1,6 @@
-# 0.2.2 / sequence 4
+# 0.2.3 / sequence 5
 
-Shell 0.4.8 compatibility release. `返回上传` now explicitly clears Review/Progress state across the Worker → Core JSON boundary. `重新开始` is a real local-state action below the workflow rail: it cancels only an editable Run through Core CAS, preserves its artifacts/revisions/events for audit, and returns to a fresh upload state. No Omnia mutation is issued by either navigation action. Minimum Shell is 0.4.8. No real Omnia canary has been performed.
+Shell 0.4.9 compatibility release. It preserves the real `返回上传` and `重新开始` Core-backed state transitions and corrects the authority Workspace read to the v4-verified Workspace Facet Type. Connector interaction remains fixed-route transport; Feature/Core own validation and state. Minimum Shell is 0.4.9. No real Omnia canary has been performed.
 
 # 0.2.1 history / sequence 3
 

@@ -7,14 +7,14 @@
 
 ```text
 v5 便携产品根
-├─ Shell 原装平台（随 Shell 0.4.8 开箱存在）
+├─ Shell 原装平台（随 Shell 0.4.9 开箱存在）
 │  ├─ 首页 / 三列聊天 / 设置 / 缩放 / Splitter
 │  ├─ Core SQLite / Feature Registry / Documentation Registry
 │  ├─ 通用 Feature Worker、Store/Event/Managed Content ports
 │  └─ RemoteConnectorTransport、Remote binding 与 Gate 基础设施（无 Local）
 ├─ 内置独立 Feature（官方签名 .ofp，随 Shell 携带并自动安装）
 │  ├─ omnia.recording 0.3.0
-│  └─ omnia.create-associate 0.2.2
+│  └─ omnia.create-associate 0.2.3
 ├─ 后装独立 Feature（官方签名 .ofp，按需安装）
 │  └─ 删除元素 0.1.2
 ├─ Connector Operation 包（官方签名 .ofop，按 Feature/capability 装载）
@@ -30,7 +30,7 @@ v5 便携产品根
 
 | 能力 | 真实状态 | Remote-only 实现 | 额外配置/边界 |
 |---|---|---|---|
-| 连接、刷新、保活、安全锁 | Shell 0.4.8 基于 0.4.7 纵切修复：双击启动可恢复损坏的本地保护数据；安全锁使用当前 Pack + 精确 Workspace Facet ID，Section 仅作可选分组展示 | 顶部 Connect 链接码 → Bridge → Remote Worker 0.3.10 → WorkstationOmniaSession | 公司电脑真实 Pack 授权 canary 仍待执行；缺 Section 不再阻断精确 Workspace 授权 |
+| 连接、刷新、保活、安全锁 | Shell 0.4.9：安全锁绑定完整 Connector/authority/tenant/Pack/engagement/Workspace 身份，保存及 Feature action 前实时复核 | 顶部 Connect → Bridge 0.4.5 → Remote Worker 0.3.12 固定读取 → Core 解析/持久化 | 公司电脑真实 Pack 授权 canary 仍待执行；缺 Section 不阻断精确 Workspace 授权 |
 | 三列聊天、附件、输入区 | 已实现 | 不依赖 Connector | Provider 未配置时只保存，不造假回复 |
 | DeepSeek / OpenAI-compatible Custom | 已实现 | 不依赖 Connector | Nova 专有协议未校验 |
 | 全局缩放、可拖动分隔线 | Shell 0.4.1 已验证并由 0.4.2 回归 | 不适用 | Shell/Settings/docked/detached/新建窗口一致；偏好写入 Core 数据库 |
@@ -45,7 +45,7 @@ v5 便携产品根
 | 1 | 录制 | 官方签名 omnia.recording 0.3.0 / sequence 4，已内置 Shell 0.4.8 | 独立 .ofp 随便携包内置；不是 Shell 硬编码业务 | 播放器式 start/pause/resume/stop/export；当前页自动采集 Risk/Control；分块进入 Core Artifact；公司电脑真实录制待 canary | 无 | 在授权 Pack/公司电脑完成现场录制 canary |
 | 2 | 删除元素 | 官方签名 .ofp 0.1.2，独立后装 | 安装后登记，按真实依赖启用 | 自动化 Operation 闭环存在；0.1.2 不因 Shell 升级被改写，真实 Remote 删除待公司电脑 canary | 无 | 用最终 Remote Connector 完成目标 Pack canary；不得 fallback 到历史 Local 路径 |
 | 3 | 删除聊天记录 | 未交付，仅产品设计 | 未来独立后装 .ofp | 不依赖 Omnia 的本地事务仍未实现 | 无 | 开发真实本地事务、附件引用清理和恢复测试；没有闭环前不要显示入口 |
-| 4 | 新建与关联 | `omnia.create-associate@0.2.2 / sequence 4` 候选包 | 独立 .ofp + 签名 .ofop；随 Shell 0.4.8 内置并自动升级 | 两列三步、真实 V3 模板、11 项校验与可编辑 Review；返回上传显式清除旧层；左侧重新开始真实取消可编辑 Run；APP/DB/OS/TOOL Return 由签名 Operation 判定 | 有 | 完成真实 SAP ECC canary；AI review 仍为 `not_evaluable` warning |
+| 4 | 新建与关联 | `omnia.create-associate@0.2.3 / sequence 5` 候选包 | 独立 .ofp + .ofop；随 Shell 0.4.9 内置并自动升级 | 保留真实三步状态机、返回上传、重新开始与 APP/DB/OS/TOOL Return；authority Workspace 类型已修正 | 有 | 完成真实 SAP ECC canary；AI review 仍为 `not_evaluable` warning |
 
 ### 3.1 录制的准确边界
 
@@ -90,6 +90,6 @@ Candidate package: `feature-packages/create-associate/candidates/create-associat
 
 0.2.0 候选收紧为通用三步 Surface，不在 Renderer 硬编码 Feature 业务分支。create-associate 随包携带签名 `Phase1-用户填写模板V3.xlsx` 源模板并可精确导出；用户选择与拖放都建立真实 Run/输入 Artifact。升级不更改已有 `data/`、Remote binding、Pack 观测或历史 Run。自动化已通过；Feature 候选文件 SHA-256 为 `4b947b7d759f854fec68df254350c91a0302278f0e47b767e71058ccd874d1b8`，Operation 候选文件 SHA-256 为 `b60253ef82ebc57c6917d2a613632c8dcbccdf408607f603bfec5646b8d52260`；便携升级与真实 Omnia canary 仍待完成。
 
-## omnia.create-associate 0.2.2 / omnia.recording 0.3.0 / Shell 0.4.8
+## omnia.create-associate 0.2.3 / omnia.recording 0.3.0 / Shell 0.4.9
 
-0.2.2 是当前开发版本。它在 0.2.1 恢复的 v4 Phase 1 Review、APP/DB/OS/Tool 元素栏、字段修订与真实 Return 基础上，修复返回上传的跨进程状态清除，并增加由 Core Run 状态机支撑的“重新开始”。保存仍通过 CAS 持久化并重新执行全部本地和可用实时检查；重新开始只取消可编辑 Run，不删除 Artifact、修订或事件，也不调用 Connector mutation。用户 V3 表中没有 `isDataAvailable`：该值只属于回传合同。源码实现与候选包、本地启动和真实 canary 的证据必须分别记录；真实 Pack canary 仍待执行。
+0.2.3 是当前开发版本。它保留 0.2.2 的返回上传、重新开始、APP/DB/OS/Tool Review 与真实 Return 闭环，并把 authority Workspace 查询修正为 v4 已验证 Facet Type。Shell 0.4.9/Connector 0.3.12 同时把安全锁改为 Connector 原始读取、Core 处理和实时复核。源码实现、候选包、远程发布和真实 canary 的证据必须分别记录；真实 Pack canary 仍待执行。

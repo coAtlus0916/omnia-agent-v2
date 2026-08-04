@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 
 const root = path.resolve(import.meta.dirname, '..');
 const previousVersion = '0.3.7';
-const currentVersion = '0.3.11';
+const currentVersion = '0.3.12';
 const previousPackage = path.join(root, 'remote-connector', 'releases', previousVersion, `Omnia-Agent-v5-Remote-Connector-v${previousVersion}-Portable`);
 const currentPackage = path.join(root, 'remote-connector', 'releases', currentVersion, `Omnia-Agent-v5-Remote-Connector-v${currentVersion}-Portable`);
 const smokeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-remote-connector-upgrade-'));

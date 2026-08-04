@@ -76,6 +76,11 @@ export interface WorkspaceObservation {
   observationId: string;
   profile: 'workspace_light_read';
   authorityId: string;
+  connectorId: string;
+  sessionGeneration: number;
+  authorityInstanceId: string;
+  tenantOrOrgId: string;
+  packId: string;
   engagementId: string;
   capturedAt: string;
   source: string;
@@ -93,6 +98,11 @@ export interface WorkspaceDirectorySnapshot {
 
 export interface WorkspaceSafetySnapshot {
   enabled: boolean;
+  connectorId: string;
+  sessionGeneration: number;
+  authorityInstanceId: string;
+  tenantOrOrgId: string;
+  packId: string;
   engagementId: string;
   workspaceIds: string[];
   authorityObservationId: string;

@@ -22,9 +22,9 @@ Local checks are recomputed from active rows while parser-origin structural/unma
 
 Live Review and prepare-return call the signed APP resolver or the generic DB/OS/Tool resolver. The resolver grants no mutation permit. A separate object-type-aware create-only preflight repeats the bounded proof immediately before creation. DB/OS uses the recorded Infrastructure subtype (`Database` or `OperatingSystem`), writes and verifies InfrastructureApplication in both directions before GRA creation, then derives RAIT from an authoritative read of the unique APP GRA. Tool uses the recorded `ITTool` + `typeId=Tool` contract and has no fabricated relation. Uncertain reconciliation remains read-only and never replays a mutation.
 
-## 0.2.2 navigation and reset correctness
+## 0.2.3 navigation, reset, and authority correctness
 
-Surface field removal uses the Shell 0.4.8 generic `clearFields` contract because JSON serialization cannot preserve `undefined`. `back-to-upload` keeps the current editable Run and clears stale Review/Progress fields. `restart-run` is declared with the generic `restart` presentation, transitions only `needs_input|ready_for_review` to `cancelled` through the Core store, records `run.restart_requested`, preserves all audit data, and projects a fresh upload state. Confirmation, returning, uncertain and terminal Runs reject restart.
+Surface field removal uses the Shell 0.4.9 generic `clearFields` contract because JSON serialization cannot preserve `undefined`. `back-to-upload` keeps the current editable Run and clears stale Review/Progress fields. `restart-run` is declared with the generic `restart` presentation, transitions only `needs_input|ready_for_review` to `cancelled` through the Core store, records `run.restart_requested`, preserves all audit data, and projects a fresh upload state. Confirmation, returning, uncertain and terminal Runs reject restart. The authority Workspace query uses the v4-verified Facet Type `d0c7e20c-1451-48d2-9dd5-8a6f2a51bfc0`.
 
 The package contains a process-isolated CommonJS Worker, declarative Surface, private migration, managed V8-derived governance IR, signed runtime-template base XLSX, and a signed Operation package. Core passes base64 bytes (64 MiB maximum), never filesystem paths. Runtime output patches only declared OOXML worksheet/core parts and verifies every undeclared part digest.
 

@@ -835,6 +835,23 @@ export class CoreDatabase {
         CREATE INDEX interaction_logs_trace ON interaction_logs(trace_id, timestamp, event_id);
         CREATE INDEX interaction_logs_failure ON interaction_logs(severity, plane, timestamp DESC);
         CREATE INDEX interaction_logs_action ON interaction_logs(component, action, timestamp DESC);
+      `],
+      [20, `
+        ALTER TABLE workspace_observations ADD COLUMN connector_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE workspace_observations ADD COLUMN session_generation INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE workspace_observations ADD COLUMN authority_instance_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE workspace_observations ADD COLUMN tenant_or_org_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE workspace_observations ADD COLUMN pack_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE workspace_safety ADD COLUMN connector_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE workspace_safety ADD COLUMN session_generation INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE workspace_safety ADD COLUMN authority_instance_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE workspace_safety ADD COLUMN tenant_or_org_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE workspace_safety ADD COLUMN pack_id TEXT NOT NULL DEFAULT '';
+        UPDATE workspace_safety
+        SET enabled=0, engagement_id='', workspace_ids_json='[]', authority_observation_id='',
+            connector_id='', session_generation=0, authority_instance_id='', tenant_or_org_id='', pack_id='',
+            state_version=state_version+1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE singleton=1;
       `]
     ];
     for (const [version, sql] of migrations) {
@@ -1112,13 +1129,20 @@ export class CoreDatabase {
 
   saveWorkspaceObservation(observation: WorkspaceObservation): void {
     this.db.prepare(`
-      INSERT INTO workspace_observations(observation_id, engagement_id, captured_at, payload_json)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO workspace_observations(
+        observation_id, engagement_id, captured_at, payload_json,
+        connector_id, session_generation, authority_instance_id, tenant_or_org_id, pack_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       observation.observationId,
       observation.engagementId,
       observation.capturedAt,
-      this.contentCipher.encrypt(JSON.stringify(observation))
+      this.contentCipher.encrypt(JSON.stringify(observation)),
+      observation.connectorId,
+      observation.sessionGeneration,
+      observation.authorityInstanceId,
+      observation.tenantOrOrgId,
+      observation.packId
     );
   }
 
@@ -1134,6 +1158,11 @@ export class CoreDatabase {
     const row = this.db.prepare('SELECT * FROM workspace_safety WHERE singleton=1').get() as Record<string, any>;
     return {
       enabled: row.enabled === 1,
+      connectorId: String(row.connector_id),
+      sessionGeneration: Number(row.session_generation),
+      authorityInstanceId: String(row.authority_instance_id),
+      tenantOrOrgId: String(row.tenant_or_org_id),
+      packId: String(row.pack_id),
       engagementId: String(row.engagement_id),
       workspaceIds: JSON.parse(String(row.workspace_ids_json)) as string[],
       authorityObservationId: String(row.authority_observation_id),
@@ -1146,6 +1175,11 @@ export class CoreDatabase {
 
   saveSafety(input: {
     enabled: boolean;
+    connectorId: string;
+    sessionGeneration: number;
+    authorityInstanceId: string;
+    tenantOrOrgId: string;
+    packId: string;
     engagementId: string;
     workspaceIds: string[];
     authorityObservationId: string;
@@ -1154,11 +1188,17 @@ export class CoreDatabase {
     const now = utcNow();
     const result = this.db.prepare(`
       UPDATE workspace_safety SET
-        enabled=?, engagement_id=?, workspace_ids_json=?, authority_observation_id=?,
+        enabled=?, connector_id=?, session_generation=?, authority_instance_id=?, tenant_or_org_id=?, pack_id=?,
+        engagement_id=?, workspace_ids_json=?, authority_observation_id=?,
         state_version=state_version+1, updated_at=?
       WHERE singleton=1 AND state_version=?
     `).run(
       input.enabled ? 1 : 0,
+      input.connectorId,
+      input.sessionGeneration,
+      input.authorityInstanceId,
+      input.tenantOrOrgId,
+      input.packId,
       input.engagementId,
       JSON.stringify(input.workspaceIds),
       input.authorityObservationId,

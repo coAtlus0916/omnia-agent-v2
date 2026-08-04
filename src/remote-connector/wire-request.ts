@@ -10,7 +10,7 @@ const operations = new Set<ConnectorOperation>([
   'connect',
   'refresh',
   'status',
-  'workspace_light_read',
+  'workspace_authority_read',
   'recording_command',
   'operation_register',
   'operation_invoke'
@@ -55,17 +55,17 @@ export function validateConnectorWireRequest(value: unknown): ConnectorRequest {
   }
   const operation = value.operation as ConnectorOperation;
   const keys = Object.keys(value.payload);
-  if (operation === 'workspace_light_read') {
+  if (operation === 'workspace_authority_read') {
     if (
       keys.length !== 1
       || keys[0] !== 'expectedEngagementId'
       || typeof value.payload.expectedEngagementId !== 'string'
-      || !value.payload.expectedEngagementId.trim()
-      || value.payload.expectedEngagementId.length > 200
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.payload.expectedEngagementId)
+      || value.payload.expectedEngagementId.toLowerCase() === '00000000-0000-0000-0000-000000000000'
     ) {
       throw new ConnectorWireError(
         'CONNECTOR.INVALID_PAYLOAD',
-        'workspace_light_read 需要唯一的 expectedEngagementId 字符串。',
+        'workspace_authority_read requires the sole exact expectedEngagementId UUID.',
         id
       );
     }
@@ -119,7 +119,7 @@ export class RemoteCommandGate {
   private readonly exclusiveOperations = new Set<ConnectorOperation>([
     'connect',
     'refresh',
-    'workspace_light_read',
+    'workspace_authority_read',
     'recording_command',
     'operation_register',
     'operation_invoke'

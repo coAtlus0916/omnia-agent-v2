@@ -1,6 +1,6 @@
 {
   "name": "omnia-agent-v5-shell",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "description": "Omnia Agent v5 Remote-only shell",
   "private": true,
   "type": "module",

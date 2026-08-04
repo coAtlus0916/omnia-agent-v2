@@ -229,6 +229,17 @@ export class ShellService {
         invalidReason: '安全锁绑定的 Pack 与当前连接不一致。'
       };
     }
+    if (safety.connectorId !== this.connection.connectorId
+      || safety.sessionGeneration !== this.connection.sessionGeneration
+      || safety.authorityInstanceId !== String(this.connection.authorityInstanceId || '')
+      || safety.tenantOrOrgId !== String(this.connection.tenantOrOrgId || '')
+      || safety.packId !== String(this.connection.packId || '')) {
+      return {
+        ...safety,
+        validForCurrentConnection: false,
+        invalidReason: '安全锁绑定的 Connector 或权威 Pack 身份与当前连接不一致。'
+      };
+    }
     const current = this.workspaceDirectory.available ? this.workspaceDirectory.observation : null;
     if (!current) {
       return {
@@ -267,7 +278,7 @@ export class ShellService {
     return {
       schemaVersion: 'omnia.shell-home/v1',
       generatedAt: utcNow(),
-      productVersion: '0.4.8',
+      productVersion: '0.4.9',
       featureCount: this.database.activeFeatureCount(),
       features: featureRuntime,
       connection: this.connection,
@@ -302,6 +313,19 @@ export class ShellService {
 
   async featureAction(request: FeatureActionRequest): Promise<ShellSnapshot> {
     if (!this.features) throw new AppError('FEATURE.RUNTIME_UNAVAILABLE', 'Feature runtime is unavailable.');
+    if (this.safetySnapshot().enabled) {
+      // Do not trust the directory captured when the dialog was opened. Every
+      // Feature action under an enabled lock starts from live authority data;
+      // mutation preparation receives only this revalidated durable scope.
+      await this.refreshWorkspaceDirectory();
+      const revalidatedSafety = this.safetySnapshot();
+      if (!revalidatedSafety.validForCurrentConnection) {
+        throw new AppError(
+          'SAFETY.LIVE_REVALIDATION_FAILED',
+          revalidatedSafety.invalidReason || '安全锁实时复核失败。'
+        );
+      }
+    }
     await this.features.action(request, {
       connection: this.connection,
       safetyLock: this.safetySnapshot()
@@ -572,13 +596,21 @@ export class ShellService {
       this.emitChanged();
       return this.snapshot();
     }
+    const expectedAuthority = {
+      connectorId: this.connection.connectorId,
+      sessionGeneration: this.connection.sessionGeneration,
+      authorityInstanceId: String(this.connection.authorityInstanceId || ''),
+      tenantOrOrgId: String(this.connection.tenantOrOrgId || ''),
+      packId: String(this.connection.packId || ''),
+      engagementId: this.connection.engagementId
+    };
     const previous = this.database.getLatestWorkspaceObservation(this.connection.engagementId);
     try {
-      const lightRead = () => this.adapter.lightRead(this.connection.engagementId);
+      const lightRead = () => this.adapter.lightRead(expectedAuthority);
       const observation = this.interactionLogs
         ? await this.interactionLogs.run({
-          plane: 'connector', component: 'remote-transport', surface: 'settings.safety', action: 'workspace-light-read',
-          failurePoint: 'connector.workspace_light_read', details: { engagementId: this.connection.engagementId }
+          plane: 'connector', component: 'remote-transport', surface: 'settings.safety', action: 'workspace-authority-read',
+          failurePoint: 'connector.workspace_authority_read', details: { engagementId: this.connection.engagementId }
         }, lightRead)
         : await lightRead();
       this.database.saveWorkspaceObservation(observation);
@@ -607,13 +639,37 @@ export class ShellService {
     return this.snapshot();
   }
 
-  saveSafety(input: {
+  async saveSafety(input: {
     enabled: boolean;
     workspaceIds: string[];
     expectedStateVersion: number;
-  }): ShellSnapshot {
+  }): Promise<ShellSnapshot> {
     if (!this.connection.connected || !this.connection.engagementId) {
       throw new AppError('SAFETY.NOT_CONNECTED', '请先连接 Omnia Pack。');
+    }
+    const expectedConnection = [
+      this.connection.connectorId,
+      this.connection.sessionGeneration,
+      this.connection.authorityInstanceId,
+      this.connection.tenantOrOrgId,
+      this.connection.packId,
+      this.connection.engagementId
+    ].join('|');
+    if (input.enabled) {
+      // Renderer selection is never authority. Re-read through the fixed
+      // Connector interaction immediately before the Core validates and saves.
+      await this.refreshWorkspaceDirectory();
+      const currentConnection = [
+        this.connection.connectorId,
+        this.connection.sessionGeneration,
+        this.connection.authorityInstanceId,
+        this.connection.tenantOrOrgId,
+        this.connection.packId,
+        this.connection.engagementId
+      ].join('|');
+      if (!this.connection.connected || currentConnection !== expectedConnection) {
+        throw new AppError('SAFETY.CONNECTION_CHANGED', '安全锁校验期间 Connector 或 Pack 身份发生变化，未保存。', true);
+      }
     }
     const observation = this.workspaceDirectory.available ? this.workspaceDirectory.observation : null;
     if (!observation) {
@@ -632,6 +688,11 @@ export class ShellService {
     }
     this.database.saveSafety({
       enabled: input.enabled,
+      connectorId: observation.connectorId,
+      sessionGeneration: observation.sessionGeneration,
+      authorityInstanceId: observation.authorityInstanceId,
+      tenantOrOrgId: observation.tenantOrOrgId,
+      packId: observation.packId,
       engagementId: this.connection.engagementId,
       workspaceIds: uniqueIds,
       authorityObservationId: observation.observationId,

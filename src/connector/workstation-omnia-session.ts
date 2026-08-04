@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { chromium, type Browser, type Page, type Request } from 'playwright-core';
-import type { ConnectorConnection, ConnectorWorkspaceLightRead, RecordingCommandRequest } from './contracts.js';
+import type { ConnectorConnection, ConnectorWorkspaceAuthorityRead, RecordingCommandRequest } from './contracts.js';
 import type { OperationInvocationRequest, OperationRegistrationRequest } from '../shared/operation-contracts.js';
 import { isAllowedOmniaUrl, isGuid, normalizeOmniaUrl, parseEngagementId } from './omnia-origin.js';
 import { OperationHost } from './operation-host.js';
@@ -15,8 +15,10 @@ import {
 } from './recording/recording-service.js';
 
 const DEFAULT_HOME = 'https://deloitteomnia.deloitte.com.cn/';
-const CONNECTOR_VERSION = '0.3.11';
-const WORKSPACE_FACET_TYPE = '8dba1267-9c45-4d88-a2e3-a1619bd905c2';
+const CONNECTOR_VERSION = '0.3.12';
+const WORKSPACE_FACET_TYPE = 'd0c7e20c-1451-48d2-9dd5-8a6f2a51bfc0';
+const WORKSPACE_AUTHORITY_MAX_ROOT_ENTRIES = 10_000;
+const WORKSPACE_AUTHORITY_MAX_ENVELOPE_BYTES = 1024 * 1024;
 
 type FetchLike = typeof fetch;
 
@@ -67,55 +69,43 @@ function explicitId(value: unknown): string {
   return id && id !== '00000000-0000-0000-0000-000000000000' ? id : '';
 }
 
-function canonicalAuthorityIdentity(apiOrigin: string, hierarchyItem: Record<string, unknown>): {
+function canonicalAuthorityIdentity(
+  apiOrigin: string,
+  hierarchyItem: Record<string, unknown>
+): {
   authorityInstanceId: string; tenantOrOrgId: string; packId: string;
 } {
   let authorityInstanceId = '';
   try { authorityInstanceId = new URL(apiOrigin).origin.toLowerCase(); } catch { /* fail closed below */ }
   const tenantOrOrgId = explicitId(hierarchyItem.tenantId || hierarchyItem.organizationId || hierarchyItem.orgId);
-  const packId = explicitId(hierarchyItem.packId);
+  const packId = explicitId(hierarchyItem.packId || hierarchyItem.engagementId || hierarchyItem.id);
+  if (!authorityInstanceId || !packId) {
+    throw new ConnectorOperationError(
+      'CONNECTOR.PACK_IDENTITY_CHANGED',
+      'Omnia hierarchy did not return the exact current Pack identity.'
+    );
+  }
   return { authorityInstanceId, tenantOrOrgId, packId };
 }
 
-function sectionIdOf(value: any): string {
-  return explicitId(value?.sectionId || value?.sectionFacetId || value?.id);
-}
-
-function workspaceIdOf(value: any): string {
-  return explicitId(value?.workspaceFacetId || value?.workspaceId || value?.facetId || value?.id);
-}
-
-function collectCanonicalWorkspaceMembership(
-  sectionPayload: unknown,
-  workspaceIds: Set<string>
-): { parents: Map<string, string>; ambiguous: Set<string> } {
-  const parents = new Map<string, string>();
-  const ambiguous = new Set<string>();
-  const visit = (value: unknown, sectionId: string): void => {
-    if (typeof value === 'string') {
-      const candidate = explicitId(value);
-      if (!candidate || !workspaceIds.has(candidate)) return;
-      const existing = parents.get(candidate);
-      if (existing && existing !== sectionId) ambiguous.add(candidate);
-      else parents.set(candidate, sectionId);
-      return;
-    }
-    if (Array.isArray(value)) {
-      for (const item of value) visit(item, sectionId);
-      return;
-    }
-    if (!value || typeof value !== 'object') return;
-    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      if (['name', 'label', 'value', 'description', 'title'].includes(key)) continue;
-      visit(child, sectionId);
-    }
-  };
-  for (const section of list(sectionPayload)) {
-    const sectionId = sectionIdOf(section);
-    if (!sectionId) continue;
-    visit(section, sectionId);
+function assertAuthorityPayloadBudget(label: string, payload: unknown): void {
+  if (Array.isArray(payload) && payload.length > WORKSPACE_AUTHORITY_MAX_ROOT_ENTRIES) {
+    throw new ConnectorOperationError(
+      'WORKSPACE.AUTHORITY_ENTRY_LIMIT_EXCEEDED',
+      `${label} exceeded the Connector root-entry limit.`
+    );
   }
-  return { parents, ambiguous };
+}
+
+function assertAuthorityEnvelopeBudget(value: ConnectorWorkspaceAuthorityRead): void {
+  let bytes = Number.POSITIVE_INFINITY;
+  try { bytes = Buffer.byteLength(JSON.stringify(value), 'utf8'); } catch { /* reject below */ }
+  if (bytes > WORKSPACE_AUTHORITY_MAX_ENVELOPE_BYTES) {
+    throw new ConnectorOperationError(
+      'WORKSPACE.AUTHORITY_RESPONSE_TOO_LARGE',
+      'Omnia workspace authority response exceeded the Connector byte limit.'
+    );
+  }
 }
 
 function selectUniqueTargetIndex(urls: string[]): number {
@@ -178,63 +168,6 @@ function browserIdentityMatches(argumentsList: string[], profileDir: string, por
     : '';
   const actualPort = Number(portArgument?.slice('--remote-debugging-port='.length));
   return actualProfile === expectedProfile && actualPort === port;
-}
-
-function normalizeLightRead(
-  engagementId: string,
-  sectionPayload: unknown,
-  workspacePayload: unknown
-): ConnectorWorkspaceLightRead {
-  const rawSections = list(sectionPayload);
-  const sections = rawSections.map((section, order) => ({
-    id: sectionIdOf(section),
-    name: clean(section?.name || section?.label || section?.value),
-    order: Number.isFinite(Number(section?.order)) ? Number(section.order) : order
-  })).filter((section) => section.id && section.name);
-  const sectionIds = new Set(sections.map((section) => section.id));
-  const rawWorkspaces = list(workspacePayload)
-    .filter((workspace) => workspace?.isDeleted !== true && workspace?.deleted !== true)
-    .map((workspace) => {
-      const id = workspaceIdOf(workspace);
-      return {
-        id,
-        name: clean(workspace?.name || workspace?.value),
-        status: clean(workspace?.status || 'active', 50),
-        explicitParentSectionId: explicitId(
-          workspace?.parentSectionId || workspace?.sectionId || workspace?.sectionFacetId
-        )
-      };
-    })
-    .filter((workspace) => workspace.id && workspace.name);
-  const membership = collectCanonicalWorkspaceMembership(
-    sectionPayload,
-    new Set(rawWorkspaces.map((workspace) => workspace.id))
-  );
-  const workspaces = rawWorkspaces.map(({ explicitParentSectionId, ...workspace }) => {
-    const inferredParent = membership.ambiguous.has(workspace.id) ? '' : membership.parents.get(workspace.id) || '';
-    const candidateParent = explicitParentSectionId || inferredParent;
-    return {
-      ...workspace,
-      // Section membership is display metadata only. Safety authorization is
-      // always based on this exact Workspace Facet ID and the current Pack.
-      parentSectionId: sectionIds.has(candidateParent) ? candidateParent : ''
-    };
-  });
-  if (workspaces.length === 0) {
-    throw new ConnectorOperationError(
-      'WORKSPACE.AUTHORITY_DIRECTORY_EMPTY',
-      'Omnia 未返回可核验的 Workspace Facet ID。'
-    );
-  }
-  return {
-    schemaVersion: 'omnia.workspace-light-read/v1',
-    profile: 'workspace_light_read',
-    authorityId: new URL(DEFAULT_HOME).hostname,
-    engagementId,
-    source: 'omnia_authority_api',
-    sections,
-    workspaces
-  };
 }
 
 export class WorkstationOmniaSession {
@@ -609,7 +542,11 @@ export class WorkstationOmniaSession {
     }
     const name = clean(exact?.name);
     if (!name) throw new Error('已识别 Pack ID，但 Omnia hierarchy 未返回可核验名称。');
-    return { name, clientName: clean(exact?.clientName), ...canonicalAuthorityIdentity(session.apiOrigin, exact) };
+    return {
+      name,
+      clientName: clean(exact?.clientName),
+      ...canonicalAuthorityIdentity(session.apiOrigin, exact)
+    };
   }
 
   async status(): Promise<ConnectorConnection> {
@@ -678,19 +615,39 @@ export class WorkstationOmniaSession {
     return this.status();
   }
 
-  async workspaceLightRead(expectedEngagementId: string): Promise<ConnectorWorkspaceLightRead> {
+  async workspaceAuthorityRead(expectedEngagementId: string): Promise<ConnectorWorkspaceAuthorityRead> {
     const session = await this.session(true);
     if (session.engagementId !== expectedEngagementId) {
       throw new ConnectorOperationError('CONNECTOR.PACK_IDENTITY_CHANGED', '当前 Pack 已变化，拒绝复用旧连接身份。');
     }
-    const [sections, workspaces] = await Promise.all([
+    const [pack, sectionsPayload, workspaceFacetsPayload] = await Promise.all([
+      this.identify(session),
       this.api(session, `/work/v1/engagements/${session.engagementId}/liveindex/menu/sections`),
       this.api(
         session,
         `/engagements/v1/engagements/${session.engagementId}/facets/byFacetType/${WORKSPACE_FACET_TYPE}/?includeDeleted=true`
       )
     ]);
-    return normalizeLightRead(session.engagementId, sections, workspaces);
+    assertAuthorityPayloadBudget('sectionsPayload', sectionsPayload);
+    assertAuthorityPayloadBudget('workspaceFacetsPayload', workspaceFacetsPayload);
+    const result: ConnectorWorkspaceAuthorityRead = {
+      schemaVersion: 'omnia.workspace-authority-read/v1',
+      profile: 'workspace_authority_read',
+      engagementId: session.engagementId,
+      source: 'omnia_authority_api',
+      connectorBinding: {
+        connectorId: this.connectorIdentity.id,
+        sessionGeneration: this.sessionGeneration,
+        engagementId: session.engagementId,
+        authorityInstanceId: pack.authorityInstanceId,
+        tenantOrOrgId: pack.tenantOrOrgId,
+        packId: pack.packId
+      },
+      sectionsPayload,
+      workspaceFacetsPayload
+    };
+    assertAuthorityEnvelopeBudget(result);
+    return result;
   }
 
   registerOperation(input: OperationRegistrationRequest): unknown {
@@ -853,9 +810,8 @@ export class WorkstationOmniaSession {
 }
 
 export const _test = {
-  collectExplicitWorkspaceParents: collectCanonicalWorkspaceMembership,
-  collectCanonicalWorkspaceMembership,
-  normalizeLightRead,
+  assertAuthorityPayloadBudget,
+  assertAuthorityEnvelopeBudget,
   findEdgeExecutable,
   selectUniqueTargetIndex,
   authorizationEngagementId,

@@ -186,7 +186,7 @@ function operationDescriptors() {
     routes: operation.routes.map((route) => {
       const routeTemplate = route.routeTemplate.replace(
         '{workspaceFacetType}',
-        '8dba1267-9c45-4d88-a2e3-a1619bd905c2'
+        'd0c7e20c-1451-48d2-9dd5-8a6f2a51bfc0'
       );
       const parameterNames = [...routeTemplate.matchAll(/\{([A-Za-z][A-Za-z0-9]*)\}/gu)]
         .map((match) => match[1])
@@ -254,7 +254,9 @@ async function buildVersion(version, sequence) {
       }, null, 2))
     ]
   });
-  const versionNote = '0.1.2 接通 Shell 0.4.0 Local 运行时、签名 Operation handler、真实重抓取/单选/右侧确认、一次性 permit、持久证据与写后读回；对象范围仍仅为单个零 blocker Information。';
+  const versionNote = version === '0.1.3'
+    ? '0.1.3 修正 Workspace Facet 权威类型为 v4 已验证值；其余删除范围与 0.1.2 相同。'
+    : '0.1.2 接通 Shell 0.4.0 Local 运行时、签名 Operation handler、真实重抓取/单选/右侧确认、一次性 permit、持久证据与写后读回；对象范围仍仅为单个零 blocker Information。';
   const featureDocs = (await readFile(path.join(source, 'docs', 'FEATURE.md'), 'utf8'))
     .replaceAll('__FEATURE_VERSION__', version)
     .replaceAll('__VERSION_NOTE__', versionNote);
@@ -433,5 +435,5 @@ async function buildVersion(version, sequence) {
 }
 
 const results = [];
-results.push(await buildVersion('0.1.2', 3));
+results.push(await buildVersion('0.1.3', 4));
 for (const result of results) console.log(`${path.relative(root, result.filename)} ${result.digest}`);

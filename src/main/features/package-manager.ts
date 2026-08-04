@@ -26,7 +26,7 @@ import { FeatureRuntimeStore } from './feature-runtime-store.js';
 import { FeatureWorkerSupervisor } from './worker-supervisor.js';
 import type { InteractionLogService } from '../services/interaction-log-service.js';
 
-const PRODUCT_VERSION = '0.4.8';
+const PRODUCT_VERSION = '0.4.9';
 const REQUIRED_FEATURE_MEMBERS = [
   'SIGNATURE.json',
   'backend/migrations/001.json',

@@ -110,6 +110,13 @@ interface ActivationHead {
   documentationPath: string;
 }
 
+interface InstalledFeaturePackage {
+  manifest: FeatureManifest;
+  surface: DeclarativeFeatureSurface;
+  envelope: OfficialPackageEnvelope;
+  root: string;
+}
+
 export interface FeatureInstallResult {
   attemptId: string;
   featureId: string;
@@ -1043,6 +1050,7 @@ export class FeaturePackageManager {
   private readonly supervisors = new Map<string, FeatureWorkerSupervisor>();
   private readonly runtimeSurfaces = new Map<string, DeclarativeFeatureSurface>();
   private readonly operationRegistrations = new Map<string, { sessionGeneration: number; packageDigest: string }>();
+  private readonly installedPackages = new Map<string, { identity: string; value: InstalledFeaturePackage }>();
   private readonly pendingRuntimeEvents = new Set<string>();
   private readonly runtimeStore: FeatureRuntimeStore;
 
@@ -1520,6 +1528,7 @@ export class FeaturePackageManager {
         this.database.exec('ROLLBACK;');
         throw error;
       }
+      this.installedPackages.delete(manifest.featureId);
       return {
         attemptId,
         featureId: manifest.featureId,
@@ -1612,6 +1621,7 @@ export class FeaturePackageManager {
       this.database.exec('ROLLBACK;');
       throw error;
     }
+    this.installedPackages.delete(featureId);
     return {
       attemptId: '',
       featureId,
@@ -1643,17 +1653,15 @@ export class FeaturePackageManager {
     } : null;
   }
 
-  private loadInstalled(head: ActivationHead): {
-    manifest: FeatureManifest;
-    surface: DeclarativeFeatureSurface;
-    envelope: OfficialPackageEnvelope;
-    root: string;
-  } {
+  private loadInstalled(head: ActivationHead): InstalledFeaturePackage {
     const root = path.resolve(this.paths.data, ...head.packagePath.split('/'));
     const installedRoot = path.resolve(this.paths.data, 'packages', 'installed');
     if (!root.startsWith(`${installedRoot}${path.sep}`)) {
       throw new AppError('FEATURE.PACKAGE_PATH_INVALID', 'The Feature activation path escaped the immutable package root.');
     }
+    const identity = `${root}\u0000${head.featureVersion}\u0000${head.packageDigest}`;
+    const cached = this.installedPackages.get(head.featureId);
+    if (cached?.identity === identity) return cached.value;
     const envelope = verifyOfficialPackage(
       JSON.parse(fs.readFileSync(path.join(root, '.official-package-envelope.json'), 'utf8')) as unknown,
       'omnia-feature'
@@ -1663,7 +1671,9 @@ export class FeaturePackageManager {
     }
     const manifest = parseManifest(envelope);
     const surface = parseSurface(envelope, manifest);
-    return { manifest, surface, envelope, root };
+    const value = { manifest, surface, envelope, root };
+    this.installedPackages.set(head.featureId, { identity, value });
+    return value;
   }
 
   async initializeRuntime(): Promise<void> {
@@ -2071,11 +2081,7 @@ export class FeaturePackageManager {
     const runtimeReason = this.runtimeBlockReason(head);
     if (runtimeReason) return runtimeReason;
     if (!context) return '';
-    const dependencies = action.dependencies || (
-      head.featureId === 'omnia.recording'
-        ? ['remote_connector'] as const
-        : ['remote_connector', 'safety_lock'] as const
-    );
+    const dependencies = action.dependencies ?? [];
     if (dependencies.includes('remote_connector')) {
       if (!context.connection.connected) return '请先连接当前 Omnia Pack。';
       if (!context.connection.sessionGeneration || context.connection.sessionGeneration < 1) {
@@ -2136,6 +2142,24 @@ export class FeaturePackageManager {
       WHERE excluded.state_revision > feature_surface_states.state_revision
          OR excluded.feature_version != feature_surface_states.feature_version
     `).run(surface.featureId, surface.featureVersion, surface.surfaceId, surface.stateVersion, JSON.stringify(surface), utcNow());
+  }
+
+  actionDependencies(request: FeatureActionRequest): ReadonlyArray<'remote_connector' | 'safety_lock' | 'verified_canary'> {
+    const head = this.head(request.featureId);
+    if (!head || head.featureVersion !== request.featureVersion) return [];
+    const { surface: installedSurface } = this.loadInstalled(head);
+    const surface = this.runtimeSurfaces.get(head.featureId) || installedSurface;
+    if (surface.surfaceId !== request.surfaceId) return [];
+    const surfaceAction = surface.actions.find((candidate) => candidate.actionId === request.actionId);
+    if (surfaceAction) return surfaceAction.dependencies ?? [];
+    const cardAction = this.messageCards().find((candidate) =>
+      candidate.featureId === request.featureId
+      && candidate.featureVersion === request.featureVersion
+      && candidate.surfaceId === request.surfaceId
+      && candidate.runId === request.payload.runId
+      && candidate.confirmationId === request.payload.confirmationId
+    )?.actions.find((candidate) => candidate.actionId === request.actionId);
+    return cardAction?.dependencies ?? [];
   }
 
   private messageCards(): import('../../shared/feature-contracts.js').FeatureMessageCard[] {

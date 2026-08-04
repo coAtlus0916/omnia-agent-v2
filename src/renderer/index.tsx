@@ -197,27 +197,34 @@ function MessageCard({ card, run }: { card: FeatureMessageCard; run: Run }) {
 }
 
 /** Docked Feature content is a main-process WebContentsView, never Shell DOM. */
-function FeatureSurfaceFrame({ instance, surface, scalePercent }: { instance: SurfaceInstance<DeclarativeFeatureSurface>; surface: DeclarativeFeatureSurface; scalePercent: number }) {
+function FeatureSurfaceFrame({ instance, surface }: { instance: SurfaceInstance<DeclarativeFeatureSurface>; surface: DeclarativeFeatureSurface }) {
   const slot = useRef<HTMLDivElement>(null);
   const [reason, setReason] = useState('');
   useEffect(() => {
-    const publish = () => {
+    const measure = () => {
       const rect = slot.current?.getBoundingClientRect();
-      if (!rect || rect.width < 1 || rect.height < 1) return;
+      return !rect || rect.width < 1 || rect.height < 1 ? null : {
+        x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height)
+      };
+    };
+    const initialBounds = measure();
+    if (initialBounds) {
       void window.omnia.openFeatureSurface?.({
         instanceId: instance.instanceId,
         featureId: surface.featureId,
         featureVersion: surface.featureVersion,
         surfaceId: surface.surfaceId,
         placement: 'docked',
-        bounds: { x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height) }
+        bounds: initialBounds
       }).then((result) => { if (result && !result.attached) setReason(result.reason); });
-    };
-    publish();
-    const observer = new ResizeObserver(publish);
+    }
+    const observer = new ResizeObserver(() => {
+      const bounds = measure();
+      if (bounds) void window.omnia.resizeFeatureSurface?.({ instanceId: instance.instanceId, bounds });
+    });
     if (slot.current) observer.observe(slot.current);
     return () => observer.disconnect();
-  }, [instance.instanceId, surface.featureId, surface.featureVersion, surface.surfaceId, scalePercent]);
+  }, [instance.instanceId, surface.featureId, surface.featureVersion, surface.surfaceId]);
   return <div ref={slot} className="feature-surface-frame" data-surface-instance-id={instance.instanceId}>
     {reason ? <p className="feature-empty">{reason}</p> : null}
   </div>;
@@ -232,13 +239,13 @@ function SurfaceActions({ onDetach, onMinimize, onClose }: {
   </div>;
 }
 
-function FeatureHost({ instance, scalePercent, onDetach, onMinimize, onClose }: {
-  instance: SurfaceInstance<DeclarativeFeatureSurface>; scalePercent: number; onDetach(): void; onMinimize(): void; onClose(): void;
+function FeatureHost({ instance, onDetach, onMinimize, onClose }: {
+  instance: SurfaceInstance<DeclarativeFeatureSurface>; onDetach(): void; onMinimize(): void; onClose(): void;
 }) {
   if (!instance.value) return <div className="feature-empty">正在读取 Feature Surface…</div>;
   return <div className="feature-host-content"><div className="feature-host-toolbar"><span>{instance.value.title}</span>
     <SurfaceActions onDetach={onDetach} onMinimize={onMinimize} onClose={onClose} /></div>
-    <FeatureSurfaceFrame instance={instance} surface={instance.value} scalePercent={scalePercent} /></div>;
+    <FeatureSurfaceFrame instance={instance} surface={instance.value} /></div>;
 }
 
 function TabStrip({ snapshot, host, activeTab, setActiveTab, run, onChange }: {
@@ -256,6 +263,10 @@ function TabStrip({ snapshot, host, activeTab, setActiveTab, run, onChange }: {
       host.focus(instance.instanceId);
       const surface = existing.value;
       if (surface) void window.omnia.openFeatureSurface?.({ instanceId: existing.instanceId, featureId: surface.featureId, featureVersion: surface.featureVersion, surfaceId: surface.surfaceId, placement: 'detached' });
+    }
+    if (existing?.placement === 'docked') {
+      setActiveTab(instance.instanceId);
+      onChange();
     }
     run(`select-tab:${instance.featureId}`, () => window.omnia.selectFeature({ featureId: instance.featureId }), (next: ShellSnapshot) => {
       const surface = next.features.surface;
@@ -678,6 +689,9 @@ function ShellApp() {
         host.restore(existing.instanceId); void window.omnia.restoreFeatureSurface?.(existing.instanceId);
       } else if (existing.placement === 'detached') {
         host.focus(existing.instanceId);
+      } else {
+        setActiveTab(existing.instanceId);
+        setHostVersion((value) => value + 1);
       }
     }
     run(`select-feature:${featureId}`, () => window.omnia.selectFeature({ featureId }), (next: ShellSnapshot) => {
@@ -727,9 +741,9 @@ function ShellApp() {
           window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
         }} /> : null}
         <main className="tabbed-host"><TabStrip snapshot={snapshot} host={host} activeTab={activeTab} setActiveTab={setActiveTab} run={run} onChange={() => setHostVersion((v) => v + 1)} />
-          <div className="host-content" key={hostVersion}>{activeTab === 'comments' || !activeFeatureInstance || activeFeatureInstance.placement !== 'docked'
+          <div className="host-content">{activeTab === 'comments' || !activeFeatureInstance || activeFeatureInstance.placement !== 'docked'
             ? <CommentsPanel snapshot={snapshot} run={run} />
-            : <FeatureHost instance={activeFeatureInstance} scalePercent={snapshot.preference.uiScalePercent} onDetach={() => detach(activeFeatureInstance)} onMinimize={() => minimize(activeFeatureInstance)} onClose={() => closeFeature(activeFeatureInstance)} />}</div>
+            : <FeatureHost instance={activeFeatureInstance} onDetach={() => detach(activeFeatureInstance)} onMinimize={() => minimize(activeFeatureInstance)} onClose={() => closeFeature(activeFeatureInstance)} />}</div>
         </main>
       </div>
     </section>

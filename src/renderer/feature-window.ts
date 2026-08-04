@@ -16,6 +16,9 @@ let selectedReviewRowKey = '';
 let dirtyReviewValues = new Map<string, string>();
 let hostPlacement: 'docked' | 'detached' | 'minimized' | 'closed' = 'docked';
 let recorderProjectedAt = Date.now();
+let renderedSurface = '';
+let renderedError = '';
+const busyDisabledState = new WeakMap<HTMLInputElement | HTMLButtonElement | HTMLSelectElement | HTMLTextAreaElement, boolean>();
 
 function renderHostToolbar(): void {
   const toolbar = document.getElementById('surface-window-toolbar');
@@ -65,7 +68,7 @@ export function reconcileBootstrapReviewDrafts(
 }
 
 function actionButton(action: DeclarativeFeatureAction, extra = ''): string {
-  return `<button data-action="${esc(action.actionId)}" data-selection="${esc(action.selectionMode || 'none')}" ${extra} ${action.enabled && !busy ? '' : 'disabled'} title="${esc(action.reason)}">${esc(action.label)}</button>`;
+  return `<button data-action="${esc(action.actionId)}" data-selection="${esc(action.selectionMode || 'none')}" ${extra} ${action.enabled ? '' : 'disabled'} title="${esc(action.reason)}">${esc(action.label)}</button>`;
 }
 
 function recorderTime(elapsedMs: number): string {
@@ -84,7 +87,7 @@ function recorderElapsed(): number {
 
 function recorderControl(action: DeclarativeFeatureAction): string {
   const presentation = action.presentation || 'default';
-  return `<button class="recorder-control ${esc(presentation)}" data-action="${esc(action.actionId)}" data-selection="${esc(action.selectionMode || 'none')}" ${action.enabled && !busy ? '' : 'disabled'} title="${esc(action.reason || action.label)}" aria-label="${esc(action.label)}"><span class="control-icon" aria-hidden="true"></span><span class="control-label">${esc(action.label)}</span></button>`;
+  return `<button class="recorder-control ${esc(presentation)}" data-action="${esc(action.actionId)}" data-selection="${esc(action.selectionMode || 'none')}" ${action.enabled ? '' : 'disabled'} title="${esc(action.reason || action.label)}" aria-label="${esc(action.label)}"><span class="control-icon" aria-hidden="true"></span><span class="control-label">${esc(action.label)}</span></button>`;
 }
 
 function renderRecorder(): string {
@@ -127,7 +130,7 @@ function visibleReviewValue(field: DeclarativeReviewField): string {
 
 function reviewFieldControl(field: DeclarativeReviewField): string {
   const value = visibleReviewValue(field);
-  const common = `data-review-input data-row-key="${esc(field.rowKey)}" data-field="${esc(field.fieldKey)}" data-revision="${field.expectedRevision}" data-initial="${esc(field.currentValue)}" maxlength="${field.maxLength}" ${field.required ? 'required' : ''} ${field.editable && !busy ? '' : 'disabled'}`;
+  const common = `data-review-input data-row-key="${esc(field.rowKey)}" data-field="${esc(field.fieldKey)}" data-revision="${field.expectedRevision}" data-initial="${esc(field.currentValue)}" maxlength="${field.maxLength}" ${field.required ? 'required' : ''} ${field.editable ? '' : 'disabled'}`;
   if (field.inputKind === 'enum') {
     return `<select ${common}>${field.allowedValues.map((allowed) => `<option value="${esc(allowed)}" ${allowed === value ? 'selected' : ''}>${esc(allowed)}</option>`).join('')}</select>`;
   }
@@ -182,8 +185,43 @@ function renderReview(review: DeclarativeFeatureReview): string {
   return `<section class="review-shell" aria-label="元素检查与修改">${issueCards ? `<section class="review-issues" aria-label="待处理问题"><h2>待处理问题</h2>${issueCards}</section>` : ''}<div class="review-layout"><nav class="review-types" aria-label="元素类别"><p><strong>ELEMENT TYPES</strong><span>元素类别</span></p>${typeRail}</nav><section class="review-content">${selectedElement ? `<div class="element-picker"><label><span>当前 ${esc(selectedReviewKind)} 元素</span><select data-review-element>${options}</select></label><span class="element-count">${typedElements.length} 个</span></div><article class="element-card"><header><div><span class="element-kind">${esc(selectedElement.kind)}</span><strong>${esc(selectedElement.elementId)}</strong><small>来源：${esc(selectedElement.sourceSheet)} · 第 ${selectedElement.sourceRow} 行</small></div><span class="element-state ${selectedElement.blocking ? 'blocked' : 'ready'}">${selectedElement.blocking ? '需要处理' : '本地检查可继续'}</span></header><p class="derived-display">${esc(selectedElement.derivedDisplay)}</p><div class="review-fields">${fields || '<p class="state">当前元素没有可展示字段。</p>'}</div></article>` : '<p class="state">当前批次没有可检查元素。</p>'}</section></div><footer class="review-actions">${footerActions}</footer></section>`;
 }
 
+function surfaceProjection(value: DeclarativeFeatureSurface | null): string {
+  return value ? JSON.stringify(value) : '';
+}
+
+function syncBusyState(): void {
+  root.setAttribute('aria-busy', String(busy));
+  root.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement | HTMLTextAreaElement>('button, input, select, textarea').forEach((control) => {
+    if (busy) {
+      if (!busyDisabledState.has(control)) busyDisabledState.set(control, control.disabled);
+      control.disabled = true;
+    } else if (busyDisabledState.has(control)) {
+      control.disabled = busyDisabledState.get(control) === true;
+      busyDisabledState.delete(control);
+    }
+  });
+  const dockButton = document.getElementById('dock-to-main') as HTMLButtonElement | null;
+  if (dockButton) dockButton.disabled = busy;
+}
+
+function setBusy(next: boolean): void {
+  busy = next;
+  syncBusyState();
+}
+
+function renderIfChanged(): void {
+  if (renderedSurface !== surfaceProjection(surface) || renderedError !== errorMessage) render();
+  else syncBusyState();
+}
+
 function render(): void {
-  if (!surface) { root.innerHTML = '<p class="state">等待 Feature bootstrap…</p>'; return; }
+  if (!surface) {
+    root.innerHTML = '<p class="state">等待 Feature bootstrap…</p>';
+    renderedSurface = '';
+    renderedError = errorMessage;
+    syncBusyState();
+    return;
+  }
   const workflow = surface.workflow;
   const steps = workflow?.steps.map((step, index) => `<li class="workflow-step ${esc(step.state)}" ${step.stepId === workflow.currentStepId ? 'aria-current="step"' : ''}><span>${index + 1}</span><div><strong>${esc(step.label)}</strong>${step.detail ? `<small>${esc(step.detail)}</small>` : ''}</div></li>`).join('') || '';
   const activeLayer = workflow?.currentStepId === 'upload' ? 'upload' : workflow?.currentStepId === 'return' ? 'return' : surface.review ? 'review' : 'default';
@@ -193,7 +231,7 @@ function render(): void {
   const items = !visibleReview ? surface.items.map((item) => `<label class="item ${item.selectable ? '' : 'disabled'}"><input type="radio" name="selection" value="${esc(item.id)}" ${surface!.selectedItemIds.includes(item.id) ? 'checked' : ''} ${item.selectable ? '' : 'disabled'}><span><strong>${esc(item.title)}</strong><small>${esc(item.subtitle)}</small></span><em>${esc(item.type)}</em></label>`).join('') : '';
   const actions = !visibleReview && !surface.recorder ? surface.actions.filter((action) => action.presentation !== 'restart').map((action) => actionButton(action)).join('') : '';
   const recorder = renderRecorder();
-  const artifacts = (surface.artifacts || []).map((artifact) => `<div class="artifact"><span><strong>${esc(artifact.name)}</strong><small>sha256:${esc(artifact.sha256.slice(0, 12))}… · ${artifact.sizeBytes} bytes</small></span><button data-download="${esc(artifact.artifactId)}" ${artifact.available && !busy ? '' : 'disabled'} title="${esc(artifact.reason)}">下载</button></div>`).join('');
+  const artifacts = (surface.artifacts || []).map((artifact) => `<div class="artifact"><span><strong>${esc(artifact.name)}</strong><small>sha256:${esc(artifact.sha256.slice(0, 12))}… · ${artifact.sizeBytes} bytes</small></span><button data-download="${esc(artifact.artifactId)}" ${artifact.available ? '' : 'disabled'} title="${esc(artifact.reason)}">下载</button></div>`).join('');
   const editors = !visibleReview ? (surface.editors || []).map((editor) => `<label class="editor"><span>${esc(editor.label)}</span>${editor.inputKind === 'enum'
     ? `<select data-editor="${esc(editor.issueId)}" data-field="${esc(editor.fieldKey)}" data-revision="${editor.expectedRevision}">${editor.allowedValues.map((value) => `<option value="${esc(value)}" ${value === editor.currentValue ? 'selected' : ''}>${esc(value)}</option>`).join('')}</select>`
     : `<input data-editor="${esc(editor.issueId)}" data-field="${esc(editor.fieldKey)}" data-revision="${editor.expectedRevision}" value="${esc(editor.currentValue)}" maxlength="${editor.maxLength}" ${editor.required ? 'required' : ''}>`}</label>`).join('') : '';
@@ -207,8 +245,11 @@ function render(): void {
     ? `<section class="surface-layer upload-layer" data-surface-layer="upload">${header}<div class="upload-card"><h2>上传资料</h2><p class="state">选择新的官方 .xlsx 后，后台将建立新的受管 Run 并执行解析和校验；已有 Artifact 在新上传成功前不会被删除。</p>${drop}${artifacts ? `<div class="artifacts">${artifacts}</div>` : ''}${actions ? `<div class="actions">${actions}</div>` : ''}</div></section>`
     : `<section class="surface-layer ${activeLayer === 'review' ? 'review-layer' : activeLayer === 'return' ? 'return-layer' : 'default-layer'}" data-surface-layer="${activeLayer}">${header}${recorder}${progress}${issues ? `<section class="issues">${issues}</section>` : ''}${review}${items ? `<div class="items">${items}</div>` : ''}${editors ? `<div class="editors">${editors}</div>` : ''}${artifacts ? `<div class="artifacts">${artifacts}</div>` : ''}${actions ? `<div class="actions">${actions}</div>` : ''}</section>`;
   root.innerHTML = `${errorMessage ? `<p class="error page-error" role="alert">${esc(errorMessage)}</p>` : ''}<div class="feature-layout">${workflow ? `<nav class="workflow-rail" aria-label="步骤"><ol>${steps}</ol>${railRestart}</nav>` : ''}<section class="operation-pane">${layerContent}</section></div>`;
+  renderedSurface = surfaceProjection(surface);
+  renderedError = errorMessage;
   renderHostToolbar();
   bindInteractions(inputAction);
+  syncBusyState();
 }
 
 function bindInteractions(inputAction: DeclarativeFeatureAction | undefined): void {
@@ -269,29 +310,35 @@ function bindInteractions(inputAction: DeclarativeFeatureAction | undefined): vo
       payload = {expectedRunRevision: surface?.stateVersion, revisions: reviewDraftRevisions()};
     }
     if (action?.output?.kind === 'save_managed_asset' && surface) {
-      busy = true; render(); errorMessage = '';
+      setBusy(true);
       try { await window.featureSurface.saveManagedAsset({featureId: surface.featureId, featureVersion: surface.featureVersion, actionId: action.actionId, memberPath: action.output.memberPath}); }
       catch (error) { errorMessage = error instanceof Error ? error.message : '模板下载失败'; }
-      finally { busy = false; render(); }
+      finally { setBusy(false); renderIfChanged(); }
       return;
     }
     if (action?.input?.kind === 'open_file' && surface) {
+      setBusy(true);
       try {
-        errorMessage = '';
         const artifact = await window.featureSurface.chooseInput({featureId: surface.featureId, featureVersion: surface.featureVersion, surfaceId: surface.surfaceId, actionId: action.actionId, accept: action.input.accept});
         if (!artifact) return;
         payload = {...payload, artifact};
-      } catch (error) { errorMessage = error instanceof Error ? error.message : '文件导入失败'; render(); return; }
+      } catch (error) {
+        errorMessage = error instanceof Error ? error.message : '文件导入失败';
+        renderIfChanged();
+        return;
+      } finally {
+        setBusy(false);
+      }
     }
     if (action?.actionId === 'remove-batch-row' && !window.confirm('仅从本次上传批次中移除此元素；不会删除 Omnia 中的任何对象。是否继续？')) return;
     void invoke(button.dataset.action || '', payload);
   }));
   root.querySelectorAll<HTMLButtonElement>('[data-download]').forEach((button) => button.addEventListener('click', async () => {
     if (!surface || busy) return;
-    busy = true; render(); errorMessage = '';
+    setBusy(true);
     try { await window.featureSurface.saveArtifact({featureId: surface.featureId, artifactId: button.dataset.download || ''}); }
     catch (error) { errorMessage = error instanceof Error ? error.message : '下载失败'; }
-    finally { busy = false; render(); }
+    finally { setBusy(false); renderIfChanged(); }
   }));
   const dropZone = root.querySelector<HTMLElement>('[data-drop-action]');
   if (dropZone && inputAction) {
@@ -303,20 +350,20 @@ function bindInteractions(inputAction: DeclarativeFeatureAction | undefined): vo
       if (!surface || busy) return;
       const file = [...(event.dataTransfer?.files || [])].find((candidate) => candidate.size > 0 && candidate.name.toLocaleLowerCase('en-US').endsWith('.xlsx'));
       if (!file) { errorMessage = '请拖入第一个非空 .xlsx 文件。'; render(); return; }
-      busy = true; errorMessage = ''; render();
+      setBusy(true);
       try {
         const artifact = await window.featureSurface.importInputBytes({featureId: surface.featureId, featureVersion: surface.featureVersion, surfaceId: surface.surfaceId, actionId: inputAction.actionId, accept: inputAction.input!.accept, name: file.name, bytes: new Uint8Array(await file.arrayBuffer())});
-        busy = false;
+        setBusy(false);
         await invoke(inputAction.actionId, {artifact});
       } catch (error) { errorMessage = error instanceof Error ? error.message : '文件导入失败'; }
-      finally { busy = false; render(); }
+      finally { setBusy(false); renderIfChanged(); }
     });
   }
 }
 
 async function invoke(actionId: string, payload: Record<string, unknown>): Promise<void> {
   if (!surface || busy) return;
-  busy = true; render(); errorMessage = '';
+  setBusy(true);
   try {
     const snapshot = await window.featureSurface.featureAction({featureId: surface.featureId, featureVersion: surface.featureVersion, surfaceId: surface.surfaceId, actionId, expectedStateVersion: surface.stateVersion, payload});
     surface = snapshot.features.surface;
@@ -325,7 +372,7 @@ async function invoke(actionId: string, payload: Record<string, unknown>): Promi
     selectedReviewKind = '';
     selectedReviewRowKey = '';
   } catch (error) { errorMessage = error instanceof Error ? error.message : 'Feature 操作失败'; }
-  finally { busy = false; render(); }
+  finally { setBusy(false); renderIfChanged(); }
 }
 
 if (typeof window !== 'undefined' && root) {
@@ -345,7 +392,6 @@ if (typeof window !== 'undefined' && root) {
       && previous.stateVersion === next.stateVersion;
     surface = next;
     recorderProjectedAt = Date.now();
-    busy = false;
     errorMessage = '';
     dirtyReviewValues = preservedDrafts;
     if (!sameProjection) {
@@ -354,7 +400,7 @@ if (typeof window !== 'undefined' && root) {
     }
     void window.featureSurface.getHostContext().then((context) => { hostPlacement = context.placement; renderHostToolbar(); })
       .catch((error) => { errorMessage = error instanceof Error ? error.message : '读取 Feature 窗口上下文失败'; render(); });
-    render();
+    renderIfChanged();
   });
   render();
   window.setInterval(updateRecorderClock, 1_000);

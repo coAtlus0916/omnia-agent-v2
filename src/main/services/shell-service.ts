@@ -215,8 +215,9 @@ export class ShellService {
     return () => this.events.off('changed', listener);
   }
 
-  private emitChanged(): void {
-    this.events.emit('changed', this.snapshot());
+  private emitChanged(snapshot = this.snapshot()): ShellSnapshot {
+    this.events.emit('changed', snapshot);
+    return snapshot;
   }
 
   private safetySnapshot(): WorkspaceSafetySnapshot {
@@ -335,16 +336,16 @@ export class ShellService {
   selectFeature(featureId: string): ShellSnapshot {
     if (!this.features) throw new AppError('FEATURE.RUNTIME_UNAVAILABLE', 'Feature runtime is unavailable.');
     this.features.select(featureId);
-    this.emitChanged();
-    return this.snapshot();
+    return this.emitChanged();
   }
 
   async featureAction(request: FeatureActionRequest): Promise<ShellSnapshot> {
     if (!this.features) throw new AppError('FEATURE.RUNTIME_UNAVAILABLE', 'Feature runtime is unavailable.');
-    if (this.safetySnapshot().enabled) {
-      // Do not trust the directory captured when the dialog was opened. Every
-      // Feature action under an enabled lock starts from live authority data;
-      // mutation preparation receives only this revalidated durable scope.
+    const dependencies = this.features.actionDependencies(request);
+    if (dependencies.includes('safety_lock') && this.safetySnapshot().enabled) {
+      // Do not trust the directory captured when the dialog was opened. Actions
+      // that declare the safety_lock dependency start from live authority data;
+      // local-only actions remain local and avoid this remote round trip.
       await this.refreshWorkspaceDirectory();
       const revalidatedSafety = this.safetySnapshot();
       if (!revalidatedSafety.validForCurrentConnection) {
@@ -367,8 +368,7 @@ export class ShellService {
         this.features.completeRuntimeEvents(eventIds, error instanceof Error ? error.message : 'Workspace refresh failed.');
       }
     }
-    this.emitChanged();
-    return this.snapshot();
+    return this.emitChanged();
   }
 
   async disposeFeatureRuntime(): Promise<void> {

@@ -268,6 +268,10 @@ export class SurfaceWindowManager {
     if (!surface) return { instanceId: input.instanceId, placement: 'closed', attached: false, reason: 'FeatureContext 已漂移，请从 Registry 重新打开。' };
     const existing = this.states.get(input.instanceId);
     if (existing) {
+      const identityChanged = existing.featureId !== input.featureId
+        || existing.featureVersion !== input.featureVersion
+        || existing.surfaceId !== input.surfaceId;
+      const wasDocked = existing.placement === 'docked';
       existing.featureId = input.featureId;
       existing.featureVersion = input.featureVersion;
       existing.surfaceId = input.surfaceId;
@@ -278,7 +282,7 @@ export class SurfaceWindowManager {
           existing.bounds = input.bounds || existing.bounds;
           existing.view.setBounds(this.toHostBounds(existing.bounds));
           existing.placement = 'docked';
-          this.bootstrap(existing, surface);
+          if (identityChanged || !wasDocked) this.bootstrap(existing, surface);
           this.reconcileDockedViews();
         }
       } else if (input.placement === 'detached') {

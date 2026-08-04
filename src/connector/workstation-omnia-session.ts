@@ -15,9 +15,10 @@ import {
 } from './recording/recording-service.js';
 
 const DEFAULT_HOME = 'https://deloitteomnia.deloitte.com.cn/';
-const CONNECTOR_VERSION = '0.3.13';
-const WORKSPACE_FACET_TYPE = 'd0c7e20c-1451-48d2-9dd5-8a6f2a51bfc0';
-const WORKSPACE_AUTHORITY_MAX_ROOT_ENTRIES = 10_000;
+const CONNECTOR_VERSION = '0.3.14';
+const WORKSPACE_AUTHORITY_DIRECTORY_ROUTE = '/engagements/v1/facets/byEngagementIds';
+const WORKSPACE_AUTHORITY_MAX_ENGAGEMENT_ENTRIES = 1;
+const WORKSPACE_AUTHORITY_MAX_FACET_ENTRIES = 2_000;
 const WORKSPACE_AUTHORITY_MAX_ENVELOPE_BYTES = 1024 * 1024;
 
 type FetchLike = typeof fetch;
@@ -88,12 +89,37 @@ function canonicalAuthorityIdentity(
   return { authorityInstanceId, tenantOrOrgId, packId };
 }
 
-function assertAuthorityPayloadBudget(label: string, payload: unknown): void {
-  if (Array.isArray(payload) && payload.length > WORKSPACE_AUTHORITY_MAX_ROOT_ENTRIES) {
+function assertAuthorityDirectoryPayload(payload: unknown, engagementId: string): void {
+  if (!Array.isArray(payload) || payload.length !== WORKSPACE_AUTHORITY_MAX_ENGAGEMENT_ENTRIES) {
+    throw new ConnectorOperationError(
+      'WORKSPACE.AUTHORITY_INVALID_DIRECTORY',
+      'Omnia facet directory did not return exactly one Engagement entry.'
+    );
+  }
+  const directory = payload[0];
+  if (!directory || typeof directory !== 'object' || Array.isArray(directory)
+    || explicitId((directory as any).engagementId) !== engagementId
+    || !Array.isArray((directory as any).facets)) {
+    throw new ConnectorOperationError(
+      'WORKSPACE.AUTHORITY_IDENTITY_CHANGED',
+      'Omnia facet directory did not match the current Engagement identity.'
+    );
+  }
+  const facets = (directory as any).facets as unknown[];
+  if (facets.length > WORKSPACE_AUTHORITY_MAX_FACET_ENTRIES) {
     throw new ConnectorOperationError(
       'WORKSPACE.AUTHORITY_ENTRY_LIMIT_EXCEEDED',
-      `${label} exceeded the Connector root-entry limit.`
+      'Omnia facet directory exceeded the Connector facet-entry limit.'
     );
+  }
+  for (const facet of facets) {
+    if (!facet || typeof facet !== 'object' || Array.isArray(facet)
+      || explicitId((facet as any).engagementId) !== engagementId) {
+      throw new ConnectorOperationError(
+        'WORKSPACE.AUTHORITY_IDENTITY_CHANGED',
+        'Omnia facet directory contained a facet outside the current Engagement.'
+      );
+    }
   }
 }
 
@@ -532,6 +558,44 @@ export class WorkstationOmniaSession {
     return payload;
   }
 
+  private async workspaceAuthorityDirectory(session: Session): Promise<unknown> {
+    const url = new URL(WORKSPACE_AUTHORITY_DIRECTORY_ROUTE, session.apiOrigin);
+    if (url.origin !== session.apiOrigin
+      || url.pathname !== WORKSPACE_AUTHORITY_DIRECTORY_ROUTE
+      || url.search
+      || !isAllowedOmniaUrl(url.href)) {
+      throw new ConnectorOperationError(
+        'WORKSPACE.AUTHORITY_ROUTE_DENIED',
+        'Connector refused a Workspace authority request outside the fixed Omnia facet-directory route.'
+      );
+    }
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url, {
+        method: 'POST',
+        headers: {
+          ...session.headers,
+          Accept: 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify([session.engagementId]),
+        signal: AbortSignal.timeout(60_000)
+      });
+    } catch {
+      throw new ConnectorOperationError('WORKSPACE.READ_TIMEOUT', 'Omnia facet directory API timed out or was unavailable.', true);
+    }
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new ConnectorOperationError(
+        response.status === 401 || response.status === 403 ? 'CONNECTOR.AUTH_REQUIRED' : 'WORKSPACE.READ_FAILED',
+        `Omnia facet directory API returned HTTP ${response.status}.`,
+        response.status >= 500
+      );
+    }
+    assertAuthorityDirectoryPayload(payload, session.engagementId);
+    return payload;
+  }
+
   private async identify(session: Session): Promise<{ name: string; clientName: string; authorityInstanceId: string; tenantOrOrgId: string; packId: string }> {
     const hierarchy = list(await this.api(session, `/engagements/v1/${session.engagementId}/headers/hierarchy`));
     const exact = hierarchy.find((item) =>
@@ -617,21 +681,15 @@ export class WorkstationOmniaSession {
 
   async workspaceAuthorityRead(expectedEngagementId: string): Promise<ConnectorWorkspaceAuthorityRead> {
     const session = await this.session(true);
-    if (session.engagementId !== expectedEngagementId) {
+    if (session.engagementId !== explicitId(expectedEngagementId)) {
       throw new ConnectorOperationError('CONNECTOR.PACK_IDENTITY_CHANGED', '当前 Pack 已变化，拒绝复用旧连接身份。');
     }
-    const [pack, sectionsPayload, workspaceFacetsPayload] = await Promise.all([
+    const [pack, facetDirectoryPayload] = await Promise.all([
       this.identify(session),
-      this.api(session, `/work/v1/engagements/${session.engagementId}/liveindex/menu/sections`),
-      this.api(
-        session,
-        `/engagements/v1/engagements/${session.engagementId}/facets/byFacetType/${WORKSPACE_FACET_TYPE}/?includeDeleted=true`
-      )
+      this.workspaceAuthorityDirectory(session)
     ]);
-    assertAuthorityPayloadBudget('sectionsPayload', sectionsPayload);
-    assertAuthorityPayloadBudget('workspaceFacetsPayload', workspaceFacetsPayload);
     const result: ConnectorWorkspaceAuthorityRead = {
-      schemaVersion: 'omnia.workspace-authority-read/v1',
+      schemaVersion: 'omnia.workspace-authority-read/v2',
       profile: 'workspace_authority_read',
       engagementId: session.engagementId,
       source: 'omnia_authority_api',
@@ -643,8 +701,7 @@ export class WorkstationOmniaSession {
         tenantOrOrgId: pack.tenantOrOrgId,
         packId: pack.packId
       },
-      sectionsPayload,
-      workspaceFacetsPayload
+      facetDirectoryPayload
     };
     assertAuthorityEnvelopeBudget(result);
     return result;
@@ -810,7 +867,7 @@ export class WorkstationOmniaSession {
 }
 
 export const _test = {
-  assertAuthorityPayloadBudget,
+  assertAuthorityDirectoryPayload,
   assertAuthorityEnvelopeBudget,
   findEdgeExecutable,
   selectUniqueTargetIndex,

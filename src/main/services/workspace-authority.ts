@@ -5,6 +5,8 @@ import { AppError } from '../../shared/errors.js';
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const MAX_AUTHORITY_BYTES = 1_500_000;
 const MAX_AUTHORITY_ROWS = 2_000;
+const CUSTOM_WORKSPACE_FACET_TYPE_ID = 'd0c7e20c-1451-48d2-9dd5-8a6f2a51bfc0';
+const CUSTOM_WORKSPACE_GROUP_FACET_TYPE_ID = '5420131f-8ea2-4c3f-938f-a25745240cd0';
 
 type AuthorityBinding = {
   connectorId: string;
@@ -21,8 +23,9 @@ type AuthorityEnvelope = {
   engagementId: string;
   source: string;
   connectorBinding: AuthorityBinding;
-  sectionsPayload: unknown;
-  workspaceFacetsPayload: unknown;
+  sectionsPayload?: unknown;
+  workspaceFacetsPayload?: unknown;
+  facetDirectoryPayload?: unknown;
 };
 
 function object(value: unknown, label: string): Record<string, any> {
@@ -64,35 +67,6 @@ function workspaceIdOf(value: Record<string, any>): string {
   return exactGuid(value.workspaceFacetId || value.workspaceId || value.facetId || value.id);
 }
 
-function referencedAuthorityIds(value: unknown, allowedIds: Set<string>): Set<string> {
-  const result = new Set<string>();
-  const seen = new WeakSet<object>();
-  let visited = 0;
-  const visit = (candidate: unknown, depth: number): void => {
-    if (depth > 8 || visited >= 20_000) return;
-    visited += 1;
-    if (typeof candidate === 'string') {
-      const id = exactGuid(candidate);
-      if (allowedIds.has(id)) result.add(id);
-      return;
-    }
-    if (!candidate || typeof candidate !== 'object') return;
-    if (seen.has(candidate as object)) return;
-    seen.add(candidate as object);
-    if (Array.isArray(candidate)) {
-      for (const item of candidate) visit(item, depth + 1);
-      return;
-    }
-    for (const [key, child] of Object.entries(candidate as Record<string, unknown>)) {
-      const keyId = exactGuid(key);
-      if (allowedIds.has(keyId)) result.add(keyId);
-      visit(child, depth + 1);
-    }
-  };
-  visit(value, 0);
-  return result;
-}
-
 function normalizeBinding(value: unknown): AuthorityBinding {
   const binding = object(value, 'Workspace authority connectorBinding');
   const normalized: AuthorityBinding = {
@@ -108,6 +82,129 @@ function normalizeBinding(value: unknown): AuthorityBinding {
     throw new AppError('WORKSPACE.INVALID_CONTRACT', 'Workspace authority 缺少可核验的 Connector/Pack 身份。');
   }
   return normalized;
+}
+
+type NormalizedAuthorityDirectory = {
+  sections: Array<{ id: string; name: string; order: number }>;
+  workspaces: Array<{ id: string; parentSectionId: string; name: string; status: string }>;
+};
+
+function normalizeLegacyAuthorityDirectory(envelope: AuthorityEnvelope): NormalizedAuthorityDirectory {
+  const sectionRows = rows(envelope.sectionsPayload, 'Omnia Section authority');
+  const sectionMap = new Map<string, { id: string; name: string; order: number }>();
+  for (const [order, raw] of sectionRows.entries()) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const id = sectionIdOf(raw);
+    const name = text(raw.name || raw.label || raw.value);
+    if (!id || !name) continue;
+    const item = { id, name, order: Number.isFinite(Number(raw.order)) ? Number(raw.order) : order };
+    const previous = sectionMap.get(id);
+    if (previous && (previous.name !== item.name || previous.order !== item.order)) {
+      throw new AppError('WORKSPACE.AUTHORITY_AMBIGUOUS', `Omnia 返回了冲突的 Section Facet ID：${id}。`);
+    }
+    sectionMap.set(id, item);
+  }
+
+  const workspaceMap = new Map<string, { id: string; parentSectionId: string; name: string; status: string }>();
+  for (const raw of rows(envelope.workspaceFacetsPayload, 'Omnia Workspace Facet authority')) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || raw.isDeleted === true || raw.deleted === true) continue;
+    const id = workspaceIdOf(raw);
+    const name = text(raw.name || raw.value);
+    if (!id || !name) continue;
+    const item = { id, parentSectionId: '', name, status: text(raw.status || 'active', 50) };
+    const previous = workspaceMap.get(id);
+    if (previous && (previous.name !== item.name || previous.status !== item.status)) {
+      throw new AppError('WORKSPACE.AUTHORITY_AMBIGUOUS', `Omnia 返回了冲突的 Workspace Facet ID：${id}。`);
+    }
+    workspaceMap.set(id, item);
+  }
+  if (workspaceMap.size === 0) {
+    throw new AppError('WORKSPACE.AUTHORITY_DIRECTORY_EMPTY', 'Omnia 未返回可核验的 Workspace Facet ID。');
+  }
+  return {
+    sections: [...sectionMap.values()].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id)),
+    workspaces: [...workspaceMap.values()].sort((left, right) => left.name.localeCompare(right.name, 'zh-CN') || left.id.localeCompare(right.id))
+  };
+}
+
+function normalizeFacetAuthorityDirectory(envelope: AuthorityEnvelope, engagementId: string): NormalizedAuthorityDirectory {
+  if (!Array.isArray(envelope.facetDirectoryPayload) || envelope.facetDirectoryPayload.length !== 1) {
+    throw new AppError('WORKSPACE.INVALID_CONTRACT', 'Omnia Facet authority 必须恰好包含当前 Engagement 的一条目录。');
+  }
+  const directory = object(envelope.facetDirectoryPayload[0], 'Omnia Facet authority directory');
+  if (exactGuid(directory.engagementId) !== engagementId) {
+    throw new AppError('WORKSPACE.AUTHORITY_IDENTITY_CHANGED', 'Omnia Facet authority 目录不属于当前 Engagement。');
+  }
+  if (!Array.isArray(directory.facets)) {
+    throw new AppError('WORKSPACE.INVALID_CONTRACT', 'Omnia Facet authority 目录缺少 facets 数组。');
+  }
+  if (directory.facets.length > MAX_AUTHORITY_ROWS) {
+    throw new AppError('WORKSPACE.AUTHORITY_BUDGET_EXCEEDED', 'Omnia Facet authority 目录超出安全锁条目预算。');
+  }
+
+  const facetTypeById = new Map<string, string>();
+  const groupMap = new Map<string, { id: string; name: string; order: number }>();
+  const workspaceRows: Array<{ id: string; parentId: string; name: string; status: string }> = [];
+  for (const rawValue of directory.facets) {
+    const raw = object(rawValue, 'Omnia Facet authority item');
+    if (exactGuid(raw.engagementId) !== engagementId) {
+      throw new AppError('WORKSPACE.AUTHORITY_IDENTITY_CHANGED', 'Omnia Facet authority 含有其他 Engagement 的 Facet。');
+    }
+    const id = exactGuid(raw.id);
+    const facetTypeId = exactGuid(raw.facetTypeId);
+    if (id) {
+      if (facetTypeById.has(id)) {
+        throw new AppError('WORKSPACE.AUTHORITY_AMBIGUOUS', `Omnia Facet authority 返回了重复 Facet ID：${id}。`);
+      }
+      facetTypeById.set(id, facetTypeId);
+    }
+    if (facetTypeId !== CUSTOM_WORKSPACE_GROUP_FACET_TYPE_ID
+      && facetTypeId !== CUSTOM_WORKSPACE_FACET_TYPE_ID) continue;
+    if (!id) {
+      throw new AppError('WORKSPACE.INVALID_CONTRACT', 'Omnia Workspace authority Facet 缺少真实 Facet ID。');
+    }
+    if (raw.isDeleted === true || raw.deleted === true) continue;
+    const name = text(raw.name || raw.value);
+    if (!name) {
+      throw new AppError('WORKSPACE.INVALID_CONTRACT', `Omnia Workspace authority Facet ${id} 缺少名称。`);
+    }
+    if (facetTypeId === CUSTOM_WORKSPACE_GROUP_FACET_TYPE_ID) {
+      groupMap.set(id, {
+        id,
+        name,
+        order: Number.isFinite(Number(raw.sequence)) ? Number(raw.sequence) : groupMap.size
+      });
+      continue;
+    }
+    workspaceRows.push({
+      id,
+      parentId: exactGuid(raw.parentId),
+      name,
+      status: text(raw.status || 'active', 50)
+    });
+  }
+
+  if (workspaceRows.length === 0) {
+    throw new AppError('WORKSPACE.AUTHORITY_DIRECTORY_EMPTY', 'Omnia 未返回可核验的 CustomWorkspace Facet ID。');
+  }
+  const workspaceMap = new Map<string, { id: string; parentSectionId: string; name: string; status: string }>();
+  for (const workspace of workspaceRows) {
+    const parentType = facetTypeById.get(workspace.parentId);
+    const verifiedParentId = parentType === CUSTOM_WORKSPACE_GROUP_FACET_TYPE_ID
+      && groupMap.has(workspace.parentId)
+      ? workspace.parentId
+      : '';
+    workspaceMap.set(workspace.id, {
+      id: workspace.id,
+      parentSectionId: verifiedParentId,
+      name: workspace.name,
+      status: workspace.status
+    });
+  }
+  return {
+    sections: [...groupMap.values()].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id)),
+    workspaces: [...workspaceMap.values()].sort((left, right) => left.name.localeCompare(right.name, 'zh-CN') || left.id.localeCompare(right.id))
+  };
 }
 
 export function normalizeWorkspaceAuthorityRead(input: unknown, expected: {
@@ -126,7 +223,7 @@ export function normalizeWorkspaceAuthorityRead(input: unknown, expected: {
     throw new AppError('WORKSPACE.AUTHORITY_BUDGET_EXCEEDED', 'Workspace authority 响应超出安全锁读取预算。');
   }
   const envelope = object(input, 'Workspace authority response') as AuthorityEnvelope;
-  if (envelope.schemaVersion !== 'omnia.workspace-authority-read/v1'
+  if (!['omnia.workspace-authority-read/v1', 'omnia.workspace-authority-read/v2'].includes(envelope.schemaVersion)
     || envelope.profile !== 'workspace_authority_read'
     || envelope.source !== 'omnia_authority_api') {
     throw new AppError('WORKSPACE.INVALID_CONTRACT', 'Remote Connector 返回了不兼容的 Workspace authority 合同。');
@@ -143,64 +240,9 @@ export function normalizeWorkspaceAuthorityRead(input: unknown, expected: {
     throw new AppError('WORKSPACE.AUTHORITY_IDENTITY_CHANGED', 'Workspace authority 响应与当前 Connector/Pack 身份不一致。');
   }
 
-  const sectionRows = rows(envelope.sectionsPayload, 'Omnia Section authority');
-  const sectionMap = new Map<string, { id: string; name: string; order: number }>();
-  for (const [order, raw] of sectionRows.entries()) {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
-    const id = sectionIdOf(raw);
-    const name = text(raw.name || raw.label || raw.value);
-    if (!id || !name) continue;
-    const item = { id, name, order: Number.isFinite(Number(raw.order)) ? Number(raw.order) : order };
-    const previous = sectionMap.get(id);
-    if (previous && (previous.name !== item.name || previous.order !== item.order)) {
-      throw new AppError('WORKSPACE.AUTHORITY_AMBIGUOUS', `Omnia 返回了冲突的 Section Facet ID：${id}。`);
-    }
-    sectionMap.set(id, item);
-  }
-
-  const workspaceRows = rows(envelope.workspaceFacetsPayload, 'Omnia Workspace Facet authority');
-  const workspaceRecords = new Map<string, { raw: Record<string, any>; id: string; name: string; status: string }>();
-  for (const raw of workspaceRows) {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || raw.isDeleted === true || raw.deleted === true) continue;
-    const id = workspaceIdOf(raw);
-    const name = text(raw.name || raw.value);
-    if (!id || !name) continue;
-    const item = { raw, id, name, status: text(raw.status || 'active', 50) };
-    const previous = workspaceRecords.get(id);
-    if (previous && (previous.name !== item.name || previous.status !== item.status)) {
-      throw new AppError('WORKSPACE.AUTHORITY_AMBIGUOUS', `Omnia 返回了冲突的 Workspace Facet ID：${id}。`);
-    }
-    workspaceRecords.set(id, item);
-  }
-  if (workspaceRecords.size === 0) {
-    throw new AppError('WORKSPACE.AUTHORITY_DIRECTORY_EMPTY', 'Omnia 未返回可核验的 Workspace Facet ID。');
-  }
-
-  const sectionIds = new Set(sectionMap.keys());
-  const workspaceIds = new Set(workspaceRecords.keys());
-  const sectionCandidatesByWorkspace = new Map<string, Set<string>>();
-  for (const rawSection of sectionRows) {
-    if (!rawSection || typeof rawSection !== 'object' || Array.isArray(rawSection)) continue;
-    const sectionId = sectionIdOf(rawSection);
-    if (!sectionMap.has(sectionId)) continue;
-    for (const workspaceId of referencedAuthorityIds(rawSection, workspaceIds)) {
-      const candidates = sectionCandidatesByWorkspace.get(workspaceId) || new Set<string>();
-      candidates.add(sectionId);
-      sectionCandidatesByWorkspace.set(workspaceId, candidates);
-    }
-  }
-
-  const workspaceMap = new Map<string, { id: string; parentSectionId: string; name: string; status: string }>();
-  for (const record of workspaceRecords.values()) {
-    const candidates = referencedAuthorityIds(record.raw, sectionIds);
-    for (const sectionId of sectionCandidatesByWorkspace.get(record.id) || []) candidates.add(sectionId);
-    workspaceMap.set(record.id, {
-      id: record.id,
-      parentSectionId: candidates.size === 1 ? [...candidates][0] : '',
-      name: record.name,
-      status: record.status
-    });
-  }
+  const directory = envelope.schemaVersion === 'omnia.workspace-authority-read/v2'
+    ? normalizeFacetAuthorityDirectory(envelope, engagementId)
+    : normalizeLegacyAuthorityDirectory(envelope);
   return {
     observationId: randomUUID(),
     profile: 'workspace_light_read',
@@ -214,7 +256,7 @@ export function normalizeWorkspaceAuthorityRead(input: unknown, expected: {
     capturedAt: new Date().toISOString(),
     source: envelope.source,
     coverage: 'full',
-    sections: [...sectionMap.values()].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id)),
-    workspaces: [...workspaceMap.values()].sort((left, right) => left.name.localeCompare(right.name, 'zh-CN') || left.id.localeCompare(right.id))
+    sections: directory.sections,
+    workspaces: directory.workspaces
   };
 }

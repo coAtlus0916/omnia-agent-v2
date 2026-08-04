@@ -82,8 +82,7 @@ export interface ConnectorConnection {
 
 export type ConnectorOperationPayload = OperationRegistrationRequest | OperationInvocationRequest;
 
-export interface ConnectorWorkspaceAuthorityRead {
-  schemaVersion: 'omnia.workspace-authority-read/v1';
+interface ConnectorWorkspaceAuthorityReadBase {
   profile: 'workspace_authority_read';
   engagementId: string;
   source: 'omnia_authority_api';
@@ -95,6 +94,19 @@ export interface ConnectorWorkspaceAuthorityRead {
     tenantOrOrgId: string;
     packId: string;
   };
+}
+
+export interface ConnectorWorkspaceAuthorityReadV1 extends ConnectorWorkspaceAuthorityReadBase {
+  schemaVersion: 'omnia.workspace-authority-read/v1';
   sectionsPayload: unknown;
   workspaceFacetsPayload: unknown;
 }
+
+export interface ConnectorWorkspaceAuthorityReadV2 extends ConnectorWorkspaceAuthorityReadBase {
+  schemaVersion: 'omnia.workspace-authority-read/v2';
+  facetDirectoryPayload: unknown;
+}
+
+export type ConnectorWorkspaceAuthorityRead =
+  | ConnectorWorkspaceAuthorityReadV1
+  | ConnectorWorkspaceAuthorityReadV2;

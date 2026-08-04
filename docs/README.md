@@ -6,11 +6,11 @@
 
 | 项目 | 当前状态 | 仍待完成 |
 |---|---|---|
-| Shell | `0.4.12` Remote-only：安全锁支持搜索、Omnia 真实所在部分折叠、右侧已选与全局关联锁；Core 单飞读取、CAS 持久化并冻结精确成员；固定宿主由启动器加载工作区热构建；内置 recording 0.3.0、create-associate 0.2.8 与 delete-elements 0.2.0 | 真实所在部分目录已现场只读采样；保存/冻结读回待发布后确认 |
+| Shell | `0.4.12` Remote-only：安全锁支持搜索、Omnia 真实所在部分折叠、右侧已选与全局关联锁；Core 单飞读取、CAS 持久化并冻结精确成员；固定宿主由启动器加载工作区热构建；内置 recording 0.3.0、create-associate 0.2.9 与 delete-elements 0.2.0 | 真实所在部分目录已现场只读采样；保存/冻结读回待发布后确认 |
 | 录制 | 官方签名独立 Feature `omnia.recording 0.3.0 / sequence 4`，播放器式真实 start/pause/resume/stop/export 并自动采集当前页 Risk/Control | 真实 Pack/Remote 现场 canary |
 | 删除元素 | 独立签名 Feature `0.2.0 / sequence 7`，随 Shell 内置自动安装/升级；声明式真实目录、多选，Comments 消息卡唯一持有计划 | 首批只开放零 blocker Information；目标 Pack 的真实 Remote mutation 待公司电脑 canary；不允许 fallback Local |
 | 删除聊天记录 | 未交付 | 仍处于产品设计阶段 |
-| 新建与关联 | `omnia.create-associate@0.2.8 / sequence 10`；authority 与安全锁/delete 共用真实 Facet 目录，只接受精确 Engagement 下的 `CustomWorkspaceGroup → CustomWorkspace.parentId`，Workspace 名称必须唯一命中且处于安全锁范围 | 真实 SAP ECC mutation/readback canary 待完成；AI review port 待接通 |
+| 新建与关联 | `omnia.create-associate@0.2.9 / sequence 11`；authority 与安全锁/delete 共用真实 Facet 目录，无关 Facet 在 Engagement 校验后忽略；只接受精确 Engagement 下的 `CustomWorkspaceGroup → CustomWorkspace.parentId`，Workspace 名称必须唯一命中且处于安全锁范围 | 真实 SAP ECC mutation/readback canary 待完成；AI review port 待接通 |
 | Phase 1 母版 | 已冻结 V8 治理输入：9 sheets、187 字段、68 条关系、21 条 v4 证据、180/180 源字段追溯；运行时使用独立签名 base/TemplateInstance，不把 V8 当用户模板 | 真实 Omnia/目标 Pack canary 未通过；待发布首个获批 TemplateVersion |
 | Remote | Remote-only：Bridge `0.4.5` 下发在线更新；Connector `0.3.14 / sequence 17` 读取 Omnia 真实 `CustomWorkspaceGroup → CustomWorkspace.parentId`；无 Local fallback | 真实接口与层级响应已现场只读采样；stable 自动升级和安全锁保存读回按发布状态记录 |
 | Nova | 仅保留 OpenAI-compatible 配置路径 | Nova 专有协议尚未校验 |

@@ -1,6 +1,10 @@
-# 0.2.8 / sequence 10
+# 0.2.9 / sequence 11
 
-Authority resolution now uses the same verified `POST /engagements/v1/facets/byEngagementIds` directory as the safety lock and delete flow. The signed handler accepts only live `CustomWorkspaceGroup` (`5420131f-8ea2-4c3f-938f-a25745240cd0`) and `CustomWorkspace` (`d0c7e20c-1451-48d2-9dd5-8a6f2a51bfc0`) Facets for the exact binding Engagement, requires every Workspace `parentId` to reference a live group, and resolves each requested Workspace name uniquely from that real Workspace set inside the frozen safety scope. Hierarchy and GRA directory reads remain mandatory; names never infer Section membership.
+Immutable successor to the already activated 0.2.8 digest. Unrelated Facets in the Engagement directory are now ignored after object-shape and Engagement validation; strict GUID, uniqueness, name, safety-scope and live-parent checks apply only to the recorded CustomWorkspaceGroup and CustomWorkspace Facet types.
+
+# 0.2.8 / sequence 10 history
+
+Authority resolution moved to the verified `POST /engagements/v1/facets/byEngagementIds` directory used by the safety lock and delete flow. Its activated digest is immutable and is superseded by 0.2.9 because it could reject unrelated Facets before filtering to the two Workspace Facet types.
 
 # 0.2.7 / sequence 9 history
 

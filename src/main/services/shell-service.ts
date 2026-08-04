@@ -87,6 +87,7 @@ export class ShellService {
   private transportReconcilePending = false;
   private lifecycleMutationRunning = false;
   private workspaceRefreshRunning: { key: string; promise: Promise<ShellSnapshot> } | null = null;
+  private lastWorkspaceRecoveryAt = 0;
 
   constructor(
     private readonly database: CoreDatabase,
@@ -248,10 +249,14 @@ export class ShellService {
       };
     }
     if (!current) {
+      const cached = this.workspaceDirectory.observation;
+      const reason = String(this.workspaceDirectory.reason || '').trim();
       return {
         ...projected,
         validForCurrentConnection: false,
-        invalidReason: '当前没有可核验的权威 Workspace 层级。'
+        invalidReason: cached
+          ? `当前 Workspace 实时复核暂不可用${reason ? `：${reason}` : ''}。列表为上次成功缓存；安全锁仍保留，但删除会在自动重读成功前失败关闭。`
+          : `当前没有可核验的实时 Workspace 目录${reason ? `：${reason}` : ''}。`
       };
     }
     const availableIds = new Set(current.workspaces.map((workspace) => workspace.id));
@@ -571,6 +576,14 @@ export class ShellService {
     if (this.pairingSecret) {
       try { await this.pollRemotePairing(); } catch { /* retry without consuming session */ }
     }
+    if (this.connection.connected
+      && !this.workspaceDirectory.available
+      && Boolean(this.workspaceDirectory.observation)
+      && !this.workspaceRefreshRunning
+      && this.timing.now() - this.lastWorkspaceRecoveryAt >= 30_000) {
+      this.lastWorkspaceRecoveryAt = this.timing.now();
+      try { await this.refreshWorkspaceDirectory(); } catch { /* retain cached display and retry after the bounded cooldown */ }
+    }
     const keepalive = this.database.getKeepalive();
     if (!keepalive.enabled || this.keepaliveRunning) return;
     const next = Date.parse(keepalive.nextAttemptAt);
@@ -667,6 +680,7 @@ export class ShellService {
         reason: '',
         observation
       };
+      this.lastWorkspaceRecoveryAt = 0;
     } catch (error) {
       const appError = error instanceof AppError ? error : null;
       this.workspaceDirectory = {
@@ -679,6 +693,7 @@ export class ShellService {
         reason: error instanceof Error ? error.message : '权威 Workspace 轻抓取失败。',
         observation: previous
       };
+      this.lastWorkspaceRecoveryAt = this.timing.now();
       this.emitChanged();
       throw error;
     }

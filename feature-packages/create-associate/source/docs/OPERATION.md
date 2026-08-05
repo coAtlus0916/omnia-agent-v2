@@ -1,6 +1,6 @@
-# Signed Operation 0.2.49
+# Signed Operation 0.2.50
 
-Sequence 51 keeps generated-Risk classification preflight, PATCH and reconcile Operations and fixes the Risk concurrency boundary. The mutation rereads the exact generated Risk and uses an `/updatedOn` test only when the Risk row itself supplies `updatedOn/updatedAt`; it never substitutes the parent Assessment token. It then replaces only `/classificationType` with exact `Higher|Lower` and requires an exact catalog readback before Risk-Control association can begin.
+Sequence 52 changes only Feature navigation and Core Store contracts; the signed Operation inventory and Connector behavior are unchanged. Generated-Risk classification preflight, PATCH and reconcile Operations retain the Risk concurrency boundary. The mutation rereads the exact generated Risk and uses an `/updatedOn` test only when the Risk row itself supplies `updatedOn/updatedAt`; it never substitutes the parent Assessment token. It then replaces only `/classificationType` with exact `Higher|Lower` and requires an exact catalog readback before Risk-Control association can begin.
 
 小型 object/relation/Risk-Control preflight、单次 mutation 与 read-only reconcile。不接受 Excel，不提供任意 URL/method/body。
 # Signed Operation inventory

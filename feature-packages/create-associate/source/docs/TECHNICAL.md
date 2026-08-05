@@ -6,7 +6,11 @@
 - Integration：Remote-only 签名 Operation，首次远程 action 才延迟注册。
 # Technical design
 
-## 0.2.49 generated Risk classification and live progress
+## 0.2.50 durable workflow navigation
+
+The Worker derives both left-rail navigation actions from the current Core Run plus durable intent, command, receipt and latest-event state. `returnRunToReview` is a CAS transaction restricted to the current unconsumed `waiting_confirmation`: it invalidates exactly one pending confirmation, cancels its frozen intents, clears the plan digest and advances to `ready_for_review` while retaining source Artifact and revisions. `restartRun` accepts only stable pre-write or terminal states. Pre-write restart cancels the Run and any unconsumed confirmation/intents; terminal restart advances the audit revision without changing terminal state, commands, receipts or evidence. Active validation, Return, verification, reconciliation and uncertain states are rejected in Core even if a stale Surface attempts the action.
+
+## 0.2.49 generated Risk classification and live progress history
 
 After every GRA reaches authoritative `EvaluationComplete`, Worker first waits for the unique generated Risk identities without pretending their classifications are already correct. Each row-and-Risk target is frozen as a `field` intent. The signed mutation rereads the Risk, uses `/updatedOn` only when the Risk row itself supplies `updatedOn/updatedAt`, accepts only exact `Higher|Lower`, patches `/classificationType`, and reconciles the exact Risk identity and classification. A parent Assessment timestamp is never accepted as Risk concurrency evidence. Core validates the projected GRA, semantic Risk identity, optional frozen Risk ID and exact read/mutation shapes before preparing a command. Only after all classification intents are receipt-backed and projected does the existing complete Risk-Control catalog gate run.
 

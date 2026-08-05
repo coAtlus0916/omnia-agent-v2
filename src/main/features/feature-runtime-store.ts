@@ -254,6 +254,8 @@ export class FeatureRuntimeStore {
     if (method === 'loadRunReview') return this.loadRunReview(input, context);
     if (method === 'applyIssueRevisions') return this.applyIssueRevisions(input, context);
     if (method === 'commitReviewValidation') return this.commitReviewValidation(input, context);
+    if (method === 'returnRunToReview') return this.returnRunToReview(input, context);
+    if (method === 'restartRun') return this.restartRun(input, context);
     if (method === 'prepareReturnIntent') return this.prepareReturnIntent(input, context);
     if (method === 'approveReturnIntent') return this.approveReturnIntent(input, context);
     if (method === 'prepareReturnCommand') return this.prepareReturnCommand(input, context);
@@ -903,6 +905,75 @@ export class FeatureRuntimeStore {
     }
   }
 
+  private returnRunToReview(input: unknown, context: FeatureWorkerPortContext): Record<string, unknown> {
+    const request = object(input, 'Return-to-review request');
+    const runId = String(request.runId || ''); const expectedRevision = Number(request.expectedRevision);
+    const run = this.core.prepare(`SELECT state,state_revision,plan_digest FROM feature_runs WHERE run_id=? AND feature_id=? AND feature_version=?`)
+      .get(runId, context.featureId, context.featureVersion) as {state:string;state_revision:number;plan_digest:string}|undefined;
+    if (!run || run.state !== 'waiting_confirmation' || run.state_revision !== expectedRevision || !run.plan_digest) {
+      throw new Error('Only the current unconsumed waiting confirmation can return to Review.');
+    }
+    const commandCount = (this.core.prepare(`SELECT COUNT(*) AS count FROM feature_commands WHERE run_id=?`).get(runId) as {count:number}).count;
+    const receiptCount = (this.core.prepare(`SELECT COUNT(*) AS count FROM feature_operation_receipts WHERE run_id=?`).get(runId) as {count:number}).count;
+    const invalidIntent = this.core.prepare(`SELECT 1 FROM managed_content_intents WHERE run_id=? AND plan_digest=? AND state<>'frozen' LIMIT 1`).get(runId, run.plan_digest);
+    if (commandCount || receiptCount || invalidIntent) throw new Error('Return confirmation already has command, receipt, or non-frozen intent state and cannot return to Review.');
+    const occurredAt = now(); const nextRevision = expectedRevision + 1;
+    this.core.exec('BEGIN IMMEDIATE;');
+    try {
+      const confirmations = this.core.prepare(`UPDATE feature_confirmations SET decision='invalidated',actor_id='feature.navigation',decision_at=? WHERE run_id=? AND plan_digest=? AND decision='pending'`)
+        .run(occurredAt, runId, run.plan_digest);
+      if (confirmations.changes !== 1) throw new Error('Pending Return confirmation is absent or ambiguous.');
+      const intents = this.core.prepare(`UPDATE managed_content_intents SET state='cancelled',updated_at=? WHERE run_id=? AND plan_digest=? AND state='frozen'`)
+        .run(occurredAt, runId, run.plan_digest);
+      if (intents.changes < 1) throw new Error('Frozen Return intents are unavailable.');
+      const updated = this.core.prepare(`UPDATE feature_runs SET state='ready_for_review',state_revision=?,plan_digest='',last_error='',updated_at=? WHERE run_id=? AND feature_id=? AND feature_version=? AND state='waiting_confirmation' AND state_revision=?`)
+        .run(nextRevision, occurredAt, runId, context.featureId, context.featureVersion, expectedRevision);
+      if (updated.changes !== 1) throw new Error('Run changed before Return confirmation invalidation completed.');
+      this.core.prepare(`INSERT INTO feature_run_events(event_id,run_id,revision,from_state,to_state,event_type,details_json,occurred_at) VALUES(?,?,?,?,?,?,?,?)`)
+        .run(randomUUID(),runId,nextRevision,'waiting_confirmation','ready_for_review','return.confirmation_invalidated',JSON.stringify({invalidatedConfirmations:confirmations.changes,cancelledIntents:intents.changes,preservedArtifacts:true,preservedRevisions:true}),occurredAt);
+      this.core.exec('COMMIT;');
+      return {state:'ready_for_review',stateRevision:nextRevision,invalidatedConfirmations:confirmations.changes,cancelledIntents:intents.changes};
+    } catch (error) { this.core.exec('ROLLBACK;'); throw error; }
+  }
+
+  private restartRun(input: unknown, context: FeatureWorkerPortContext): Record<string, unknown> {
+    const request = object(input, 'Restart Run request');
+    const runId = String(request.runId || ''); const expectedRevision = Number(request.expectedRevision);
+    const run = this.core.prepare(`SELECT state,state_revision,plan_digest FROM feature_runs WHERE run_id=? AND feature_id=? AND feature_version=?`)
+      .get(runId, context.featureId, context.featureVersion) as {state:string;state_revision:number;plan_digest:string}|undefined;
+    const stablePreWrite = new Set(['acquiring','needs_input','ready_for_review','waiting_confirmation']);
+    const stableTerminal = new Set(['succeeded','failed','cancelled','not_evaluable']);
+    if (!run || run.state_revision !== expectedRevision || (!stablePreWrite.has(run.state) && !stableTerminal.has(run.state))) {
+      throw new Error('Run restart is forbidden while validation or Return mutation/reconciliation can still be active.');
+    }
+    const commandCount = (this.core.prepare(`SELECT COUNT(*) AS count FROM feature_commands WHERE run_id=?`).get(runId) as {count:number}).count;
+    const receiptCount = (this.core.prepare(`SELECT COUNT(*) AS count FROM feature_operation_receipts WHERE run_id=?`).get(runId) as {count:number}).count;
+    if (stablePreWrite.has(run.state) && (commandCount || receiptCount)) {
+      throw new Error('A pre-write Run unexpectedly owns command or receipt evidence and cannot be cancelled.');
+    }
+    const alreadyRestarted = this.core.prepare(`SELECT 1 FROM feature_run_events WHERE run_id=? AND revision=? AND event_type='run.restart_requested' LIMIT 1`)
+      .get(runId, expectedRevision);
+    if (alreadyRestarted) throw new Error('This Run revision has already been restarted.');
+    const occurredAt = now(); const nextRevision = expectedRevision + 1;
+    const nextState = stablePreWrite.has(run.state) ? 'cancelled' : run.state;
+    this.core.exec('BEGIN IMMEDIATE;');
+    try {
+      const confirmations = stablePreWrite.has(run.state)
+        ? this.core.prepare(`UPDATE feature_confirmations SET decision='invalidated',actor_id='feature.navigation',decision_at=? WHERE run_id=? AND decision='pending'`).run(occurredAt, runId)
+        : { changes: 0 };
+      const intents = stablePreWrite.has(run.state)
+        ? this.core.prepare(`UPDATE managed_content_intents SET state='cancelled',updated_at=? WHERE run_id=? AND state='frozen'`).run(occurredAt, runId)
+        : { changes: 0 };
+      const updated = this.core.prepare(`UPDATE feature_runs SET state=?,state_revision=?,last_error=CASE WHEN ?='cancelled' THEN '' ELSE last_error END,updated_at=? WHERE run_id=? AND feature_id=? AND feature_version=? AND state=? AND state_revision=?`)
+        .run(nextState,nextRevision,nextState,occurredAt,runId,context.featureId,context.featureVersion,run.state,expectedRevision);
+      if (updated.changes !== 1) throw new Error('Run changed before restart audit was committed.');
+      this.core.prepare(`INSERT INTO feature_run_events(event_id,run_id,revision,from_state,to_state,event_type,details_json,occurred_at) VALUES(?,?,?,?,?,?,?,?)`)
+        .run(randomUUID(),runId,nextRevision,run.state,nextState,'run.restart_requested',JSON.stringify({terminalAuditPreserved:stableTerminal.has(run.state),commandCount,receiptCount,invalidatedConfirmations:confirmations.changes,cancelledIntents:intents.changes,preserveArtifacts:true,preserveRevisions:true,nextUploadCreatesNewRun:true}),occurredAt);
+      this.core.exec('COMMIT;');
+      return {state:nextState,stateRevision:nextRevision,terminalAuditPreserved:stableTerminal.has(run.state),commandCount,receiptCount};
+    } catch (error) { this.core.exec('ROLLBACK;'); throw error; }
+  }
+
   private recordFieldRevisions(input: unknown, context: FeatureWorkerPortContext): number {
     const request = object(input, 'Field revision batch');
     const fields = request.fields;
@@ -1226,10 +1297,18 @@ export class FeatureRuntimeStore {
         if (target.workspace !== undefined && !allowedWorkspaceIds.includes(String(target.workspace))) {
           throw new Error('Return intent target Workspace is outside the exact durable safety scope.');
         }
-        this.core.prepare(`
+        const frozenIntent = this.core.prepare(`
           INSERT INTO managed_content_intents(intent_id, run_id, plan_digest, target_kind, target_key, intended_revision_json, state, created_at, updated_at)
           VALUES(?, ?, ?, ?, ?, ?, 'frozen', ?, ?)
+          ON CONFLICT(run_id,target_kind,target_key) DO UPDATE SET
+            plan_digest=excluded.plan_digest,
+            intended_revision_json=excluded.intended_revision_json,
+            state='frozen',
+            updated_at=excluded.updated_at
+          WHERE managed_content_intents.state='cancelled'
+            AND NOT EXISTS(SELECT 1 FROM feature_commands c WHERE c.intent_id=managed_content_intents.intent_id)
         `).run(randomUUID(), runId, planDigest, String(target.kind), String(target.key), JSON.stringify(target), createdAt, createdAt);
+        if (frozenIntent.changes !== 1) throw new Error('Return intent target conflicts with a non-cancelled or commanded prior freeze.');
       }
       this.core.prepare(`
         INSERT INTO feature_confirmations(

@@ -1,4 +1,8 @@
-# 0.2.49 / sequence 51
+# 0.2.50 / sequence 52
+
+Added fixed left-rail “重新开始” and “返回上一步” actions backed by real Worker/Core transitions. Validate can return to Upload without replacing the current Run, Artifact or field revisions. An unconsumed waiting confirmation can return to Review only through an atomic Core transaction that invalidates the confirmation and cancels the frozen intents before clearing the plan digest. Restart cancels stable pre-write Runs, preserves terminal command/receipt/evidence audit, and always leaves the next upload to create a new Run. Validation, mutation, verification, reconciliation and uncertain states reject rollback/restart based on durable Run/intent/command/receipt state. No Connector or signed Operation route changed.
+
+# 0.2.49 / sequence 51 history
 
 Corrected the generated-Risk concurrency contract after the real 0.2.48 canary proved that a slim Risk row can omit `updatedOn`. The classification Operation now uses only a Risk-owned `updatedOn/updatedAt` token and follows v4 by omitting the JSON Patch test when that token is absent; it never substitutes the parent Assessment timestamp. Exact Risk identity, signed preflight, user confirmation, `Higher|Lower` mutation and authoritative reconcile remain mandatory. The 0.2.48 receipt-backed live progress and strict APP/DB/OS/Tool managed-create recovery remain unchanged.
 

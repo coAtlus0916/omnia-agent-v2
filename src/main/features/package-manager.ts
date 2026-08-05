@@ -28,6 +28,7 @@ import type { InteractionLogService } from '../services/interaction-log-service.
 
 const PRODUCT_VERSION = '0.4.14';
 const OMNIA_MUTATION_WORKER_TIMEOUT_MS = 15 * 60_000;
+const MAX_SIGNED_OPERATION_COUNT = 64;
 const MANAGED_PYTHON_DISTRIBUTION = 'cpython-3.13.14-embed-amd64';
 const MANAGED_PYTHON_ARCHIVE_SHA256 = '90b4e5b9898b72d744650524bff92377c367f44bd5fbd09e3148656c080ad907';
 const CREATE_ASSOCIATE_PYTHON_MEMBERS = [
@@ -963,7 +964,7 @@ function validateOperationPackage(input: unknown, featureManifest: FeatureManife
     || manifest.featureId !== featureManifest.featureId
     || !Array.isArray(manifest.operations)
     || manifest.operations.length < 1
-    || manifest.operations.length > 32
+    || manifest.operations.length > MAX_SIGNED_OPERATION_COUNT
   ) throw new Error('Connector Operation manifest identity is invalid.');
   const operationIds = new Set<string>();
   for (const operation of manifest.operations) {

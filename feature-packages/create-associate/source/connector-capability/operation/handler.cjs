@@ -100,17 +100,26 @@ async function readApplicationSettings(sdk,readStep,workspaceStep,objectId,froze
   const authority=await assertObjectWorkspaceAuthority(sdk,workspaceStep,result,frozenWorkspaceId);
   return{...result,...authority};
 }
-function assertObject(item, query) {
-  const type = text(item.itElementType || item.elementType || item.type);
-  if (rowWorkspace(item) !== guid(query.workspaceId, 'query.workspaceId') || !type || type !== query.objectType) return false;
-  if (query.subtypeId && text(item.typeId || item.itElementTypeId) !== text(query.subtypeId)) return false;
-  const external = text(item.number || item.referenceNumber || item.name);
-  return external.normalize('NFC') === text(query.externalId).normalize('NFC');
-}
 function objectIdentityValues(item) {
   return [item && (item.number || item.referenceNumber || item.itElementNumber),
     item && (item.name || item.displayName || item.itElementName), item && item.systemId]
     .map((value) => normalizedLabel(value)).filter(Boolean);
+}
+function objectTypeEvidence(item) {
+  return [...new Set([item && item.itElementType, item && item.elementType, item && item.entityType, item && item.type]
+    .map(normalizedObjectType).filter(Boolean))];
+}
+function normalizedSubtype(value) {
+  const normalized = normalizedLabel(value).replace(/[\s_-]+/gu, '');
+  if (['database', 'db', 'sql', 'sqlserver', 'oracle'].includes(normalized)) return 'Database';
+  if (['operatingsystem', 'os', 'unix', 'linux', 'windows', 'win'].includes(normalized)) return 'OperatingSystem';
+  if (['tool', 'ittool'].includes(normalized)) return 'Tool';
+  return '';
+}
+function objectSubtypeEvidence(item) {
+  return [...new Set([item && item.typeId, item && item.itElementTypeId, item && item.subtype,
+    item && item.infrastructureType, item && item.databaseType, item && item.category]
+    .map(normalizedSubtype).filter(Boolean))];
 }
 async function searchObjectIdentities(sdk, stepId, query, sortField, extra) {
   const wanted = normalizedLabel(query.externalId); const wantedWorkspace = guid(query.workspaceId, 'query.workspaceId');
@@ -120,14 +129,16 @@ async function searchObjectIdentities(sdk, stepId, query, sortField, extra) {
     const current = resultRows(payload);
     for (const item of current) {
       if (!objectIdentityValues(item).includes(wanted)) continue;
-      const itemType = normalizedObjectType(item && (item.itElementType || item.elementType || item.entityType || item.type));
+      const objectTypes = objectTypeEvidence(item);
       const workspaceId = optionalGuid(item && (item.workspaceId || item.workspaceFacetId || item.facetId));
       const id = optionalGuid(item && (item.id || item.itElementId || item.applicationId || item.infrastructureId || item.toolId));
-      const observedSubtype = text(item && (item.typeId || item.itElementTypeId));
-      if (itemType !== query.objectType || !workspaceId || workspaceId !== wantedWorkspace || !id
-        || (query.subtypeId && observedSubtype && observedSubtype !== text(query.subtypeId))) {
-        matches.push({ state: 'ambiguous', id, item });
-      } else matches.push({ state: deletedEntity(item) ? 'recycle_bin' : 'active', id, item });
+      const subtypes = objectSubtypeEvidence(item); const expectedSubtype = text(query.subtypeId);
+      const explicitConflict = objectTypes.some((value) => value !== query.objectType)
+        || Boolean(workspaceId && workspaceId !== wantedWorkspace)
+        || Boolean(expectedSubtype && subtypes.some((value) => value !== expectedSubtype));
+      matches.push({ state: deletedEntity(item) ? 'recycle_bin' : 'active', id, item, objectTypes, workspaceId, subtypes,
+        explicitConflict, fieldPresence: { id: Boolean(id), objectType: objectTypes.length > 0,
+          workspace: Boolean(workspaceId), subtype: subtypes.length > 0 } });
     }
     observed += current.length;
     const total = Number(payload && payload.totalResults);
@@ -144,30 +155,30 @@ async function searchObjectIdentities(sdk, stepId, query, sortField, extra) {
 }
 function mergeObjectIdentityMatches(matches, query) {
   const expectedWorkspaceId = guid(query.workspaceId, 'query.workspaceId');
-  const expectedSubtype = text(query.subtypeId); const byId = new Map(); let incompleteCount = 0;
+  const expectedSubtype = text(query.subtypeId); const byId = new Map(); let incompleteCount = 0; let explicitConflictCount = 0;
+  const fieldPresence = { rows: matches.length, id: 0, objectType: 0, workspace: 0, subtype: 0 };
   for (const match of matches) {
-    if (!match.id || match.state === 'ambiguous') { incompleteCount += 1; continue; }
-    const item = match.item || {};
-    const objectType = normalizedObjectType(item.itElementType || item.elementType || item.entityType || item.type);
-    const workspaceId = optionalGuid(item.workspaceId || item.workspaceFacetId || item.facetId);
-    const subtype = text(item.typeId || item.itElementTypeId);
-    if (!objectType || !workspaceId || (expectedSubtype && !subtype)) { incompleteCount += 1; continue; }
-    const current = byId.get(match.id) || { id: match.id, states: new Set(), objectTypes: new Set(), workspaceIds: new Set(), subtypes: new Set(), item };
-    current.states.add(match.state); current.objectTypes.add(objectType); current.workspaceIds.add(workspaceId);
-    if (subtype) current.subtypes.add(subtype);
+    for (const key of ['id', 'objectType', 'workspace', 'subtype']) if (match.fieldPresence[key]) fieldPresence[key] += 1;
+    if (!match.id) { incompleteCount += 1; if (match.explicitConflict) explicitConflictCount += 1; continue; }
+    const current = byId.get(match.id) || { id: match.id, states: new Set(), objectTypes: new Set(), workspaceIds: new Set(), subtypes: new Set(), item: match.item, explicitConflict: false };
+    current.states.add(match.state); for (const value of match.objectTypes) current.objectTypes.add(value);
+    if (match.workspaceId) current.workspaceIds.add(match.workspaceId);
+    for (const value of match.subtypes) current.subtypes.add(value);
+    current.explicitConflict ||= match.explicitConflict;
     byId.set(match.id, current);
   }
   const active = []; const recycled = []; const conflictIds = [];
   for (const current of byId.values()) {
-    const conflict = current.states.size !== 1 || current.objectTypes.size !== 1 || !current.objectTypes.has(query.objectType)
-      || current.workspaceIds.size !== 1 || !current.workspaceIds.has(expectedWorkspaceId)
-      || (expectedSubtype && (current.subtypes.size !== 1 || !current.subtypes.has(expectedSubtype)));
-    if (conflict) { conflictIds.push(current.id); continue; }
+    const conflict = current.explicitConflict || current.states.size !== 1
+      || current.objectTypes.size > 1 || (current.objectTypes.size === 1 && !current.objectTypes.has(query.objectType))
+      || current.workspaceIds.size > 1 || (current.workspaceIds.size === 1 && !current.workspaceIds.has(expectedWorkspaceId))
+      || (expectedSubtype && (current.subtypes.size > 1 || (current.subtypes.size === 1 && !current.subtypes.has(expectedSubtype))));
+    if (conflict) { conflictIds.push(current.id); explicitConflictCount += 1; continue; }
     const merged = { id: current.id, state: [...current.states][0], item: current.item };
     (merged.state === 'active' ? active : recycled).push(merged);
   }
   active.sort((left, right) => left.id.localeCompare(right.id)); recycled.sort((left, right) => left.id.localeCompare(right.id)); conflictIds.sort();
-  return { active, recycled, conflictIds, incompleteCount };
+  return { active, recycled, conflictIds, incompleteCount, explicitConflictCount, fieldPresence };
 }
 async function objectPreflight(request, sdk) {
   const queryKeys = Object.keys(request.query || {}).sort();
@@ -186,7 +197,7 @@ async function objectPreflight(request, sdk) {
   }
   const search = await searchObjectIdentities(sdk, mapping[0], query, mapping[1], query.objectType === 'ITTool' ? { itElementType: 'ITTool' } : {});
   const merged = mergeObjectIdentityMatches(search.matches, query);
-  const { active, recycled, conflictIds, incompleteCount } = merged;
+  const { active, recycled, conflictIds, incompleteCount, explicitConflictCount, fieldPresence } = merged;
   let graMatches = [];
   if (text(query.graName)) {
     const [workItems, commonAccounts] = await Promise.all([
@@ -210,10 +221,16 @@ async function objectPreflight(request, sdk) {
   if (matchState === 'active') {
     const objectId = active[0].id; const detail = await sdk.invokeStep('object-detail', { objectId });
     const detailWorkspaceId = optionalGuid(detail && (detail.workspaceId || detail.workspaceFacetId || detail.facetId));
+    const detailTypes = objectTypeEvidence(detail); const detailSubtypes = objectSubtypeEvidence(detail);
+    const detailName = normalizedLabel(detail && (detail.name || detail.displayName || detail.itElementName));
+    const detailNumber = normalizedLabel(detail && (detail.number || detail.referenceNumber || detail.itElementNumber));
+    const wanted = normalizedLabel(query.externalId);
+    const detailIdentityExact = query.objectType === 'ITTool'
+      ? detailName === wanted && (!detailNumber || detailNumber === wanted)
+      : detailName === wanted && detailNumber === wanted;
     const detailExact = !deletedEntity(detail) && rowId(detail) === objectId
-      && normalizedObjectType(detail.itElementType || detail.elementType || detail.entityType || detail.type) === query.objectType
-      && objectIdentityValues(detail).includes(normalizedLabel(query.externalId))
-      && (!query.subtypeId || text(detail.typeId || detail.itElementTypeId) === text(query.subtypeId))
+      && detailTypes.length === 1 && detailTypes[0] === query.objectType && detailIdentityExact
+      && (!query.subtypeId || (detailSubtypes.length === 1 && detailSubtypes[0] === text(query.subtypeId)))
       && (!detailWorkspaceId || detailWorkspaceId === workspaceId);
     if (!detailExact) matchState = 'ambiguous';
     else {
@@ -227,7 +244,7 @@ async function objectPreflight(request, sdk) {
     graState: identityState(graMatches), graMatchCount: graMatches.length,
     evidence: { pagesRead: search.pagesRead, observed: search.observed, total: search.total,
       uniqueActiveIds: active.slice(0, 10).map((value) => value.id), recycleIds: recycled.slice(0, 10).map((value) => value.id),
-      conflictIds: conflictIds.slice(0, 10), incompleteCount } };
+      conflictIds: conflictIds.slice(0, 10), incompleteCount, explicitConflictCount, fieldPresence } };
 }
 
 function optionalGuid(value) {

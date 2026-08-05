@@ -1,6 +1,10 @@
-# 0.2.30 / sequence 32
+# 0.2.31 / sequence 33
 
-Generic DB/OS/Tool identity search now merges duplicate list representations by canonical object GUID. Identical representations no longer manufacture `identifier_ambiguous`; multiple GUIDs, missing key identity fields, field disagreement, and same-GUID active/recycle conflicts still fail closed. A unique active GUID is accepted only after the exact object detail and its unique Work Item-to-frozen-Workspace mapping pass. GRA directory rows are likewise deduplicated by assessment GUID while preserving representation and lifecycle conflicts. Existing exact objects and relationships are reused rather than renamed or recreated.
+Generic Infrastructure and IT Tool list rows are partial endpoint-scoped projections. A row with an exact identifier and canonical GUID is no longer rejected merely because it omits object type, Workspace, or subtype fields. Explicit list evidence still must agree with the frozen target. Infrastructure subtype evidence now recognizes the v4 fields `typeId`, `itElementTypeId`, `subtype`, `infrastructureType`, `databaseType`, and `category` and normalizes DB/OS families. The unique candidate must then pass exact detail GUID, name/number, type/subtype and authoritative Work Item-to-frozen-Workspace proof. Compact field-presence and explicit-conflict evidence is returned for live diagnosis.
+
+# 0.2.30 / sequence 32 history
+
+Generic DB/OS/Tool identity search now merges duplicate list representations by canonical object GUID. Identical representations no longer manufacture `identifier_ambiguous`; multiple GUIDs, missing canonical GUIDs, field disagreement, and same-GUID active/recycle conflicts still fail closed. A unique active GUID is accepted only after the exact object detail and its unique Work Item-to-frozen-Workspace mapping pass. GRA directory rows are likewise deduplicated by assessment GUID while preserving representation and lifecycle conflicts. Existing exact objects and relationships are reused rather than renamed or recreated.
 
 # 0.2.29 / sequence 31 history
 

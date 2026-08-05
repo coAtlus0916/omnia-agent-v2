@@ -102,6 +102,12 @@ Entity candidate extraction now distinguishes zero, one and conflicting candidat
 
 Risk-assessment detail can contain multiple `riskScopes` belonging to different entity kinds. Candidate extraction accepts only active scopes whose normalized `riskScopeType`, `entityType`, or `type` equals the expected canonical object type. If a scope carries `inkContentId` or `contentId`, it must also equal the detail/query content identity. Scopes without type are ignored rather than guessed. Top-level `entityId`/`itElementId`/`applicationId` remain candidates; the combined semantic set is deduplicated and must contain the exact planned object or be empty for the existing directory fallback. Application identity passes Application plus the current object ID and detail content; reconcile passes its signed type/content/entity query. Infrastructure covers both DB and OS, and ITTool covers Tool.
 
+## 0.2.31 partial list evidence and authoritative detail
+
+The object kind is frozen by the signed endpoint mapping (`Application`, `Infrastructure`, or `ITTool`). Search rows may omit type, Workspace, and subtype; absence is recorded in bounded field-presence evidence and is deferred to detail. Explicit supported fields are normalized and any disagreement with the frozen query marks the GUID conflicting. Infrastructure subtype evidence follows the v4 field order vocabulary across `typeId`, `itElementTypeId`, `subtype`, `infrastructureType`, `databaseType`, and `category`, normalized to Database or OperatingSystem.
+
+Only a canonical GUID may become a candidate. The sole active candidate is re-read and must prove exact GUID, exact name/number identity, canonical type and governed subtype. Its Work Item Facet mapping must contain exactly the frozen Workspace. Thus partial list projections can recover an existing object without weakening final authority.
+
 ## 0.2.30 canonical identity representation merge
 
 Generic object searches can return more than one representation of the same real Omnia object. The Connector Operation groups exact-name candidates by canonical object GUID and merges only representations with one consistent lifecycle state, canonical object type, frozen Workspace, and governed subtype. Identical duplicates do not increase the incomplete count. A missing GUID or key field, multiple GUIDs, active/recycle disagreement, or field disagreement remains ambiguous. The sole active candidate is then re-read from IT Element detail and its Work Item Facet mapping must resolve to exactly the frozen Workspace.

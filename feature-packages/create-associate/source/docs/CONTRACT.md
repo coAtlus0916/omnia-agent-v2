@@ -6,7 +6,7 @@ V8 digest 固定为 `1ED937A50253CEDF431CE02A0CC7A3B3E576597BBD6CAA6C967738D7B2D
 
 # Contracts
 
-Version 0.2.30 retains the same canonical validation, GRA identity, Application settings, authority, safety and receipt contracts. Repeated search rows with the same canonical GUID are merged only when their active/recycle state, type, Workspace and subtype claims agree. Conflicts, missing key identity fields and multiple GUIDs remain blocking. The unique object detail and its Work Item-to-Workspace mapping remain the final identity authority.
+Version 0.2.31 retains the same canonical validation, GRA identity, Application settings, authority, safety and receipt contracts. Search endpoint identity freezes the expected object kind; omitted optional list-row type, Workspace and subtype fields are not treated as conflicts. Any explicit contradictory evidence remains blocking. A unique candidate is accepted only when object detail proves the exact GUID, name/number, type and subtype and its Work Item mapping proves the frozen Workspace.
 
 Canonical GRA names are `GRA-${elementId}` and participate with element IDs in batch uniqueness checks. DB/OS must reference exactly one in-batch APP in the same normalized Workspace. The InfrastructureApplication relation is written and read from both directions before Infrastructure GRA creation; DB/OS RAIT is then inherited from the exact live APP GRA. Tool has no relationship input in the template, so no Tool relationship is fabricated.
 

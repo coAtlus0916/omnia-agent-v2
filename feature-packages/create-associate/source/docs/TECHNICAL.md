@@ -6,9 +6,9 @@
 - Integration：Remote-only 签名 Operation，首次远程 action 才延迟注册。
 # Technical design
 
-## 0.2.48 generated Risk classification and live progress
+## 0.2.49 generated Risk classification and live progress
 
-After every GRA reaches authoritative `EvaluationComplete`, Worker first waits for the unique generated Risk identities without pretending their classifications are already correct. Each row-and-Risk target is frozen as a `field` intent. The signed mutation rereads the Risk, uses its fresh live `updatedOn` in a JSON Patch test, accepts only exact `Higher|Lower`, patches `/classificationType`, and reconciles the exact Risk identity and classification. Core validates the projected GRA, semantic Risk identity, optional frozen Risk ID and exact read/mutation shapes before preparing a command. Only after all classification intents are receipt-backed and projected does the existing complete Risk-Control catalog gate run.
+After every GRA reaches authoritative `EvaluationComplete`, Worker first waits for the unique generated Risk identities without pretending their classifications are already correct. Each row-and-Risk target is frozen as a `field` intent. The signed mutation rereads the Risk, uses `/updatedOn` only when the Risk row itself supplies `updatedOn/updatedAt`, accepts only exact `Higher|Lower`, patches `/classificationType`, and reconciles the exact Risk identity and classification. A parent Assessment timestamp is never accepted as Risk concurrency evidence. Core validates the projected GRA, semantic Risk identity, optional frozen Risk ID and exact read/mutation shapes before preparing a command. Only after all classification intents are receipt-backed and projected does the existing complete Risk-Control catalog gate run.
 
 During the same long mutation invocation, successful Core Store transitions read `loadReturnProgress` directly and publish a disposable progress-only Surface. This projection never replaces the authorized cached Surface, never changes `stateVersion`, and never invokes the Worker concurrently; `activeInvocationId` and `allowMutation` therefore remain unchanged.
 

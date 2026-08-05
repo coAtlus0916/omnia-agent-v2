@@ -1,6 +1,6 @@
-# 0.2.48 / sequence 50
+# 0.2.49 / sequence 51
 
-Restored the v4 generated-Risk classification stage as first-class v5 intents and signed Operations. Generated identities settle before classification; each unique Risk is patched with a fresh live concurrency token and exact `Higher|Lower`, then reconciled and projected before the complete Risk-Control relation gate runs. APP/DB/OS/Tool continuation now requires exact current-authority managed-create proof. Return progress streams from receipt-backed Core state during the same authorized Worker invocation without a second Worker call, authorization-cache replacement, stateVersion change or fabricated timer.
+Corrected the generated-Risk concurrency contract after the real 0.2.48 canary proved that a slim Risk row can omit `updatedOn`. The classification Operation now uses only a Risk-owned `updatedOn/updatedAt` token and follows v4 by omitting the JSON Patch test when that token is absent; it never substitutes the parent Assessment timestamp. Exact Risk identity, signed preflight, user confirmation, `Higher|Lower` mutation and authoritative reconcile remain mandatory. The 0.2.48 receipt-backed live progress and strict APP/DB/OS/Tool managed-create recovery remain unchanged.
 
 # 0.2.47 / sequence 49 history
 

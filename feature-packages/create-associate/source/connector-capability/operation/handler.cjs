@@ -460,6 +460,76 @@ function authorityFacetDirectory(payload, engagementId) {
   });
   return { groups, workspaces };
 }
+const GRA_KIND_CONTRACT = Object.freeze({
+  APP: Object.freeze({ objectType: 'Application', objectSubtype: 'Application', typeId: 3,
+    categoryParent: 'Application type', categoryName: 'Application' }),
+  DB: Object.freeze({ objectType: 'Infrastructure', objectSubtype: 'Database', typeId: 4,
+    categoryParent: 'Infrastructure type', categoryName: 'Infrastructure_Database' }),
+  OS: Object.freeze({ objectType: 'Infrastructure', objectSubtype: 'OperatingSystem', typeId: 4,
+    categoryParent: 'Infrastructure type', categoryName: 'Infrastructure_Operating system' }),
+  TOOL: Object.freeze({ objectType: 'ITTool', objectSubtype: 'Tool', typeId: 5,
+    categoryParent: 'Tool type', categoryName: 'Tool' })
+});
+function catalogName(value) {
+  return normalizedLabel(value).replace(/^(?:standardizedaccount|commonaccount)_/u, '');
+}
+function requestedContentAliases(elementKind, contentName) {
+  const input = catalogName(contentName);
+  const aliases = {
+    APP: { generic: ['Generic', 'Generic Application'], 'sap ecc': ['SAP ECC'] },
+    DB: { generic: ['Generic', 'Generic Database'], oracle: ['Oracle', 'Oracle Database'], sql: ['SQL', 'SQL Database'] },
+    OS: { generic: ['Generic', 'Generic Operating System'], unix: ['UNIX', 'Unix'], win: ['WIN', 'Windows'] },
+    TOOL: {
+      generic: ['Generic', 'Generic Tool'],
+      '工单工具': ['工单工具', 'Ticketing Tool'],
+      '身份和访问管理工具': ['身份和访问管理工具', 'Identity & Access Management Tool']
+    }
+  }[elementKind] || {};
+  return new Set((aliases[input] || [contentName]).map(catalogName));
+}
+function standardizedAccountItems(payload, engagementId) {
+  if (!Array.isArray(payload) || payload.length !== 1) fail('GRA content authority must contain exactly one Standardized Accounts List publication.');
+  const publication = payload[0];
+  if (!publication || typeof publication !== 'object' || Array.isArray(publication)
+    || guid(publication.engagementId, 'GRA content publication engagementId') !== engagementId
+    || normalizedLabel(publication.typeName) !== normalizedLabel('Standardized Accounts List')
+    || !Array.isArray(publication.items) || publication.items.length < 1 || publication.items.length > 2000) {
+    fail('GRA content authority publication is invalid.');
+  }
+  return publication.items;
+}
+function contentCandidateNames(item) {
+  const names = [item && item.name, item && item.description];
+  for (const child of rows(item && item.subItems)) {
+    if (normalizedLabel(child && child.parentListName) === normalizedLabel('Common Account Area')) names.push(child.name, child.description);
+  }
+  return new Set(names.map(catalogName).filter(Boolean));
+}
+function resolveGraContent(items, spec, engagementId) {
+  const kindContract = GRA_KIND_CONTRACT[spec.elementKind];
+  if (!kindContract || spec.objectType !== kindContract.objectType || spec.objectSubtype !== kindContract.objectSubtype) {
+    fail(`GRA content ${spec.elementKind} object type/subtype contract drifted.`);
+  }
+  const aliases = requestedContentAliases(spec.elementKind, spec.contentName);
+  const matches = items.filter((item) => item && typeof item === 'object' && !Array.isArray(item)
+    && item.isDeleted !== true
+    && normalizedLabel(item.parentListName) === normalizedLabel('Standardized Accounts List')
+    && [...contentCandidateNames(item)].some((name) => aliases.has(name)));
+  if (matches.length !== 1) fail(`GRA content ${spec.elementKind}/${spec.contentName} is absent or ambiguous in the authoritative Standardized Accounts List.`);
+  const item = matches[0];
+  if (guid(item.engagementId, 'resolved GRA content engagementId') !== engagementId) fail('Resolved GRA content belongs to another Engagement.');
+  const categories = rows(item.subItems).filter((candidate) => candidate && typeof candidate === 'object'
+    && !Array.isArray(candidate) && candidate.isDeleted !== true
+    && normalizedLabel(candidate.parentListName) === normalizedLabel(kindContract.categoryParent)
+    && normalizedLabel(candidate.name) === normalizedLabel(kindContract.categoryName));
+  if (categories.length !== 1) fail(`GRA content ${spec.elementKind}/${spec.contentName} has no unique live IT Element category.`);
+  if (guid(categories[0].engagementId, 'resolved IT Element category engagementId') !== engagementId) fail('Resolved IT Element category belongs to another Engagement.');
+  return {
+    contentName: text(spec.contentName), objectType: spec.objectType, objectSubtype: spec.objectSubtype,
+    elementKind: spec.elementKind, inkContentId: catalogId(item.key, 'resolved GRA content id'),
+    typeId: kindContract.typeId, itElementTypeId: catalogId(categories[0].key, 'resolved IT Element type id')
+  };
+}
 async function resolveAuthority(request, sdk) {
   const query = exact(request.query, ['workspaceNames', 'graContents'], 'Authority resolution query');
   if (!Array.isArray(query.workspaceNames) || query.workspaceNames.length < 1 || query.workspaceNames.length > 50
@@ -471,7 +541,7 @@ async function resolveAuthority(request, sdk) {
   if (allowed.length < 1 || allowed.length !== rows(request.allowedWorkspaceIds).length) fail('Authority resolution safety scope is invalid.');
   const [hierarchy, facetPayload, graDirectory] = await Promise.all([
     sdk.invokeStep('authority-hierarchy'), sdk.invokeStep('authority-directory', { engagementId }),
-    sdk.invokeStep('authority-gra-directory', {}, { riskAssessmentType: [] })
+    sdk.invokeStep('authority-gra-directory')
   ]);
   if (hierarchy === null || hierarchy === undefined) fail('Pack hierarchy authority is unavailable.');
   const directory = authorityFacetDirectory(facetPayload, engagementId);
@@ -489,21 +559,9 @@ async function resolveAuthority(request, sdk) {
     if (!allowed.includes(workspaceId)) fail(`Resolved Workspace ${name} is outside the exact safety lock.`);
     return { name, workspaceId, parentSectionId: matches[0].parentSectionId };
   });
-  const resolvedGraContents = query.graContents.map((raw) => {
-    const spec = exact(raw, ['contentName', 'objectType'], 'GRA content request');
-    const item = uniqueExact(graDirectory, (candidate) => {
-      const name = candidate.contentName || candidate.name || candidate.title || candidate.inkContentName;
-      const objectType = candidate.itElementType || candidate.objectType || candidate.entityType || candidate.typeName;
-      return normalizedLabel(name) === normalizedLabel(spec.contentName)
-        && (!text(objectType) || normalizedLabel(objectType) === normalizedLabel(spec.objectType));
-    }, `GRA content ${spec.objectType}/${spec.contentName}`);
-    return {
-      contentName: text(spec.contentName), objectType: text(spec.objectType),
-      inkContentId: catalogId(item.inkContentId || item.contentId || item.id, 'resolved GRA content id'),
-      typeId: catalogId(item.typeId || item.riskAssessmentTypeId || item.assessmentTypeId, 'resolved GRA type id'),
-      itElementTypeId: catalogId(item.itElementTypeId || item.applicationTypeId || item.entityTypeId,'resolved IT Element type id')
-    };
-  });
+  const contentItems = standardizedAccountItems(graDirectory, engagementId);
+  const resolvedGraContents = query.graContents.map((raw) => resolveGraContent(contentItems,
+    exact(raw, ['contentName', 'elementKind', 'objectSubtype', 'objectType'], 'GRA content request'), engagementId));
   return { engagementId, workspaces: resolvedWorkspaces, graContents: resolvedGraContents };
 }
 

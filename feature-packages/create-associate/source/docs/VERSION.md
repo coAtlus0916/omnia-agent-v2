@@ -1,4 +1,8 @@
-# 0.2.10 / sequence 12
+# 0.2.11 / sequence 13
+
+Corrective release replacing the non-authoritative created-GRA `commonAccounts` lookup in `authority.resolve` with the live `Standardized Accounts List` reference-list publication. Each request and resolved identity carries `elementKind` and object subtype; APP/DB/OS/TOOL select their own exact live category child, so DB and OS cannot cross-resolve through the shared Infrastructure protocol type. Content IDs and IT Element type IDs come only from the live directory; GRA protocol type IDs are Application 3, Infrastructure 4, and ITTool 5. Governance aliases cover Generic, SAP ECC, SQL, UNIX, WIN, Ticketing Tool, and Identity & Access Management Tool values.
+
+# 0.2.10 / sequence 12 history
 
 Source release correcting Omnia/Core GUID validation in the Worker and signed Operation handler. Canonical non-zero 8-4-4-4-12 hexadecimal identities are accepted regardless of RFC UUID version or variant bits; input trimming and lowercase normalization remain in force. This source version has not been packaged, installed, or canary-tested.
 

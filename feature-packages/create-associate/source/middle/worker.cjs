@@ -506,6 +506,7 @@ function rowField(row, governance, fieldId) {
 }
 function objectType(kind) { return kind === 'APP' ? 'Application' : kind === 'TOOL' ? 'ITTool' : 'Infrastructure'; }
 function objectSubtypeId(kind) { return kind === 'DB' ? 'Database' : kind === 'OS' ? 'OperatingSystem' : kind === 'TOOL' ? 'Tool' : ''; }
+function authorityObjectSubtype(kind) { return kind === 'APP' ? 'Application' : objectSubtypeId(kind); }
 function identityKey(prefix, value) { return `${prefix}:${digest(Buffer.from(canonical(value))).slice(0, 48)}`; }
 function normalizeRait(value) {
   const normalized=String(value||'').normalize('NFKC').trim().toLocaleLowerCase('en-US');
@@ -774,7 +775,8 @@ function createFeatureWorker(dependencies) {
     const workspaceNames = [...new Set(activeRows(checkpoint.parsed).map((row) => rowField(row, governance, `P1.${row.kind}.IT.WORKSPACE`)))];
     const graContents = [...new Map(activeRows(checkpoint.parsed).map((row) => {
       const value = rowField(row, governance, `P1.${row.kind}.GRA.GRA_CONTENT`);
-      return [`${objectType(row.kind)}|${value}`, { objectType: objectType(row.kind), contentName: value }];
+      return [`${row.kind}|${value}`, { elementKind: row.kind, objectType: objectType(row.kind),
+        objectSubtype: authorityObjectSubtype(row.kind), contentName: value }];
     })).values()];
     if (workspaceNames.some((value) => !value) || graContents.some((value) => !value.contentName)) fail('RETURN.AUTHORITY_INPUT_MISSING', 'Workspace or GRA content input is missing.');
     return { connectorBinding: context.connectorBinding, allowedWorkspaceIds: context.safetyLock.workspaceIds, query: { workspaceNames, graContents } };
@@ -831,7 +833,7 @@ function createFeatureWorker(dependencies) {
       fail('RETURN.AUTHORITY_SCOPE_MISSING', 'Exact authority instance, tenant/org, Pack, and engagement identities are required.');
     }
     const workspaces = new Map(authority.workspaces.map((item) => [String(item.name).normalize('NFKC'), item.workspaceId]));
-    const graContents = new Map(authority.graContents.map((item) => [`${item.objectType}|${String(item.contentName).normalize('NFKC')}`, item]));
+    const graContents = new Map(authority.graContents.map((item) => [`${item.elementKind}|${String(item.contentName).normalize('NFKC')}`, item]));
     const plannedApps = activeRows(checkpoint.parsed).filter((item) => item.kind === 'APP').map((item) => ({
       elementId: item.elementId, workspaceName: rowField(item, governance, 'P1.APP.IT.WORKSPACE'),
       mode: rowField(item, governance, 'P1.APP.GRA.RAIT_CONCLUSION')
@@ -841,7 +843,7 @@ function createFeatureWorker(dependencies) {
       const type = objectType(row.kind); const workspaceName = rowField(row, governance, `P1.${row.kind}.IT.WORKSPACE`);
       const workspaceId = workspaces.get(workspaceName.normalize('NFKC'));
       const contentName = rowField(row, governance, `P1.${row.kind}.GRA.GRA_CONTENT`);
-      const content = graContents.get(`${type}|${contentName.normalize('NFKC')}`);
+      const content = graContents.get(`${row.kind}|${contentName.normalize('NFKC')}`);
       if (!workspaceId || !content) fail('RETURN.AUTHORITY_UNRESOLVED', `Authority identity is unavailable for ${row.kind}/${row.elementId}.`);
       const objectTarget = { targetIdentityKey: identityKey('object', [row.kind, row.elementId, workspaceId]), workspaceId };
       const declaredMode = row.kind === 'APP' || row.kind === 'TOOL'

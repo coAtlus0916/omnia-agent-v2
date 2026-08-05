@@ -140,7 +140,7 @@ const runtimeBaseBytes = workerModule.buildRuntimeWorkbook(
 
 const userTemplateBytes = await readFile(userTemplatePath);
 if (userTemplateBytes.length < 1 || userTemplateBytes.length > 64 * 1024 * 1024) throw new Error('Phase1 user template V3 size is invalid.');
-const version = '0.2.10'; const sequence = 12;
+const version = '0.2.11'; const sequence = 13;
 const route = (stepId, method, routeTemplate, parameters, bodyMode = 'none', bodyParameter = '') => ({ stepId, method, routeTemplate, parameters, bodyMode, bodyParameter });
 const applicationIdentityRoutes = () => [
   route('workitem-directory', 'POST', '/work/v1/WorkQueries/getWorkitemDetails', [], 'signed_json'),
@@ -154,7 +154,7 @@ const operations = [
   { operationId: 'omnia.create-associate.authority.resolve.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.authority-resolve-request/v1', responseSchema: 'omnia.create-associate.authority-resolve-response/v1', enabledByDefault: true, grantsMutationPermit: false, routes: [
     route('authority-hierarchy', 'GET', '/engagements/v1/{engagementId}/headers/hierarchy', []),
     route('authority-directory', 'POST', '/engagements/v1/facets/byEngagementIds', [{ name: 'engagementId', type: 'guid' }], 'parameter_array', 'engagementId'),
-    route('authority-gra-directory', 'POST', '/rapr/v0/engagements/{engagementId}/riskassessments/commonAccounts', [], 'signed_json')
+    route('authority-gra-directory', 'GET', '/rapr/v0/engagements/{engagementId}/content/reference-list-byLatestDate?typeId=Standardized+Accounts+List&releaseDate=null', [])
   ] },
   { operationId: 'omnia.create-associate.risk-control.catalog.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.risk-control-catalog-request/v1', responseSchema: 'omnia.create-associate.risk-control-catalog-response/v1', enabledByDefault: true, grantsMutationPermit: false, routes: [
     route('risk-catalog', 'GET', '/rapr/v0/engagements/{engagementId}/plannedresponse/byRiskAssessmentId/{riskAssessmentId}', [{ name: 'riskAssessmentId', type: 'guid' }]),

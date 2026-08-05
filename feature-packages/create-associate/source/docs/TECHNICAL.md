@@ -44,6 +44,10 @@ Live validation fails closed before Connector invocation when the binding or exp
 
 Worker response identity extraction and the signed Operation handler now share the Connector origin rule: normalize string input, require the canonical 8-4-4-4-12 hexadecimal shape, reject the all-zero value, and do not constrain RFC UUID version or variant positions. This preserves exact identity comparison while accepting valid Omnia/Core GUIDs that are not RFC-generated UUIDs.
 
+## 0.2.11 authoritative GRA content catalog
+
+`authority.resolve` reads the Engagement-bound `Standardized Accounts List` reference-list publication instead of treating already-created `commonAccounts` as a content catalog. Worker requests and Operation responses carry `elementKind` and object subtype explicitly. The handler resolves the unique top-level content identity and then the exact category child: Application, Infrastructure_Database, Infrastructure_Operating system, or Tool. `inkContentId` and `itElementTypeId` are live keys; GRA `typeId` follows the recorded protocol enum 3/4/5. Alias normalization covers the governed Generic, SAP ECC, SQL/SQL Database, UNIX/Unix, WIN/Windows, Ticketing Tool, and Identity & Access Management Tool values without hardcoding content identities.
+
 The package contains a process-isolated CommonJS Worker, declarative Surface, private migration, managed V8-derived governance IR, signed runtime-template base XLSX, and a signed Operation package. Core passes base64 bytes (64 MiB maximum), never filesystem paths. Runtime output patches only declared OOXML worksheet/core parts and verifies every undeclared part digest.
 
 The governance IR contains 187 fields, 68 relation rules, and 15 scoring items. TemplateVersion semantic identity is stable across Runs; instance semantic/patch/output/governance digests are per Run.

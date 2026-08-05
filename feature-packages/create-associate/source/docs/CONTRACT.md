@@ -6,7 +6,7 @@ V8 digest 固定为 `1ED937A50253CEDF431CE02A0CC7A3B3E576597BBD6CAA6C967738D7B2D
 
 # Contracts
 
-Version 0.2.25 retains the same canonical validation, GRA identity, Application settings, authority, safety and receipt contracts. Risk-Control catalog and mutation-time revalidation are bound to the exact v4 planned-response query route and controls route with `includeContentDeleted=false`. Hidden-data validation, association POST and risk-scope detail readback remain separately signed and exact; no route correction changes the frozen payload or verification semantics.
+Version 0.2.26 retains the same canonical validation, GRA identity, Application settings, authority, safety and receipt contracts. Risk-Control catalog parsing accepts only the recorded top-level v4 collections, preserves live risk/control numbers, classification and RiskRiskScope identity, and applies the same identity rules during review, execution and action-time mutation revalidation. Missing or ambiguous identities remain blocking; no relation is skipped to make a Run pass.
 
 Canonical GRA names are `GRA-${elementId}` and participate with element IDs in batch uniqueness checks. DB/OS must reference exactly one in-batch APP in the same normalized Workspace. The InfrastructureApplication relation is written and read from both directions before Infrastructure GRA creation; DB/OS RAIT is then inherited from the exact live APP GRA. Tool has no relationship input in the template, so no Tool relationship is fabricated.
 

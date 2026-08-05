@@ -564,14 +564,47 @@ function responseId(value, label) {
   if (!candidate) fail('RETURN.IDENTITY_INVALID', `${label} did not return one canonical GUID.`);
   return candidate;
 }
+function catalogIdentityText(value) { return String(value || '').normalize('NFKC').replace(/\s+/gu, ' ').trim().toLocaleLowerCase('en-US'); }
+function governedCatalogNumber(value) {
+  const label = String(value || '').normalize('NFKC').trim();
+  return label.split(/[｜|]/u, 1)[0].trim();
+}
+function catalogRiskMatches(catalog, relation, classification) {
+  const number = catalogIdentityText(governedCatalogNumber(relation.riskName));
+  const expectedName = catalogIdentityText(relation.riskName);
+  const expectedClassification = catalogIdentityText(classification);
+  return (Array.isArray(catalog?.risks) ? catalog.risks : []).filter((item) => {
+    const liveNumber = catalogIdentityText(item.riskNumber);
+    const identityMatches = liveNumber ? liveNumber === number : catalogIdentityText(item.name) === expectedName;
+    return identityMatches && catalogIdentityText(item.classification) === expectedClassification;
+  });
+}
+function catalogControlMatches(catalog, relation) {
+  const number = catalogIdentityText(governedCatalogNumber(relation.controlName));
+  const expectedName = catalogIdentityText(relation.controlName);
+  return (Array.isArray(catalog?.controls) ? catalog.controls : []).filter((item) => {
+    const liveNumber = catalogIdentityText(item.controlNumber);
+    return liveNumber ? liveNumber === number : catalogIdentityText(item.name) === expectedName;
+  });
+}
+function requestedRelationFamily(kind, content) {
+  const value = catalogIdentityText(content);
+  const aliases = {
+    APP: { GENERIC: ['generic', 'generic application'], SAP_ECC: ['sap ecc'] },
+    DB: { GENERIC: ['generic', 'generic database'], ORACLE: ['oracle', 'oracle database'], SQL: ['sql', 'sql database'] },
+    OS: { GENERIC: ['generic', 'generic operating system'], UNIX: ['unix'], WIN: ['win', 'windows'] },
+    TOOL: { TICKET: ['工单工具', 'ticketing tool'], IDENTITY: ['身份和访问管理工具', 'identity & access management tool'] }
+  }[kind];
+  if (!aliases) fail('RETURN.RELATION_SCOPE_DRIFT', `Unsupported V8 relation object kind: ${kind}.`);
+  const matches = Object.entries(aliases).filter(([, values]) => values.map(catalogIdentityText).includes(value)).map(([family]) => family);
+  if (matches.length !== 1) fail('RETURN.RELATION_SCOPE_DRIFT', `GRA content ${kind}/${content} has no unique governed V8 relation family.`);
+  return matches[0];
+}
 function relationApplicable(relation, row, content, mode) {
-  const scope = String(relation.objectType || '').toLocaleLowerCase('en-US');
-  const kindMatch = row.kind === 'APP' ? scope.includes('application')
-    : row.kind === 'DB' ? scope.includes('database')
-      : row.kind === 'OS' ? scope.includes('operating system') || scope.includes('os')
-        : scope.includes('tool');
-  const subtypeMatch = row.kind !== 'APP' || !scope.includes('sap ecc') || String(content).toLocaleLowerCase('en-US').includes('sap ecc');
-  return kindMatch && subtypeMatch && String(relation[`catalogPresent${mode}`] || '').startsWith('Y');
+  const match = /^REL\.(APP|DB|OS|TOOL)\.(GENERIC|SAP_ECC|ORACLE|SQL|UNIX|WIN|TICKET|IDENTITY)\./u.exec(String(relation.relationId || ''));
+  if (!match) fail('RETURN.RELATION_SCOPE_DRIFT', `V8 relation ${relation.relationId || '(missing)'} has no canonical object/subtype family.`);
+  return match[1] === row.kind && match[2] === requestedRelationFamily(row.kind, content)
+    && String(relation[`catalogPresent${mode}`] || '').startsWith('Y');
 }
 function linkRequired(relation, mode) { return String(relation[`linkRequired${mode}`] || '').startsWith('Y'); }
 function uncertainError(error) { return error && error.code === 'CONNECTOR.RESPONSE_LOST'; }
@@ -1025,8 +1058,8 @@ function createFeatureWorker(dependencies) {
         if(riskIntents.length){
           const catalog=await invoke(RETURN_OPERATIONS.riskCatalog,context.connectorBinding,{target:{targetIdentityKey:identityKey('risk-catalog',[row.rowKey]),workspaceId:row.workspaceId},riskAssessmentId:row.graId});
           for(const intent of riskIntents){
-            const risks=catalog.risks.filter((item)=>normalized(item.name)===normalized(intent.riskName)&&normalized(item.classification)===normalized(intent.classification));
-            const controls=catalog.controls.filter((item)=>normalized(item.name)===normalized(intent.controlName));
+            const risks=catalogRiskMatches(catalog,intent,intent.classification);
+            const controls=catalogControlMatches(catalog,intent);
             if(risks.length!==1||controls.length!==1) fail('RETURN.RISK_CONTROL_CATALOG_DRIFT',`Risk/Control identity is absent or ambiguous during review: ${intent.relationId}.`);
             const risk=risks[0],control=controls[0]; intent.resolvedCatalog={riskId:risk.riskId,riskRiskScopeId:risk.riskRiskScopeId,controlId:control.controlId,assertion:risk.assertion,updatedOn:risk.updatedOn};
             const observed=await invoke(RETURN_OPERATIONS.riskRead,context.connectorBinding,{target:{targetIdentityKey:intent.operationTargetIdentityKey,workspaceId:row.workspaceId},query:{riskRiskScopeId:risk.riskRiskScopeId,riskId:risk.riskId,controlId:control.controlId,assertion:risk.assertion}});
@@ -1450,10 +1483,9 @@ function createFeatureWorker(dependencies) {
             }
             const contentName = row.content.contentName; const selected = governance.relations.filter((relation) => relationApplicable(relation, row, contentName, mode));
             const catalog = selected.length ? await invoke(RETURN_OPERATIONS.riskCatalog, binding, { target: { targetIdentityKey: identityKey('risk-catalog', [row.rowKey]), workspaceId: row.workspaceId }, riskAssessmentId: graId }) : { risks: [], controls: [] };
-            const normalized = (value) => String(value || '').normalize('NFKC').replace(/\s+/gu, ' ').trim();
             for (const relation of selected.filter((item) => linkRequired(item, mode))) {
-              const risks = catalog.risks.filter((item) => normalized(item.name) === normalized(relation.riskName) && normalized(item.classification) === normalized(relation[`classification${mode}`]));
-              const controls = catalog.controls.filter((item) => normalized(item.name) === normalized(relation.controlName));
+              const risks = catalogRiskMatches(catalog,relation,relation[`classification${mode}`]);
+              const controls = catalogControlMatches(catalog,relation);
               if (risks.length !== 1 || controls.length !== 1) fail('RETURN.RISK_CONTROL_CATALOG_DRIFT', `Risk/Control catalog identity is absent or ambiguous: ${relation.relationId}.`);
               const risk = risks[0]; const control = controls[0]; const targetKey = `risk-control|${row.rowKey}|${relation.relationId}`;
               if (done(targetKey)) continue;

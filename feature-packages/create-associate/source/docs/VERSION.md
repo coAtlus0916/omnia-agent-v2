@@ -1,4 +1,8 @@
-# 0.2.25 / sequence 27
+# 0.2.26 / sequence 28
+
+V8 relation selection is now subtype-exclusive across APP, DB, OS and Tool; SAP ECC no longer receives Generic APP relations. Risk-Control catalog parsing follows the v4 top-level payload contract and preserves `riskNumber`/`inkRiskNumber`, `controlNumber`, classification, assertion, `updatedOn` and RiskRiskScope identity. Review, execution and mutation-time revalidation resolve by number first and use an exact display-name fallback only when a live row has no number. Structured catalog counts and normalized identity inventories are retained in the Operation response for bounded audit diagnostics. Missing or ambiguous identities continue to fail closed.
+
+# 0.2.25 / sequence 27 history
 
 Risk-Control catalog routes now exactly match the v4 live API: planned responses use `plannedresponse/byRiskAssessmentId?riskAssessmentId={riskAssessmentId}&reviewMode=false`, and controls use `controls/byRiskAssessmentId/{riskAssessmentId}?includeContentDeleted=false`. Both the read-only catalog Operation and the mutation Operation's action-time re-read use these routes. Hidden-data validation, association POST, and exact risk-scope detail readback URLs were rechecked against v4 and remain unchanged.
 

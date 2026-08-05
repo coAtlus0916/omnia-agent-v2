@@ -629,24 +629,64 @@ function catalogEntryId(item, names, label) {
   for (const name of names) if (item && item[name]) return guid(item[name], label);
   fail(`${label} is absent.`);
 }
+function catalogRows(payload, property, label) {
+  if (Array.isArray(payload)) return payload;
+  if (payload && typeof payload === 'object' && !Array.isArray(payload) && Array.isArray(payload[property])) return payload[property];
+  fail(`${label} did not return its recorded v4 top-level collection.`);
+}
+function catalogNumber(item, names) {
+  for (const name of names) { const value = text(item && item[name]); if (value) return value; }
+  return '';
+}
+function catalogDisplayName(number, value) {
+  const name = text(value);
+  if (!number || normalizedLabel(name).startsWith(normalizedLabel(number))) return name;
+  return `${number}｜${name}`;
+}
+function riskRiskScopeLookupId(item) {
+  const direct = optionalGuid(item && item.riskRiskScopeId);
+  if (direct) return direct;
+  for (const value of rows(item && item.riskRiskScopeIds)) { const candidate = optionalGuid(value); if (candidate) return candidate; }
+  for (const scope of rows(item && item.riskRiskScopes)) { const candidate = optionalGuid(scope && scope.id); if (candidate) return candidate; }
+  fail('riskRiskScopeId is absent from the recorded v4 catalog shapes.');
+}
+function catalogAssertion(item) {
+  const candidates = [item && item.assertion, item && item.assertionType, item && item.selectedAssertion,
+    ...rows(item && item.assertions).map((value) => value && typeof value === 'object' ? value.assertion : value),
+    ...rows(item && item.riskRiskScopes).flatMap((scope) => [scope && scope.selectedAssertion, scope && scope.assertionType,
+      ...rows(scope && scope.assertions).map((value) => value && typeof value === 'object' ? value.assertion : value)])]
+    .map(text).filter(Boolean);
+  return candidates[0] || '';
+}
 async function riskControlCatalog(request, sdk) {
   target(request);
   const riskAssessmentId = guid(request.riskAssessmentId, 'riskAssessmentId');
   const [riskPayload, controlPayload] = await Promise.all([
     sdk.invokeStep('risk-catalog', { riskAssessmentId }), sdk.invokeStep('control-catalog', { riskAssessmentId })
   ]);
-  const risks = flattenObjects(riskPayload).filter((item) => item && (item.riskId || item.riskRiskScopeId || item.riskScopeId)).map((item) => ({
+  const riskRows = catalogRows(riskPayload, 'plannedResponses', 'Risk catalog');
+  const controlRows = catalogRows(controlPayload, 'controls', 'Control catalog');
+  const risks = riskRows.filter((item) => item && (item.riskId || item.id)).map((item) => {
+    const riskNumber = catalogNumber(item, ['riskNumber', 'inkRiskNumber']);
+    return ({
     riskId: catalogEntryId(item, ['riskId', 'id'], 'riskId'),
-    riskRiskScopeId: catalogEntryId(item, ['riskRiskScopeId', 'riskScopeId', 'scopeId'], 'riskRiskScopeId'),
-    name: text(item.name || item.riskName || item.title),
-    classification: text(item.riskClassification || item.classification || item.classificationName),
-    assertion: text(item.assertion || item.assertionType || rows(item.assertions)[0]?.assertion),
+    riskRiskScopeId: riskRiskScopeLookupId(item), riskNumber,
+    name: catalogDisplayName(riskNumber, item.name || item.riskName || item.title || item.description),
+    classification: text(item.classificationType || item.riskClassification || item.classification || item.classificationName),
+    assertion: catalogAssertion(item),
     updatedOn: text(item.updatedOn || item.updatedAt)
-  })).filter((item) => item.name && item.classification && item.assertion && item.updatedOn);
-  const controls = flattenObjects(controlPayload).filter((item) => item && (item.controlId || item.id)).map((item) => ({
-    controlId: catalogEntryId(item, ['controlId', 'id'], 'controlId'), name: text(item.name || item.controlName || item.title)
-  })).filter((item) => item.name);
-  return { riskAssessmentId, risks, controls };
+  }); }).filter((item) => (item.riskNumber || item.name) && item.classification && item.assertion && item.updatedOn);
+  const controls = controlRows.filter((item) => item && (item.controlId || item.id)).map((item) => {
+    const controlNumber = catalogNumber(item, ['controlNumber']);
+    return { controlId: catalogEntryId(item, ['controlId', 'id'], 'controlId'), controlNumber,
+      name: catalogDisplayName(controlNumber, item.name || item.controlName || item.title || item.description) };
+  }).filter((item) => item.controlNumber || item.name);
+  return { riskAssessmentId, risks, controls, diagnostics: {
+    riskRows: riskRows.length, acceptedRisks: risks.length, controlRows: controlRows.length, acceptedControls: controls.length,
+    riskNumbers: risks.map((item) => item.riskNumber).filter(Boolean).sort(),
+    controlNumbers: controls.map((item) => item.controlNumber).filter(Boolean).sort(),
+    classifications: [...new Set(risks.map((item) => item.classification).filter(Boolean))].sort()
+  } };
 }
 async function graPreflight(request, sdk) {
   const query = exact(request.query, ['entityId', 'itElementType', 'name', 'workspaceId'], 'GRA preflight query');
@@ -959,8 +999,10 @@ function createOperationHandler() {
           || text(scope.assertionType) !== text(scope.assertions[0]?.assertion)) fail('Risk-Control scope identity or assertion is invalid.');
         const controlId=guid(scope.controlId,'scope.controlId'); const riskScopeId=guid(scope.riskScopeId,'scope.riskScopeId');
         const catalog=await riskControlCatalog({target:request.target,riskAssessmentId:payload.riskAssessmentId},sdk);
-        const riskMatches=catalog.risks.filter((item)=>normalizedLabel(item.name)===normalizedLabel(payload.riskName)&&normalizedLabel(item.classification)===normalizedLabel(payload.riskClassification));
-        const controlMatches=catalog.controls.filter((item)=>normalizedLabel(item.name)===normalizedLabel(payload.controlName));
+        const riskNumber=text(payload.riskName).split(/[｜|]/u,1)[0]; const controlNumber=text(payload.controlName).split(/[｜|]/u,1)[0];
+        const riskMatches=catalog.risks.filter((item)=>(item.riskNumber?normalizedLabel(item.riskNumber)===normalizedLabel(riskNumber):normalizedLabel(item.name)===normalizedLabel(payload.riskName))
+          &&normalizedLabel(item.classification)===normalizedLabel(payload.riskClassification));
+        const controlMatches=catalog.controls.filter((item)=>item.controlNumber?normalizedLabel(item.controlNumber)===normalizedLabel(controlNumber):normalizedLabel(item.name)===normalizedLabel(payload.controlName));
         if(riskMatches.length!==1||controlMatches.length!==1||riskMatches[0].riskId!==riskId||riskMatches[0].riskRiskScopeId!==riskScopeId
           ||riskMatches[0].assertion!==text(scope.assertionType)||controlMatches[0].controlId!==controlId||riskMatches[0].updatedOn!==text(payload.updatedOn)) fail('Risk-Control mutation identity differs from the signed live catalog and logical frozen intent.');
         return sdk.invokeStep('risk-control-associate', {}, {

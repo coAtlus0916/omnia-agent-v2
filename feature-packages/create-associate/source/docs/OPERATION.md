@@ -1,4 +1,4 @@
-# Signed Operation 0.2.25
+# Signed Operation 0.2.26
 
 小型 object/relation/Risk-Control preflight、单次 mutation 与 read-only reconcile。不接受 Excel，不提供任意 URL/method/body。
 # Signed Operation inventory

@@ -40,6 +40,13 @@ DEFAULT_ENUMS = {
     "Tool 类型": ("工单工具", "身份和访问管理工具"),
 }
 
+REVIEW_MATRIX = {
+    "APP": (("系统ID", "元素ID", True, 200), ("APP类型", "APP子类型", True, 120), ("System Risk Classification", "RAIT", True, 20), ("Factors Considered", "Factors Considered", True, 8000), ("Omnia工作区", "Omnia工作区", True, 200)),
+    "DB": (("数据库ID", "元素ID", True, 200), ("DB 类型", "DB子类型", True, 120), ("Omnia工作区", "Omnia工作区", True, 200), ("关联系统ID", "关联系统ID", True, 500), ("Inherited System Risk Classification", "RAIT（只读继承）", False, 20)),
+    "OS": (("服务器ID", "元素ID", True, 200), ("OS 类型", "OS子类型", True, 120), ("Omnia工作区", "Omnia工作区", True, 200), ("关联系统ID", "关联系统ID", True, 500), ("Inherited System Risk Classification", "RAIT（只读继承）", False, 20)),
+    "TOOL": (("IT TOOL ID", "元素ID", True, 200), ("Tool 类型", "Tool子类型", True, 120), ("System Risk Classification", "RAIT", True, 20), ("Omnia工作区", "Omnia工作区", True, 200)),
+}
+
 
 def normalize_header(value: object) -> str:
     return _WHITESPACE.sub(" ", unicodedata.normalize("NFKC", str(value or ""))).strip()
@@ -192,6 +199,7 @@ def parse_workbook(source: object, *, source_artifact_id: str, governance: dict)
         "issueNamespace": issue_namespace,
         "sheetNames": [sheet.name for sheet in workbook.sheets],
     }
+    _recompute_local_issues(parsed)
     parsed["semanticDigest"] = semantic_digest({key: value for key, value in parsed.items() if key != "semanticDigest"})
     return parsed
 
@@ -331,6 +339,88 @@ def _add_cross_row_semantics(rows: list[dict], candidates: list[dict], issues: l
             candidate = _candidate(field_key=field_key, raw_field_key="Inherited System Risk Classification", canonical_field_id=canonical_id, value=value, value_kind="inherited", status="accepted", source_artifact_id=source_artifact_id, source_sheet=row["sourceSheet"], source_row=row["sourceRow"], row_key=row["rowKey"], trace=f"inheritance:{sha256_hex(inheritance_identity)}", rule=f"planned_db_os_rait_from_app_edge:{matched[0]['rowKey']};remote_verification_required_before_return")
             candidates.append(candidate)
             row["fields"]["Inherited System Risk Classification"] = value
+
+
+def _recompute_local_issues(parsed: dict) -> None:
+    rows = parsed.get("rows", [])
+    issues = [item for item in parsed.get("issues", []) if item.get("origin") == "parser"]
+    namespace = str(parsed.get("issueNamespace") or "legacy")
+    by_row_raw: dict[tuple[str, str], dict] = {}
+    for candidate in parsed.get("candidates", []):
+        key = (str(candidate.get("provenance", {}).get("rowKey", "")), str(candidate.get("rawFieldKey", "")))
+        by_row_raw.setdefault(key, candidate)
+
+    def add(row: dict, code: str, field_key: str, issue_type: str, state: str, message: str, check_id: str) -> None:
+        effective_key = field_key or f"{row.get('rowKey', 'global')}.{issue_type}"
+        created = _issue("local", code, effective_key, issue_type, state, message, check_id)
+        created["issueId"] = f"local-{sha256_hex(f'{namespace}|{code}|{effective_key}')[:48]}"
+        issues.append(created)
+
+    for row in rows:
+        matrix = REVIEW_MATRIX[row["kind"]]
+        for raw, label, required, maximum in matrix:
+            value = unicodedata.normalize("NFC", _js_string(row.get("fields", {}).get(raw, ""))).strip()
+            candidate = by_row_raw.get((row["rowKey"], raw))
+            field_key = str(candidate.get("fieldKey", "")) if candidate else ""
+            if required and not value:
+                add(row, "LOCAL.REQUIRED_FIELD", field_key or f"{row['rowKey']}.missing.{sha256_hex(raw)}", "missing", "needs_input", f"{row['kind']} {row['elementId']} 缺少必填字段 {label}。", "required_fields")
+            if len(value) > maximum:
+                add(row, "LOCAL.FIELD_TOO_LONG", field_key, "invalid_enum", "needs_input", f"{row['kind']} {row['elementId']} 的 {label} 超过 {maximum} 字符上限。", "valid_values")
+            allowed = DEFAULT_ENUMS.get(raw)
+            if value and allowed and value not in allowed:
+                add(row, "LOCAL.INVALID_ENUM", field_key, "invalid_enum", "needs_input", f"{row['kind']} {row['elementId']} 的 {label} 仅允许 {' / '.join(allowed)}。", "valid_values")
+            if raw == matrix[0][0]:
+                row["elementId"] = value
+                if _ILLEGAL_NAME.search(value) or (value and set(value) == {"."}) or len(derive_gra_name(value)) > 200:
+                    add(row, "LOCAL.ILLEGAL_ELEMENT_NAME", field_key, "invalid_enum", "needs_input", f"{row['kind']} 元素 ID 含非法字符，或派生 GRA 名超过 200 字符。", "valid_values")
+    identities: dict[str, dict] = {}
+    gra_names: dict[str, dict] = {}
+    for row in rows:
+        identity = row["elementId"].lower()
+        gra = derive_gra_name(row["elementId"]).lower()
+        if identity in identities or gra in gra_names:
+            add(row, "LOCAL.DUPLICATE_IDENTITY", f"{row['rowKey']}.identity", "conflict", "blocking", f"{row['kind']} {row['elementId']} 的元素 ID 或派生 GRA 名在全批次重复。", "unique_names")
+        else:
+            identities[identity] = row
+            gra_names[gra] = row
+    apps: dict[str, list[dict]] = {}
+    infrastructure: list[dict] = []
+    for row in rows:
+        if row["kind"] == "APP":
+            apps.setdefault(row["elementId"].lower(), []).append(row)
+        elif row["kind"] in ("DB", "OS"):
+            infrastructure.append(row)
+    for row in infrastructure:
+        row["relations"] = [part.strip() for part in _RELATION_SPLIT.split(str(row["fields"].get("关联系统ID", ""))) if part.strip()]
+        if len(row["relations"]) != 1:
+            add(row, "LOCAL.EXACTLY_ONE_APP_REQUIRED", f"{row['rowKey']}.relations", "ambiguous", "blocking", f"{row['kind']} {row['elementId']} 必须恰好关联一个批内 APP；0.2.1 不支持零个或多个继承边。", "infrastructure_links")
+        matches = apps.get(row["relations"][0].lower(), []) if len(row["relations"]) == 1 else []
+        if len(row["relations"]) == 1 and not matches:
+            add(row, "UNSUPPORTED.EXTERNAL_APP_REFERENCE", f"{row['rowKey']}.relationship-target-live", "contract_mismatch", "blocking", f"{row['kind']} {row['elementId']} 引用批外 APP {row['relations'][0]}；0.2.1 未冻结外部目标与 RAIT，禁止回传。", "relationship_targets")
+        if len(matches) > 1:
+            add(row, "LOCAL.AMBIGUOUS_APP_REFERENCE", f"{row['rowKey']}.relations", "ambiguous", "blocking", f"{row['kind']} {row['elementId']} 的批内 APP 关联存在歧义。", "infrastructure_links")
+        if len(matches) == 1:
+            source = matches[0]
+            row_workspace = unicodedata.normalize("NFKC", str(row["fields"].get("Omnia工作区", ""))).strip()
+            source_workspace = unicodedata.normalize("NFKC", str(source["fields"].get("Omnia工作区", ""))).strip()
+            if row_workspace != source_workspace:
+                add(row, "LOCAL.CROSS_WORKSPACE_INHERITANCE", f"{row['rowKey']}.relations", "contract_mismatch", "blocking", f"{row['kind']} {row['elementId']} 与 APP {source['elementId']} 不在同一 Omnia 工作区。", "infrastructure_links")
+            mode = str(source["fields"].get("System Risk Classification", ""))
+            if mode not in ("Higher", "Lower"):
+                add(row, "LOCAL.RAIT_INHERITANCE_INVALID", f"{row['rowKey']}.inheritance", "conflict", "blocking", f"{row['kind']} {row['elementId']} 的唯一 APP RAIT 不可用。", "infrastructure_rait")
+            else:
+                row["fields"]["Inherited System Risk Classification"] = mode
+    parsed["issues"] = issues
+
+
+def _js_string(value: Any) -> str:
+    if value is None:
+        return ""
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    return str(value)
 
 
 if __name__ == "__main__":

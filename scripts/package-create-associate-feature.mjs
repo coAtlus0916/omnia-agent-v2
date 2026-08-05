@@ -301,7 +301,10 @@ const surface = {
     { actionId: 'revalidate-all', label: '重新检查全部', effect: 'local_state_write', enabled: false, reason: '等待 Review。', selectionMode: 'none', dependencies: [] },
     { actionId: 'back-to-upload', label: '返回上传', effect: 'local_state_write', enabled: false, reason: '等待 Review。', selectionMode: 'none', dependencies: [] },
     { actionId: 'restart-run', label: '重新开始', effect: 'local_state_write', enabled: false, reason: '当前没有可重置的可编辑 Run。', presentation: 'restart', selectionMode: 'none', dependencies: [] },
-    { actionId: 'prepare-return', label: '提交到 Comments 审核', effect: 'local_state_write', enabled: false, reason: '完成处理与问题修订后可用。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock'] }
+    { actionId: 'prepare-return', label: '提交审核', effect: 'local_state_write', enabled: false, reason: '完成处理与问题修订后可用。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock'] },
+    { actionId: 'confirm-return', label: '确认回传', effect: 'omnia_mutation', enabled: false, reason: '请先提交审核并冻结回传计划。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock'] },
+    { actionId: 'continue-return', label: '继续回传', effect: 'omnia_mutation', enabled: false, reason: '当前没有可继续的冻结计划。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock'] },
+    { actionId: 'reconcile-return', label: '只读核验', effect: 'read_only', enabled: false, reason: '当前没有待核验的写入结果。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock'] }
   ]
 };
 const migration = { schemaVersion: 'omnia.feature-private-migration/v1', namespace: 'create_associate', version: 1, tables: [{ name: 'create_associate_runtime_plans', columns: [{ name: 'plan_id', type: 'TEXT', notNull: true, primaryKey: true }, { name: 'payload_json', type: 'TEXT', notNull: true, primaryKey: false }, { name: 'updated_at', type: 'TEXT', notNull: true, primaryKey: false }] }] };

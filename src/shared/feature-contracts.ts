@@ -129,6 +129,10 @@ export interface DeclarativeProgressItem {
   label: string;
   state: DeclarativeProgressState;
   detail: string;
+  /** Optional authoritative counters for capsule progress rendering. */
+  completed?: number;
+  total?: number;
+  percent?: number;
 }
 
 export interface DeclarativeProgress {

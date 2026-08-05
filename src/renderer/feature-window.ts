@@ -365,6 +365,9 @@ function render(): void {
   const items = !visibleReview && !surface.selectionBrowser ? surface.items.map((item) => `<label class="item ${item.selectable ? '' : 'disabled'}"><input type="radio" name="selection" value="${esc(item.id)}" ${surface!.selectedItemIds.includes(item.id) ? 'checked' : ''} ${item.selectable ? '' : 'disabled'}><span><strong>${esc(item.title)}</strong><small>${esc(item.subtitle)}</small></span><em>${esc(item.type)}</em></label>`).join('') : '';
   const actions = !visibleReview && !surface.recorder && !surface.selectionBrowser ? surface.actions.filter((action) => {
     if (['restart', 'file_input', 'background'].includes(action.presentation || '')) return false;
+    if (surface?.featureId === 'omnia.create-associate' && activeLayer === 'return') {
+      return ['confirm-return', 'continue-return', 'reconcile-return'].includes(action.actionId) && action.enabled;
+    }
     return activeLayer === 'upload' ? action.presentation === 'upload' : action.presentation !== 'upload';
   }).map((action) => actionButton(action)).join('') : '';
   const recorder = renderRecorder();
@@ -373,14 +376,20 @@ function render(): void {
   const editors = !visibleReview ? (surface.editors || []).map((editor) => `<label class="editor"><span>${esc(editor.label)}</span>${editor.inputKind === 'enum'
     ? `<select data-editor="${esc(editor.issueId)}" data-field="${esc(editor.fieldKey)}" data-revision="${editor.expectedRevision}">${editor.allowedValues.map((value) => `<option value="${esc(value)}" ${value === editor.currentValue ? 'selected' : ''}>${esc(value)}</option>`).join('')}</select>`
     : `<input data-editor="${esc(editor.issueId)}" data-field="${esc(editor.fieldKey)}" data-revision="${editor.expectedRevision}" value="${esc(editor.currentValue)}" maxlength="${editor.maxLength}" ${editor.required ? 'required' : ''}>`}</label>`).join('') : '';
-  const progress = surface.progress ? `<section class="progress-panel" aria-label="${esc(surface.progress.label)}"><div class="progress-heading"><strong>${esc(surface.progress.label)}</strong><span>${surface.progress.completed}/${surface.progress.total} · ${surface.progress.percent}%</span></div><progress max="100" value="${surface.progress.percent}">${surface.progress.percent}%</progress><p class="state">${esc(surface.progress.message)}</p><div class="checks">${surface.progress.items.map((item) => `<div class="check ${esc(item.state)}"><span>${esc(item.state)}</span><div><strong>${esc(item.label)}</strong><small>${esc(item.detail)}</small></div></div>`).join('')}</div></section>` : '';
+  const capsuleProgress = surface.progress?.items.some((item) => item.completed !== undefined && item.total !== undefined && item.percent !== undefined) === true;
+  const progress = surface.progress ? `<section class="progress-panel ${capsuleProgress ? 'capsule-progress' : ''}" aria-label="${esc(surface.progress.label)}"><div class="progress-heading"><strong>${esc(surface.progress.label)}</strong><span>${surface.progress.completed}/${surface.progress.total} · ${surface.progress.percent}%</span></div><progress max="100" value="${surface.progress.percent}">${surface.progress.percent}%</progress>${!capsuleProgress && surface.progress.message ? `<p class="state">${esc(surface.progress.message)}</p>` : ''}<div class="checks">${surface.progress.items.map((item) => item.completed !== undefined && item.total !== undefined && item.percent !== undefined
+    ? `<div class="check capsule ${esc(item.state)}" style="--capsule-progress:${item.percent}%"><div><strong>${esc(item.label)}</strong><small>${item.completed}/${item.total}</small></div></div>`
+    : `<div class="check ${esc(item.state)}"><span>${esc(item.state)}</span><div><strong>${esc(item.label)}</strong><small>${esc(item.detail)}</small></div></div>`).join('')}</div></section>` : '';
   const issues = !visibleReview ? (surface.issues || []).map((issue) => `<div class="issue ${esc(issue.severity)}"><strong>${esc(issue.scope === 'global' ? '全局' : issue.scope === 'element' ? `元素 ${issue.elementId}` : '字段')}</strong><span>${esc(issue.message)}</span></div>`).join('') : '';
   const inputAction = activeLayer === 'upload' || !visibleReview ? surface.actions.find((action) => action.input?.kind === 'open_file') : undefined;
   const drop = inputAction ? `<section class="drop-zone ${sourceArtifact ? 'has-source' : ''}" data-drop-action="${esc(inputAction.actionId)}" tabindex="0">${sourceArtifact
     ? `<strong>${esc(sourceArtifact.name)}</strong><span>${sourceArtifact.sizeBytes} bytes · ${esc(sourceArtifact.reason || '待确认上传')}</span><small>点击或拖入另一个非空 .xlsx 文件可替换</small>`
     : `<strong>上传 .xlsx 资料</strong><span>点击“${esc(inputAction.label)}”选择，或将第一个非空 .xlsx 文件拖到这里</span>`}</section>` : '';
   const review = visibleReview ? renderReview(visibleReview) : '';
-  const header = hasSelectionBrowser ? '' : `<span class="status">${esc(surface.status)}</span><h1>${esc(surface.title)}</h1><p>${esc(surface.description)}</p>${surface.statusMessage ? `<p class="state">${esc(surface.statusMessage)}</p>` : ''}`;
+  const compactCreateAssociateReturn = surface.featureId === 'omnia.create-associate' && activeLayer === 'return';
+  const header = hasSelectionBrowser ? '' : compactCreateAssociateReturn
+    ? `<h1>${esc(surface.title)}</h1>`
+    : `<span class="status">${esc(surface.status)}</span><h1>${esc(surface.title)}</h1><p>${esc(surface.description)}</p>${surface.statusMessage ? `<p class="state">${esc(surface.statusMessage)}</p>` : ''}`;
   const layerContent = activeLayer === 'upload' && inputAction
     ? `<section class="surface-layer upload-layer" data-surface-layer="upload">${header}<div class="upload-card"><h2>上传资料</h2><p class="state">选择或拖入官方 .xlsx 只会暂存文件；点击“确认上传”后才进入校验。</p>${drop}${artifacts ? `<div class="artifacts">${artifacts}</div>` : ''}${actions ? `<div class="actions">${actions}</div>` : ''}</div></section>`
     : `<section class="surface-layer ${activeLayer === 'review' ? 'review-layer' : activeLayer === 'return' ? 'return-layer' : 'default-layer'}${hasSelectionBrowser ? ' catalog-priority-layer' : ''}" data-surface-layer="${activeLayer}">${header}${selectionBrowser}${recorder}${progress}${issues ? `<section class="issues">${issues}</section>` : ''}${review}${items ? `<div class="items">${items}</div>` : ''}${editors ? `<div class="editors">${editors}</div>` : ''}${artifacts ? `<div class="artifacts">${artifacts}</div>` : ''}${actions ? `<div class="actions">${actions}</div>` : ''}</section>`;

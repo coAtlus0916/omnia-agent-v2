@@ -417,7 +417,7 @@ function buildRuntimeWorkbook(parsed, metadata, baseBytes) {
     ['SUPPORT.element_relation.tool','support','not_applicable_no_input_contract','element_relation','The current user template has no Tool relation field; Tool object/GRA/RAIT Return is supported without fabricating a relationship.'],
     ['SUPPORT.risk_control', 'support', 'conditional', 'risk_control', 'Governance multiset plus live catalog/hidden-data validation required.'],
     ['SUPPORT.not_applicable', 'support', 'not_applicable', 'explicit_n_a', 'Governance-declared N/A operations are omitted, never synthesized.'],
-    ['SUPPORT.production_return', 'support', 'pending_canary', 'return', 'Comments confirmation and exact authority canary remain mandatory.']
+    ['SUPPORT.production_return', 'support', 'pending_canary', 'return', 'In-feature explicit confirmation and exact authority canary remain mandatory.']
   );
   const sheets = [
     ['处理结果', ['rowKey', '类型', '元素ID', '工作区', 'RAIT', '关联APP', '状态'], resultRows, { validation: `G2:G${Math.max(2, resultRows.length + 1)}`, columnWidths: [36, 12, 24, 20, 14, 24, 20], maxRowHeight: 72 }],
@@ -665,15 +665,14 @@ function workflowSurface(latest){
   const confirmationPending=state==='waiting_confirmation';
   const confirmed=['returning','verifying','uncertain','reconciling','succeeded'].includes(state)
     ||state==='failed'&&Array.isArray(latest?.returnProgress)&&latest.returnProgress.length>0;
-  const returning=confirmed;
+  const returning=confirmationPending||confirmed;
   const validationStarted=Boolean(run)&&!['draft','acquiring'].includes(state);
   const validationDone=['ready_for_review','waiting_confirmation','returning','verifying','uncertain','reconciling','succeeded'].includes(state);
-  const failed=state==='failed'; const currentStepId=returning?'return':confirmationPending?'comments':validationStarted?'validate':'upload';
+  const failed=state==='failed'; const currentStepId=returning?'return':validationStarted?'validate':'upload';
   return {revision,currentStepId,steps:[
     {stepId:'upload',label:'上传资料',state:run?'completed':'current',detail:'上传系统信息'},
     {stepId:'validate',label:'校验',state:failed&&!returning?'failed':validationDone?'completed':validationStarted?'current':'pending',detail:validationDone?'解析、规则与输出校验已持久化':validationStarted?'正在按 Run 事件推进':'等待上传'},
-    {stepId:'comments',label:'Comments 复核',state:confirmed?'completed':confirmationPending?'current':'pending',detail:confirmed?'已确认':confirmationPending?'计划已冻结，等待 Comments 确认':'未提交'},
-    {stepId:'return',label:'回传',state:state==='succeeded'?'completed':state==='uncertain'?'warning':failed&&returning?'failed':returning?'current':'pending',detail:state==='succeeded'?'全部命令读回完成':state==='uncertain'?'响应未知，仅允许只读核验':returning?`已确认；持久 Run 状态：${state}`:'等待 Comments 确认'}
+    {stepId:'return',label:'回传',state:state==='succeeded'?'completed':state==='uncertain'?'warning':failed&&returning?'failed':returning?'current':'pending',detail:state==='succeeded'?'回传完成':state==='uncertain'?'等待只读核验':failed&&returning?'回传未完成':confirmationPending?'等待确认回传':returning?'正在回传':'等待校验通过'}
   ]};
 }
 function progressSurface(latest,parsed){
@@ -738,44 +737,57 @@ function recomputeLocalIssues(parsed){
 }
 function reviewSurface(latest,plan,compiled,message){const parsed=plan.parsed,progress=progressSurface(latest,parsed),validation=validationPresentation(parsed,plan.liveValidation||{}),blocker=reviewBlocked(parsed,plan.liveValidation||{}),activeCount=activeRows(parsed).length;return{stateVersion:Number(latest.run.state_revision),status:blocker?'blocked':'ready',statusMessage:message,scopes:progress.scopes,items:progress.items,workflow:progress.workflow,progress:validation.progress,issues:validation.issues,review:reviewPresentation(parsed),editors:[],artifacts:[],actions:[
   {actionId:'download-source-template',enabled:false,reason:'校验步骤不显示上传动作。'},{actionId:'stage-source-workbook',enabled:false,reason:'请先返回上传。'},{actionId:'confirm-upload',enabled:false,reason:'当前资料已经确认。'},{actionId:'validate-staged-upload',enabled:false,reason:'当前校验已经完成。'},
-  {actionId:'back-to-upload',enabled:true,reason:'离开 Review 后才允许重新选择资料。'},{actionId:'restart-run',enabled:true,reason:'取消当前可编辑 Run；旧 Artifact、修订和事件保留审计。'},{actionId:'apply-revisions',enabled:true,reason:'保存所有 dirty 字段并完整重跑校验。'},{actionId:'remove-batch-row',enabled:activeCount>1,reason:activeCount>1?'仅移出本批，不调用 Connector，不删除 Omnia。':'批次仅剩一行，禁止移除。'},{actionId:'revalidate-all',enabled:true,reason:'在原 Run 上重跑全部本地与可用实时校验。'},{actionId:'prepare-return',enabled:!blocker,reason:blocker?'存在 error、未执行实时项或全局 blocker。':''}]};}
+  {actionId:'back-to-upload',enabled:true,reason:'离开 Review 后才允许重新选择资料。'},{actionId:'restart-run',enabled:true,reason:'取消当前可编辑 Run；旧 Artifact、修订和事件保留审计。'},{actionId:'apply-revisions',enabled:true,reason:'保存所有 dirty 字段并完整重跑校验。'},{actionId:'remove-batch-row',enabled:activeCount>1,reason:activeCount>1?'仅移出本批，不调用 Connector，不删除 Omnia。':'批次仅剩一行，禁止移除。'},{actionId:'revalidate-all',enabled:true,reason:'在原 Run 上重跑全部本地与可用实时校验。'},{actionId:'prepare-return',enabled:!blocker,reason:blocker?'存在 error、未执行实时项或全局 blocker。':''},
+  {actionId:'confirm-return',enabled:false,reason:'请先提交审核并冻结回传计划。'},{actionId:'continue-return',enabled:false,reason:'当前没有可继续的冻结计划。'},{actionId:'reconcile-return',enabled:false,reason:'当前没有待核验的写入结果。'}]};}
 function uploadSurface(latest,message,fresh=false){
   const run=latest?.run;const staged=run?.state==='acquiring';const editable=staged||['needs_input','ready_for_review'].includes(String(run?.state||''));
   const workflow={revision:Math.max(1,Number(latest?.run?.state_revision||1)),currentStepId:'upload',steps:[
     {stepId:'upload',label:'上传资料',state:'current',detail:'上传系统信息'},
     {stepId:'validate',label:'校验',state:'pending',detail:'等待上传'},
-    {stepId:'comments',label:'Comments 复核',state:'pending',detail:'未提交'},
-    {stepId:'return',label:'回传',state:'pending',detail:'等待 Comments 确认'}
+    {stepId:'return',label:'回传',state:'pending',detail:'等待校验通过'}
   ]};
   const source=staged?(latest.artifacts||[]).filter((item)=>String(item.kind)==='source').slice(-1):[];
   return{stateVersion:Number(run?.state_revision||1),status:'ready',statusMessage:message,scopes:[],items:[],workflow,clearFields:['progress','review'],issues:[],editors:[],artifacts:source.map((item)=>({artifactId:String(item.artifact_id),kind:'source',name:String(item.original_name),sha256:String(item.sha256),sizeBytes:Number(item.size_bytes),available:false,reason:'待确认上传'})),actions:[
     {actionId:'download-source-template',enabled:true,reason:''},{actionId:'stage-source-workbook',enabled:true,reason:''},{actionId:'confirm-upload',enabled:staged,reason:staged?'':'请先选择或拖入一个 .xlsx 文件。'},{actionId:'validate-staged-upload',enabled:false,reason:'等待确认上传。'},
-    {actionId:'restart-run',enabled:editable,reason:editable?'取消当前可编辑 Run；下一次上传建立新 Run。':'当前没有可重置的可编辑 Run。'},{actionId:'apply-revisions',enabled:false,reason:'等待校验。'},{actionId:'remove-batch-row',enabled:false,reason:'等待校验。'},{actionId:'revalidate-all',enabled:false,reason:'等待校验。'},{actionId:'back-to-upload',enabled:false,reason:'当前已在上传步骤。'},{actionId:'prepare-return',enabled:false,reason:'等待校验通过。'}]};
+    {actionId:'restart-run',enabled:editable,reason:editable?'取消当前可编辑 Run；下一次上传建立新 Run。':'当前没有可重置的可编辑 Run。'},{actionId:'apply-revisions',enabled:false,reason:'等待校验。'},{actionId:'remove-batch-row',enabled:false,reason:'等待校验。'},{actionId:'revalidate-all',enabled:false,reason:'等待校验。'},{actionId:'back-to-upload',enabled:false,reason:'当前已在上传步骤。'},{actionId:'prepare-return',enabled:false,reason:'等待校验通过。'},
+    {actionId:'confirm-return',enabled:false,reason:'请先提交审核并冻结回传计划。'},{actionId:'continue-return',enabled:false,reason:'当前没有可继续的冻结计划。'},{actionId:'reconcile-return',enabled:false,reason:'当前没有待核验的写入结果。'}]};
 }
 function processingSurface(latest,message){
   const labels=[['template_structure','模板结构可识别'],['required_fields','必填项目已填写'],['valid_values','名称与填写内容合法'],['unique_names','批次内元素 ID 与 GRA 名称唯一'],['omnia_id_conflicts','已核验当前 Pack 与回收站中的同名元素影响'],['infrastructure_links','基础设施已关联系统'],['infrastructure_rait','多系统关联的 RAIT 一致'],['relationship_targets','关联目标存在且类型正确'],['workspace_presence','Omnia 工作区已填写'],['factors_considered_ai_review','Factors Considered 智能复核'],['workspace_live','Omnia 工作区名称实时有效']];
   return{stateVersion:Number(latest.run.state_revision),status:'loading',statusMessage:message,scopes:[],items:[],workflow:workflowSurface(latest),progress:{label:'校验进度',completed:0,total:labels.length,percent:0,state:'running',message:'正在校验 0/11',items:labels.map(([itemId,label])=>({itemId,label,state:'pending',detail:'等待后台校验。'}))},issues:[],editors:[],artifacts:[],clearFields:['review'],actions:[
-    {actionId:'download-source-template',enabled:false,reason:'正在校验。'},{actionId:'stage-source-workbook',enabled:false,reason:'正在校验。'},{actionId:'confirm-upload',enabled:false,reason:'已确认上传。'},{actionId:'validate-staged-upload',enabled:true,reason:''},{actionId:'restart-run',enabled:false,reason:'后台校验已开始，不允许重放或取消中间状态。'},{actionId:'apply-revisions',enabled:false,reason:'正在校验。'},{actionId:'remove-batch-row',enabled:false,reason:'正在校验。'},{actionId:'revalidate-all',enabled:false,reason:'正在校验。'},{actionId:'back-to-upload',enabled:false,reason:'正在校验。'},{actionId:'prepare-return',enabled:false,reason:'正在校验。'}]};
+    {actionId:'download-source-template',enabled:false,reason:'正在校验。'},{actionId:'stage-source-workbook',enabled:false,reason:'正在校验。'},{actionId:'confirm-upload',enabled:false,reason:'已确认上传。'},{actionId:'validate-staged-upload',enabled:true,reason:''},{actionId:'restart-run',enabled:false,reason:'后台校验已开始，不允许重放或取消中间状态。'},{actionId:'apply-revisions',enabled:false,reason:'正在校验。'},{actionId:'remove-batch-row',enabled:false,reason:'正在校验。'},{actionId:'revalidate-all',enabled:false,reason:'正在校验。'},{actionId:'back-to-upload',enabled:false,reason:'正在校验。'},{actionId:'prepare-return',enabled:false,reason:'正在校验。'},
+    {actionId:'confirm-return',enabled:false,reason:'请先提交审核并冻结回传计划。'},{actionId:'continue-return',enabled:false,reason:'当前没有可继续的冻结计划。'},{actionId:'reconcile-return',enabled:false,reason:'当前没有待核验的写入结果。'}]};
 }
 function returnSurface(latest,message){
   const run=latest?.run;const progress=progressSurface(latest);const state=String(run?.state||'');
-  const terminal=['succeeded','failed','cancelled'].includes(state);const status=state==='succeeded'?'ready':state==='failed'?'error':state==='uncertain'?'stale':'loading';
-  const intents=latest?.returnProgress||[]; const completed=intents.filter((item)=>item.state==='verified'||['readback_verified','closed_not_applied'].includes(item.command_state)).length; const percent=state==='succeeded'?100:intents.length?Math.floor(completed*100/intents.length):0;
+  const status=state==='succeeded'?'ready':state==='failed'?'error':state==='uncertain'?'stale':'loading';
+  const intents=latest?.returnProgress||[]; const completed=intents.filter((item)=>item.state==='verified'||['readback_verified','closed_not_applied'].includes(item.command_state)).length; const effectiveCompleted=state==='succeeded'?intents.length:completed;const percent=intents.length?Math.floor(effectiveCompleted*100/intents.length):0;
   const intentState=(item)=>item.state==='verified'||['readback_verified','closed_not_applied'].includes(item.command_state)?'passed':item.state==='uncertain'||item.command_state==='uncertain'?'uncertain':item.state==='failed'||item.command_state==='failed'?'failed':['submitted','committed'].includes(item.command_state)?'running':'pending';
   const category=(item)=>{const key=String(item.target_key||''),kind=String(item.target_kind||'');if(kind==='object'&&key.startsWith('object|'))return'元素';if(kind==='object'&&key.startsWith('gra|'))return'GRA';if(kind==='relation')return'关系';if(kind==='risk_control')return'Risk-Control';return'设置';};
   const categoryOrder=['元素','GRA','关系','Risk-Control','设置'];
   const grouped=categoryOrder.map((label)=>({label,rows:intents.filter((item)=>category(item)===label)})).filter((group)=>group.rows.length).map((group,index)=>{
     const states=group.rows.map(intentState),done=states.filter((value)=>value==='passed').length,failedCount=states.filter((value)=>value==='failed').length,uncertainCount=states.filter((value)=>value==='uncertain').length,runningCount=states.filter((value)=>value==='running').length;
     const groupState=failedCount?'failed':uncertainCount?'uncertain':runningCount?'running':done===group.rows.length?'passed':'pending';
-    return{itemId:`return-group-${index}`,label:group.label,state:groupState,detail:`已完成 ${done}/${group.rows.length}${failedCount?`；失败 ${failedCount}`:''}${uncertainCount?`；待只读核验 ${uncertainCount}`:''}${runningCount?`；执行中 ${runningCount}`:''}`};
+    return{itemId:`return-group-${index}`,label:group.label,state:groupState,detail:'',completed:done,total:group.rows.length,percent:group.rows.length?Math.floor(done*100/group.rows.length):0};
   });
-  return {stateVersion:Number(run?.state_revision||1),status,statusMessage:message||`回传阶段 ${state} / revision ${Number(run?.state_revision||0)}`,workflow:progress.workflow,clearFields:['review'],
-    progress:{label:'回传进度',completed:state==='succeeded'?intents.length:completed,total:intents.length,percent,state:state==='uncertain'?'uncertain':state==='failed'?'failed':state==='succeeded'?'passed':'running',message:state==='succeeded'?'已完成；停留在回传页面。':state==='uncertain'?'响应未知，禁止重放；请执行只读核验。':message||`当前阶段 ${state}`,items:grouped},
-    scopes:progress.scopes,items:progress.items,editors:[],issues:[],artifacts:(latest?.artifacts||[]).filter((item)=>String(item.kind)!=='source').map((item)=>({artifactId:String(item.artifact_id),kind:String(item.kind),name:String(item.original_name),sha256:String(item.sha256),sizeBytes:Number(item.size_bytes),available:true,reason:''})),actions:[
-      {actionId:'stage-source-workbook',enabled:terminal,reason:terminal?'':'回传计划已冻结；请先完成、核验或终止当前 Run。'},
+  const issues=state==='failed'?[{issueId:`return-failed-${String(run?.run_id||'run')}`,scope:'global',severity:'error',elementId:'',fieldKey:'return',message:'回传未完成，本次计划已安全停止。请重新建立回传计划；系统会复用已经写入并验证的内容。'}]
+    :state==='uncertain'?[{issueId:`return-uncertain-${String(run?.run_id||'run')}`,scope:'global',severity:'warning',elementId:'',fieldKey:'return',message:'写入结果尚未完成核验，请保持当前页面并执行只读核验。'}]:[];
+  return {stateVersion:Number(run?.state_revision||1),status,statusMessage:'',workflow:progress.workflow,clearFields:['review'],
+    progress:{label:'回传进度',completed:effectiveCompleted,total:intents.length,percent,state:state==='uncertain'?'uncertain':state==='failed'?'failed':state==='succeeded'?'passed':'running',message:'',items:grouped},
+    scopes:[],items:[],editors:[],issues,artifacts:[],actions:[
+      {actionId:'download-source-template',enabled:false,reason:'回传阶段不再显示上传操作。'},
+      {actionId:'stage-source-workbook',enabled:false,reason:'回传阶段不再显示上传操作。'},
+      {actionId:'confirm-upload',enabled:false,reason:'上传已经完成。'},
+      {actionId:'validate-staged-upload',enabled:false,reason:'校验已经完成。'},
       {actionId:'restart-run',enabled:false,reason:'回传计划已冻结；重新开始不能掩盖确认、写入或 uncertain 状态。'},
       {actionId:'apply-revisions',enabled:false,reason:'回传阶段不接受字段修订。'},
-      {actionId:'prepare-return',enabled:false,reason:'回传计划已冻结或已完成。'}]};
+      {actionId:'remove-batch-row',enabled:false,reason:'回传阶段不接受批次修改。'},
+      {actionId:'revalidate-all',enabled:false,reason:'校验已经完成。'},
+      {actionId:'back-to-upload',enabled:false,reason:'回传计划已冻结。'},
+      {actionId:'prepare-return',enabled:false,reason:'回传计划已冻结或已完成。'},
+      {actionId:'confirm-return',enabled:state==='waiting_confirmation',reason:state==='waiting_confirmation'?'':'当前不在待确认阶段。'},
+      {actionId:'continue-return',enabled:state==='returning',reason:state==='returning'?'':'当前没有可继续的冻结计划。'},
+      {actionId:'reconcile-return',enabled:state==='uncertain',reason:state==='uncertain'?'':'当前没有待核验的写入结果。'}]};
 }
 
 function createFeatureWorker(dependencies) {
@@ -1145,7 +1157,7 @@ function createFeatureWorker(dependencies) {
   return Object.freeze({
     health: async () => {
       let latest=await store.call('loadLatestRun',{}); let run=latest?.run;
-      let recoveredMessageCard=null,recoveredSurfacePatch=null;
+      let recoveredSurfacePatch=null;
       if(run?.state==='acquiring'){
         await ensureStagedPlan(latest);
         recoveredSurfacePatch=uploadSurface(latest,'已恢复待确认的系统信息文件；确认上传后才会开始校验。');
@@ -1173,14 +1185,12 @@ function createFeatureWorker(dependencies) {
           artifacts:(latest.artifacts||[]).filter((item)=>String(item.kind)!=='source').map((item)=>({artifactId:String(item.artifact_id),kind:String(item.kind),name:String(item.original_name),sha256:String(item.sha256),sizeBytes:Number(item.size_bytes),available:true,reason:''})),editors:[],actions:[
             {actionId:'stage-source-workbook',enabled:true,reason:''},{actionId:'restart-run',enabled:false,reason:'中断 Run 已失败关闭。'},{actionId:'apply-revisions',enabled:false,reason:'中断 Run 不允许原地修订。'},{actionId:'prepare-return',enabled:false,reason:'离线处理未完成；必须重新导入并生成新 Run。'}]};
       }
-      if(run?.state==='uncertain'){
-        const checkpoint=await store.call('loadPlan',String(run.run_id));
-        recoveredSurfacePatch=returnSurface(latest,'Recovered an uncertain Return; mutation replay is forbidden and only read-only reconcile is available.');
-        if(checkpoint?.confirmation) recoveredMessageCard={messageId:checkpoint.confirmation.messageId,featureId:FEATURE_ID,featureVersion:FEATURE_VERSION,surfaceId:'create-associate.workbench',runId:String(run.run_id),confirmationId:checkpoint.confirmation.confirmationId,stateVersion:Number(run.state_revision),state:'uncertain',title:'回传结果待核验',summary:'检测到重启前已提交但未完成读回的命令；禁止重放，只允许签名只读 reconcile。',details:[{label:'计划摘要',value:checkpoint.confirmation.planDigest}],actions:[{actionId:'reconcile-return',label:'只读核验',effect:'read_only',enabled:true,reason:'',selectionMode:'none',dependencies:['remote_connector','safety_lock']}]};
+      if(run?.state==='waiting_confirmation'){
+        recoveredSurfacePatch=returnSurface(latest,'');
+      }else if(run?.state==='uncertain'){
+        recoveredSurfacePatch=returnSurface(latest,'');
       }else if(run?.state==='returning'){
-        const checkpoint=await store.call('loadPlan',String(run.run_id));
-        recoveredSurfacePatch=returnSurface(latest,'Recovered a confirmed pre-submit Return; no mutation was replayed and explicit continuation is required.');
-        if(checkpoint?.confirmation) recoveredMessageCard={messageId:checkpoint.confirmation.messageId,featureId:FEATURE_ID,featureVersion:FEATURE_VERSION,surfaceId:'create-associate.workbench',runId:String(run.run_id),confirmationId:checkpoint.confirmation.confirmationId,stateVersion:Number(run.state_revision),state:'executing',title:'已确认回传待显式继续',summary:'进程在 mutation 提交前退出；没有自动执行或重放任何写入。请核对冻结计划后显式继续。',details:[{label:'计划摘要',value:checkpoint.confirmation.planDigest},{label:'恢复状态',value:'returning / no submitted or committed command'}],actions:[{actionId:'continue-return',label:'继续冻结命令',effect:'omnia_mutation',enabled:true,reason:'',selectionMode:'none',dependencies:['remote_connector','safety_lock']}]};
+        recoveredSurfacePatch=returnSurface(latest,'');
       }
       if(run&&['needs_input','ready_for_review'].includes(run.state)){
         const checkpoint=await store.call('loadPlan',String(run.run_id));
@@ -1188,7 +1198,7 @@ function createFeatureWorker(dependencies) {
           ?uploadSurface(latest,'已恢复持久化 Upload 层；原 Run、Artifact、修订与排除状态未改变。')
           :reviewSurface(latest,checkpoint,null,'已恢复持久化 Review 层。');
       }
-      return {ready:true,featureId:FEATURE_ID,featureVersion:FEATURE_VERSION,transport:'remote-only',recoveredMessageCard,recoveredSurfacePatch};
+      return {ready:true,featureId:FEATURE_ID,featureVersion:FEATURE_VERSION,transport:'remote-only',recoveredMessageCard:null,recoveredSurfacePatch};
     },
     handleAction: async (input) => {
       if(input?.actionId==='restart-run'){
@@ -1199,7 +1209,7 @@ function createFeatureWorker(dependencies) {
         return{surfacePatch:uploadSurface(cancelled,'当前 Run 已取消并保留审计；下一次上传将建立新的 Run。',true)};
       }
       if (input?.actionId === 'reconcile-return') {
-        const runId=String(input.payload?.runId||''); const latest=await store.call('loadLatestRun',{}); const run=latest?.run;
+        const latest=await store.call('loadLatestRun',{}); const run=latest?.run;const runId=String(input.payload?.runId||run?.run_id||'');
         if(!run||String(run.run_id)!==runId||run.state!=='uncertain') fail('RETURN.RECONCILE_STATE','Only the current uncertain Run can reconcile.');
         const checkpoint=await store.call('loadPlan',runId); const spec=checkpoint?.execution?.reconcileSpec||await store.call('loadReturnReconcileSpec',{runId});
         if(!spec?.commandId||!spec.targetKey) fail('RETURN.RECONCILE_SPEC_MISSING','Serializable reconcile specification is unavailable.');
@@ -1264,18 +1274,20 @@ function createFeatureWorker(dependencies) {
         await store.call('transitionRun',{runId,expectedRevision:revision,toState:applied?'returning':manualUnresolved?'uncertain':'failed',eventType:applied?'return.reconcile_resolved':manualUnresolved?'return.reconcile_manual_required':'return.reconcile_not_applied',details:{applied,manualUnresolved}});
         await store.call('savePlan',{...checkpoint,execution:{state:applied?'reconciled':manualUnresolved?'uncertain':'reconciled',lastCommandId:spec.commandId,applied,reconcileSpec:manualUnresolved?spec:undefined},updatedAt:new Date().toISOString()});
         const latestAfterReconcile=await store.call('loadLatestRun',{});
-        return {surfacePatch:returnSurface(latestAfterReconcile,applied?'只读 reconcile 证明已应用；未重放，待显式继续。':manualUnresolved?'APP 身份仍无法证明写入结果；Run 保持 uncertain，禁止重放并等待人工核验。':'只读 reconcile 证明未应用；Run 已失败关闭。'),messageCard:{messageId:checkpoint.confirmation.messageId,featureId:FEATURE_ID,featureVersion:FEATURE_VERSION,surfaceId:'create-associate.workbench',runId,confirmationId:checkpoint.confirmation.confirmationId,stateVersion:Number(input.expectedStateVersion)+1,state:applied?'executing':manualUnresolved?'uncertain':'failed',title:'只读核验完成',summary:applied?'权威读回确认写入已应用；未重放。可继续剩余冻结命令。':manualUnresolved?'身份解析仍为 create/skip，无法安全判断写入结果；未重放，保持 uncertain 并等待人工核验。':'权威读回确认该写入未应用；未重放。本 intent 已失败关闭，如需重试必须建立新计划并重新确认。',details:[{label:'计划摘要',value:checkpoint.confirmation.planDigest},{label:'核验命令',value:spec.commandId}],actions:applied?[{actionId:'continue-return',label:'继续剩余回传',effect:'omnia_mutation',enabled:true,reason:'',selectionMode:'none',dependencies:['remote_connector','safety_lock']}]:manualUnresolved?[{actionId:'reconcile-return',label:'重新只读核验',effect:'read_only',enabled:true,reason:'',selectionMode:'none',dependencies:['remote_connector','safety_lock']}]:[]}};
+        return {surfacePatch:returnSurface(latestAfterReconcile,'')};
       }
       if (input?.actionId === 'confirm-return' || input?.actionId === 'continue-return') {
-        const runId = String(input.payload?.runId || '');
+        const actionLatest=await store.call('loadLatestRun',{});
+        const runId = String(input.payload?.runId || actionLatest?.run?.run_id || '');
         const checkpoint = await store.call('loadPlan', runId);
         if (!checkpoint?.returnPlan || !checkpoint?.confirmation) fail('RETURN.PLAN_MISSING', 'The frozen Return plan is unavailable.');
         const current = await buildReturnPreparation(checkpoint, input.context);
         const currentPreflightDigest = digest(Buffer.from(canonical({ authority: current.authority, preflights: current.preflights })));
         if (input.actionId === 'confirm-return' && currentPreflightDigest !== checkpoint.preflightDigest) fail('RETURN.PREFLIGHT_CHANGED', 'Authority, object identity, or GRA preflight changed before confirmation.');
+        if(input.actionId==='confirm-return'&&Number(checkpoint.confirmation.stateVersion)!==1) fail('RETURN.CONFIRMATION_VERSION_INVALID','The frozen confirmation state version is invalid.');
         const approved = input.actionId === 'confirm-return' ? await store.call('approveReturnIntent', {
-          confirmationId: input.payload?.confirmationId, confirmationToken: checkpoint.confirmation.confirmationToken,
-          expectedStateVersion: input.expectedStateVersion, connectorBinding: input.context.connectorBinding,
+          confirmationId: input.payload?.confirmationId||checkpoint.confirmation.confirmationId, confirmationToken: checkpoint.confirmation.confirmationToken,
+          expectedStateVersion: Number(checkpoint.confirmation.stateVersion), connectorBinding: input.context.connectorBinding,
           safetyLock: input.context.safetyLock, preflightDigest: currentPreflightDigest
         }) : (await store.call('validateReturnAuthority', { runId, connectorBinding: input.context.connectorBinding, safetyLock: input.context.safetyLock }), { planDigest: checkpoint.confirmation.planDigest });
         const plan = checkpoint.returnPlan; const planDigest = approved.planDigest; const binding = input.context.connectorBinding;
@@ -1656,19 +1668,14 @@ function createFeatureWorker(dependencies) {
           await store.call('finishReturn', { runId, outcome: 'succeeded' });
           await store.call('savePlan', { ...checkpoint, execution: { state: 'completed' }, updatedAt: new Date().toISOString() });
           const completedLatest=await store.call('loadLatestRun',{});
-          return { surfacePatch:returnSurface(completedLatest,'Return completed with authoritative read-back and durable projection for every intent.'),messageCard: { messageId: checkpoint.confirmation.messageId, featureId: FEATURE_ID, featureVersion: FEATURE_VERSION,
-            surfaceId:'create-associate.workbench',runId,confirmationId:checkpoint.confirmation.confirmationId,stateVersion:Number(input.expectedStateVersion)+1,
-            state: 'completed', title: '回传完成', summary: '所有冻结 intent 均已通过第二次预检、写入、权威读回和 Managed Content 投影。', details: [{label:'计划摘要',value:planDigest}], actions: [] } };
+          return {surfacePatch:returnSurface(completedLatest,'')};
         } catch (error) {
-          if (error?.code === 'RETURN.UNCERTAIN') { const uncertainLatest=await store.call('loadLatestRun',{}); return { surfacePatch:returnSurface(uncertainLatest,'Mutation response was lost; the durable Run is uncertain and only read-only reconcile is allowed.'),messageCard: { messageId: checkpoint.confirmation.messageId, featureId: FEATURE_ID, featureVersion: FEATURE_VERSION,
-            surfaceId:'create-associate.workbench',runId,confirmationId:checkpoint.confirmation.confirmationId,stateVersion:Number(input.expectedStateVersion)+1,state:'uncertain',
-            title: '回传结果待核验', summary: '写入响应丢失；禁止重放，只允许执行签名只读 reconcile。', details: [{label:'计划摘要',value:planDigest}],
-            actions: [{ actionId:'reconcile-return',label:'只读核验',effect:'read_only',enabled:true,reason:'',selectionMode:'none',dependencies:['remote_connector','safety_lock'] }] } }; }
+          if (error?.code === 'RETURN.UNCERTAIN') { const uncertainLatest=await store.call('loadLatestRun',{}); return {surfacePatch:returnSurface(uncertainLatest,'')}; }
           const failedLatest=await store.call('loadLatestRun',{});
           if(failedLatest?.run?.state==='returning'||failedLatest?.run?.state==='verifying') await store.call('finishReturn',{runId,outcome:'failed',error:String(error.message||error)});
           await store.call('savePlan',{...checkpoint,execution:{state:'failed',error:{code:String(error.code||'RETURN.FAILED'),message:String(error.message||error)}},updatedAt:new Date().toISOString()});
           const terminalLatest=await store.call('loadLatestRun',{});
-          return {surfacePatch:returnSurface(terminalLatest,`Return failed: ${String(error.message||error)}`),messageCard:{messageId:checkpoint.confirmation.messageId,featureId:FEATURE_ID,featureVersion:FEATURE_VERSION,surfaceId:'create-associate.workbench',runId,confirmationId:checkpoint.confirmation.confirmationId,stateVersion:Number(input.expectedStateVersion)+1,state:'failed',title:'回传失败',summary:'确定性预检、业务校验或读回失败；冻结计划不可重放，必须重新准备并审核新计划。',details:[{label:'计划摘要',value:planDigest},{label:'失败',value:`${String(error.code||'RETURN.FAILED')}: ${String(error.message||error)}`}],actions:[]}};
+          return {surfacePatch:returnSurface(terminalLatest,'')};
         }
       }
       if (input?.actionId === 'prepare-return') {
@@ -1687,34 +1694,13 @@ function createFeatureWorker(dependencies) {
             tenantOrOrgId: input.context.connectorBinding.tenantOrOrgId, packId: input.context.connectorBinding.packId,
             workspaceIds: input.context.safetyLock.workspaceIds
           })));
-          const elementTargets=prepared.targets.filter((item)=>item.kind==='object'&&item.objectType!=='GRA');
-          const existingObjects=elementTargets.filter((item)=>['reuse','resume'].includes(item.disposition)).length;
-          const newObjects=elementTargets.filter((item)=>item.disposition==='create').length;
-          const visibleDetails = [
-            {label:'Pack / Workspace',value:`${input.context.connectorBinding.packId} · ${prepared.authority.workspaces.map((item)=>item.name).join('、')}`},
-            {label:'元素',value:`${prepared.rows.length} 个：${prepared.rows.map((row)=>`${row.kind} ${row.elementId}`).join('；')}`},
-            {label:'对象处理',value:`${existingObjects} 个复用/恢复，${newObjects} 个新建`},
-            {label:'关系',value:`${prepared.targets.filter((item)=>item.kind==='relation').length} 项`},
-            {label:'Risk-Control',value:`${prepared.targets.filter((item)=>item.kind==='risk_control').length} 项`},
-            {label:'计划摘要',value:'(freezing)'}
-          ];
           const frozen = await store.call('prepareReturnIntent', {
             runId: run.run_id, plan, connectorBinding: input.context.connectorBinding, safetyLock: input.context.safetyLock,
             credentialDigest: authorityDigest, preflightDigest
           });
-          const capabilityState=await store.call('getCapabilityEvidenceState',{...RETURN_CAPABILITY,connectorBinding:input.context.connectorBinding,workspaceIds:input.context.safetyLock.workspaceIds});
           await store.call('savePlan', { ...checkpoint, returnPlan: plan, confirmation: frozen, preflightDigest, updatedAt: new Date().toISOString() });
           const frozenLatest=await store.call('loadLatestRun',{});
-          return { surfacePatch:returnSurface(frozenLatest,capabilityState.verified?'回传计划已冻结；当前 scope 已有有效读回验证证据，等待 Comments 明确确认。':'回传计划已冻结，等待 Comments 中的一次明确确认。首次真实回传验证将在确认后写入当前 Pack。'),messageCard: {
-            messageId: frozen.messageId, featureId: FEATURE_ID, featureVersion: FEATURE_VERSION,
-            surfaceId: 'create-associate.workbench', runId: run.run_id, confirmationId: frozen.confirmationId,
-            stateVersion: frozen.stateVersion, state: 'pending_confirmation', title: '新建与关联回传审核',
-            summary: `已冻结 ${prepared.rows.length} 个元素的回传计划：${existingObjects} 个复用/恢复，${newObjects} 个新建；确认后执行二次预检、写入与权威读回。`,
-            details: visibleDetails.map((detail) => detail.label === '计划摘要' ? { ...detail, value: frozen.planDigest } : detail),
-            actions: [{ actionId: 'confirm-return', label: '确认回传', effect: 'omnia_mutation', enabled: true,
-              reason:'', selectionMode: 'none',
-              dependencies: ['remote_connector', 'safety_lock'] }]
-          } };
+          return {surfacePatch:returnSurface(frozenLatest,'')};
         }
       }
       if (['apply-revisions','remove-batch-row','revalidate-all','back-to-upload'].includes(input?.actionId)) {

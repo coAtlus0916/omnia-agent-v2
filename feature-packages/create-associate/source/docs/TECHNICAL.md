@@ -64,15 +64,15 @@ Omnia IT Element detail may expose the all-zero `workspaceId`; this is not Works
 
 APP identity resolution and the APP branch of the action-time create preflight use the same signed Work Item Facet Mapping authority before classifying an active Application as `resume` or `reuse`. Search and detail Workspace fields are not authority. The pruned item and resolved identity carry the exact object Work Item ID and frozen Workspace after a unique mapping is proven.
 
-## 0.2.17 four-phase workflow projection
+## Three-phase workflow projection
 
-The workflow projection has four status phases: `upload`, `validate`, `comments`, and `return`. The Comments phase reads durable Run state only: before plan freeze it is unsubmitted, `waiting_confirmation` means the plan is frozen and awaiting Comments confirmation, and post-confirmation Return states mark it completed. The declarative workflow contract exposes no host-tab navigation command, so the rail does not fabricate a clickable Comments control. Return state and progress remain sourced from persisted Return intents, commands, receipts, and read-back evidence.
+The workflow projection has three status phases: `upload`, `validate`, and `return`. `waiting_confirmation` stays inside the Return Surface and exposes the real frozen confirmation action there; it does not emit a Comments message card or request host-tab navigation. Return state and progress remain sourced from persisted Return intents, commands, receipts, and read-back evidence.
 
 An exact APP `resume` disposition represents an authority-proven object whose GRA/settings sequence is incomplete. When and only when that object's authoritative settings read returns an unset `isDataAvailable`, the frozen disposition is `resume_unset_default_false`; confirmation-time execution must read it as still unset before PATCHing the governed false value and verifying read-back. `reuse` continues to require an authoritative boolean and fails closed on null.
 
-## 0.2.18 compact confirmation and grouped progress
+## In-feature confirmation and grouped progress
 
-The full plan, preflights, target keys, Operation IDs, and evidence arrays remain in the immutable Core plan and intent/command/evidence tables. Comments projects only Pack/Workspace, the real element count and names, create versus reuse/resume counts, relationship count, Risk-Control count, and plan digest. Return progress groups the persisted `returnProgress` rows into Element, GRA, Relationship, Risk-Control, and Settings categories; group totals and state are derived from the underlying intent and command states.
+The full plan, preflights, target keys, Operation IDs, and evidence arrays remain in the immutable Core plan and intent/command/evidence tables and are not projected to Comments. The Return Surface owns confirmation and groups persisted `returnProgress` rows into Element, GRA, Relationship, Risk-Control, and Settings categories. Each capsule's completed count, total and fill percentage are derived from the underlying intent and command states.
 
 Core command binding handles exact non-GRA object `resume` through the same resolved-object read-query branch as `reuse`. It still requires the frozen resolved object ID, external identity, object type, Application editor description, mutation Operation, evidence Operation array, target identity, approved plan digest, and exact authority scope.
 

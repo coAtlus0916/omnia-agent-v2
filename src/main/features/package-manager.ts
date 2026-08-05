@@ -533,10 +533,21 @@ function validateSurface(value: unknown, manifest: FeatureManifest): Declarative
       || !['pending', 'running', 'passed', 'warning', 'failed', 'skipped', 'uncertain'].includes(progress.state)
       || typeof progress.message !== 'string' || progress.message.length > 500 || !Array.isArray(progress.items) || progress.items.length > 500) throw new Error('Declarative progress fields are invalid.');
     for (const item of progress.items) {
-      exactKeys(item, ['itemId', 'label', 'state', 'detail'], 'Declarative progress item');
+      const hasCounters = Object.hasOwn(item, 'completed') || Object.hasOwn(item, 'total') || Object.hasOwn(item, 'percent');
+      exactKeys(item, hasCounters
+        ? ['itemId', 'label', 'state', 'detail', 'completed', 'total', 'percent']
+        : ['itemId', 'label', 'state', 'detail'], 'Declarative progress item');
       if (typeof item.itemId !== 'string' || typeof item.label !== 'string' || item.label.length < 1 || item.label.length > 120
         || !['pending', 'running', 'passed', 'warning', 'failed', 'skipped', 'uncertain'].includes(item.state)
         || typeof item.detail !== 'string' || item.detail.length > 500) throw new Error('Declarative progress item fields are invalid.');
+      if (hasCounters) {
+        const expectedPercent = item.total === 0 ? 0 : Math.floor((item.completed as number) * 100 / (item.total as number));
+        if (!Number.isSafeInteger(item.completed) || !Number.isSafeInteger(item.total) || !Number.isSafeInteger(item.percent)
+          || (item.completed as number) < 0 || (item.total as number) < 0 || (item.completed as number) > (item.total as number)
+          || (item.percent as number) < 0 || (item.percent as number) > 100 || item.percent !== expectedPercent) {
+          throw new Error('Declarative progress item counters are invalid.');
+        }
+      }
     }
   }
   for (const issue of surface.issues || []) {

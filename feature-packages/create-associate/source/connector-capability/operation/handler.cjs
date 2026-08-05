@@ -87,6 +87,19 @@ async function assertObjectWorkspaceAuthority(sdk, stepId, item, frozenWorkspace
   if (workspaceIds.length !== 1 || workspaceIds[0] !== frozenWorkspaceId) fail('IT Element Work Item has no unique exact frozen Workspace mapping.');
   return { workItemId, workspaceId: frozenWorkspaceId };
 }
+function settingsConcurrencyToken(item, required, label) {
+  const candidates=rows(item&&item.concurrencyTabs).filter((tab)=>Number(tab&&tab.entityTabTypeId)===501&&text(tab&&tab.updatedOn));
+  if(!candidates.length){if(required)fail(`${label} has no Application settings concurrency token.`);return '';}
+  const latest=[...candidates].map((tab)=>text(tab.updatedOn)).sort((left,right)=>right.localeCompare(left))[0];
+  if(candidates.filter((tab)=>text(tab.updatedOn)===latest).length!==1) fail(`${label} has no unique latest Application settings concurrency token.`);
+  return latest;
+}
+async function readApplicationSettings(sdk,readStep,workspaceStep,objectId,frozenWorkspaceId,label){
+  const result=await sdk.invokeStep(readStep,{objectId});
+  if(rowId(result)!==objectId||deletedEntity(result)||text(result.itElementType||result.elementType||result.type)!=='Application') fail(`${label} identity/type mismatch.`);
+  const authority=await assertObjectWorkspaceAuthority(sdk,workspaceStep,result,frozenWorkspaceId);
+  return{...result,...authority};
+}
 function assertObject(item, query) {
   const type = text(item.itElementType || item.elementType || item.type);
   if (rowWorkspace(item) !== guid(query.workspaceId, 'query.workspaceId') || !type || type !== query.objectType) return false;
@@ -708,27 +721,41 @@ function createOperationHandler() {
         return {...result,...authority};
       }
       if (operationId === 'omnia.create-associate.object-settings.preflight.v1') {
-        const frozen=target(request); const objectId=guid(request.objectId,'objectId'); const result=await sdk.invokeStep('object-settings-read',{objectId});
-        if(rowId(result)!==objectId||deletedEntity(result)||text(result.itElementType||result.elementType||result.type)!=='Application') fail('IT Element settings preflight identity/type mismatch.');
-        const authority=await assertObjectWorkspaceAuthority(sdk,'object-settings-workspace',result,frozen.workspaceId); return {...result,...authority};
+        const frozen=target(request); const objectId=guid(request.objectId,'objectId');
+        return readApplicationSettings(sdk,'object-settings-read','object-settings-workspace',objectId,frozen.workspaceId,'IT Element settings preflight');
       }
       if (operationId === 'omnia.create-associate.object-settings.patch.v1') {
         const value=exactPatch(request,'patch_object_settings');
-        const payload=exact(value,['engagementId','workspaceId','objectId','typeId','isRelevant','isDataAvailable','concurrencyTabId','concurrencyTabUpdatedOn'],'IT Element settings payload');
+        const payload=exact(value,['engagementId','workspaceId','objectId','typeId','isRelevant','isDataAvailable','mode'],'IT Element settings payload');
         assertScope(request,sdk,payload); const objectId=guid(payload.objectId,'payload.objectId');
-        if(!text(payload.typeId)||payload.isRelevant!==false||typeof payload.isDataAvailable!=='boolean'||Number(payload.concurrencyTabId)!==501||!text(payload.concurrencyTabUpdatedOn)) fail('IT Element settings do not match the frozen Application contract.');
-        return sdk.invokeStep('object-settings-patch',{objectId},[
+        if(!text(payload.typeId)||payload.isRelevant!==false||typeof payload.isDataAvailable!=='boolean'||!['create_bootstrap','existing_with_token','recover_owned_create_bootstrap'].includes(payload.mode)) fail('IT Element settings do not match the frozen Application contract.');
+        const before=await readApplicationSettings(sdk,'object-settings-mutation-read','object-settings-mutation-workspace',objectId,target(request).workspaceId,'IT Element settings mutation pre-read');
+        const previousToken=settingsConcurrencyToken(before,payload.mode==='existing_with_token','IT Element settings mutation pre-read');
+        if(['create_bootstrap','recover_owned_create_bootstrap'].includes(payload.mode)&&previousToken) fail('Application settings bootstrap is only allowed before a concurrency token exists.');
+        if(payload.mode==='recover_owned_create_bootstrap'){
+          const empty=(item)=>item===null||item===undefined||item==='';
+          if(!empty(before.typeId)||!empty(before.isRelevant)||!empty(before.isDataAvailable)||!Array.isArray(before.concurrencyTabs)||before.concurrencyTabs.length!==0)fail('Owned-create Application settings recovery requires all settings and concurrency tabs to remain empty.');
+        }
+        const typePatch=[
           {op:'replace',path:'/typeId',value:payload.typeId},{op:'replace',path:'/isRelevant',value:false},
+          {op:'replace',path:'/concurrencyTabId',value:501},
+          ...(['create_bootstrap','recover_owned_create_bootstrap'].includes(payload.mode)?[{op:'replace',path:'/concurrencyTabUpdatedOn'}]:[{op:'replace',path:'/concurrencyTabUpdatedOn',value:previousToken}])
+        ];
+        await sdk.invokeStep('object-settings-type-patch',{objectId},typePatch);
+        const afterType=await readApplicationSettings(sdk,'object-settings-mutation-read','object-settings-mutation-workspace',objectId,target(request).workspaceId,'IT Element settings type/relevance read-back');
+        if(text(afterType.typeId)!==text(payload.typeId)||afterType.isRelevant!==false) fail('Application settings type/relevance read-back differs from the frozen plan.');
+        const freshToken=settingsConcurrencyToken(afterType,true,'IT Element settings type/relevance read-back');
+        if(previousToken&&freshToken===previousToken) fail('Application settings type/relevance PATCH did not produce a fresh concurrency token.');
+        return sdk.invokeStep('object-settings-data-patch',{objectId},[
           {op:'replace',path:'/isDataAvailable',value:payload.isDataAvailable},{op:'replace',path:'/concurrencyTabId',value:501},
-          {op:'replace',path:'/concurrencyTabUpdatedOn',value:payload.concurrencyTabUpdatedOn}
+          {op:'replace',path:'/concurrencyTabUpdatedOn',value:freshToken}
         ]);
       }
       if (operationId === 'omnia.create-associate.object-settings.reconcile.v1') {
-        const frozen=target(request); const query=exact(request.query,['objectId','typeId','isRelevant','isDataAvailable','number'],'IT Element settings readback query');
-        const objectId=guid(query.objectId,'query.objectId'); const result=await sdk.invokeStep('object-settings-read',{objectId});
-        if(rowId(result)!==objectId||deletedEntity(result)||text(result.itElementType||result.elementType||result.type)!=='Application') fail('IT Element settings readback identity/type mismatch.');
-        const authority=await assertObjectWorkspaceAuthority(sdk,'object-settings-workspace',result,frozen.workspaceId);
-        const authoritativeResult={...result,...authority};
+        const frozen=target(request); const query=exact(request.query,['objectId','typeId','isRelevant','isDataAvailable','number','mode'],'IT Element settings readback query');
+        if(!['create_bootstrap','existing_with_token','recover_owned_create_bootstrap'].includes(query.mode))fail('IT Element settings readback mode is invalid.');
+        const objectId=guid(query.objectId,'query.objectId'); const authoritativeResult=await readApplicationSettings(sdk,'object-settings-read','object-settings-workspace',objectId,frozen.workspaceId,'IT Element settings readback');
+        const result=authoritativeResult;
         return {verified:text(result.number||result.referenceNumber)===text(query.number)&&text(result.typeId)===text(query.typeId)&&result.isRelevant===query.isRelevant&&result.isDataAvailable===query.isDataAvailable,result:authoritativeResult};
       }
       if (operationId === 'omnia.create-associate.relation.preflight.v1' || operationId === 'omnia.create-associate.relation.reconcile.v1') {

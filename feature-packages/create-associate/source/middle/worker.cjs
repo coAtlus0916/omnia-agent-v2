@@ -605,6 +605,24 @@ function resolveFrozenAppDataAvailability(identityDisposition,before,frozen){
   if(expectedDisposition==='signed_new_default_false'&&frozen.value!==false)fail('RETURN.DATA_AVAILABILITY_RULE_DRIFT','New APP execution may only use the signed false default.');
   return frozen.value;
 }
+function latestApplicationSettingsToken(detail,required,label){
+  const candidates=(detail?.concurrencyTabs||[]).filter((tab)=>Number(tab?.entityTabTypeId)===501&&String(tab?.updatedOn||'').trim());
+  if(!candidates.length){if(required)fail('RETURN.OBJECT_SETTINGS_AUTHORITY_MISSING',`${label} has no Application settings concurrency token.`);return'';}
+  const latest=candidates.map((tab)=>String(tab.updatedOn).trim()).sort((left,right)=>right.localeCompare(left))[0];
+  if(candidates.filter((tab)=>String(tab.updatedOn).trim()===latest).length!==1)fail('RETURN.OBJECT_SETTINGS_AUTHORITY_AMBIGUOUS',`${label} has no unique latest Application settings concurrency token.`);
+  return latest;
+}
+function unsetApplicationSettings(detail){
+  const empty=(value)=>value===null||value===undefined||value==='';
+  return empty(detail?.typeId)&&empty(detail?.isRelevant)&&empty(detail?.isDataAvailable)
+    &&Array.isArray(detail?.concurrencyTabs)&&detail.concurrencyTabs.length===0;
+}
+function exactApplicationSettingsIdentity(detail,objectId,externalId){
+  const normalized=(value)=>String(value||'').normalize('NFC').trim();
+  return normalized(detail?.id||detail?.itElementId||detail?.applicationId).toLowerCase()===String(objectId).toLowerCase()
+    &&normalized(detail?.number||detail?.referenceNumber)===normalized(externalId)
+    &&normalized(detail?.name||detail?.displayName)===normalized(externalId);
+}
 function workflowSurface(latest){
   const run=latest?.run; const state=String(run?.state||''); const revision=Math.max(1,Number(run?.state_revision||1));
   const confirmationPending=state==='waiting_confirmation';
@@ -933,7 +951,7 @@ function createFeatureWorker(dependencies) {
         disposition:graObserved.found?'reuse':'create',resolvedObjectId:graObserved.found?responseId(graObserved.item,'GRA preflight'):'',entityObjectTargetKey:`object|${row.rowKey}`,
         contentIdentity:{inkContentId:content.inkContentId,typeId:content.typeId},mutationOperationId:RETURN_OPERATIONS.graCreate,
         operationTargetIdentityKey:identityKey('gra',[row.rowKey,workspaceId]),evidenceOperationIds:[RETURN_OPERATIONS.graRead,RETURN_OPERATIONS.graPreflight] });
-      if(row.kind==='APP') targets.push({kind:'field',key:`object-settings|${row.rowKey}`,rowKey:row.rowKey,workspace:workspaceId,objectType:type,objectTargetKey:`object|${row.rowKey}`,typeId:content.itElementTypeId,isRelevant:prepared.isRelevant,isDataAvailable:prepared.dataAvailability?.value,dataAvailabilityDisposition:prepared.dataAvailability?.disposition,
+      if(row.kind==='APP') targets.push({kind:'field',key:`object-settings|${row.rowKey}`,rowKey:row.rowKey,workspace:workspaceId,objectType:type,externalId:row.elementId,objectTargetKey:`object|${row.rowKey}`,mode:objectId?'existing_with_token':'create_bootstrap',typeId:content.itElementTypeId,isRelevant:prepared.isRelevant,isDataAvailable:prepared.dataAvailability?.value,dataAvailabilityDisposition:prepared.dataAvailability?.disposition,
         mutationOperationId:RETURN_OPERATIONS.objectSettingsWrite,operationTargetIdentityKey:identityKey('object-settings',[row.rowKey]),evidenceOperationIds:[RETURN_OPERATIONS.objectSettingsRead]});
       targets.push({ kind: 'field', key: `gra-status|${row.rowKey}`, rowKey: row.rowKey, workspace: workspaceId, objectType: 'GRA', graTargetKey: `gra|${row.rowKey}`, fieldId: 'status', value: 'EvaluationStarted',
         mutationOperationId:RETURN_OPERATIONS.graStateWrite,operationTargetIdentityKey:identityKey('gra-state',[row.rowKey,'status']),evidenceOperationIds:[RETURN_OPERATIONS.graStateRead] });
@@ -984,6 +1002,13 @@ function createFeatureWorker(dependencies) {
         if(row.objectId){
           const target={targetIdentityKey:settingsIntent.operationTargetIdentityKey,workspaceId:row.workspaceId};
           const current=await invoke(RETURN_OPERATIONS.objectSettingsPreflight,context.connectorBinding,{target,objectId:row.objectId});
+           const currentToken=latestApplicationSettingsToken(current,false,`APP ${row.elementId} settings preflight`);
+           if(!currentToken){
+             if(row.identityDisposition!=='resume'||!unsetApplicationSettings(current)||!exactApplicationSettingsIdentity(current,row.objectId,row.elementId))fail('RETURN.OBJECT_SETTINGS_AUTHORITY_MISSING',`APP ${row.elementId} has no reusable 501 token and is not an exact empty owned-create recovery candidate.`);
+             const proof=await store.call('proveOwnedCreatedObject',{objectId:row.objectId,workspaceId:row.workspaceId,externalId:row.elementId,connectorBinding:context.connectorBinding});
+             if(proof?.proven!==true)fail('RETURN.OBJECT_SETTINGS_OWNERSHIP_MISSING',`APP ${row.elementId} has no exact prior product-owned object.create commit proof.`);
+             settingsIntent.mode='recover_owned_create_bootstrap';settingsIntent.ownedCreateProof={runId:proof.runId,commandId:proof.commandId,objectId:proof.objectId};
+           }
            const frozenData=freezeAppDataAvailability(row.identityDisposition,current.isDataAvailable,row.isDataAvailable);const desiredData=frozenData.value;
            row.dataAvailability=frozenData;settingsIntent.isDataAvailable=desiredData;settingsIntent.dataAvailabilityDisposition=frozenData.disposition;
           rowPreview.changes.push({targetKey:settingsIntent.key,disposition:String(current.typeId)===String(settingsIntent.typeId)&&current.isRelevant===settingsIntent.isRelevant&&current.isDataAvailable===desiredData?'reuse':'patch',current:{typeId:current.typeId,isRelevant:current.isRelevant,isDataAvailable:current.isDataAvailable},desired:{typeId:settingsIntent.typeId,isRelevant:settingsIntent.isRelevant,isDataAvailable:desiredData},operationId:RETURN_OPERATIONS.objectSettingsWrite,evidenceOperationId:RETURN_OPERATIONS.objectSettingsRead});
@@ -1309,13 +1334,21 @@ function createFeatureWorker(dependencies) {
               const settingsKey=`object-settings|${row.rowKey}`; const settingsTarget={targetIdentityKey:identityKey('object-settings',[row.rowKey]),workspaceId:row.workspaceId};
               const settingsIntent=targetByKey.get(settingsKey);if(!settingsIntent)fail('RETURN.INTENT_MISSING',`Frozen APP settings target is missing: ${settingsKey}`);
               const before=await invoke(RETURN_OPERATIONS.objectSettingsPreflight,binding,{target:settingsTarget,objectId});
-              const tab=(before.concurrencyTabs||[]).find((item)=>Number(item.entityTabTypeId)===501);
+              const allowedSettingsModes=row.identityDisposition==='create'?['create_bootstrap']:row.identityDisposition==='reuse'?['existing_with_token']:row.identityDisposition==='resume'?['existing_with_token','recover_owned_create_bootstrap']:[];
+              if(!allowedSettingsModes.includes(settingsIntent.mode))fail('RETURN.OBJECT_SETTINGS_MODE_DRIFT',`APP ${row.elementId} settings mode differs from the frozen identity disposition.`);
+              const beforeToken=latestApplicationSettingsToken(before,settingsIntent.mode==='existing_with_token',`APP ${row.elementId} settings execution preflight`);
+              if(['create_bootstrap','recover_owned_create_bootstrap'].includes(settingsIntent.mode)&&beforeToken)fail('RETURN.OBJECT_SETTINGS_MODE_DRIFT',`APP ${row.elementId} bootstrap mode cannot consume a pre-existing concurrency token.`);
+              if(settingsIntent.mode==='recover_owned_create_bootstrap'){
+                if(!unsetApplicationSettings(before)||!exactApplicationSettingsIdentity(before,objectId,row.elementId))fail('RETURN.OBJECT_SETTINGS_AUTHORITY_DRIFT',`APP ${row.elementId} is no longer an exact empty owned-create recovery candidate.`);
+                const proof=await store.call('proveOwnedCreatedObject',{objectId,workspaceId:row.workspaceId,externalId:row.elementId,connectorBinding:binding});
+                if(proof?.proven!==true||proof.runId!==settingsIntent.ownedCreateProof?.runId||proof.commandId!==settingsIntent.ownedCreateProof?.commandId)fail('RETURN.OBJECT_SETTINGS_OWNERSHIP_DRIFT',`APP ${row.elementId} owned-create proof changed after plan freeze.`);
+              }
               const desiredData=resolveFrozenAppDataAvailability(row.identityDisposition,before,{disposition:settingsIntent.dataAvailabilityDisposition,value:settingsIntent.isDataAvailable});
-              if(typeof desiredData!=='boolean'||!tab?.updatedOn) fail('RETURN.OBJECT_SETTINGS_AUTHORITY_MISSING',`APP ${row.elementId} settings lack exact data-availability or concurrency authority.`);
-              const query={objectId,typeId:row.content.itElementTypeId,isRelevant:row.isRelevant,isDataAvailable:desiredData,number:row.elementId};
-              const settingsResult=String(before.typeId)===String(query.typeId)&&before.isRelevant===row.isRelevant&&before.isDataAvailable===desiredData&&String(before.number||before.referenceNumber)===row.elementId
+              if(typeof desiredData!=='boolean') fail('RETURN.OBJECT_SETTINGS_AUTHORITY_MISSING',`APP ${row.elementId} settings lack exact data-availability authority.`);
+              const query={objectId,typeId:row.content.itElementTypeId,isRelevant:row.isRelevant,isDataAvailable:desiredData,number:row.elementId,mode:settingsIntent.mode};
+              const settingsResult=settingsIntent.mode==='existing_with_token'&&String(before.typeId)===String(query.typeId)&&before.isRelevant===row.isRelevant&&before.isDataAvailable===desiredData&&String(before.number||before.referenceNumber)===row.elementId
                 ? await closeVerified(settingsKey,RETURN_OPERATIONS.objectSettingsWrite,RETURN_OPERATIONS.objectSettingsRead,{target:settingsTarget,query},(observed)=>observed.verified===true)
-                : await verifiedMutation({targetKey:settingsKey,target:settingsTarget,preflightOperation:RETURN_OPERATIONS.objectSettingsPreflight,preflightRequest:{target:settingsTarget,objectId},mutationOperation:RETURN_OPERATIONS.objectSettingsWrite,commandKind:'patch_object_settings',mutationPayload:{engagementId:binding.engagementId,workspaceId:row.workspaceId,objectId,typeId:row.content.itElementTypeId,isRelevant:row.isRelevant,isDataAvailable:desiredData,concurrencyTabId:501,concurrencyTabUpdatedOn:tab.updatedOn},readOperation:RETURN_OPERATIONS.objectSettingsRead,readRequest:{target:settingsTarget,query},verify:(observed)=>observed.verified===true});
+                : await verifiedMutation({targetKey:settingsKey,target:settingsTarget,preflightOperation:RETURN_OPERATIONS.objectSettingsPreflight,preflightRequest:{target:settingsTarget,objectId},mutationOperation:RETURN_OPERATIONS.objectSettingsWrite,commandKind:'patch_object_settings',mutationPayload:{engagementId:binding.engagementId,workspaceId:row.workspaceId,objectId,typeId:row.content.itElementTypeId,isRelevant:row.isRelevant,isDataAvailable:desiredData,mode:settingsIntent.mode},readOperation:RETURN_OPERATIONS.objectSettingsRead,readRequest:{target:settingsTarget,query},verify:(observed)=>observed.verified===true});
               await projectObject(settingsResult,row,settingsKey,row.objectType,objectId);
             }
             // v4 ordering is intentional: an Infrastructure must be linked to its

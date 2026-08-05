@@ -140,7 +140,7 @@ const runtimeBaseBytes = workerModule.buildRuntimeWorkbook(
 
 const userTemplateBytes = await readFile(userTemplatePath);
 if (userTemplateBytes.length < 1 || userTemplateBytes.length > 64 * 1024 * 1024) throw new Error('Phase1 user template V3 size is invalid.');
-const version = '0.2.18'; const sequence = 20;
+const version = '0.2.19'; const sequence = 21;
 const route = (stepId, method, routeTemplate, parameters, bodyMode = 'none', bodyParameter = '') => ({ stepId, method, routeTemplate, parameters, bodyMode, bodyParameter });
 const applicationIdentityRoutes = () => [
   route('workitem-directory', 'POST', '/work/v1/WorkQueries/getWorkitemDetails', [], 'signed_json'),
@@ -186,7 +186,12 @@ const operations = [
     route('object-settings-read','GET','/rapr/v0/engagements/{engagementId}/itelement/{objectId}',[{name:'objectId',type:'guid'}]),
     route('object-settings-workspace','GET','/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}',[{name:'workItemId',type:'guid'}])
   ] },
-  { operationId: 'omnia.create-associate.object-settings.patch.v1', effect: 'omnia_mutation', requestSchema: 'omnia.create-associate.object-settings-patch-request/v1', responseSchema: 'omnia.create-associate.object-settings-patch-response/v1', enabledByDefault: false, grantsMutationPermit: false, routes: [route('object-settings-patch','PATCH','/rapr/v0/engagements/{engagementId}/itelement/{objectId}',[{name:'objectId',type:'guid'}],'signed_json')] },
+  { operationId: 'omnia.create-associate.object-settings.patch.v1', effect: 'omnia_mutation', requestSchema: 'omnia.create-associate.object-settings-patch-request/v1', responseSchema: 'omnia.create-associate.object-settings-patch-response/v1', enabledByDefault: false, grantsMutationPermit: false, routes: [
+    route('object-settings-mutation-read','GET','/rapr/v0/engagements/{engagementId}/itelement/{objectId}',[{name:'objectId',type:'guid'}]),
+    route('object-settings-mutation-workspace','GET','/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}',[{name:'workItemId',type:'guid'}]),
+    route('object-settings-type-patch','PATCH','/rapr/v0/engagements/{engagementId}/itelement/{objectId}',[{name:'objectId',type:'guid'}],'signed_json'),
+    route('object-settings-data-patch','PATCH','/rapr/v0/engagements/{engagementId}/itelement/{objectId}',[{name:'objectId',type:'guid'}],'signed_json')
+  ] },
   { operationId: 'omnia.create-associate.object-settings.reconcile.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.object-settings-reconcile-request/v1', responseSchema: 'omnia.create-associate.object-settings-reconcile-response/v1', enabledByDefault: true, grantsMutationPermit: false, routes: [
     route('object-settings-read','GET','/rapr/v0/engagements/{engagementId}/itelement/{objectId}',[{name:'objectId',type:'guid'}]),
     route('object-settings-workspace','GET','/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}',[{name:'workItemId',type:'guid'}])
@@ -246,7 +251,7 @@ const runtimeContract={schemaVersion:'omnia.feature-runtime-contract/v1',feature
   inputs:['staged_xlsx_artifact','upload_confirmation','background_validation','issue_revisions','return_confirmation','connector_binding','workspace_safety'],outputs:['template_instance_xlsx','surface_patch','confirmation_card','managed_object_revisions','managed_relation_revisions'],
   events:['artifact.staging_replaced','workbook.upload_confirmed','run.transition','run.offline_crash_recovered','run.restart_requested','return.confirmed_in_comments','return.readback_verified','return.uncertain'],
   errors:['WORKBOOK.*','GOVERNANCE.*','RETURN.*','CONNECTOR.RESPONSE_LOST'],
-  storePorts:['createRun','readArtifactBytes','readManagedAssetBytes','commitArtifact','transitionRun','recordFieldRevisions','recordIssues','loadRunReview','commitReviewValidation','prepareReturnIntent','approveReturnIntent','prepareReturnCommand','freezeReturnEvidenceSpec','recordReturnEvidence','projectVerifiedReturn','recordBootstrapCapabilityEvidence','getCapabilityEvidenceState','finishReturn','savePlan','loadPlan']};
+  storePorts:['createRun','readArtifactBytes','readManagedAssetBytes','commitArtifact','transitionRun','recordFieldRevisions','recordIssues','loadRunReview','commitReviewValidation','proveOwnedCreatedObject','prepareReturnIntent','approveReturnIntent','prepareReturnCommand','freezeReturnEvidenceSpec','recordReturnEvidence','projectVerifiedReturn','recordBootstrapCapabilityEvidence','getCapabilityEvidenceState','finishReturn','savePlan','loadPlan']};
 const implementationMap={schemaVersion:'omnia.feature-implementation-map/v1',featureId:'omnia.create-associate',featureVersion:version,planes:{
   surface:['frontend/surface.json'],worker:['middle/worker.cjs'],store:['backend/migrations/001.json','contracts/feature-runtime.json'],connector:['connector-capability/operation.ofop']},
   operations:operations.map(({operationId,effect})=>({operationId,effect}))};

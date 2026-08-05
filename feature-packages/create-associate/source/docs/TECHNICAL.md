@@ -76,6 +76,12 @@ The full plan, preflights, target keys, Operation IDs, and evidence arrays remai
 
 Core command binding handles exact non-GRA object `resume` through the same resolved-object read-query branch as `reuse`. It still requires the frozen resolved object ID, external identity, object type, Application editor description, mutation Operation, evidence Operation array, target identity, approved plan digest, and exact authority scope.
 
+## 0.2.19 v4-compatible Application settings protocol
+
+The frozen settings intent carries exactly one mode. `create_bootstrap` is permitted only for an APP whose object identity disposition was `create` and whose live detail has no 501 token; the first PATCH writes type/relevance and concurrency tab 501 with a JSON Patch `/concurrencyTabUpdatedOn` operation that intentionally has no `value`. `existing_with_token` is limited to `resume|reuse` and requires a unique latest live 501 token for that first PATCH. Both modes then GET the exact object, revalidate identity, authoritative Work Item Facet Mapping, Application type, desired type/relevance, and a unique latest fresh 501 token before the second PATCH writes `isDataAvailable` with that token. No object-level timestamp is accepted. Final reconcile performs another GET and verifies number, type, relevance, data availability, and Workspace.
+
+Core command binding requires the command/query `mode` to equal the immutable settings intent. Ordinary external `resume|reuse` with no live 501 token remains blocked. The only no-token recovery is `recover_owned_create_bootstrap`: Core must find exactly one prior committed object-create command under the current Connector/session, authority, Pack, engagement and Workspace, with an exact evidence engagement/object/external identity match, while the current signed read must still show all Application settings and concurrency tabs empty. Worker never serializes an `updatedOn` token into the plan or command.
+
 The package contains a process-isolated CommonJS Worker, declarative Surface, private migration, managed V8-derived governance IR, signed runtime-template base XLSX, and a signed Operation package. Core passes base64 bytes (64 MiB maximum), never filesystem paths. Runtime output patches only declared OOXML worksheet/core parts and verifies every undeclared part digest.
 
 The governance IR contains 187 fields, 68 relation rules, and 15 scoring items. TemplateVersion semantic identity is stable across Runs; instance semantic/patch/output/governance digests are per Run.

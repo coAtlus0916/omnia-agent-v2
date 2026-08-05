@@ -83,6 +83,7 @@ export class FeatureRuntimeStore {
     if (method === 'readArtifactBytes') return this.readArtifactBytes(input, context);
     if (method === 'readManagedAssetBytes') return this.readManagedAssetBytes(input, context);
     if (method === 'commitArtifact') return this.commitArtifact(input, context);
+    if (method === 'proveOwnedCreatedObject') return this.proveOwnedCreatedObject(input, context);
     if (method === 'commitStandaloneArtifact') return this.commitStandaloneArtifact(input, context);
     if (method === 'recordTemplateMetadata') return this.recordTemplateMetadata(input, context);
     if (method === 'loadLatestRun') return this.loadLatestRun(context);
@@ -163,6 +164,43 @@ export class FeatureRuntimeStore {
     } finally {
       store.close();
     }
+  }
+
+  private proveOwnedCreatedObject(input: unknown, context: FeatureWorkerPortContext): Record<string, unknown> {
+    const request=object(input,'Owned created object proof'); const objectId=String(request.objectId||'').toLowerCase();
+    const workspaceId=String(request.workspaceId||'').toLowerCase(); const externalId=String(request.externalId||'').normalize('NFC').trim();
+    const binding=returnAuthorityBinding(request.connectorBinding,'Owned created object current binding');
+    if(!objectId||!workspaceId||!externalId||!binding.connectorId||Number(binding.sessionGeneration)<1||!binding.engagementId||!binding.authorityInstanceId||!binding.packId)throw new Error('Owned created object proof request is incomplete.');
+    const safety=this.core.prepare(`SELECT enabled,engagement_id,workspace_ids_json FROM workspace_safety WHERE singleton=1`).get() as {enabled:number;engagement_id:string;workspace_ids_json:string}|undefined;
+    const allowed=safety?JSON.parse(safety.workspace_ids_json) as string[]:[];
+    if(!safety||safety.enabled!==1||safety.engagement_id!==binding.engagementId||!allowed.includes(workspaceId))throw new Error('Owned created object proof is outside the current exact safety scope.');
+    const rows=this.core.prepare(`
+      SELECT r.run_id,r.engagement_id,i.intended_revision_json,c.command_id,c.operation_id,c.commit_point_at,e.payload_json,
+        f.connector_id,f.session_generation,f.authority_instance_id,f.tenant_or_org_id,f.pack_id,
+        f.engagement_id AS confirmation_engagement_id
+      FROM feature_runs r
+      JOIN managed_content_intents i ON i.run_id=r.run_id AND i.target_kind='object'
+      JOIN feature_commands c ON c.run_id=i.run_id AND c.intent_id=i.intent_id AND c.operation_id='omnia.create-associate.object.create.v1' AND c.commit_point_at<>''
+      JOIN feature_command_evidence e ON e.run_id=c.run_id AND e.command_id=c.command_id AND e.evidence_type='commit' AND e.verified=1
+      JOIN feature_confirmations f ON f.run_id=c.run_id AND f.plan_digest=c.plan_digest AND f.decision='approved'
+      WHERE r.feature_id=? AND r.engagement_id=?
+      ORDER BY e.occurred_at,c.command_id
+    `).all(context.featureId,binding.engagementId) as Array<Record<string,unknown>>;
+    const matches=rows.filter((row)=>{
+      if(String(row.connector_id)!==String(binding.connectorId)||Number(row.session_generation)!==Number(binding.sessionGeneration)
+        ||String(row.authority_instance_id)!==String(binding.authorityInstanceId)||String(row.tenant_or_org_id)!==String(binding.tenantOrOrgId)
+        ||String(row.pack_id)!==String(binding.packId)||String(row.confirmation_engagement_id)!==String(binding.engagementId))return false;
+      const intended=JSON.parse(String(row.intended_revision_json||'{}')) as Record<string,unknown>;
+      if(intended.kind!=='object'||intended.objectType!=='Application'||intended.disposition!=='create'
+        ||String(intended.workspace||'').toLowerCase()!==workspaceId||String(intended.externalId||'').normalize('NFC').trim()!==externalId
+        ||intended.mutationOperationId!=='omnia.create-associate.object.create.v1')return false;
+      const payload=JSON.parse(String(row.payload_json||'{}')) as Record<string,unknown>;
+      const committedId=String(payload.id||payload.itElementId||payload.applicationId||'').toLowerCase();
+      return String(payload.engagementId||'')===String(binding.engagementId)&&committedId===objectId
+        &&String(payload.number||payload.referenceNumber||payload.name||'').normalize('NFC').trim()===externalId;
+    });
+    if(matches.length!==1)return{proven:false};
+    return{proven:true,runId:String(matches[0].run_id),commandId:String(matches[0].command_id),objectId,workspaceId,externalId};
   }
 
   private createMutationRun(input: unknown, context: FeatureWorkerPortContext): Record<string, unknown> {
@@ -942,9 +980,18 @@ export class FeatureRuntimeStore {
       }
     } else if (String(intended.key || '').startsWith('object-settings|')) {
       const parentId = projectedObjectId(intended.objectTargetKey);
+      const ownedProof=intended.ownedCreateProof as Record<string,unknown>|undefined;
+      const currentOwnedProof=String(intended.mode||'')==='recover_owned_create_bootstrap'
+        ?this.proveOwnedCreatedObject({objectId:parentId,workspaceId:intended.workspace,externalId:intended.externalId,connectorBinding:binding},context)
+        :{proven:true};
       commandIntentValid = String(desired.objectId || '') === parentId
         && String(desired.typeId || '') === String(intended.typeId || '')
-        && desired.isRelevant === intended.isRelevant && desired.isDataAvailable === intended.isDataAvailable;
+        && desired.isRelevant === intended.isRelevant && desired.isDataAvailable === intended.isDataAvailable
+        && ['create_bootstrap','existing_with_token','recover_owned_create_bootstrap'].includes(String(intended.mode||''))
+        && String(desired.mode||'')===String(intended.mode||'')
+        && (String(intended.mode||'')!=='recover_owned_create_bootstrap'||currentOwnedProof.proven===true
+          &&String(currentOwnedProof.runId||'')===String(ownedProof?.runId||'')&&String(currentOwnedProof.commandId||'')===String(ownedProof?.commandId||'')
+          &&String(currentOwnedProof.objectId||'')===parentId);
     } else if (String(intended.key || '').startsWith('gra-status|') || String(intended.key || '').startsWith('gra-rait|') || String(intended.key || '').startsWith('inheritance-source|')) {
       const expectedPatchKind = String(intended.fieldId) === 'status' ? 'status' : 'rait';
       commandIntentValid = String(desired.riskAssessmentId || '') === projectedObjectId(intended.graTargetKey)

@@ -1,4 +1,4 @@
-# Signed Operation 0.2.18
+# Signed Operation 0.2.19
 
 小型 object/relation/Risk-Control preflight、单次 mutation 与 read-only reconcile。不接受 Excel，不提供任意 URL/method/body。
 # Signed Operation inventory
@@ -10,3 +10,5 @@ The inventory includes exact APP identity/recycle resolution, generic DB/OS/Tool
 Authority resolution retains the hierarchy read, obtains Workspace membership only from `POST /engagements/v1/facets/byEngagementIds`, and obtains GRA content authority from the Engagement-bound `Standardized Accounts List` reference-list publication. The catalog type and null release-date are frozen handler inputs to declared string route parameters and are encoded only by Operation Host. It validates the exact binding Engagement on the publication, resolved content and selected IT Element category, preserves the real `CustomWorkspaceGroup -> CustomWorkspace.parentId` relationship, rejects missing or ambiguous names, and requires every resolved Workspace ID to remain inside the explicit safety lock.
 
 All Omnia/Core GUID inputs and returned identities use the same acceptance rule as Connector origin parsing: canonical 8-4-4-4-12 hexadecimal text, non-zero, normalized to lowercase, with no RFC UUID version/variant restriction.
+
+Application settings mutation is a fixed signed two-stage route sequence. Bootstrap JSON Patch omits the `value` member for `/concurrencyTabUpdatedOn`; existing settings use the unique latest live 501 token. The Operation GETs after type/relevance, validates exact object/Workspace/type/relevance and a unique latest fresh 501 token, then performs data availability PATCH. Runtime input cannot provide an `updatedOn` value.

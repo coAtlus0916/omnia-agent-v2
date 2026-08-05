@@ -752,16 +752,14 @@ async function generatedRiskIdentityCatalog(request, sdk) {
   ]);
   if(guid(assessment.id||assessment.riskAssessmentId,'Generated Risk assessment id')!==riskAssessmentId
     ||assessmentWorkspace(assessment)!==frozen.workspaceId) fail('Generated Risk catalog assessment identity or Workspace mismatch.');
-  const assessmentUpdatedOn=text(assessment.updatedOn);
-  if(!assessmentUpdatedOn) fail('Generated Risk catalog assessment has no live updatedOn value.');
   const riskRows = catalogRows(riskPayload, 'plannedResponses', 'Risk catalog');
   const risks=riskRows.filter((item)=>item&&(item.riskId||item.id)).map((item)=>{
     const riskNumber=recordedRiskNumber(catalogNumber(item,['riskNumber','inkRiskNumber']));
     return {riskId:catalogEntryId(item,['riskId','id'],'riskId'),riskNumber,
       name:catalogDisplayName(riskNumber,item.name||item.riskName||item.title||item.description),
       classification:text(item.classificationType||item.riskClassification||item.classification||item.classificationName),
-      updatedOn:text(item.updatedOn||item.updatedAt||assessmentUpdatedOn)};
-  }).filter((item)=>(item.riskNumber||item.name)&&item.updatedOn);
+      updatedOn:text(item.updatedOn||item.updatedAt)};
+  }).filter((item)=>item.riskNumber||item.name);
   return { riskAssessmentId, risks, diagnostics: {
     riskRows: riskRows.length, acceptedRisks: risks.length,
     riskNumbers: risks.map((item) => item.riskNumber).filter(Boolean).sort(),
@@ -1176,7 +1174,7 @@ function createOperationHandler() {
         const catalog=await generatedRiskIdentityCatalog({target:request.target,riskAssessmentId},sdk);
         const risk=exactGeneratedRisk(catalog,text(payload.riskName),riskId);
         return sdk.invokeStep('risk-classification-patch',{riskId},[
-          {op:'test',path:'/updatedOn',value:risk.updatedOn},
+          ...(risk.updatedOn?[{op:'test',path:'/updatedOn',value:risk.updatedOn}]:[]),
           {op:'replace',path:'/classificationType',value:classification}
         ]);
       }

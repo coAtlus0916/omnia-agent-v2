@@ -802,7 +802,7 @@ function createFeatureWorker(dependencies) {
           }catch(error){identityBlocks+=1;checkpoint.parsed.issues.push(liveIssue('LIVE.APP_IDENTITY_FAILED',`${row.rowKey}.identity`,'contract_mismatch','blocking',`APP ${row.elementId} 身份解析失败：${String(error.message||error)}`,'omnia_id_conflicts'));}
           continue;
         }
-        const request={target:{targetIdentityKey:identityKey('review-object',[row.kind,row.elementId,workspaceId]),workspaceId},query:{objectType:objectType(row.kind),externalId:row.elementId,workspaceId,graName:deriveGraName(row.elementId)}};
+        const request={target:{targetIdentityKey:identityKey('review-object',[row.kind,row.elementId,workspaceId]),workspaceId},query:{objectType:objectType(row.kind),subtypeId:objectSubtypeId(row.kind),externalId:row.elementId,workspaceId,graName:deriveGraName(row.elementId)}};
         const observed=await invoke(RETURN_OPERATIONS.objectPreflight,binding,request);const identity=inspectGenericIdentity(observed,request);
         checkpoint.liveIdentityResolutions[row.rowKey]={operationId:RETURN_OPERATIONS.objectPreflight,target:request.target,query:request.query,matchState:identity.state,resolved:{objectId:identity.objectId},evidence:identity.evidence};
         if(!identity.accepted){identityBlocks+=1;checkpoint.parsed.issues.push(liveIssue('LIVE.NON_APP_IDENTITY_BLOCKED',`${row.rowKey}.identity`,'conflict','blocking',`${row.kind} ${row.elementId} 身份解析被拒绝：${identity.reasonCode}。`,'omnia_id_conflicts'));}

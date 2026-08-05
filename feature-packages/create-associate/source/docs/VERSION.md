@@ -1,4 +1,8 @@
-# 0.2.12 / sequence 14
+# 0.2.13 / sequence 15
+
+Corrective release aligning Review live validation with the signed non-APP object preflight exact schema. DB, OS, and Tool queries now carry the same governed `subtypeId` already used by Return preparation.
+
+# 0.2.12 / sequence 14 history
 
 Immutable successor to 0.2.11 after package-manager startup rejected a literal `+` in the signed route template. The Standardized Accounts List and null release-date query values are now declared string parameters; the Operation handler supplies the frozen values and Operation Host performs the required percent encoding.
 

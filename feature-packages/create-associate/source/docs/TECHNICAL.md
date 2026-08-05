@@ -6,6 +6,10 @@
 - Integration：Remote-only 签名 Operation，首次远程 action 才延迟注册。
 # Technical design
 
+## 0.2.40 cross-Run business target identity
+
+Persistent remote target identities are derived from the exact Workspace-bound object/GRA business identity used by preflight and query semantics. GRA-scoped field, documentation, evaluation, risk-factor, Risk-Control and inheritance targets add their stable field or relation identity. Source `rowKey` is retained only for internal Run orchestration.
+
 ## 0.2.39 namespace-neutral OOXML input
 
 The bounded XLSX reader accepts optional XML namespace prefixes on supported workbook, relationship, shared-string, worksheet, value, inline-string and formula tags. Unprefixed OOXML remains compatible. Formula rejection and ZIP limits are unchanged. Missing worksheet directories/parts and zero rows/candidates fail with `WORKBOOK.*` or `PARSER.NO_SUPPORTED_ROWS` before `recordFieldRevisions`.

@@ -1,4 +1,8 @@
-# 0.2.39 / sequence 41
+# 0.2.40 / sequence 42
+
+Remote Operation target identities now use the current Pack business identity instead of workbook row position. GRA and GRA-scoped targets bind Workspace, element kind, external element ID, derived GRA name, and the applicable field or relation ID, so the same template row in different Runs cannot create a false persistent reservation conflict. Internal Run target keys remain row-scoped.
+
+# 0.2.39 / sequence 41 history
 
 The XLSX reader accepts optional XML namespace prefixes emitted by artifact-tool while retaining unprefixed compatibility. Formula rejection and ZIP safety limits are unchanged. Missing worksheet directories/parts and empty supported parses fail with precise WORKBOOK/PARSER errors before Core field-revision persistence. The unchanged signed Operation inventory is repackaged for the release.
 

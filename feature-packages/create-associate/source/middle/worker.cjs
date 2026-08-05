@@ -522,6 +522,24 @@ function objectType(kind) { return kind === 'APP' ? 'Application' : kind === 'TO
 function objectSubtypeId(kind) { return kind === 'DB' ? 'Database' : kind === 'OS' ? 'OperatingSystem' : kind === 'TOOL' ? 'Tool' : ''; }
 function authorityObjectSubtype(kind) { return kind === 'APP' ? 'Application' : objectSubtypeId(kind); }
 function identityKey(prefix, value) { return `${prefix}:${digest(Buffer.from(canonical(value))).slice(0, 48)}`; }
+function objectBusinessIdentity(kind, elementId, workspaceId) {
+  return [workspaceId, kind, elementId];
+}
+function graBusinessIdentity(kind, elementId, workspaceId, graName = deriveGraName(elementId)) {
+  return [...objectBusinessIdentity(kind, elementId, workspaceId), graName];
+}
+function graOperationIdentity(prefix, row, qualifier = '') {
+  const identity = graBusinessIdentity(row.kind, row.elementId, row.workspaceId, row.graName);
+  return identityKey(prefix, qualifier === '' ? identity : [...identity, qualifier]);
+}
+function inheritanceOperationIdentity(source, target) {
+  return identityKey('gra-state', [
+    ...graBusinessIdentity(source.kind, source.elementId, source.workspaceId, source.graName),
+    'itElementRaitConclusionLevelId',
+    'inherited-by',
+    ...graBusinessIdentity(target.kind, target.elementId, target.workspaceId, target.graName)
+  ]);
+}
 function normalizeRait(value) {
   const normalized=String(value||'').normalize('NFKC').trim().toLocaleLowerCase('en-US');
   return normalized==='higher'?'Higher':normalized==='lower'?'Lower':String(value||'').normalize('NFKC').trim();
@@ -995,10 +1013,10 @@ function createFeatureWorker(dependencies) {
       let graObserved = { found: false, item: null };
       if(appIdentity?.disposition==='reuse') graObserved={found:true,item:{id:appIdentity.riskAssessmentId}};
       else if (objectId&&row.kind!=='APP') graObserved = await invoke(RETURN_OPERATIONS.graPreflight, context.connectorBinding, {
-        target: { targetIdentityKey: identityKey('gra', [row.rowKey, workspaceId]), workspaceId },
+        target: { targetIdentityKey: identityKey('gra', graBusinessIdentity(row.kind, row.elementId, workspaceId)), workspaceId },
         query: { entityId: objectId, itElementType: type, name: deriveGraName(row.elementId), workspaceId }
       });
-      if(graObserved.found) await invoke(RETURN_OPERATIONS.graRead,context.connectorBinding,{target:{targetIdentityKey:identityKey('gra',[row.rowKey,workspaceId]),workspaceId},riskAssessmentId:responseId(graObserved.item,'GRA preflight'),query:{entityId:objectId,name:deriveGraName(row.elementId),itElementType:type,inkContentId:content.inkContentId,typeId:content.typeId}});
+      if(graObserved.found) await invoke(RETURN_OPERATIONS.graRead,context.connectorBinding,{target:{targetIdentityKey:identityKey('gra',graBusinessIdentity(row.kind,row.elementId,workspaceId)),workspaceId},riskAssessmentId:responseId(graObserved.item,'GRA preflight'),query:{entityId:objectId,name:deriveGraName(row.elementId),itElementType:type,inkContentId:content.inkContentId,typeId:content.typeId}});
       let mode = declaredMode; let inheritanceSources = [];
       if (['DB','OS'].includes(row.kind)) {
         if(row.relations.length!==1) fail('RETURN.APP_REFERENCE_CARDINALITY',`${row.kind} ${row.elementId} requires exactly one in-workbook APP inheritance edge.`);
@@ -1035,13 +1053,13 @@ function createFeatureWorker(dependencies) {
       targets.push({ kind: 'object', key: `gra|${row.rowKey}`, rowKey: row.rowKey, workspace: workspaceId, objectType: 'GRA', externalId: prepared.graName,
         disposition:graObserved.found?'reuse':'create',resolvedObjectId:graObserved.found?responseId(graObserved.item,'GRA preflight'):'',entityObjectTargetKey:`object|${row.rowKey}`,
         contentIdentity:{inkContentId:content.inkContentId,typeId:content.typeId},mutationOperationId:RETURN_OPERATIONS.graCreate,
-        operationTargetIdentityKey:identityKey('gra',[row.rowKey,workspaceId]),evidenceOperationIds:[RETURN_OPERATIONS.graRead,RETURN_OPERATIONS.graPreflight] });
+        operationTargetIdentityKey:graOperationIdentity('gra',prepared),evidenceOperationIds:[RETURN_OPERATIONS.graRead,RETURN_OPERATIONS.graPreflight] });
       if(row.kind==='APP') targets.push({kind:'field',key:`object-settings|${row.rowKey}`,rowKey:row.rowKey,workspace:workspaceId,objectType:type,externalId:row.elementId,objectTargetKey:`object|${row.rowKey}`,mode:objectId?'existing_with_token':'create_bootstrap',typeId:content.itElementTypeId,isRelevant:prepared.isRelevant,isDataAvailable:prepared.dataAvailability?.value,dataAvailabilityDisposition:prepared.dataAvailability?.disposition,
-        mutationOperationId:RETURN_OPERATIONS.objectSettingsWrite,operationTargetIdentityKey:identityKey('object-settings',[row.rowKey]),evidenceOperationIds:[RETURN_OPERATIONS.objectSettingsRead]});
+        mutationOperationId:RETURN_OPERATIONS.objectSettingsWrite,operationTargetIdentityKey:identityKey('object-settings',[...objectBusinessIdentity(row.kind,row.elementId,workspaceId),'application-settings']),evidenceOperationIds:[RETURN_OPERATIONS.objectSettingsRead]});
       targets.push({ kind: 'field', key: `gra-status|${row.rowKey}`, rowKey: row.rowKey, workspace: workspaceId, objectType: 'GRA', graTargetKey: `gra|${row.rowKey}`, fieldId: 'status', value: 'EvaluationStarted',
-        mutationOperationId:RETURN_OPERATIONS.graStateWrite,operationTargetIdentityKey:identityKey('gra-state',[row.rowKey,'status']),evidenceOperationIds:[RETURN_OPERATIONS.graStateRead] });
+        mutationOperationId:RETURN_OPERATIONS.graStateWrite,operationTargetIdentityKey:graOperationIdentity('gra-state',prepared,'status'),evidenceOperationIds:[RETURN_OPERATIONS.graStateRead] });
       if (['APP','DB','OS','TOOL'].includes(row.kind)) targets.push({ kind: 'field', key: `gra-rait|${row.rowKey}`, rowKey: row.rowKey, workspace: workspaceId, objectType: 'GRA', graTargetKey: `gra|${row.rowKey}`, fieldId: 'itElementRaitConclusionLevelId', value: mode,
-        mutationOperationId:RETURN_OPERATIONS.graStateWrite,operationTargetIdentityKey:identityKey('gra-state',[row.rowKey,'rait']),evidenceOperationIds:[RETURN_OPERATIONS.graStateRead] });
+        mutationOperationId:RETURN_OPERATIONS.graStateWrite,operationTargetIdentityKey:graOperationIdentity('gra-state',prepared,'itElementRaitConclusionLevelId'),evidenceOperationIds:[RETURN_OPERATIONS.graStateRead] });
       for (const relation of row.relations) targets.push({ kind: 'relation', key: `element-relation|${row.rowKey}|${relation}`, rowKey: row.rowKey, workspace: workspaceId, relationType: 'InfrastructureApplication',
         sourceObjectTargetKey:`object|${row.rowKey}`,targetExternalId:relation,mutationOperationId:RETURN_OPERATIONS.relationWrite,
         operationTargetIdentityMode:'resolved_relation',operationTargetIdentityKey:'post-create-resolution',evidenceOperationIds:[RETURN_OPERATIONS.relationRead] });
@@ -1049,20 +1067,20 @@ function createFeatureWorker(dependencies) {
       for (const relation of selectedGovernance.filter((item) => linkRequired(item, mode || 'Higher'))) targets.push({
         kind: 'risk_control', key: `risk-control|${row.rowKey}|${relation.relationId}`, rowKey: row.rowKey, workspace: workspaceId,
         objectType: 'GRA', graTargetKey: `gra|${row.rowKey}`, relationId: relation.relationId, riskName: relation.riskName, controlName: relation.controlName,
-        classification: relation[`classification${mode || 'Higher'}`],mutationOperationId:RETURN_OPERATIONS.riskWrite,operationTargetIdentityKey:identityKey('risk-control',[row.rowKey,relation.relationId]),evidenceOperationIds:[RETURN_OPERATIONS.riskRead]
+        classification: relation[`classification${mode || 'Higher'}`],mutationOperationId:RETURN_OPERATIONS.riskWrite,operationTargetIdentityKey:graOperationIdentity('risk-control',prepared,relation.relationId),evidenceOperationIds:[RETURN_OPERATIONS.riskRead]
       });
       if (row.kind === 'APP' && contentName.toLocaleLowerCase('en-US').includes('sap ecc')) {
         for (const item of governance.scoringItems) {
           const applicable = mode === 'Higher' ? String(item.higherApplicable).startsWith('Y') : true;
           if (applicable) targets.push({ kind: 'field', key: `risk-factor|${row.rowKey}|${item.itemId}`, rowKey: row.rowKey, workspace: workspaceId, objectType: 'GRA', graTargetKey: `gra|${row.rowKey}`, fieldId: item.itemId, value: mode,
-            mutationOperationId:RETURN_OPERATIONS.factorWrite,operationTargetIdentityKey:identityKey('risk-factor',[row.rowKey,item.itemId]),evidenceOperationIds:[RETURN_OPERATIONS.factorRead,RETURN_OPERATIONS.factorPreflight] });
+            mutationOperationId:RETURN_OPERATIONS.factorWrite,operationTargetIdentityKey:graOperationIdentity('risk-factor',prepared,item.itemId),evidenceOperationIds:[RETURN_OPERATIONS.factorRead,RETURN_OPERATIONS.factorPreflight] });
         }
         const factors = rowField(row, governance, 'P1.APP.GRA.FACTORS_CONSIDERED');
         if (factors) targets.push({ kind: 'documentation', key: `documentation|${row.rowKey}`, rowKey: row.rowKey, workspace: workspaceId, objectType: 'GRA', graTargetKey: `gra|${row.rowKey}`, plainText: factors,
-          mutationOperationId:RETURN_OPERATIONS.documentationWrite,operationTargetIdentityKey:identityKey('documentation',[row.rowKey]),evidenceOperationIds:[RETURN_OPERATIONS.documentationRead] });
+          mutationOperationId:RETURN_OPERATIONS.documentationWrite,operationTargetIdentityKey:graOperationIdentity('documentation',prepared,'factors-considered'),evidenceOperationIds:[RETURN_OPERATIONS.documentationRead] });
       }
       targets.push({ kind: 'evaluation', key: `evaluation|${row.rowKey}`, rowKey: row.rowKey, workspace: workspaceId, objectType: 'GRA', graTargetKey: `gra|${row.rowKey}`, value: 'EvaluationComplete',
-        mutationOperationId:RETURN_OPERATIONS.evaluationWrite,operationTargetIdentityKey:identityKey('evaluation',[row.rowKey]),evidenceOperationIds:[RETURN_OPERATIONS.evaluationRead] });
+        mutationOperationId:RETURN_OPERATIONS.evaluationWrite,operationTargetIdentityKey:graOperationIdentity('evaluation',prepared,'EvaluationComplete'),evidenceOperationIds:[RETURN_OPERATIONS.evaluationRead] });
     }
     for(const relation of targets.filter((item)=>item.kind==='relation')){
       const matches=rowsPrepared.filter((item)=>item.kind==='APP'&&item.elementId.toLocaleLowerCase('en-US')===String(relation.targetExternalId).toLocaleLowerCase('en-US'));
@@ -1074,7 +1092,7 @@ function createFeatureWorker(dependencies) {
       if(row.inheritanceSources.length!==1) fail('RETURN.RAIT_INHERITANCE_AMBIGUOUS',`${row.kind} ${row.elementId} requires exactly one APP inheritance edge.`);
       const source=rowsPrepared.find((item)=>item.kind==='APP'&&item.elementId.toLocaleLowerCase('en-US')===row.inheritanceSources[0].externalId.toLocaleLowerCase('en-US')&&item.workspaceName.normalize('NFKC')===row.inheritanceSources[0].workspaceName.normalize('NFKC'));
       if(!source) fail('RETURN.RAIT_INHERITANCE_AMBIGUOUS',`${row.kind} ${row.elementId} APP inheritance source is not an exact planned identity.`);
-      targets.push({kind:'field',key:`inheritance-source|${row.rowKey}|${source.rowKey}`,rowKey:row.rowKey,workspace:source.workspaceId,objectType:'GRA',graTargetKey:`gra|${source.rowKey}`,sourceRowKey:source.rowKey,fieldId:'itElementRaitConclusionLevelId',value:row.mode,mutationOperationId:RETURN_OPERATIONS.graStateWrite,operationTargetIdentityKey:identityKey('gra-state',[row.rowKey,source.rowKey,'inheritance']),evidenceOperationIds:[RETURN_OPERATIONS.graStateRead]});
+      targets.push({kind:'field',key:`inheritance-source|${row.rowKey}|${source.rowKey}`,rowKey:row.rowKey,workspace:source.workspaceId,objectType:'GRA',graTargetKey:`gra|${source.rowKey}`,sourceRowKey:source.rowKey,fieldId:'itElementRaitConclusionLevelId',value:row.mode,mutationOperationId:RETURN_OPERATIONS.graStateWrite,operationTargetIdentityKey:inheritanceOperationIdentity(source,row),evidenceOperationIds:[RETURN_OPERATIONS.graStateRead]});
     }
     const normalized=(value)=>String(value||'').normalize('NFKC').replace(/\s+/gu,' ').trim();
     for(const row of rowsPrepared){
@@ -1100,8 +1118,8 @@ function createFeatureWorker(dependencies) {
          }else{const frozenData=freezeAppDataAvailability('create',undefined,row.isDataAvailable);row.dataAvailability=frozenData;settingsIntent.isDataAvailable=frozenData.value;settingsIntent.dataAvailabilityDisposition=frozenData.disposition;rowPreview.changes.push({targetKey:settingsIntent.key,disposition:'post-create-resolution',current:'not-readable-before-object-create',desired:{typeId:settingsIntent.typeId,isRelevant:settingsIntent.isRelevant,isDataAvailable:frozenData.value,dataAvailabilityDisposition:frozenData.disposition},operationId:RETURN_OPERATIONS.objectSettingsWrite,evidenceOperationId:RETURN_OPERATIONS.objectSettingsRead});}
       }
       if(row.graId){
-        const stateTarget=(kind)=>({targetIdentityKey:identityKey('gra-state',[row.rowKey,kind]),workspaceId:row.workspaceId});
-        const state=await invoke(RETURN_OPERATIONS.graStatePreflight,context.connectorBinding,{target:stateTarget('status'),riskAssessmentId:row.graId});
+        const statusIntent=rowTargets.find((item)=>String(item.key).startsWith('gra-status|'));
+        const state=await invoke(RETURN_OPERATIONS.graStatePreflight,context.connectorBinding,{target:{targetIdentityKey:statusIntent.operationTargetIdentityKey,workspaceId:row.workspaceId},riskAssessmentId:row.graId});
         for(const intent of rowTargets.filter((item)=>String(item.key).startsWith('gra-status|')||String(item.key).startsWith('gra-rait|'))){
           const patchKind=intent.fieldId==='status'?'status':'rait'; const current=patchKind==='status'?(state.status??null):(state.itElementRaitConclusionLevelId||state.itElementRaitConclusionLevelName||null);
           rowPreview.changes.push({targetKey:intent.key,disposition:String(current)===String(intent.value)?'reuse':'patch',current,desired:intent.value,operationId:intent.mutationOperationId,evidenceOperationId:intent.evidenceOperationIds[0]});
@@ -1130,7 +1148,7 @@ function createFeatureWorker(dependencies) {
               rowPreview.changes.push({targetKey:intent.key,disposition:'post-evaluation-resolution',current:'Evaluation is not complete',desired,operationId:intent.mutationOperationId,evidenceOperationIds:intent.evidenceOperationIds});
             }
           }else if(riskIntents.length){
-            const catalog=await invoke(RETURN_OPERATIONS.riskCatalog,context.connectorBinding,{target:{targetIdentityKey:identityKey('risk-catalog',[row.rowKey]),workspaceId:row.workspaceId},riskAssessmentId:row.graId});
+            const catalog=await invoke(RETURN_OPERATIONS.riskCatalog,context.connectorBinding,{target:{targetIdentityKey:graOperationIdentity('risk-catalog',row,'generated-catalog'),workspaceId:row.workspaceId},riskAssessmentId:row.graId});
             for(const intent of riskIntents){
               const risks=catalogRiskMatches(catalog,intent,intent.classification);
               const controls=catalogControlMatches(catalog,intent);
@@ -1241,7 +1259,7 @@ function createFeatureWorker(dependencies) {
           if(identity.accepted&&['resume','reuse'].includes(identity.disposition)){
             objectId=identity.objectId;
             if(identity.disposition==='reuse'){
-              const graTarget={targetIdentityKey:identityKey('gra',[rowPlan.rowKey,rowPlan.workspaceId]),workspaceId:rowPlan.workspaceId};
+              const graTarget={targetIdentityKey:checkpoint.returnPlan.targets.find((item)=>item.key===`gra|${rowPlan.rowKey}`)?.operationTargetIdentityKey||graOperationIdentity('gra',rowPlan),workspaceId:rowPlan.workspaceId};
               const graRead=await invoke(RETURN_OPERATIONS.graRead,binding,{target:graTarget,riskAssessmentId:identity.riskAssessmentId,query:{entityId:objectId,name:rowPlan.graName||deriveGraName(rowPlan.elementId),itElementType:'Application',inkContentId:rowPlan.content.inkContentId,typeId:rowPlan.content.typeId}});
               if(responseId(graRead,'reconciled APP GRA read-back')!==identity.riskAssessmentId) fail('RETURN.READBACK_MISMATCH','Reconciled APP GRA differs from its exact identity resolution.');
             }
@@ -1453,7 +1471,7 @@ function createFeatureWorker(dependencies) {
             objectIds.set(runtimeKey(row.kind,row.elementId,row.workspaceId), objectId);
             if (objectResult) await projectObject(objectResult, row, `object|${row.rowKey}`, row.objectType, objectId);
             if(row.kind==='APP'&&!done(`object-settings|${row.rowKey}`)){
-              const settingsKey=`object-settings|${row.rowKey}`; const settingsTarget={targetIdentityKey:identityKey('object-settings',[row.rowKey]),workspaceId:row.workspaceId};
+              const settingsKey=`object-settings|${row.rowKey}`; const settingsTarget={targetIdentityKey:targetByKey.get(settingsKey).operationTargetIdentityKey,workspaceId:row.workspaceId};
               const settingsIntent=targetByKey.get(settingsKey);if(!settingsIntent)fail('RETURN.INTENT_MISSING',`Frozen APP settings target is missing: ${settingsKey}`);
               const before=await invoke(RETURN_OPERATIONS.objectSettingsPreflight,binding,{target:settingsTarget,objectId});
               const allowedSettingsModes=row.identityDisposition==='create'?['create_bootstrap']:row.identityDisposition==='reuse'?['existing_with_token']:row.identityDisposition==='resume'?['existing_with_token','recover_owned_create_bootstrap']:[];
@@ -1494,7 +1512,7 @@ function createFeatureWorker(dependencies) {
                 await store.call('projectVerifiedReturn',{runId,commandId:relationResult.command.commandId,binding,workspaceId:row.workspaceId,projectionKind:'relation',relationType:'InfrastructureApplication',relationKey:targetKey,sourceObjectId:objectId,targetObjectId:appId,payload:relationResult.observed});
               }
             }
-            const graTarget = { targetIdentityKey: identityKey('gra', [row.rowKey, row.workspaceId]), workspaceId: row.workspaceId };
+            const graTarget = { targetIdentityKey: targetByKey.get(`gra|${row.rowKey}`).operationTargetIdentityKey, workspaceId: row.workspaceId };
             let graId = row.graId; let graResult;
             const graPreflightRequest = { target: graTarget, query: { entityId: objectId, itElementType: row.objectType, name: row.graName, workspaceId: row.workspaceId } };
             if (done(`gra|${row.rowKey}`)) {
@@ -1521,7 +1539,7 @@ function createFeatureWorker(dependencies) {
             for (const [patchKind, value] of statePatches) {
               const targetKey = `gra-${patchKind === 'status' ? 'status' : 'rait'}|${row.rowKey}`;
               if (done(targetKey)) continue;
-              const target = { targetIdentityKey: identityKey('gra-state', [row.rowKey, patchKind]), workspaceId: row.workspaceId };
+              const target = { targetIdentityKey: targetByKey.get(targetKey).operationTargetIdentityKey, workspaceId: row.workspaceId };
               const before = await invoke(RETURN_OPERATIONS.graStatePreflight, binding, { target, riskAssessmentId: graId });
               const currentValue = patchKind === 'status' ? before.status : before.itElementRaitConclusionLevelId || before.itElementRaitConclusionLevelName;
               const stateResult = String(currentValue) === String(value)
@@ -1557,7 +1575,7 @@ function createFeatureWorker(dependencies) {
               const source=row.inheritanceSources[0]; const appRow=ordered.find((item)=>item.kind==='APP'&&item.elementId.toLocaleLowerCase('en-US')===source.externalId.toLocaleLowerCase('en-US')&&item.workspaceName.normalize('NFKC')===source.workspaceName.normalize('NFKC'));
               if(!appRow) fail('RETURN.RAIT_INHERITANCE_DRIFT',`${row.kind} ${row.elementId} inheritance source disappeared.`);
               const appGraId=graIds.get(runtimeKey('APP',appRow.elementId,appRow.workspaceId)); const sourceKey=`inheritance-source|${row.rowKey}|${appRow.rowKey}`;
-              const sourceTarget={targetIdentityKey:identityKey('gra-state',[row.rowKey,appRow.rowKey,'inheritance']),workspaceId:appRow.workspaceId};
+              const sourceTarget={targetIdentityKey:targetByKey.get(sourceKey).operationTargetIdentityKey,workspaceId:appRow.workspaceId};
               const sourceBefore=await invoke(RETURN_OPERATIONS.graStatePreflight,binding,{target:sourceTarget,riskAssessmentId:appGraId});
               const liveInheritedMode=normalizeRait(sourceBefore.itElementRaitConclusionLevelId||sourceBefore.itElementRaitConclusionLevelName);
               if(!['Higher','Lower'].includes(liveInheritedMode)||liveInheritedMode!==normalizeRait(appRow.mode)) fail('RETURN.RAIT_INHERITANCE_DRIFT',`${row.kind} ${row.elementId} live APP GRA RAIT differs from the frozen APP plan.`);
@@ -1568,7 +1586,7 @@ function createFeatureWorker(dependencies) {
               mode=liveInheritedMode;
               const targetKey=`gra-rait|${row.rowKey}`;
               if(!done(targetKey)){
-                const target={targetIdentityKey:identityKey('gra-state',[row.rowKey,'rait']),workspaceId:row.workspaceId}; const before=await invoke(RETURN_OPERATIONS.graStatePreflight,binding,{target,riskAssessmentId:graId}); const currentValue=before.itElementRaitConclusionLevelId||before.itElementRaitConclusionLevelName;
+                const target={targetIdentityKey:targetByKey.get(targetKey).operationTargetIdentityKey,workspaceId:row.workspaceId}; const before=await invoke(RETURN_OPERATIONS.graStatePreflight,binding,{target,riskAssessmentId:graId}); const currentValue=before.itElementRaitConclusionLevelId||before.itElementRaitConclusionLevelName;
                 const stateResult=String(currentValue)===String(mode)?await closeVerified(targetKey,RETURN_OPERATIONS.graStateWrite,RETURN_OPERATIONS.graStateRead,{target,query:{riskAssessmentId:graId,patchKind:'rait',value:mode}},(observed)=>observed.verified===true):await verifiedMutation({targetKey,target,preflightOperation:RETURN_OPERATIONS.graStatePreflight,preflightRequest:{target,riskAssessmentId:graId},mutationOperation:RETURN_OPERATIONS.graStateWrite,commandKind:'patch_gra_state',mutationPayload:{engagementId:binding.engagementId,workspaceId:row.workspaceId,riskAssessmentId:graId,patchKind:'rait',value:mode},readOperation:RETURN_OPERATIONS.graStateRead,readRequest:{target,query:{riskAssessmentId:graId,patchKind:'rait',value:mode}},verify:(observed)=>observed.verified===true});
                 await projectGraRevision(stateResult,row,targetKey,graId);
               }
@@ -1586,7 +1604,7 @@ function createFeatureWorker(dependencies) {
                 const targetKey = `risk-factor|${row.rowKey}|${item.itemId}`;
                 if (!targetByKey.has(targetKey)) continue;
                 if (done(targetKey)) continue;
-                const target = { targetIdentityKey: identityKey('risk-factor', [row.rowKey, item.itemId]), workspaceId: row.workspaceId };
+                const target = { targetIdentityKey: targetByKey.get(targetKey).operationTargetIdentityKey, workspaceId: row.workspaceId };
                 const factorPreflight = await invoke(RETURN_OPERATIONS.factorPreflight, binding, { target, query: { riskAssessmentId: graId, itemId: item.itemId, selectionMode: mode } });
                 if (factorPreflight.applicable === false) {
                   const preflightRequest={target,query:{riskAssessmentId:graId,itemId:item.itemId,selectionMode:mode}};
@@ -1611,7 +1629,7 @@ function createFeatureWorker(dependencies) {
               }
               const docKey = `documentation|${row.rowKey}`; const docIntent = targetByKey.get(docKey);
               if (docIntent && !done(docKey)) {
-                const target = { targetIdentityKey: identityKey('documentation', [row.rowKey]), workspaceId: row.workspaceId };
+                const target = { targetIdentityKey: docIntent.operationTargetIdentityKey, workspaceId: row.workspaceId };
                 const plainText = docIntent.plainText; const editorData = `<p>${plainText.replace(/[&<>]/gu, (char) => ({ '&':'&amp;','<':'&lt;','>':'&gt;' }[char]))}</p>`;
                 const currentDoc = await invoke(RETURN_OPERATIONS.documentationPreflight, binding, { target, riskAssessmentId: graId });
                 const observedDoc = observedDocumentation(currentDoc);
@@ -1630,7 +1648,7 @@ function createFeatureWorker(dependencies) {
           // the bounded v4 window and do not become uncertain on the first read.
           for (const row of ordered) {
             const graId=graIds.get(runtimeKey(row.kind,row.elementId,row.workspaceId));
-            const evaluationKey = `evaluation|${row.rowKey}`; const evaluationTarget = { targetIdentityKey: identityKey('evaluation', [row.rowKey]), workspaceId: row.workspaceId };
+            const evaluationKey = `evaluation|${row.rowKey}`; const evaluationTarget = { targetIdentityKey: targetByKey.get(evaluationKey).operationTargetIdentityKey, workspaceId: row.workspaceId };
             if (done(evaluationKey)) continue;
             const currentEvaluation = await invoke(RETURN_OPERATIONS.evaluationPreflight, binding, { target: evaluationTarget, riskAssessmentId: graId });
             const evaluationResult = currentEvaluation.status === 'EvaluationComplete'
@@ -1653,7 +1671,7 @@ function createFeatureWorker(dependencies) {
             const requiredRelations=selected.filter((item)=>linkRequired(item,mode));
             const pendingRelations=requiredRelations.filter((relation)=>!done(`risk-control|${row.rowKey}|${relation.relationId}`));
             if(!pendingRelations.length) continue;
-            const catalogRequest={target:{targetIdentityKey:identityKey('risk-catalog',[row.rowKey]),workspaceId:row.workspaceId},riskAssessmentId:graId};
+            const catalogRequest={target:{targetIdentityKey:graOperationIdentity('risk-catalog',row,'generated-catalog'),workspaceId:row.workspaceId},riskAssessmentId:graId};
             let catalog=await waitForCompleteRiskControlCatalog(binding,catalogRequest,requiredRelations,mode);
             for(let relationIndex=0;relationIndex<pendingRelations.length;relationIndex+=1){
               const relation=pendingRelations[relationIndex];
@@ -1665,7 +1683,7 @@ function createFeatureWorker(dependencies) {
               const targetSpec=targetByKey.get(targetKey);const frozenCatalog=targetSpec.resolvedCatalog;
               if(frozenCatalog&&(frozenCatalog.riskId!==risk.riskId||frozenCatalog.riskRiskScopeId!==risk.riskRiskScopeId||(frozenCatalog.riskScopeId&&frozenCatalog.riskScopeId!==risk.riskScopeId)||frozenCatalog.controlId!==control.controlId
                 ||(frozenCatalog.assertionType&&frozenCatalog.assertionType!==risk.assertionType)||frozenCatalog.assertion!==risk.assertion)) fail('RETURN.RISK_CONTROL_CATALOG_IDENTITY_DRIFT',`Risk/Control live identity changed after confirmation: ${relation.relationId}.`);
-              const target={targetIdentityKey:identityKey('risk-control',[row.rowKey,relation.relationId]),workspaceId:row.workspaceId};
+              const target={targetIdentityKey:targetSpec.operationTargetIdentityKey,workspaceId:row.workspaceId};
               const riskQuery={riskRiskScopeId:risk.riskRiskScopeId,riskScopeId:risk.riskScopeId,riskId:risk.riskId,controlId:control.controlId,assertionType:risk.assertionType,assertion:risk.assertion};
               const existingRisk=await invoke(RETURN_OPERATIONS.riskRead,binding,{target,query:riskQuery});
               if(existingRisk.verified===true&&!frozenCatalog&&!['post_state_catalog','post_evaluation_catalog'].includes(targetSpec.resolutionMode)) fail('RETURN.POST_CREATE_RISK_ALREADY_ASSOCIATED',`Post-create Risk-Control ${relation.relationId} became associated before its frozen mutation; a new review is required.`);

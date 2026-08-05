@@ -3,7 +3,7 @@
 Surface 只采集/展示；Worker 解析、验证、编译计划；Core Store 持久化；Connector 只托管签名 Operation。
 # Implementation map
 
-Version 0.2.39 keeps the four-plane boundary. Worker XLSX parsing accepts optional namespace prefixes and rejects missing worksheet parts or zero supported rows before Core field-revision persistence. Core, UI and signed Operation contracts are unchanged.
+Version 0.2.40 keeps the four-plane boundary. Worker remote target identities bind Workspace + element kind + external element ID + derived GRA name and the relevant field/relation ID. Core, UI and signed Operation contracts are unchanged.
 
 - Frontend: `frontend/surface.json` plus generic two-column workflow renderer, native picker/drop staging, explicit confirmation, post-render background action dispatch, signed-template Save As, artifacts, progress/issues, and issue editors.
 - Worker: `middle/worker.cjs` owns XLSX parsing, governance interpretation, plan/output compilation, revisions, and orchestration.

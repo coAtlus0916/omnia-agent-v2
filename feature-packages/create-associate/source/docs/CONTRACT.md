@@ -6,7 +6,7 @@ V8 digest 固定为 `1ED937A50253CEDF431CE02A0CC7A3B3E576597BBD6CAA6C967738D7B2D
 
 # Contracts
 
-Version 0.2.39 makes supported OOXML element matching namespace-prefix neutral. ZIP bounds and user-formula rejection remain fail-closed. Missing worksheet directories/parts and zero supported rows fail with WORKBOOK/PARSER errors before field revisions are recorded. All identity, authority, mutation, readback and receipt contracts remain unchanged.
+Version 0.2.40 binds every persistent remote target identity to the current Pack's Workspace-bound object/GRA business identity plus the applicable field or relation ID. `rowKey` remains an internal per-Run orchestration key and is not a cross-Run remote identity. Authority, immutable intent, mutation, readback and receipt contracts remain fail-closed.
 
 Canonical GRA names are `GRA-${elementId}` and participate with element IDs in batch uniqueness checks. DB/OS must reference exactly one in-batch APP in the same normalized Workspace. The InfrastructureApplication relation is written and read from both directions before Infrastructure GRA creation; DB/OS RAIT is then inherited from the exact live APP GRA. Tool has no relationship input in the template, so no Tool relationship is fabricated.
 

@@ -13,6 +13,10 @@ function object(value: unknown, label: string): Record<string, any> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} is invalid.`);
   return value as Record<string, any>;
 }
+function returnAuthorityBinding(value: unknown, label: string): Record<string, any> {
+  const binding = object(value, label);
+  return { ...binding, tenantOrOrgId: String(binding.tenantOrOrgId || '') };
+}
 function canonical(value: unknown): string {
   if (value === null || ['boolean', 'string', 'number'].includes(typeof value)) return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -100,9 +104,9 @@ export class FeatureRuntimeStore {
     if (method === 'finishReturn') return this.finishReturn(input, context);
     if (method === 'recordBootstrapCapabilityEvidence') return this.recordBootstrapCapabilityEvidence(input, context);
     if (method === 'getCapabilityEvidenceState') {
-      const request=object(input,'Capability evidence lookup'); const binding=object(request.connectorBinding,'Capability evidence binding');
+      const request=object(input,'Capability evidence lookup'); const binding=returnAuthorityBinding(request.connectorBinding,'Capability evidence binding');
       const workspaceIds=Array.isArray(request.workspaceIds)?[...new Set(request.workspaceIds.map(String))]:[];
-      if(!binding.authorityInstanceId||!binding.tenantOrOrgId||!binding.packId||!binding.engagementId||workspaceIds.length<1)return{verified:false};
+      if(!binding.authorityInstanceId||!binding.packId||!binding.engagementId||workspaceIds.length<1)return{verified:false};
       const count=this.core.prepare(`SELECT COUNT(DISTINCT workspace_id) AS count FROM feature_capability_evidence WHERE feature_id=? AND feature_version=? AND scenario_id=? AND capability_id=? AND authority_instance_id=? AND tenant_or_org_id=? AND pack_contract_id=? AND engagement_id=? AND workspace_id IN (${workspaceIds.map(()=>'?').join(',')}) AND automated_status='passed' AND portable_status='passed' AND canary_status='passed' AND readback_status='passed' AND verified=1 AND revoked_at='' AND expires_at>?`).get(context.featureId,context.featureVersion,String(request.scenarioId||''),String(request.capabilityId||''),String(binding.authorityInstanceId),String(binding.tenantOrOrgId),String(binding.packId),String(binding.engagementId),...workspaceIds,now()) as {count:number};
       return{verified:count.count===workspaceIds.length};
     }
@@ -719,27 +723,28 @@ export class FeatureRuntimeStore {
   private prepareReturnIntent(input: unknown, context: FeatureWorkerPortContext): Record<string, unknown> {
     const request = object(input, 'Return intent request');
     const runId = String(request.runId || '');
-    const plan = object(request.plan, 'Return plan');
+    let plan = object(request.plan, 'Return plan');
     const targets = plan.targets;
     if (!Array.isArray(targets) || targets.length < 1 || targets.length > 2_000) throw new Error('Return plan target inventory is invalid.');
     const run = this.core.prepare(`SELECT state, state_revision, engagement_id FROM feature_runs WHERE run_id=? AND feature_id=? AND feature_version=?`)
       .get(runId, context.featureId, context.featureVersion) as { state: string; state_revision: number; engagement_id: string } | undefined;
     if (!run || run.state !== 'ready_for_review') throw new Error('Return intent requires a ready_for_review Run.');
-    const binding = object(request.connectorBinding, 'Return Connector binding');
+    const binding = returnAuthorityBinding(request.connectorBinding, 'Return Connector binding');
     const safety = object(request.safetyLock, 'Return safety lock');
     const workspaceIds = Array.isArray(safety.workspaceIds) ? safety.workspaceIds.map(String) : [];
     const globalWorkspaceIds = safety.globalEnabled === true && Array.isArray(safety.globalWorkspaceIds)
       ? safety.globalWorkspaceIds.map(String) : [];
     const allowedWorkspaceIds = [...new Set([...workspaceIds, ...globalWorkspaceIds])];
     if (!binding.connectorId || Number(binding.sessionGeneration) < 1 || !binding.engagementId
-      || !binding.authorityInstanceId || !binding.tenantOrOrgId || !binding.packId
+      || !binding.authorityInstanceId || !binding.packId
       || safety.enabled !== true || safety.engagementId !== binding.engagementId || workspaceIds.length < 1) {
       throw new Error('Return intent binding or safety lock is invalid.');
     }
     if (run.engagement_id && run.engagement_id !== String(binding.engagementId)) {
       throw new Error('Return intent engagement differs from the engagement already frozen on this Run.');
     }
-    const planAuthority = object(plan.authority, 'Return plan authority snapshot');
+    const planAuthority = returnAuthorityBinding(plan.authority, 'Return plan authority snapshot');
+    plan = { ...plan, authority: planAuthority };
     if (String(planAuthority.authorityInstanceId || '') !== String(binding.authorityInstanceId)
       || String(planAuthority.tenantOrOrgId || '') !== String(binding.tenantOrOrgId)
       || String(planAuthority.packId || '') !== String(binding.packId)
@@ -811,7 +816,7 @@ export class FeatureRuntimeStore {
       SELECT c.*, r.state, r.state_revision, r.engagement_id AS run_engagement_id FROM feature_confirmations c JOIN feature_runs r ON r.run_id=c.run_id
       WHERE c.confirmation_id=? AND r.feature_id=? AND r.feature_version=?
     `).get(confirmationId, context.featureId, context.featureVersion) as Record<string, any> | undefined;
-    const binding = object(request.connectorBinding, 'Current Return Connector binding');
+    const binding = returnAuthorityBinding(request.connectorBinding, 'Current Return Connector binding');
     const safety = object(request.safetyLock, 'Current Return safety lock');
     const durableSafety = this.core.prepare(`SELECT enabled, engagement_id, workspace_ids_json, global_enabled, global_section_ids_json, global_workspace_ids_json, state_version FROM workspace_safety WHERE singleton=1`)
       .get() as { enabled: number; engagement_id: string; workspace_ids_json: string; global_enabled:number; global_section_ids_json:string; global_workspace_ids_json:string; state_version: number };
@@ -855,7 +860,7 @@ export class FeatureRuntimeStore {
 
   private validateReturnAuthority(input: unknown, context: FeatureWorkerPortContext): true {
     const request=object(input,'Return authority validation'); const runId=String(request.runId||'');
-    const binding=object(request.connectorBinding,'Current Return Connector binding'); const safety=object(request.safetyLock,'Current Return safety lock');
+    const binding=returnAuthorityBinding(request.connectorBinding,'Current Return Connector binding'); const safety=object(request.safetyLock,'Current Return safety lock');
     const confirmation=this.core.prepare(`SELECT c.credential_digest,c.engagement_id,c.authority_instance_id,c.tenant_or_org_id,c.pack_id,c.safety_revision,r.engagement_id AS run_engagement_id FROM feature_confirmations c JOIN feature_runs r ON r.run_id=c.run_id WHERE c.run_id=? AND c.decision='approved' AND r.feature_id=? AND r.feature_version=? ORDER BY c.created_at DESC LIMIT 1`).get(runId,context.featureId,context.featureVersion) as Record<string,any>|undefined;
     const durable=this.core.prepare(`SELECT enabled,engagement_id,workspace_ids_json,global_enabled,global_section_ids_json,global_workspace_ids_json,state_version FROM workspace_safety WHERE singleton=1`).get() as {enabled:number;engagement_id:string;workspace_ids_json:string;global_enabled:number;global_section_ids_json:string;global_workspace_ids_json:string;state_version:number};
     const workspaceIds=Array.isArray(safety.workspaceIds)?safety.workspaceIds.map(String):[];
@@ -883,7 +888,7 @@ export class FeatureRuntimeStore {
       .get(runId, planDigest, targetKind, targetKey) as { intent_id: string; state: string; intended_revision_json: string } | undefined;
     const confirmation = this.core.prepare(`SELECT decision, credential_digest, authority_instance_id, tenant_or_org_id, pack_id, engagement_id FROM feature_confirmations WHERE run_id=? AND plan_digest=? ORDER BY created_at DESC LIMIT 1`)
       .get(runId, planDigest) as Record<string, any> | undefined;
-    const binding = object(request.binding, 'Return command authority binding');
+    const binding = returnAuthorityBinding(request.binding, 'Return command authority binding');
     const workspaceIds = Array.isArray(request.workspaceIds) ? request.workspaceIds.map(String) : [];
     const authorityDigest = crypto.createHash('sha256').update(canonical({
       connectorId: binding.connectorId, sessionGeneration: Number(binding.sessionGeneration), engagementId: binding.engagementId,
@@ -1015,7 +1020,7 @@ export class FeatureRuntimeStore {
       .get(runId, planDigest, targetKind, targetKey) as { intent_id:string; state:string; intended_revision_json:string }|undefined;
     const confirmation = this.core.prepare(`SELECT decision,credential_digest,authority_instance_id,tenant_or_org_id,pack_id,engagement_id FROM feature_confirmations WHERE run_id=? AND plan_digest=? ORDER BY created_at DESC LIMIT 1`)
       .get(runId, planDigest) as Record<string,any>|undefined;
-    const binding = object(request.binding, 'Deletion command authority binding');
+    const binding = returnAuthorityBinding(request.binding, 'Deletion command authority binding');
     const workspaceIds = Array.isArray(request.workspaceIds) ? request.workspaceIds.map(String) : [];
     const intended = intent ? JSON.parse(intent.intended_revision_json) as Record<string,unknown> : {};
     const mutationPayload = object(request.request, 'Exact deletion mutation payload');
@@ -1076,7 +1081,7 @@ export class FeatureRuntimeStore {
       WHERE c.command_id=? AND c.run_id=? AND r.feature_id=? AND r.feature_version=?
       ORDER BY f.created_at DESC LIMIT 1
     `).get(commandId, runId, context.featureId, context.featureVersion) as Record<string, any> | undefined;
-    const binding = object(evidenceRequest.connectorBinding, 'Evidence authority binding');
+    const binding = returnAuthorityBinding(evidenceRequest.connectorBinding, 'Evidence authority binding');
     const target = object(evidenceRequest.target, 'Evidence target identity');
     const safety = this.core.prepare(`SELECT workspace_ids_json FROM workspace_safety WHERE singleton=1`).get() as {workspace_ids_json:string};
     const workspaceIds = JSON.parse(safety.workspace_ids_json) as string[];
@@ -1206,8 +1211,8 @@ export class FeatureRuntimeStore {
     const command = this.core.prepare(`SELECT c.intent_id,c.state,c.plan_digest,i.target_kind,i.target_key,i.intended_revision_json,i.state AS intent_state FROM feature_commands c JOIN managed_content_intents i ON i.intent_id=c.intent_id AND i.run_id=c.run_id AND i.plan_digest=c.plan_digest WHERE c.command_id=? AND c.run_id=?`).get(commandId, runId) as { intent_id: string; state: string; plan_digest:string; target_kind:string; target_key:string; intended_revision_json:string; intent_state:string } | undefined;
     const evidence = this.core.prepare(`SELECT evidence_id FROM feature_command_evidence WHERE command_id=? AND evidence_type IN ('readback','reconcile') AND receipt_id<>'' AND verified=1 ORDER BY occurred_at DESC LIMIT 1`).get(commandId) as { evidence_id: string } | undefined;
     if (!command || command.state !== 'readback_verified' || command.intent_state !== 'verified' || !evidence) throw new Error('Managed projection requires verified current read-back evidence.');
-    const binding = object(request.binding, 'Projection authority binding');
-    for (const field of ['authorityInstanceId', 'tenantOrOrgId', 'packId', 'engagementId']) if (!String(binding[field] || '')) throw new Error(`Projection authority is missing ${field}.`);
+    const binding = returnAuthorityBinding(request.binding, 'Projection authority binding');
+    for (const field of ['authorityInstanceId', 'packId', 'engagementId']) if (!String(binding[field] || '')) throw new Error(`Projection authority is missing ${field}.`);
     const confirmation = this.core.prepare(`SELECT credential_digest,authority_instance_id,tenant_or_org_id,pack_id,engagement_id FROM feature_confirmations WHERE run_id=? AND plan_digest=? AND decision='approved' ORDER BY created_at DESC LIMIT 1`).get(runId, command.plan_digest) as Record<string,any>|undefined;
     const safety = this.core.prepare(`SELECT workspace_ids_json FROM workspace_safety WHERE singleton=1`).get() as {workspace_ids_json:string};
     const workspaceIds = JSON.parse(safety.workspace_ids_json) as string[];
@@ -1283,7 +1288,7 @@ export class FeatureRuntimeStore {
     const observed = JSON.parse(evidence.payload_json) as Record<string,unknown>;
     if (observed.deleted !== true) throw new Error('Deletion readback does not prove the target is deleted.');
     const intended = JSON.parse(String(command.intended_revision_json)) as Record<string,any>;
-    const binding = object(request.binding, 'Deletion projection authority binding');
+    const binding = returnAuthorityBinding(request.binding, 'Deletion projection authority binding');
     const workspaceId = String(request.workspaceId || '');
     if (!workspaceId || workspaceId !== String(intended.workspace || '')
       || String(command.target_key) !== String(intended.key || '')) throw new Error('Deletion projection differs from the frozen target.');
@@ -1374,7 +1379,7 @@ export class FeatureRuntimeStore {
       || !/^[a-z0-9][a-z0-9._-]{2,127}$/u.test(capabilityId)) {
       throw new Error('Bootstrap capability evidence schema or capability declaration is invalid.');
     }
-    const binding = object(request.connectorBinding, 'Bootstrap Connector binding'); const safety = object(request.safetyLock, 'Bootstrap safety scope');
+    const binding = returnAuthorityBinding(request.connectorBinding, 'Bootstrap Connector binding'); const safety = object(request.safetyLock, 'Bootstrap safety scope');
     const run = this.core.prepare(`SELECT state FROM feature_runs WHERE run_id=? AND feature_id=? AND feature_version=?`)
       .get(runId, context.featureId, context.featureVersion) as { state: string } | undefined;
     if (!run || !['returning','verifying'].includes(run.state)) throw new Error('Bootstrap evidence requires the current verified Return batch before terminal completion.');

@@ -3,7 +3,7 @@
 Surface 只采集/展示；Worker 解析、验证、编译计划；Core Store 持久化；Connector 只托管签名 Operation。
 # Implementation map
 
-Version 0.2.26 keeps the four-plane boundary. The Worker selects exactly one V8 subtype family and resolves frozen Risk-Control intents by live catalog number. The signed Connector Operation parses the recorded top-level v4 catalog shapes, preserves live number/scope/classification identity, and reuses the same resolution rule at mutation time. Routes, validation, mutation and detail readback remain unchanged and signed.
+Version 0.2.27 keeps the four-plane boundary. The Worker distinguishes complete existing GRAs from incomplete recovery candidates using the signed live status/RAIT read. Stable governance identities are frozen at prepare time; generated live Risk-Control and Risk Factor identities are resolved only after state repair. Connector routes and mutation semantics remain unchanged and signed.
 
 - Frontend: `frontend/surface.json` plus generic two-column workflow renderer, native picker/drop staging, explicit confirmation, post-render background action dispatch, signed-template Save As, artifacts, progress/issues, and issue editors.
 - Worker: `middle/worker.cjs` owns XLSX parsing, governance interpretation, plan/output compilation, revisions, and orchestration.

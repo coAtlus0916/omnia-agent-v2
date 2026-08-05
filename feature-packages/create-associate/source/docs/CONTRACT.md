@@ -6,7 +6,7 @@ V8 digest 固定为 `1ED937A50253CEDF431CE02A0CC7A3B3E576597BBD6CAA6C967738D7B2D
 
 # Contracts
 
-Version 0.2.26 retains the same canonical validation, GRA identity, Application settings, authority, safety and receipt contracts. Risk-Control catalog parsing accepts only the recorded top-level v4 collections, preserves live risk/control numbers, classification and RiskRiskScope identity, and applies the same identity rules during review, execution and action-time mutation revalidation. Missing or ambiguous identities remain blocking; no relation is skipped to make a Run pass.
+Version 0.2.27 retains the same canonical validation, GRA identity, Application settings, authority, safety and receipt contracts. Prepare freezes relation IDs, factor item IDs, documentation text and evaluation intent for incomplete GRAs without pretending that generated live IDs already exist. Execution first verifies the GRA state/RAIT patches, then performs at most four strict catalog reads across a five-second bounded wait. Every required relation must resolve uniquely; missing SAP.15 or any other target remains blocking.
 
 Canonical GRA names are `GRA-${elementId}` and participate with element IDs in batch uniqueness checks. DB/OS must reference exactly one in-batch APP in the same normalized Workspace. The InfrastructureApplication relation is written and read from both directions before Infrastructure GRA creation; DB/OS RAIT is then inherited from the exact live APP GRA. Tool has no relationship input in the template, so no Tool relationship is fabricated.
 

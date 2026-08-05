@@ -587,6 +587,10 @@ function catalogControlMatches(catalog, relation) {
     return liveNumber ? liveNumber === number : catalogIdentityText(item.name) === expectedName;
   });
 }
+function unresolvedCatalogRelations(catalog, relations, mode) {
+  return relations.filter((relation) => catalogRiskMatches(catalog, relation, relation[`classification${mode}`]).length !== 1
+    || catalogControlMatches(catalog, relation).length !== 1);
+}
 function requestedRelationFamily(kind, content) {
   const value = catalogIdentityText(content);
   const aliases = {
@@ -845,6 +849,17 @@ function createFeatureWorker(dependencies) {
     return connector.invoke({ schemaVersion: 'omnia.operation-invocation/v1', featureId: FEATURE_ID,
       featureVersion: FEATURE_VERSION, operationId, request: { connectorBinding, ...request } });
   }
+  async function waitForCompleteRiskControlCatalog(connectorBinding, request, relations, mode) {
+    const delays = [1000, 2000, 2000];
+    let catalog = { risks: [], controls: [], diagnostics: {} }; let missing = relations;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      catalog = await invoke(RETURN_OPERATIONS.riskCatalog, connectorBinding, request);
+      missing = unresolvedCatalogRelations(catalog, relations, mode);
+      if (!missing.length) return catalog;
+      if (attempt < delays.length) await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+    }
+    fail('RETURN.RISK_CONTROL_CATALOG_SETTLING_TIMEOUT', `Generated Risk/Control catalog remained incomplete after 4 bounded reads: ${missing.map((item) => item.relationId).join(', ')}.`);
+  }
   function authorityRequest(checkpoint, context) {
     const workspaceNames = [...new Set(activeRows(checkpoint.parsed).map((row) => rowField(row, governance, `P1.${row.kind}.IT.WORKSPACE`)))];
     const graContents = [...new Map(activeRows(checkpoint.parsed).map((row) => {
@@ -1054,31 +1069,39 @@ function createFeatureWorker(dependencies) {
           const patchKind=intent.fieldId==='status'?'status':'rait'; const current=patchKind==='status'?state.status:state.itElementRaitConclusionLevelId||state.itElementRaitConclusionLevelName;
           rowPreview.changes.push({targetKey:intent.key,disposition:String(current)===String(intent.value)?'reuse':'patch',current,desired:intent.value,operationId:intent.mutationOperationId,evidenceOperationId:intent.evidenceOperationIds[0]});
         }
-        const riskIntents=rowTargets.filter((item)=>item.kind==='risk_control');
-        if(riskIntents.length){
-          const catalog=await invoke(RETURN_OPERATIONS.riskCatalog,context.connectorBinding,{target:{targetIdentityKey:identityKey('risk-catalog',[row.rowKey]),workspaceId:row.workspaceId},riskAssessmentId:row.graId});
-          for(const intent of riskIntents){
-            const risks=catalogRiskMatches(catalog,intent,intent.classification);
-            const controls=catalogControlMatches(catalog,intent);
-            if(risks.length!==1||controls.length!==1) fail('RETURN.RISK_CONTROL_CATALOG_DRIFT',`Risk/Control identity is absent or ambiguous during review: ${intent.relationId}.`);
-            const risk=risks[0],control=controls[0]; intent.resolvedCatalog={riskId:risk.riskId,riskRiskScopeId:risk.riskRiskScopeId,controlId:control.controlId,assertion:risk.assertion,updatedOn:risk.updatedOn};
-            const observed=await invoke(RETURN_OPERATIONS.riskRead,context.connectorBinding,{target:{targetIdentityKey:intent.operationTargetIdentityKey,workspaceId:row.workspaceId},query:{riskRiskScopeId:risk.riskRiskScopeId,riskId:risk.riskId,controlId:control.controlId,assertion:risk.assertion}});
-            rowPreview.changes.push({targetKey:intent.key,disposition:observed.verified===true?'reuse':'associate',current:observed.verified===true?'exact association':'absent',desired:{risk:intent.riskName,classification:intent.classification,control:intent.controlName,assertion:risk.assertion},resolvedIds:intent.resolvedCatalog,operationId:intent.mutationOperationId,evidenceOperationId:intent.evidenceOperationIds[0]});
+        const desiredStatus=rowTargets.find((item)=>String(item.key).startsWith('gra-status|'))?.value;
+        const desiredRait=rowTargets.find((item)=>String(item.key).startsWith('gra-rait|'))?.value;
+        const graStateReady=String(state.status)===String(desiredStatus)&&normalizeRait(state.itElementRaitConclusionLevelId||state.itElementRaitConclusionLevelName)===normalizeRait(desiredRait);
+        const deferred=rowTargets.filter((item)=>item.kind==='risk_control'||String(item.key).startsWith('risk-factor|')||item.kind==='documentation'||item.kind==='evaluation');
+        if(!graStateReady){
+          for(const intent of deferred){intent.resolutionMode='post_state_catalog';rowPreview.changes.push({targetKey:intent.key,disposition:'post-state-resolution',current:'GRA state/RAIT not ready',desired:intent.relationId||intent.fieldId||intent.plainText||intent.value,operationId:intent.mutationOperationId,evidenceOperationIds:intent.evidenceOperationIds});}
+        }else{
+          const riskIntents=rowTargets.filter((item)=>item.kind==='risk_control');
+          if(riskIntents.length){
+            const catalog=await invoke(RETURN_OPERATIONS.riskCatalog,context.connectorBinding,{target:{targetIdentityKey:identityKey('risk-catalog',[row.rowKey]),workspaceId:row.workspaceId},riskAssessmentId:row.graId});
+            for(const intent of riskIntents){
+              const risks=catalogRiskMatches(catalog,intent,intent.classification);
+              const controls=catalogControlMatches(catalog,intent);
+              if(risks.length!==1||controls.length!==1) fail('RETURN.RISK_CONTROL_CATALOG_DRIFT',`Risk/Control identity is absent or ambiguous during review: ${intent.relationId}.`);
+              const risk=risks[0],control=controls[0]; intent.resolvedCatalog={riskId:risk.riskId,riskRiskScopeId:risk.riskRiskScopeId,controlId:control.controlId,assertion:risk.assertion,updatedOn:risk.updatedOn};
+              const observed=await invoke(RETURN_OPERATIONS.riskRead,context.connectorBinding,{target:{targetIdentityKey:intent.operationTargetIdentityKey,workspaceId:row.workspaceId},query:{riskRiskScopeId:risk.riskRiskScopeId,riskId:risk.riskId,controlId:control.controlId,assertion:risk.assertion}});
+              rowPreview.changes.push({targetKey:intent.key,disposition:observed.verified===true?'reuse':'associate',current:observed.verified===true?'exact association':'absent',desired:{risk:intent.riskName,classification:intent.classification,control:intent.controlName,assertion:risk.assertion},resolvedIds:intent.resolvedCatalog,operationId:intent.mutationOperationId,evidenceOperationId:intent.evidenceOperationIds[0]});
+            }
           }
+          for(const intent of rowTargets.filter((item)=>String(item.key).startsWith('risk-factor|'))){
+            const target={targetIdentityKey:intent.operationTargetIdentityKey,workspaceId:row.workspaceId};
+            const observed=await invoke(RETURN_OPERATIONS.factorPreflight,context.connectorBinding,{target,query:{riskAssessmentId:row.graId,itemId:intent.fieldId,selectionMode:intent.value}});
+            intent.resolvedFactor={factorId:observed.factorId,selectedValue:observed.selected?.value,selectedName:observed.selected?.name,spectrumDigest:digest(Buffer.from(canonical(observed.spectrum||[])))};
+            const selected=Number(observed.selected?.value),current=Number(observed.current?.value??observed.current);
+            rowPreview.changes.push({targetKey:intent.key,disposition:observed.applicable===false?'not-applicable':selected===current?'reuse':'patch',current:observed.current,desired:observed.selected,operationId:intent.mutationOperationId,evidenceOperationId:observed.applicable===false?RETURN_OPERATIONS.factorPreflight:RETURN_OPERATIONS.factorRead});
+          }
+          const docIntent=rowTargets.find((item)=>item.kind==='documentation');
+          if(docIntent){const current=await invoke(RETURN_OPERATIONS.documentationPreflight,context.connectorBinding,{target:{targetIdentityKey:docIntent.operationTargetIdentityKey,workspaceId:row.workspaceId},riskAssessmentId:row.graId}); const doc=current.documentation?.documentation||current.documentation;
+            rowPreview.changes.push({targetKey:docIntent.key,disposition:String(doc?.plainText||'')===String(docIntent.plainText)?'reuse':'patch',current:doc?.plainText||'',desired:docIntent.plainText,operationId:docIntent.mutationOperationId,evidenceOperationId:docIntent.evidenceOperationIds[0]});}
+          const evalIntent=rowTargets.find((item)=>item.kind==='evaluation');
+          const evaluation=await invoke(RETURN_OPERATIONS.evaluationPreflight,context.connectorBinding,{target:{targetIdentityKey:evalIntent.operationTargetIdentityKey,workspaceId:row.workspaceId},riskAssessmentId:row.graId});
+          rowPreview.changes.push({targetKey:evalIntent.key,disposition:evaluation.status===evalIntent.value?'reuse':'submit',current:evaluation.status,desired:evalIntent.value,operationId:evalIntent.mutationOperationId,evidenceOperationId:evalIntent.evidenceOperationIds[0]});
         }
-        for(const intent of rowTargets.filter((item)=>String(item.key).startsWith('risk-factor|'))){
-          const target={targetIdentityKey:intent.operationTargetIdentityKey,workspaceId:row.workspaceId};
-          const observed=await invoke(RETURN_OPERATIONS.factorPreflight,context.connectorBinding,{target,query:{riskAssessmentId:row.graId,itemId:intent.fieldId,selectionMode:intent.value}});
-          intent.resolvedFactor={factorId:observed.factorId,selectedValue:observed.selected?.value,selectedName:observed.selected?.name,spectrumDigest:digest(Buffer.from(canonical(observed.spectrum||[])))};
-          const selected=Number(observed.selected?.value),current=Number(observed.current?.value??observed.current);
-          rowPreview.changes.push({targetKey:intent.key,disposition:observed.applicable===false?'not-applicable':selected===current?'reuse':'patch',current:observed.current,desired:observed.selected,operationId:intent.mutationOperationId,evidenceOperationId:observed.applicable===false?RETURN_OPERATIONS.factorPreflight:RETURN_OPERATIONS.factorRead});
-        }
-        const docIntent=rowTargets.find((item)=>item.kind==='documentation');
-        if(docIntent){const current=await invoke(RETURN_OPERATIONS.documentationPreflight,context.connectorBinding,{target:{targetIdentityKey:docIntent.operationTargetIdentityKey,workspaceId:row.workspaceId},riskAssessmentId:row.graId}); const doc=current.documentation?.documentation||current.documentation;
-          rowPreview.changes.push({targetKey:docIntent.key,disposition:String(doc?.plainText||'')===String(docIntent.plainText)?'reuse':'patch',current:doc?.plainText||'',desired:docIntent.plainText,operationId:docIntent.mutationOperationId,evidenceOperationId:docIntent.evidenceOperationIds[0]});}
-        const evalIntent=rowTargets.find((item)=>item.kind==='evaluation');
-        const evaluation=await invoke(RETURN_OPERATIONS.evaluationPreflight,context.connectorBinding,{target:{targetIdentityKey:evalIntent.operationTargetIdentityKey,workspaceId:row.workspaceId},riskAssessmentId:row.graId});
-        rowPreview.changes.push({targetKey:evalIntent.key,disposition:evaluation.status===evalIntent.value?'reuse':'submit',current:evaluation.status,desired:evalIntent.value,operationId:evalIntent.mutationOperationId,evidenceOperationId:evalIntent.evidenceOperationIds[0]});
       }else for(const intent of rowTargets.filter((item)=>!item.key.startsWith('object|')&&!item.key.startsWith('gra|')&&item.kind!=='relation'&&!item.key.startsWith('object-settings|'))) rowPreview.changes.push({targetKey:intent.key,disposition:'post-create-resolution',current:'not-readable-before-gra-create',desired:intent.value||intent.plainText||intent.relationId||intent.fieldId||intent.kind,operationId:intent.mutationOperationId,evidenceOperationIds:intent.evidenceOperationIds});
       preflights.push(rowPreview);
     }
@@ -1482,17 +1505,23 @@ function createFeatureWorker(dependencies) {
               }
             }
             const contentName = row.content.contentName; const selected = governance.relations.filter((relation) => relationApplicable(relation, row, contentName, mode));
-            const catalog = selected.length ? await invoke(RETURN_OPERATIONS.riskCatalog, binding, { target: { targetIdentityKey: identityKey('risk-catalog', [row.rowKey]), workspaceId: row.workspaceId }, riskAssessmentId: graId }) : { risks: [], controls: [] };
-            for (const relation of selected.filter((item) => linkRequired(item, mode))) {
+            const requiredRelations=selected.filter((item)=>linkRequired(item,mode));
+            const catalogRequest={target:{targetIdentityKey:identityKey('risk-catalog',[row.rowKey]),workspaceId:row.workspaceId},riskAssessmentId:graId};
+            let catalog = requiredRelations.length ? await waitForCompleteRiskControlCatalog(binding,catalogRequest,requiredRelations,mode) : { risks: [], controls: [] };
+            for (let relationIndex=0;relationIndex<requiredRelations.length;relationIndex+=1) {
+              const relation=requiredRelations[relationIndex];
+              if(relationIndex>0) catalog=await invoke(RETURN_OPERATIONS.riskCatalog,binding,catalogRequest);
               const risks = catalogRiskMatches(catalog,relation,relation[`classification${mode}`]);
               const controls = catalogControlMatches(catalog,relation);
               if (risks.length !== 1 || controls.length !== 1) fail('RETURN.RISK_CONTROL_CATALOG_DRIFT', `Risk/Control catalog identity is absent or ambiguous: ${relation.relationId}.`);
               const risk = risks[0]; const control = controls[0]; const targetKey = `risk-control|${row.rowKey}|${relation.relationId}`;
               if (done(targetKey)) continue;
+              const frozenCatalog=targetByKey.get(targetKey).resolvedCatalog;
+              if(frozenCatalog&&(frozenCatalog.riskId!==risk.riskId||frozenCatalog.riskRiskScopeId!==risk.riskRiskScopeId||frozenCatalog.controlId!==control.controlId||frozenCatalog.assertion!==risk.assertion)) fail('RETURN.RISK_CONTROL_CATALOG_IDENTITY_DRIFT',`Risk/Control live identity changed after confirmation: ${relation.relationId}.`);
               const target = { targetIdentityKey: identityKey('risk-control', [row.rowKey, relation.relationId]), workspaceId: row.workspaceId };
               const riskQuery = { riskRiskScopeId: risk.riskRiskScopeId, riskId: risk.riskId, controlId: control.controlId, assertion: risk.assertion };
               const existingRisk = await invoke(RETURN_OPERATIONS.riskRead, binding, { target, query: riskQuery });
-              if(existingRisk.verified===true&&!targetByKey.get(targetKey).resolvedCatalog) fail('RETURN.POST_CREATE_RISK_ALREADY_ASSOCIATED',`Post-create Risk-Control ${relation.relationId} became associated before its frozen mutation; a new review is required.`);
+              if(existingRisk.verified===true&&!frozenCatalog&&targetByKey.get(targetKey).resolutionMode!=='post_state_catalog') fail('RETURN.POST_CREATE_RISK_ALREADY_ASSOCIATED',`Post-create Risk-Control ${relation.relationId} became associated before its frozen mutation; a new review is required.`);
               const result = existingRisk.verified === true ? await closeVerified(targetKey,RETURN_OPERATIONS.riskWrite,RETURN_OPERATIONS.riskRead,{target,query:riskQuery},(observed)=>observed.verified===true) : await verifiedMutation({ targetKey, target, preflightOperation: RETURN_OPERATIONS.riskPreflight,
                 preflightRequest: { target, query: { riskId: risk.riskId, riskClassification: risk.classification, controlId: control.controlId } },
                 mutationOperation: RETURN_OPERATIONS.riskWrite, commandKind: 'associate_risk_control', mutationPayload: {

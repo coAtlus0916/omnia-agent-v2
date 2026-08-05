@@ -1,4 +1,8 @@
-# 0.2.26 / sequence 28
+# 0.2.27 / sequence 29
+
+Existing but incomplete GRAs no longer fail prepare because generated Risk/Control or Risk Factor catalogs have not settled. Prepare freezes stable V8 relation IDs, scoring item IDs, documentation and evaluation intent, marks their live identity resolution as post-state, and previews the required state repair. Execution patches and verifies GRA status/RAIT first, then performs four strict catalog reads within the v4 five-second wait budget. All required relations must resolve exactly; no target is skipped. Complete existing GRAs retain prepare-time catalog/readback validation, and frozen live IDs must still match the action-time catalog.
+
+# 0.2.26 / sequence 28 history
 
 V8 relation selection is now subtype-exclusive across APP, DB, OS and Tool; SAP ECC no longer receives Generic APP relations. Risk-Control catalog parsing follows the v4 top-level payload contract and preserves `riskNumber`/`inkRiskNumber`, `controlNumber`, classification, assertion, `updatedOn` and RiskRiskScope identity. Review, execution and mutation-time revalidation resolve by number first and use an exact display-name fallback only when a live row has no number. Structured catalog counts and normalized identity inventories are retained in the Operation response for bounded audit diagnostics. Missing or ambiguous identities continue to fail closed.
 

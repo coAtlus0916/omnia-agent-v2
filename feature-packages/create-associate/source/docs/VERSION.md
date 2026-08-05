@@ -1,4 +1,8 @@
-# 0.2.28 / sequence 30
+# 0.2.29 / sequence 31
+
+Fixed relationship readback after Omnia successfully committed an association whose search-result row did not contain `workspaceId`. The previous predicate called strict `rowWorkspace` on every association row and failed before it could recognize the exact counterpart ID. Preflight and reconcile now prove source and target Workspace membership independently through signed object-detail plus Work Item Facet mapping routes, validate endpoint types, and then evaluate search rows by exact object ID. Bidirectional Infrastructure/Application consistency remains mandatory. An already committed relationship is recovered read-only and is never replayed.
+
+# 0.2.28 / sequence 30 history
 
 Fixed the local prepare failure `Cannot convert undefined or null to object` for incomplete existing GRAs. The signed state response can omit both RAIT properties; the 0.2.27 preview copied that JavaScript `undefined` into `rowPreview.changes.current`, and strict canonicalization then reached `Object.keys(undefined)`. Missing status/RAIT is now explicit JSON `null`. Deferred previews freeze validated typed desired objects, so optional fallback values cannot introduce another undefined. The post-state catalog wait, completeness rules and execution order remain unchanged.
 

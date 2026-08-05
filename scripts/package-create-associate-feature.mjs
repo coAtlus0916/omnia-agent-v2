@@ -140,7 +140,7 @@ const runtimeBaseBytes = workerModule.buildRuntimeWorkbook(
 
 const userTemplateBytes = await readFile(userTemplatePath);
 if (userTemplateBytes.length < 1 || userTemplateBytes.length > 64 * 1024 * 1024) throw new Error('Phase1 user template V3 size is invalid.');
-const version = '0.2.28'; const sequence = 30;
+const version = '0.2.29'; const sequence = 31;
 const route = (stepId, method, routeTemplate, parameters, bodyMode = 'none', bodyParameter = '') => ({ stepId, method, routeTemplate, parameters, bodyMode, bodyParameter });
 const applicationIdentityRoutes = () => [
   route('workitem-directory', 'POST', '/work/v1/WorkQueries/getWorkitemDetails', [], 'signed_json'),
@@ -196,12 +196,20 @@ const operations = [
     route('object-settings-workspace','GET','/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}',[{name:'workItemId',type:'guid'}])
   ] },
   { operationId: 'omnia.create-associate.relation.preflight.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.relation-preflight-request/v1', responseSchema: 'omnia.create-associate.relation-preflight-response/v1', enabledByDefault: true, grantsMutationPermit: true, permitsOperationId: 'omnia.create-associate.relation.associate.v1', routes: [
+    route('relation-source-detail', 'GET', '/rapr/v0/engagements/{engagementId}/itelement/{objectId}', [{ name: 'objectId', type: 'guid' }]),
+    route('relation-source-workspace', 'GET', '/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}', [{ name: 'workItemId', type: 'guid' }]),
+    route('relation-target-detail', 'GET', '/rapr/v0/engagements/{engagementId}/itelement/{objectId}', [{ name: 'objectId', type: 'guid' }]),
+    route('relation-target-workspace', 'GET', '/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}', [{ name: 'workItemId', type: 'guid' }]),
     route('applications-search', 'POST', '/rapr/v0/engagements/{engagementId}/applications/search', [], 'signed_json'),
     route('infrastructures-search', 'POST', '/rapr/v0/engagements/{engagementId}/infrastructures/search', [], 'signed_json'),
     route('tool-relation-search', 'POST', '/rapr/v0/engagements/{engagementId}/itelement/search', [], 'signed_json')
   ] },
   { operationId: 'omnia.create-associate.relation.associate.v1', effect: 'omnia_mutation', requestSchema: 'omnia.create-associate.relation-associate-request/v1', responseSchema: 'omnia.create-associate.relation-associate-response/v1', enabledByDefault: false, grantsMutationPermit: false, routes: [route('relation-associate', 'POST', '/rapr/v0/engagements/{engagementId}/itelement/associate', [], 'signed_json')] },
   { operationId: 'omnia.create-associate.relation.reconcile.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.relation-reconcile-request/v1', responseSchema: 'omnia.create-associate.relation-reconcile-response/v1', enabledByDefault: true, grantsMutationPermit: false, routes: [
+    route('relation-source-detail', 'GET', '/rapr/v0/engagements/{engagementId}/itelement/{objectId}', [{ name: 'objectId', type: 'guid' }]),
+    route('relation-source-workspace', 'GET', '/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}', [{ name: 'workItemId', type: 'guid' }]),
+    route('relation-target-detail', 'GET', '/rapr/v0/engagements/{engagementId}/itelement/{objectId}', [{ name: 'objectId', type: 'guid' }]),
+    route('relation-target-workspace', 'GET', '/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}', [{ name: 'workItemId', type: 'guid' }]),
     route('applications-search', 'POST', '/rapr/v0/engagements/{engagementId}/applications/search', [], 'signed_json'),
     route('infrastructures-search', 'POST', '/rapr/v0/engagements/{engagementId}/infrastructures/search', [], 'signed_json'),
     route('tool-relation-search', 'POST', '/rapr/v0/engagements/{engagementId}/itelement/search', [], 'signed_json')

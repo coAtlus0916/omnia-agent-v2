@@ -457,21 +457,36 @@ async function applicationCreatePreflight(request, sdk) {
   }
   return { ...resolution, disposition: 'create', reasonCode: 'not_found' };
 }
+async function relationshipObjectAuthority(sdk, detailStep, workspaceStep, objectId, expectedType, workspaceId, label) {
+  const detail = await sdk.invokeStep(detailStep, { objectId });
+  if (rowId(detail) !== objectId || deletedEntity(detail)
+    || normalizedObjectType(detail.itElementType || detail.elementType || detail.entityType || detail.type) !== expectedType) {
+    fail(`${label} identity/type mismatch.`);
+  }
+  const authority = await assertObjectWorkspaceAuthority(sdk, workspaceStep, detail, workspaceId);
+  return { objectId, objectType: expectedType, workItemId: authority.workItemId, workspaceId: authority.workspaceId };
+}
 async function relationshipRead(request, sdk) {
   const query = exact(request.query, ['associationType', 'itElementId', 'associatingEntityId', 'workspaceId'], 'Relationship query');
   const itElementId = guid(query.itElementId, 'query.itElementId');
   const associatingId = guid(query.associatingEntityId, 'query.associatingEntityId');
-  guid(query.workspaceId, 'query.workspaceId');
-  if (query.associationType === 'InfrastructureApplication') {
-    const fromInfrastructure = await boundedSearch(sdk, 'applications-search', (page) => pageBody(page, 500, 'number', { associatedWithInfrastructureId: itElementId }), (item) => rowId(item) === associatingId && rowWorkspace(item) === query.workspaceId);
-    const fromApplication = await boundedSearch(sdk, 'infrastructures-search', (page) => pageBody(page, 500, 'number', { associatedWithApplicationId: associatingId }), (item) => rowId(item) === itElementId && rowWorkspace(item) === query.workspaceId);
-    return { associated: fromInfrastructure.found && fromApplication.found, inconsistent: fromInfrastructure.found !== fromApplication.found, fromInfrastructure, fromApplication };
-  }
-  const elementType = query.associationType === 'ItToolApplication' ? 'Application'
+  const workspaceId = guid(query.workspaceId, 'query.workspaceId');
+  const targetType = query.associationType === 'InfrastructureApplication' || query.associationType === 'ItToolApplication' ? 'Application'
     : query.associationType === 'ItToolInfrastructure' ? 'Infrastructure' : '';
-  if (!elementType) fail('Unsupported signed relationship type.');
-  const found = await boundedSearch(sdk, 'tool-relation-search', (page) => pageBody(page, 10, 'name', { associatedWithITToolId: itElementId, itElementType: elementType }), (item) => rowId(item) === associatingId && rowWorkspace(item) === query.workspaceId);
-  return { associated: found.found, inconsistent: false, found };
+  const sourceType = query.associationType === 'InfrastructureApplication' ? 'Infrastructure'
+    : targetType ? 'ITTool' : '';
+  if (!sourceType || !targetType) fail('Unsupported signed relationship type.');
+  const [sourceAuthority, targetAuthority] = await Promise.all([
+    relationshipObjectAuthority(sdk, 'relation-source-detail', 'relation-source-workspace', itElementId, sourceType, workspaceId, 'Relationship source'),
+    relationshipObjectAuthority(sdk, 'relation-target-detail', 'relation-target-workspace', associatingId, targetType, workspaceId, 'Relationship target')
+  ]);
+  if (query.associationType === 'InfrastructureApplication') {
+    const fromInfrastructure = await boundedSearch(sdk, 'applications-search', (page) => pageBody(page, 500, 'number', { associatedWithInfrastructureId: itElementId }), (item) => rowId(item) === associatingId);
+    const fromApplication = await boundedSearch(sdk, 'infrastructures-search', (page) => pageBody(page, 500, 'number', { associatedWithApplicationId: associatingId }), (item) => rowId(item) === itElementId);
+    return { associated: fromInfrastructure.found && fromApplication.found, inconsistent: fromInfrastructure.found !== fromApplication.found, sourceAuthority, targetAuthority, fromInfrastructure, fromApplication };
+  }
+  const found = await boundedSearch(sdk, 'tool-relation-search', (page) => pageBody(page, 10, 'name', { associatedWithITToolId: itElementId, itElementType: targetType }), (item) => rowId(item) === associatingId);
+  return { associated: found.found, inconsistent: false, sourceAuthority, targetAuthority, found };
 }
 function flattenObjects(value, output = []) {
   if (Array.isArray(value)) for (const item of value) flattenObjects(item, output);

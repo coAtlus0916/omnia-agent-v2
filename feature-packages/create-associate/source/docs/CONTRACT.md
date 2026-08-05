@@ -6,7 +6,7 @@ V8 digest 固定为 `1ED937A50253CEDF431CE02A0CC7A3B3E576597BBD6CAA6C967738D7B2D
 
 # Contracts
 
-Version 0.2.28 retains the same canonical validation, GRA identity, Application settings, authority, safety and receipt contracts. Authoritative missing state is represented as `null`, not an absent JavaScript property. Deferred Risk-Control, Risk Factor, documentation and evaluation previews each require a typed, non-empty desired identity before freezing. The 0.2.27 post-state catalog ordering and strict bounded completeness checks are unchanged.
+Version 0.2.29 retains the same canonical validation, GRA identity, Application settings, authority, safety and receipt contracts. A relationship is accepted only when both endpoint details have the exact requested object IDs/types, both endpoint Work Items map uniquely to the frozen Workspace, and the association searches return the exact counterpart IDs. Infrastructure/Application readback remains bidirectional and must be consistent. Missing Workspace fields on association result rows are neither guessed nor treated as authority.
 
 Canonical GRA names are `GRA-${elementId}` and participate with element IDs in batch uniqueness checks. DB/OS must reference exactly one in-batch APP in the same normalized Workspace. The InfrastructureApplication relation is written and read from both directions before Infrastructure GRA creation; DB/OS RAIT is then inherited from the exact live APP GRA. Tool has no relationship input in the template, so no Tool relationship is fabricated.
 

@@ -32,6 +32,13 @@ function assertFile(filename, code, message) {
   return path.resolve(filename);
 }
 
+function extendedWindowsPath(filename) {
+  const resolved = path.resolve(filename);
+  if (process.platform !== 'win32' || resolved.startsWith('\\\\?\\')) return resolved;
+  if (resolved.startsWith('\\\\')) return `\\\\?\\UNC\\${resolved.slice(2)}`;
+  return `\\\\?\\${resolved}`;
+}
+
 function rejectEmbeddedBinary(value, seen = new Set()) {
   if (!value || typeof value !== 'object') return;
   if (seen.has(value)) throw sidecarError('PYTHON.RPC_CYCLE', 'Python sidecar RPC payload contains a cycle.');
@@ -150,11 +157,11 @@ class PythonSidecarBridge {
       NO_PROXY: '*',
       no_proxy: '*',
       OMNIA_PYTHON_PROTOCOL: PROTOCOL,
-      OMNIA_PYTHON_PACKAGE_ROOT: this.packageRoot,
-      OMNIA_PYTHON_TEMP_ROOT: this.tempRoot
+      OMNIA_PYTHON_PACKAGE_ROOT: extendedWindowsPath(this.packageRoot),
+      OMNIA_PYTHON_TEMP_ROOT: extendedWindowsPath(this.tempRoot)
     };
-    const child = spawn(this.pythonExecutable, ['-I', '-S', '-E', '-u', this.pythonEntry, '--stdio-rpc'], {
-      cwd: this.tempRoot,
+    const child = spawn(this.pythonExecutable, ['-I', '-S', '-E', '-u', extendedWindowsPath(this.pythonEntry), '--stdio-rpc'], {
+      cwd: extendedWindowsPath(this.tempRoot),
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true

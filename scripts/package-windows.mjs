@@ -13,8 +13,15 @@ const runId = `${process.pid}-${Date.now()}`;
 const releaseTarget = path.join(releasesRoot, version);
 const release = path.join(releasesRoot, `.staging-${version}-${runId}`);
 const appRoot = path.join(release, 'resources', 'app');
+const pythonRuntimeVersion = '3.13.14';
+const pythonRuntimeDirectory = `cpython-${pythonRuntimeVersion}-embed-amd64`;
+const pythonRuntimeSource = path.join(root, '.codex-tmp', 'python-runtime', pythonRuntimeDirectory);
+const pythonRuntimeTarget = path.join(releasesRoot, 'runtime', 'python', pythonRuntimeDirectory);
 for (const target of [releaseTarget]) if (existsSync(target)) {
   throw new Error(`Immutable Shell artifact already exists: ${target}`);
+}
+if (!existsSync(path.join(pythonRuntimeSource, 'python.exe')) || !existsSync(path.join(pythonRuntimeSource, 'runtime-manifest.json'))) {
+  throw new Error('The managed CPython runtime is unavailable. Run scripts/provision-python-runtime.mjs first.');
 }
 
 async function removeWithRetry(target, recursive = true) {
@@ -86,8 +93,8 @@ await cp(path.join(root, 'scripts', 'hot-shell-bootstrap.cjs'), path.join(appRoo
 await mkdir(path.join(appRoot, 'builtins'), { recursive: true });
 const builtins = [
   ['recording', 'recording-0.3.0.ofp'],
-  ['create-associate', 'create-associate-0.2.6.ofp'],
-  ['delete-elements', 'delete-elements-0.1.5.ofp']
+  ['create-associate', 'create-associate-0.2.43.ofp'],
+  ['delete-elements', 'delete-elements-0.2.1.ofp']
 ];
 for (const [sourceDirectory, filename] of builtins) {
   await cp(
@@ -110,8 +117,8 @@ const releaseFiles = [
   'resources/app/dist/main/feature-worker-host.cjs',
   'resources/app/dist/tools/feature-installer.cjs',
   'resources/app/builtins/recording-0.3.0.ofp',
-  'resources/app/builtins/create-associate-0.2.6.ofp',
-  'resources/app/builtins/delete-elements-0.1.5.ofp',
+  'resources/app/builtins/create-associate-0.2.43.ofp',
+  'resources/app/builtins/delete-elements-0.2.1.ofp',
   'resources/app/dist/renderer/app.js',
   'resources/app/dist/renderer/index.html',
   'resources/app/dist/renderer/styles.css'
@@ -123,6 +130,13 @@ await writeFile(path.join(release, 'release-manifest.json'), JSON.stringify({
   product: 'omnia-agent-v5-shell',
   version,
   platform: 'win32-x64',
+  runtime: {
+    python: {
+      version: pythonRuntimeVersion,
+      relativePath: `runtime/python/${pythonRuntimeDirectory}`,
+      distribution: 'embeddable'
+    }
+  },
   signed: false,
   signingStatus: 'organization_code_signing_required_before_distribution',
   files: digests
@@ -147,10 +161,23 @@ await writeFile(path.join(release, 'sbom.json'), JSON.stringify({
   components: [
     { type: 'framework', name: 'electron', version: String(electronPackage.version) },
     { type: 'library', name: 'react', version: String(reactPackage.version) },
-    { type: 'library', name: 'react-dom', version: String(reactDomPackage.version) }
+    { type: 'library', name: 'react-dom', version: String(reactDomPackage.version) },
+    { type: 'application', name: 'CPython embeddable', version: pythonRuntimeVersion, licenses: [{ license: { name: 'Python Software Foundation License' } }] }
   ]
 }, null, 2));
 await publishDirectory(release, releaseTarget);
+if (!existsSync(pythonRuntimeTarget)) {
+  const pythonStage = path.join(releasesRoot, `.python-runtime-${runId}`);
+  await removeWithRetry(pythonStage);
+  await mkdir(path.dirname(pythonRuntimeTarget), { recursive: true });
+  await cp(pythonRuntimeSource, pythonStage, { recursive: true });
+  await publishDirectory(pythonStage, pythonRuntimeTarget);
+} else {
+  const installedRuntime = JSON.parse(await readFile(path.join(pythonRuntimeTarget, 'runtime-manifest.json'), 'utf8'));
+  if (installedRuntime.schemaVersion !== 'omnia.managed-python-runtime/v1' || installedRuntime.version !== pythonRuntimeVersion) {
+    throw new Error('The existing versioned managed Python runtime has a conflicting identity.');
+  }
+}
 await mkdir(path.join(releasesRoot, 'data'), { recursive: true });
 const markerStage = path.join(releasesRoot, `.portable-root-${runId}.json`);
 const currentStage = path.join(releasesRoot, `.current-${runId}.json`);

@@ -26,7 +26,7 @@ import { FeatureRuntimeStore } from './feature-runtime-store.js';
 import { FeatureWorkerSupervisor } from './worker-supervisor.js';
 import type { InteractionLogService } from '../services/interaction-log-service.js';
 
-const PRODUCT_VERSION = '0.4.12';
+const PRODUCT_VERSION = '0.4.14';
 const OMNIA_MUTATION_WORKER_TIMEOUT_MS = 15 * 60_000;
 const MANAGED_PYTHON_DISTRIBUTION = 'cpython-3.13.14-embed-amd64';
 const MANAGED_PYTHON_ARCHIVE_SHA256 = '90b4e5b9898b72d744650524bff92377c367f44bd5fbd09e3148656c080ad907';

@@ -140,7 +140,7 @@ const runtimeBaseBytes = workerModule.buildRuntimeWorkbook(
 
 const userTemplateBytes = await readFile(userTemplatePath);
 if (userTemplateBytes.length < 1 || userTemplateBytes.length > 64 * 1024 * 1024) throw new Error('Phase1 user template V3 size is invalid.');
-const version = '0.2.41'; const sequence = 43;
+const version = '0.2.43'; const sequence = 45;
 const route = (stepId, method, routeTemplate, parameters, bodyMode = 'none', bodyParameter = '') => ({ stepId, method, routeTemplate, parameters, bodyMode, bodyParameter });
 const applicationIdentityRoutes = () => [
   route('workitem-directory', 'POST', '/work/v1/WorkQueries/getWorkitemDetails', [], 'signed_json'),
@@ -269,14 +269,23 @@ const operationPackage = envelope({
 const docs = ['FEATURE', 'IMPLEMENTATION_MAP', 'PRODUCT', 'TECHNICAL', 'CONTRACT', 'TESTING', 'OPERATIONS', 'VERSION'];
 const documentationFiles = await Promise.all(docs.map(async (name) => ({ path: `docs/${name}.md`, bytes: await readFile(path.join(source, 'docs', `${name}.md`)), purpose: name.toLowerCase() })));
 const docsManifest = { schemaVersion: 'omnia.feature-documentation/v1', featureId: 'omnia.create-associate', featureVersion: version, documents: documentationFiles.map((document) => ({ path: document.path, sha256: sha256(document.bytes), purpose: document.purpose })) };
+const pythonMemberPaths = [
+  'python/canonical.py', 'python/engine.py', 'python/errors.py', 'python/ooxml.py',
+  'python/protocol.py', 'python/return_plan.py', 'python/security.py', 'python/workbook_compile.py'
+];
+const pythonFiles = await Promise.all(pythonMemberPaths.map(async (memberPath) => ({
+  path: memberPath,
+  bytes: await readFile(path.join(source, ...memberPath.split('/')))
+})));
 const testIds=['v8-governance-ooxml','signed-v3-source-template','staged-source-acquiring','confirm-before-background-validation','background-action-non-mutation','acquiring-recovery','staged-replacement-audit','v3-no-user-is-data-available','v4-is-data-available-false-rule','canonical-eleven-checks','canonical-four-kind-review-matrix','four-kind-derived-description','excluded-row-no-issue-order','empty-kind-disabled','review-reimport-dirty-guard','save-and-full-revalidate','remove-row-full-live-revalidate','remove-row-cas-persistence','live-revalidate-recovery','warnings-do-not-block-return','unexecuted-checks-not-passed','app-identity-recycle-resolution','non-app-identity-state-resolution','app-create-only-permit','uncertain-identity-reconcile-no-replay','three-step-durable-workflow','full-return-operation-loop','bootstrap-capability-evidence','crash-recovery-monotonic'];
 const runtimeContract={schemaVersion:'omnia.feature-runtime-contract/v1',featureId:'omnia.create-associate',featureVersion:version,
   inputs:['staged_xlsx_artifact','upload_confirmation','background_validation','issue_revisions','return_confirmation','connector_binding','workspace_safety'],outputs:['template_instance_xlsx','surface_patch','confirmation_card','managed_object_revisions','managed_relation_revisions'],
   events:['artifact.staging_replaced','workbook.upload_confirmed','run.transition','run.offline_crash_recovered','run.restart_requested','return.confirmed_in_comments','return.readback_verified','return.uncertain'],
   errors:['WORKBOOK.*','GOVERNANCE.*','RETURN.*','CONNECTOR.RESPONSE_LOST'],
-  storePorts:['createRun','readArtifactBytes','readManagedAssetBytes','commitArtifact','transitionRun','recordFieldRevisions','recordIssues','loadRunReview','commitReviewValidation','proveOwnedCreatedObject','prepareReturnIntent','approveReturnIntent','prepareReturnCommand','freezeReturnEvidenceSpec','recordReturnEvidence','projectVerifiedReturn','recordBootstrapCapabilityEvidence','getCapabilityEvidenceState','finishReturn','savePlan','loadPlan']};
+  storePorts:['createRun','readArtifactBytes','readManagedAssetBytes','commitArtifact','transitionRun','recordFieldRevisions','recordIssues','loadRunReview','commitReviewValidation','proveOwnedCreatedObject','prepareReturnIntent','approveReturnIntent','prepareReturnCommand','freezeReturnEvidenceSpec','recordReturnEvidence','projectVerifiedReturn','recordBootstrapCapabilityEvidence','getCapabilityEvidenceState','finishReturn','savePlan','loadPlan','openPythonArtifactHandle','createPythonJsonInputHandle','createPythonOutputHandle','readPythonJsonHandle','commitPythonOutputHandle','releasePythonArtifactHandles'],
+  pythonSidecar:{schemaVersion:'omnia.python-sidecar-runtime/v1',implementation:'cpython',version:'3.13.14',architecture:'win32-x64',protocol:'omnia.python-sidecar-rpc/v1',bridgePath:'middle/python-bridge.cjs',entryPath:'python/engine.py',members:pythonMemberPaths,maxFrameBytes:1024*1024,heartbeatIntervalMs:5000,heartbeatTimeoutMs:15000}};
 const implementationMap={schemaVersion:'omnia.feature-implementation-map/v1',featureId:'omnia.create-associate',featureVersion:version,planes:{
-  surface:['frontend/surface.json'],worker:['middle/worker.cjs'],store:['backend/migrations/001.json','contracts/feature-runtime.json'],connector:['connector-capability/operation.ofop']},
+  surface:['frontend/surface.json'],worker:['middle/worker.cjs','middle/python-bridge.cjs',...pythonMemberPaths],store:['backend/migrations/001.json','contracts/feature-runtime.json'],connector:['connector-capability/operation.ofop']},
   operations:operations.map(({operationId,effect})=>({operationId,effect}))};
 const testVectors={schemaVersion:'omnia.feature-test-vectors/v1',featureId:'omnia.create-associate',vectors:testIds.map((testId)=>({testId,inputRef:'tests/self-test.cjs',expected:'pass'}))};
 const testsManifest={schemaVersion:'omnia.feature-tests-manifest/v1',featureId:'omnia.create-associate',featureVersion:version,testIds,vectorsPath:'tests/vectors.json',selfTestPath:'tests/self-test.cjs',status:'declared',command:'node tests/self-test.cjs'};
@@ -287,7 +296,7 @@ const packagedSelfTest=selfTest
   .replace("governance.derivationRules?.[2]?.ruleId!=='v4.app-is-data-available-false.v1'||governance.derivationRules?.[2]?.constantValue!==false", "governance.derivationRules?.find((rule)=>rule.ruleId==='v4.app-is-data-available-false.v1')?.constantValue!==false")
   .replace("governance.derivationRules?.[3]?.ruleId!=='v4.phase1-gra-name-from-element-id.v1'||governance.derivationRules?.[3]?.prefix!=='GRA-'", "governance.derivationRules?.find((rule)=>rule.ruleId==='v4.phase1-gra-name-from-element-id.v1')?.prefix!=='GRA-'");
 const featureManifest = {
-  schemaVersion: 'omnia.feature-manifest/v1', featureId: 'omnia.create-associate', version, sequence, displayName: '新建与关联', minimumShellVersion: '0.4.9',
+  schemaVersion: 'omnia.feature-manifest/v1', featureId: 'omnia.create-associate', version, sequence, displayName: '新建与关联', minimumShellVersion: '0.4.14',
   requiredIsolation: 'process', storeNamespace: 'create_associate', migrationPath: 'backend/migrations/001.json', surfacePath: 'frontend/surface.json', workerPath: 'middle/worker.cjs', operationPackagePath: 'connector-capability/operation.ofop',
   contractsPath:'contracts/feature-runtime.json',implementationMapPath:'contracts/implementation-map.json',testsManifestPath:'tests/manifest.json',
   assets: [
@@ -333,8 +342,10 @@ const featurePackage = envelope({
     file('contracts/feature-runtime.json',JSON.stringify(runtimeContract,null,2)),file('contracts/implementation-map.json',JSON.stringify(implementationMap,null,2)),
     ...documentationFiles.map((document) => file(document.path, document.bytes)), file('docs/manifest.json', JSON.stringify(docsManifest, null, 2)),
     file('frontend/surface.json', JSON.stringify(surface, null, 2)), file('manifest.json', JSON.stringify(featureManifest, null, 2)), file('middle/worker.cjs', worker),
+    file('middle/python-bridge.cjs', await readFile(path.join(source, 'middle', 'python-bridge.cjs'))),
+    ...pythonFiles.map((member) => file(member.path, member.bytes)),
     file('tests/manifest.json',JSON.stringify(testsManifest,null,2)),file('tests/vectors.json',JSON.stringify(testVectors,null,2)),file('tests/self-test.cjs',packagedSelfTest),
-    file('sbom.json', JSON.stringify({ bomFormat: 'CycloneDX', specVersion: '1.6', version: 1, metadata: { component: { type: 'application', name: featureManifest.featureId, version } }, components: [] }))
+    file('sbom.json', JSON.stringify({ bomFormat: 'CycloneDX', specVersion: '1.6', version: 1, metadata: { component: { type: 'application', name: featureManifest.featureId, version } }, components: [{type:'application',name:'CPython embeddable runtime',version:'3.13.14',scope:'required'}] }))
   ]
 });
 await mkdir(output, { recursive: true });

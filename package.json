@@ -1,6 +1,6 @@
 {
   "name": "omnia-agent-v5-shell",
-  "version": "0.4.12",
+  "version": "0.4.14",
   "description": "Omnia Agent v5 Remote-only shell",
   "private": true,
   "type": "module",
@@ -8,7 +8,8 @@
   "scripts": {
     "clean": "node scripts/clean.mjs",
     "build": "node scripts/build.mjs",
-    "package:windows": "node scripts/package-windows.mjs",
+    "package:windows": "node scripts/provision-python-runtime.mjs && node scripts/package-windows.mjs",
+    "package:portable-release": "npm run package:windows && node scripts/package-portable-artifact.mjs",
     "package:remote-connector": "npm run build && node scripts/package-remote-connector.mjs",
     "package:bridge": "npm run build && node scripts/package-bridge.mjs",
     "package:delete-feature": "npm run build && node scripts/package-delete-feature.mjs",

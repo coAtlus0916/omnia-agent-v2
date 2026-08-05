@@ -25,14 +25,32 @@ class AuthorizedHandle:
     sha256: str
 
 
+def _native_path(value: str) -> str:
+    """Use the Windows extended-length namespace without changing public handle paths."""
+    absolute = os.path.abspath(value)
+    if os.name != "nt" or absolute.startswith("\\\\?\\"):
+        return absolute
+    if absolute.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + absolute[2:]
+    return "\\\\?\\" + absolute
+
+
+def _public_path(value: str) -> str:
+    if os.name != "nt" or not value.startswith("\\\\?\\"):
+        return value
+    if value.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + value[8:]
+    return value[4:]
+
+
 class AuditPolicy:
     def __init__(self, package_root: str) -> None:
-        self.package_root = os.path.realpath(package_root)
+        self.package_root = os.path.realpath(_native_path(package_root))
         self.runtime_root = os.path.realpath(sys.base_prefix)
         configured_temp = os.environ.get("OMNIA_PYTHON_TEMP_ROOT", "")
         if not configured_temp or not os.path.isabs(configured_temp):
             raise EngineError("SIDECAR.TEMP_ROOT_INVALID", "Managed Python temp root is unavailable.")
-        self.temp_root = os.path.realpath(configured_temp)
+        self.temp_root = os.path.realpath(_native_path(configured_temp))
         require(os.path.isdir(self.temp_root), "SIDECAR.TEMP_ROOT_INVALID", "Managed Python temp root is unavailable.")
         self.read_paths: set[str] = set()
         self.write_paths: set[str] = set()
@@ -60,17 +78,17 @@ class AuditPolicy:
         require(run_id == self.invocation_run_id, "HANDLE.RUN_BINDING_MISMATCH", "Artifact handle is not bound to the active invocation Run.")
         require(isinstance(raw_path, str) and os.path.isabs(raw_path), "HANDLE.PATH_INVALID", "Artifact handle path must be absolute.")
         require(access in ("read", "write", "readwrite"), "HANDLE.ACCESS_INVALID", "Artifact handle access is invalid.")
-        expected_root = os.path.realpath(os.path.join(self.temp_root, run_id, handle_id))
+        expected_root = os.path.realpath(_native_path(os.path.join(self.temp_root, run_id, handle_id)))
         require(_within(expected_root, self.temp_root) and os.path.isdir(expected_root), "HANDLE.ROOT_INVALID", "Artifact handle root is unavailable.")
         if required_access == "read":
             require(access in ("read", "readwrite"), "HANDLE.READ_FORBIDDEN", "Artifact handle does not grant read access.")
-            path = os.path.realpath(raw_path)
+            path = os.path.realpath(_native_path(raw_path))
             require(_within(path, expected_root) and os.path.dirname(path) == expected_root, "HANDLE.PATH_OUTSIDE_RUN", "Artifact handle escaped its Feature/Run temp root.")
             require(os.path.isfile(path), "HANDLE.FILE_MISSING", "Artifact handle does not resolve to a regular file.")
             self.read_paths.add(path)
         else:
             require(access in ("write", "readwrite"), "HANDLE.WRITE_FORBIDDEN", "Artifact handle does not grant write access.")
-            parent = os.path.realpath(os.path.dirname(raw_path))
+            parent = os.path.realpath(_native_path(os.path.dirname(raw_path)))
             require(_within(parent, expected_root) and parent == expected_root, "HANDLE.PATH_OUTSIDE_RUN", "Artifact handle escaped its Feature/Run temp root.")
             require(os.path.isdir(parent), "HANDLE.PARENT_MISSING", "Artifact handle parent directory is unavailable.")
             path = os.path.join(parent, os.path.basename(raw_path))
@@ -120,7 +138,7 @@ class AuditPolicy:
         except OSError as exc:
             raise EngineError("HANDLE.WRITE_FAILED", "Artifact handle could not be written.") from exc
         digest = hashlib.sha256(data).hexdigest()
-        return {"schemaVersion": HANDLE_SCHEMA, "handleId": handle.handle_id, "runId": handle.run_id, "path": handle.path, "access": "read", "sizeBytes": len(data), "sha256": digest}
+        return {"schemaVersion": HANDLE_SCHEMA, "handleId": handle.handle_id, "runId": handle.run_id, "path": _public_path(handle.path), "access": "read", "sizeBytes": len(data), "sha256": digest}
 
     def _audit(self, event: str, args: tuple) -> None:
         if event.startswith("socket.") or event in {"subprocess.Popen", "os.system", "os.posix_spawn", "os.posix_spawnp", "pty.spawn"} or event.startswith("os.spawn"):

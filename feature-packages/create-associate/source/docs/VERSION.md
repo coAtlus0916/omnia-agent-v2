@@ -1,4 +1,8 @@
-# 0.2.47 / sequence 49
+# 0.2.48 / sequence 50
+
+Restored the v4 generated-Risk classification stage as first-class v5 intents and signed Operations. Generated identities settle before classification; each unique Risk is patched with a fresh live concurrency token and exact `Higher|Lower`, then reconciled and projected before the complete Risk-Control relation gate runs. APP/DB/OS/Tool continuation now requires exact current-authority managed-create proof. Return progress streams from receipt-backed Core state during the same authorized Worker invocation without a second Worker call, authorization-cache replacement, stateVersion change or fabricated timer.
+
+# 0.2.47 / sequence 49 history
 
 Return confirmation and continuation no longer detach the serial executor with `setImmediate` after returning the action result. The entire executor is awaited inside the originating `omnia_mutation` invocation, so Worker Store and Connector port calls retain the exact action authorization that passed safety, confirmation and effect gates. Core command validation remains unchanged and fail-closed. The 15-minute mutation deadline, process-interruption classification, durable per-target checkpoints, readback, uncertain handling and continuation semantics remain intact.
 

@@ -1,6 +1,6 @@
-# Signed Operation 0.2.47
+# Signed Operation 0.2.48
 
-Sequence 46 republishes the unchanged signed Operation inventory. Retaining Return execution inside the originating authorized Worker invocation is a Feature Worker orchestration change; no Operation route, permit, readback, or safety contract changed.
+Sequence 50 adds generated-Risk classification preflight, PATCH and reconcile Operations. The mutation rereads the exact generated Risk, takes its fresh live `updatedOn`, tests that token, replaces only `/classificationType` with exact `Higher|Lower`, and then requires an exact catalog readback before Risk-Control association can begin.
 
 小型 object/relation/Risk-Control preflight、单次 mutation 与 read-only reconcile。不接受 Excel，不提供任意 URL/method/body。
 # Signed Operation inventory

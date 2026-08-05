@@ -6,7 +6,13 @@
 - Integration：Remote-only 签名 Operation，首次远程 action 才延迟注册。
 # Technical design
 
-## 0.2.47 authorized Return invocation lifetime
+## 0.2.48 generated Risk classification and live progress
+
+After every GRA reaches authoritative `EvaluationComplete`, Worker first waits for the unique generated Risk identities without pretending their classifications are already correct. Each row-and-Risk target is frozen as a `field` intent. The signed mutation rereads the Risk, uses its fresh live `updatedOn` in a JSON Patch test, accepts only exact `Higher|Lower`, patches `/classificationType`, and reconciles the exact Risk identity and classification. Core validates the projected GRA, semantic Risk identity, optional frozen Risk ID and exact read/mutation shapes before preparing a command. Only after all classification intents are receipt-backed and projected does the existing complete Risk-Control catalog gate run.
+
+During the same long mutation invocation, successful Core Store transitions read `loadReturnProgress` directly and publish a disposable progress-only Surface. This projection never replaces the authorized cached Surface, never changes `stateVersion`, and never invokes the Worker concurrently; `activeInvocationId` and `allowMutation` therefore remain unchanged.
+
+## 0.2.47 authorized Return invocation lifetime history
 
 `confirm-return` and `continue-return` await the serial executor before the Worker host emits the action result. Consequently `activeInvocationId` and the Supervisor's `allowMutation` entry remain live for `prepareReturnCommand`, signed mutation Operation calls, evidence, readback and final projection. No capability token is copied into the Worker, and Core does not accept a Feature-authored authorization claim. Mutation timeout or Worker loss still terminates the process tree and invokes the existing durable interruption classifier.
 

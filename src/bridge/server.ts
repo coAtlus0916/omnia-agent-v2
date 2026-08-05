@@ -15,7 +15,7 @@ import {
   type BridgePairRequest,
   type BridgePairResponse
 } from '../shared/bridge-contracts.js';
-import { BridgeBindingStore } from './binding-store.js';
+import { BridgeBindingStore, normalizeRemoteConnectorDiagnosticsReport } from './binding-store.js';
 
 interface TokenPayload {
   role: 'shell' | 'connector';
@@ -136,16 +136,18 @@ export function createBridgeServer(options: BridgeServerOptions) {
     const liveIdentity = online
       ? ((connectors.get(pairId) as any)?.identity as SocketIdentity | undefined)
       : undefined;
+    const connectorOnline = online && binding?.lifecycle === 'active';
     return {
       schemaVersion: BRIDGE_SCHEMA,
       kind: 'state' as const,
-      connectorOnline: online && binding?.lifecycle === 'active',
+      connectorOnline,
       bridgeVersion: BRIDGE_VERSION,
       protocol: BRIDGE_PROTOCOL,
       connectorId: binding?.connectorId || '',
       connectorVersion: liveIdentity?.connectorVersion || binding?.connectorVersion || '',
       generation: binding?.generation || 0,
-      message: online ? 'Remote Connector 在线。' : 'Remote Connector 离线。'
+      message: online ? 'Remote Connector 在线。' : 'Remote Connector 离线。',
+      remoteDiagnostics: store.diagnostics(pairId, Boolean(connectorOnline))
     };
   };
   const notifyShells = (pairId: string) => {
@@ -515,6 +517,15 @@ export function createBridgeServer(options: BridgeServerOptions) {
         requestOwners.delete(envelope.requestId);
         const connector = connectors.get(identity.pairId);
         if (socketFresh(connector)) connector!.send(JSON.stringify(envelope));
+      } else if (identity.role === 'connector' && envelope.kind === 'diagnostics') {
+        const diagnostics = normalizeRemoteConnectorDiagnosticsReport(envelope.diagnostics);
+        if (
+          !diagnostics
+          || diagnostics.pairId !== identity.pairId
+          || diagnostics.connectorId !== identity.deviceId
+          || diagnostics.version !== identity.connectorVersion
+        ) return;
+        if (store.updateDiagnostics(identity.pairId, diagnostics)) notifyShells(identity.pairId);
       } else if (identity.role === 'connector' && envelope.kind === 'result') {
         const pending = requestOwners.get(envelope.response.id);
         if (!pending || pending.pairId !== identity.pairId) return;
@@ -524,9 +535,15 @@ export function createBridgeServer(options: BridgeServerOptions) {
       }
     });
 
-    ws.on('close', () => {
+    ws.on('close', (code, reason) => {
       if (identity.role === 'connector' && connectors.get(identity.pairId) === ws) {
         connectors.delete(identity.pairId);
+        const forced = (ws as any).diagnosticClose as { code: number; reason: string } | undefined;
+        store.recordDisconnect(
+          identity.pairId,
+          forced?.code ?? code,
+          forced?.reason ?? reason.toString('utf8')
+        );
         for (const [id, pending] of requestOwners) {
           if (pending.pairId !== identity.pairId) continue;
           clearTimeout(pending.timer);
@@ -554,7 +571,11 @@ export function createBridgeServer(options: BridgeServerOptions) {
     for (const ws of wss.clients) {
       if (!socketFresh(ws)) {
         const identity = (ws as any).identity as SocketIdentity | undefined;
-        if (identity?.role === 'connector') notifyShells(identity.pairId);
+        if (identity?.role === 'connector') {
+          (ws as any).diagnosticClose = { code: 4008, reason: 'heartbeat_stale' };
+          store.recordDisconnect(identity.pairId, 4008, 'heartbeat_stale');
+          notifyShells(identity.pairId);
+        }
         ws.terminate();
         continue;
       }

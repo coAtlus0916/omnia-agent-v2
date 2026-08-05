@@ -120,6 +120,76 @@ export interface BridgeResultEnvelope {
   response: ConnectorResponse;
 }
 
+export const REMOTE_CONNECTOR_DIAGNOSTICS_SCHEMA = 'omnia.v5.remote-connector-diagnostics/v1' as const;
+
+export type RemoteConnectorBridgeState =
+  | 'unpaired'
+  | 'repair_required'
+  | 'connector_incompatible'
+  | 'connecting'
+  | 'connected'
+  | 'disconnected';
+
+export type RemoteConnectorSupervisorEventName =
+  | 'worker_exited'
+  | 'worker_start_failed'
+  | 'candidate_promoted'
+  | 'candidate_rolled_back'
+  | 'update_check_failed'
+  | 'supervisor_failed';
+
+export interface RemoteConnectorSupervisorEvent {
+  at: string;
+  level: 'info' | 'warn' | 'error';
+  event: RemoteConnectorSupervisorEventName;
+  version: string;
+  current: string;
+  previous: string;
+  failedVersion: string;
+  restoredVersion: string;
+  sequence: number | null;
+  exitCode: number | null;
+  signal: string;
+  error: string;
+}
+
+export interface RemoteConnectorManagedDiagnostics {
+  current: string;
+  previous: string;
+  pending: { version: string; sequence: number; stagedAt: string } | null;
+  highestSequence: number;
+}
+
+export interface RemoteConnectorDiagnosticsReport {
+  schemaVersion: typeof REMOTE_CONNECTOR_DIAGNOSTICS_SCHEMA;
+  reportedAt: string;
+  pairId: string;
+  connectorId: string;
+  version: string;
+  pid: number;
+  bridgeState: RemoteConnectorBridgeState;
+  bridgeReason: string;
+  heartbeatAt: string;
+  activeOperations: number;
+  uncertainOperations: number;
+  managed: RemoteConnectorManagedDiagnostics;
+  supervisorEvents: RemoteConnectorSupervisorEvent[];
+}
+
+export interface RemoteConnectorDiagnostics extends RemoteConnectorDiagnosticsReport {
+  connectorOnline: boolean;
+  lastSeenAt: string;
+  disconnectedAt: string;
+  closeCode: number | null;
+  closeReason: string;
+}
+
+export interface BridgeDiagnosticsEnvelope {
+  schemaVersion: typeof BRIDGE_SCHEMA;
+  kind: 'diagnostics';
+  diagnostics: RemoteConnectorDiagnosticsReport;
+}
+
 export interface BridgeStateEnvelope {
   schemaVersion: typeof BRIDGE_SCHEMA;
   kind: 'state';
@@ -130,6 +200,7 @@ export interface BridgeStateEnvelope {
   connectorVersion: string;
   generation: number;
   message: string;
+  remoteDiagnostics?: RemoteConnectorDiagnostics | null;
 }
 
 export interface BridgeBindingCommittedEnvelope {
@@ -145,4 +216,4 @@ export interface BridgeUpdateCheckEnvelope {
   requestedAt: string;
 }
 
-export type BridgeEnvelope = BridgeCommandEnvelope | BridgeCancelEnvelope | BridgeResultEnvelope | BridgeStateEnvelope | BridgeBindingCommittedEnvelope | BridgeUpdateCheckEnvelope;
+export type BridgeEnvelope = BridgeCommandEnvelope | BridgeCancelEnvelope | BridgeResultEnvelope | BridgeDiagnosticsEnvelope | BridgeStateEnvelope | BridgeBindingCommittedEnvelope | BridgeUpdateCheckEnvelope;

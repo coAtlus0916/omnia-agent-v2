@@ -2,7 +2,13 @@ import fs from 'node:fs';
 import { WebSocket } from 'ws';
 import { WorkstationOmniaSession, ConnectorOperationError } from '../connector/workstation-omnia-session.js';
 import type { ConnectorRequest } from '../connector/contracts.js';
-import { BRIDGE_PROTOCOL, BRIDGE_SCHEMA, type BridgeEnvelope } from '../shared/bridge-contracts.js';
+import {
+  BRIDGE_PROTOCOL,
+  BRIDGE_SCHEMA,
+  REMOTE_CONNECTOR_DIAGNOSTICS_SCHEMA,
+  type BridgeEnvelope,
+  type RemoteConnectorDiagnosticsReport
+} from '../shared/bridge-contracts.js';
 import {
   REMOTE_CONNECTOR_PRODUCT,
   REMOTE_CONNECTOR_UPDATE_MANIFEST_URL,
@@ -11,9 +17,11 @@ import {
 import {
   ensureRemoteConnectorDirectories,
   ensureManagedLaunchers,
+  readManagedState,
   resolveRemoteConnectorPaths,
   writeJsonAtomic
 } from './managed-state.js';
+import { readSupervisorDiagnostics, redactDiagnosticText } from './diagnostics.js';
 import { RemoteCommandGate } from './wire-request.js';
 import {
   clearStoredBridgeCredential,
@@ -60,6 +68,8 @@ const cancelledRequests = new Set<string>();
 let reconnectAttempt = 0;
 let credentialRepairRequired = false;
 let socketCredentialPairId = '';
+let heartbeatAt = new Date().toISOString();
+let lastDiagnosticsSentAt = 0;
 
 async function reconnectDelay(): Promise<void> {
   const base = Math.min(30_000, 1_000 * (2 ** Math.min(reconnectAttempt, 5)));
@@ -68,6 +78,7 @@ async function reconnectDelay(): Promise<void> {
 }
 
 function status(): void {
+  heartbeatAt = new Date().toISOString();
   writeJsonAtomic(paths.status, {
     schemaVersion: 'omnia.v5.remote-connector-status/v1',
     product: REMOTE_CONNECTOR_PRODUCT,
@@ -79,8 +90,43 @@ function status(): void {
     activeOperations,
     uncertainOperations: 0,
     updateManifestUrl: REMOTE_CONNECTOR_UPDATE_MANIFEST_URL,
-    heartbeatAt: new Date().toISOString()
+    heartbeatAt
   });
+}
+
+function sendDiagnostics(pairId: string, ws: WebSocket): void {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  try {
+    const managed = readManagedState(paths);
+    const diagnostics: RemoteConnectorDiagnosticsReport = {
+      schemaVersion: REMOTE_CONNECTOR_DIAGNOSTICS_SCHEMA,
+      reportedAt: new Date().toISOString(),
+      pairId,
+      connectorId: deviceIdentity.connectorId,
+      version: REMOTE_CONNECTOR_VERSION,
+      pid: process.pid,
+      bridgeState,
+      bridgeReason: redactDiagnosticText(bridgeReason),
+      heartbeatAt,
+      activeOperations,
+      uncertainOperations: 0,
+      managed: {
+        current: managed.current,
+        previous: managed.previous,
+        pending: managed.pending ? {
+          version: managed.pending.version,
+          sequence: managed.pending.sequence,
+          stagedAt: managed.pending.stagedAt
+        } : null,
+        highestSequence: managed.highestSequence
+      },
+      supervisorEvents: readSupervisorDiagnostics(paths)
+    };
+    ws.send(JSON.stringify({ schemaVersion: BRIDGE_SCHEMA, kind: 'diagnostics', diagnostics }));
+    lastDiagnosticsSentAt = Date.now();
+  } catch {
+    // Diagnostics are best-effort and must never interrupt command execution.
+  }
 }
 
 function requestOnlineUpdate(): void {
@@ -145,6 +191,7 @@ async function runSocket(): Promise<void> {
         bridgeState = 'connected';
         bridgeReason = '';
         status();
+        sendDiagnostics(credential.pairId, ws);
       });
       ws.on('message', (data) => {
         let envelope: BridgeEnvelope;
@@ -276,6 +323,9 @@ async function runSocket(): Promise<void> {
 
 const timer = setInterval(() => {
   status();
+  if (socket?.readyState === WebSocket.OPEN && socketCredentialPairId && Date.now() - lastDiagnosticsSentAt >= 10_000) {
+    sendDiagnostics(socketCredentialPairId, socket);
+  }
   const candidate = readCandidateBridgeCredential(paths.dataRoot);
   if (candidate && activeOperations === 0 && socket?.readyState === WebSocket.OPEN && candidate.pairId !== socketCredentialPairId) {
     socket.close(4000, 'candidate credential ready');

@@ -1,6 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomBytes, randomInt, randomUUID } from 'node:crypto';
+import {
+  REMOTE_CONNECTOR_DIAGNOSTICS_SCHEMA,
+  type RemoteConnectorBridgeState,
+  type RemoteConnectorDiagnostics,
+  type RemoteConnectorDiagnosticsReport,
+  type RemoteConnectorSupervisorEvent,
+  type RemoteConnectorSupervisorEventName
+} from '../shared/bridge-contracts.js';
 
 export type BindingLifecycle = 'candidate' | 'active' | 'revoked';
 
@@ -38,13 +46,128 @@ interface StoreDocument {
   schemaVersion: 'omnia.v5.bridge-binding-store/v1';
   bindings: BridgeBinding[];
   sessions: PairingSession[];
+  diagnostics: RemoteConnectorDiagnostics[];
 }
 
 const emptyDocument = (): StoreDocument => ({
   schemaVersion: 'omnia.v5.bridge-binding-store/v1',
   bindings: [],
-  sessions: []
+  sessions: [],
+  diagnostics: []
 });
+
+const BRIDGE_STATES = new Set<RemoteConnectorBridgeState>([
+  'unpaired', 'repair_required', 'connector_incompatible', 'connecting', 'connected', 'disconnected'
+]);
+const SUPERVISOR_EVENTS = new Set<RemoteConnectorSupervisorEventName>([
+  'worker_exited', 'worker_start_failed', 'candidate_promoted', 'candidate_rolled_back',
+  'update_check_failed', 'supervisor_failed'
+]);
+const timestamp = (value: unknown): string => {
+  const text = typeof value === 'string' ? value.slice(0, 40) : '';
+  return Number.isFinite(Date.parse(text)) ? text : '';
+};
+const identifier = (value: unknown, maximum = 127): string => {
+  const text = typeof value === 'string' ? value.trim().slice(0, maximum) : '';
+  return /^[A-Za-z0-9][A-Za-z0-9_.:-]*$/u.test(text) ? text : '';
+};
+const version = (value: unknown): string => {
+  const text = typeof value === 'string' ? value.trim().slice(0, 40) : '';
+  return /^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/u.test(text) ? text : '';
+};
+const nonnegative = (value: unknown, maximum = 1_000_000): number | null =>
+  Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= maximum ? Number(value) : null;
+const safeText = (value: unknown, maximum = 300): string => (typeof value === 'string' ? value : '')
+  .replace(/[\u0000-\u001f\u007f]/gu, ' ')
+  .replace(/\b(authorization|cookie|token|secret|password|credential)\b\s*[:=]\s*[^\s,;]+/giu, '$1=[redacted]')
+  .replace(/\bBearer\s+[^\s,;]+/giu, 'Bearer [redacted]')
+  .replace(/(?:https?|wss?):\/\/[^\s]+/giu, '[url]')
+  .replace(/(?:[A-Za-z]:\\|\\\\)[^\s"']+/gu, '[path]')
+  .replace(/\b[A-Za-z0-9+/=_-]{48,}\b/gu, '[redacted]')
+  .trim()
+  .slice(0, maximum);
+
+function normalizeSupervisorEvent(input: unknown): RemoteConnectorSupervisorEvent | null {
+  if (!input || typeof input !== 'object') return null;
+  const value = input as Record<string, unknown>;
+  const at = timestamp(value.at);
+  const event = String(value.event || '') as RemoteConnectorSupervisorEventName;
+  const level = String(value.level || '');
+  if (!at || !SUPERVISOR_EVENTS.has(event) || !['info', 'warn', 'error'].includes(level)) return null;
+  return {
+    at,
+    level: level as RemoteConnectorSupervisorEvent['level'],
+    event,
+    version: version(value.version),
+    current: version(value.current),
+    previous: version(value.previous),
+    failedVersion: version(value.failedVersion),
+    restoredVersion: version(value.restoredVersion),
+    sequence: nonnegative(value.sequence, Number.MAX_SAFE_INTEGER),
+    exitCode: Number.isSafeInteger(value.exitCode) ? Number(value.exitCode) : null,
+    signal: safeText(value.signal, 32),
+    error: safeText(value.error)
+  };
+}
+
+export function normalizeRemoteConnectorDiagnosticsReport(input: unknown): RemoteConnectorDiagnosticsReport | null {
+  if (!input || typeof input !== 'object') return null;
+  const value = input as Record<string, unknown>;
+  const reportedAt = timestamp(value.reportedAt);
+  const heartbeatAt = timestamp(value.heartbeatAt);
+  const pairId = identifier(value.pairId, 80);
+  const connectorId = identifier(value.connectorId);
+  const connectorVersion = version(value.version);
+  const pid = nonnegative(value.pid, 0x7fffffff);
+  const activeOperations = nonnegative(value.activeOperations);
+  const uncertainOperations = nonnegative(value.uncertainOperations);
+  const bridgeState = String(value.bridgeState || '') as RemoteConnectorBridgeState;
+  const managed = value.managed && typeof value.managed === 'object'
+    ? value.managed as Record<string, unknown> : null;
+  const highestSequence = nonnegative(managed?.highestSequence, Number.MAX_SAFE_INTEGER);
+  if (
+    value.schemaVersion !== REMOTE_CONNECTOR_DIAGNOSTICS_SCHEMA || !reportedAt || !heartbeatAt
+    || !pairId || !connectorId || !connectorVersion || pid === null || pid <= 0
+    || activeOperations === null || uncertainOperations === null || !BRIDGE_STATES.has(bridgeState)
+    || !managed || highestSequence === null || !Array.isArray(value.supervisorEvents)
+  ) return null;
+  const pendingValue = managed.pending && typeof managed.pending === 'object'
+    ? managed.pending as Record<string, unknown> : null;
+  const pendingSequence = pendingValue ? nonnegative(pendingValue.sequence, Number.MAX_SAFE_INTEGER) : null;
+  const pendingVersion = pendingValue ? version(pendingValue.version) : '';
+  const pendingStagedAt = pendingValue ? timestamp(pendingValue.stagedAt) : '';
+  if (pendingValue && (!pendingVersion || pendingSequence === null || !pendingStagedAt)) return null;
+  return {
+    schemaVersion: REMOTE_CONNECTOR_DIAGNOSTICS_SCHEMA,
+    reportedAt,
+    pairId,
+    connectorId,
+    version: connectorVersion,
+    pid,
+    bridgeState,
+    bridgeReason: safeText(value.bridgeReason),
+    heartbeatAt,
+    activeOperations,
+    uncertainOperations,
+    managed: {
+      current: version(managed.current),
+      previous: version(managed.previous),
+      pending: pendingValue ? { version: pendingVersion, sequence: pendingSequence!, stagedAt: pendingStagedAt } : null,
+      highestSequence
+    },
+    supervisorEvents: value.supervisorEvents.slice(-20)
+      .map(normalizeSupervisorEvent)
+      .filter((event): event is RemoteConnectorSupervisorEvent => event !== null)
+  };
+}
+
+function cloneDiagnostics(value: RemoteConnectorDiagnostics): RemoteConnectorDiagnostics {
+  return {
+    ...value,
+    managed: { ...value.managed, pending: value.managed.pending ? { ...value.managed.pending } : null },
+    supervisorEvents: value.supervisorEvents.map((event) => ({ ...event }))
+  };
+}
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 
@@ -61,6 +184,20 @@ export class BridgeBindingStore {
       const parsed = JSON.parse(fs.readFileSync(this.filename, 'utf8')) as StoreDocument;
       if (parsed.schemaVersion !== 'omnia.v5.bridge-binding-store/v1') throw new Error('schema');
       if (!Array.isArray(parsed.bindings) || !Array.isArray(parsed.sessions)) throw new Error('shape');
+      parsed.diagnostics = Array.isArray(parsed.diagnostics) ? parsed.diagnostics.flatMap((input) => {
+        const report = normalizeRemoteConnectorDiagnosticsReport(input);
+        if (!report || !input || typeof input !== 'object') return [];
+        const value = input as unknown as Record<string, unknown>;
+        return [{
+          ...report,
+          connectorOnline: value.connectorOnline === true,
+          lastSeenAt: timestamp(value.lastSeenAt) || report.reportedAt,
+          disconnectedAt: timestamp(value.disconnectedAt),
+          closeCode: Number.isInteger(value.closeCode) && Number(value.closeCode) >= 0 && Number(value.closeCode) <= 4999
+            ? Number(value.closeCode) : null,
+          closeReason: safeText(value.closeReason, 120)
+        }];
+      }) : [];
       return parsed;
     } catch (error: any) {
       if (error?.code !== 'ENOENT') throw new Error('Bridge binding store is unreadable.');
@@ -299,6 +436,43 @@ export class BridgeBindingStore {
     if (!binding) return;
     binding.lastSeenAt = new Date().toISOString();
     this.save();
+  }
+
+  updateDiagnostics(pairId: string, input: unknown): RemoteConnectorDiagnostics | null {
+    const report = normalizeRemoteConnectorDiagnosticsReport(input);
+    const binding = this.document.bindings.find((item) => item.pairId === pairId && item.lifecycle !== 'revoked');
+    if (!report || !binding || report.pairId !== pairId || report.connectorId !== binding.connectorId) return null;
+    const now = new Date().toISOString();
+    const previous = this.document.diagnostics.find((item) => item.pairId === pairId);
+    const next: RemoteConnectorDiagnostics = {
+      ...report,
+      connectorOnline: true,
+      lastSeenAt: now,
+      disconnectedAt: previous?.disconnectedAt || '',
+      closeCode: previous?.closeCode ?? null,
+      closeReason: previous?.closeReason || ''
+    };
+    this.document.diagnostics = this.document.diagnostics.filter((item) => item.pairId !== pairId);
+    this.document.diagnostics.push(next);
+    binding.connectorVersion = report.version;
+    binding.lastSeenAt = now;
+    this.save();
+    return cloneDiagnostics(next);
+  }
+
+  recordDisconnect(pairId: string, code: number, reason: string, disconnectedAt = new Date().toISOString()): void {
+    const diagnostics = this.document.diagnostics.find((item) => item.pairId === pairId);
+    if (!diagnostics) return;
+    diagnostics.connectorOnline = false;
+    diagnostics.disconnectedAt = timestamp(disconnectedAt) || new Date().toISOString();
+    diagnostics.closeCode = Number.isInteger(code) && code >= 0 && code <= 4999 ? code : null;
+    diagnostics.closeReason = safeText(reason, 120);
+    this.save();
+  }
+
+  diagnostics(pairId: string, connectorOnline: boolean): RemoteConnectorDiagnostics | null {
+    const value = this.document.diagnostics.find((item) => item.pairId === pairId);
+    return value ? cloneDiagnostics({ ...value, connectorOnline }) : null;
   }
 
   revoke(pairId: string): boolean {

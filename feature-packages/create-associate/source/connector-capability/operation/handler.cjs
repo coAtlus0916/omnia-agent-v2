@@ -221,15 +221,25 @@ function explicitArrayRows(value, label) {
   if (keys.length !== 1 || !Array.isArray(value[keys[0]])) fail(`${label} must contain exactly one allowed array envelope.`);
   return value[keys[0]];
 }
-function assessmentEntityCandidates(value, label) {
+function assessmentEntityCandidates(value, label, expectedObjectType, expectedInkContentId, expectedObjectId) {
+  const canonicalType=normalizedObjectType(expectedObjectType); const expectedContent=text(expectedInkContentId);
+  const expectedEntityId=guid(expectedObjectId,`${label} expected entityId`);
+  if(!canonicalType||canonicalType!==text(expectedObjectType))fail(`${label} expected object type is not canonical.`);
   const direct = [value && value.entityId, value && value.itElementId, value && value.applicationId]
     .map(optionalGuid).filter(Boolean);
   const scoped = explicitArrayRows(value && value.riskScopes, `${label} riskScopes`)
     .filter((scope) => scope && typeof scope === 'object' && !Array.isArray(scope) && !deletedEntity(scope)
       && scope.isActive !== false && scope.active !== false)
+    .filter((scope)=>{
+      const scopeType=normalizedObjectType(scope.riskScopeType||scope.entityType||scope.type);
+      if(scopeType!==canonicalType)return false;
+      const scopeContent=text(scope.inkContentId||scope.contentId);
+      return !scopeContent||(expectedContent&&scopeContent===expectedContent);
+    })
     .map((scope) => optionalGuid(scope.entityId)).filter(Boolean);
   const exact = [...new Set([...direct, ...scoped])];
   if (exact.length > 1) fail(`${label} contains conflicting active IT Element entity GUIDs.`);
+  if(exact.length===1&&exact[0]!==expectedEntityId)fail(`${label} entity GUID differs from the exact planned IT Element.`);
   return exact;
 }
 function payloadRows(value) { return Array.isArray(value) ? value : resultRows(value); }
@@ -421,7 +431,7 @@ async function resolveApplicationIdentity(request, sdk) {
   const actualRait = normalizeRait(graDetail.itElementRaitConclusionLevelId || graDetail.itElementRaitConclusionLevel
     || graDetail.itElementRaitConclusionLevelName || graDetail.lastSubmittedITElementRaitConclusionLevelId
     || graDetail.raitConclusionLevel);
-  const graWorkspaceIds = detailWorkspaceIds(graDetail, gra); const detailEntityCandidates=assessmentEntityCandidates(graDetail, 'Existing Application GRA');
+  const graWorkspaceIds = detailWorkspaceIds(graDetail, gra); const detailEntityCandidates=assessmentEntityCandidates(graDetail,'Existing Application GRA','Application',graDetail.inkContentId||graDetail.contentId,objectId);
   const exactDirectoryFallback=!gra.ambiguous&&!gra.recycled&&gra.assessmentId===optionalGuid(graDetail.id||graDetail.riskAssessmentId)
     &&gra.objectId===objectId&&text(gra.graName)===graName&&gra.workspaceId===workspaceId&&gra.objectType==='Application';
   const graObjectId=detailEntityCandidates.length===1?detailEntityCandidates[0]:exactDirectoryFallback?gra.objectId:'';
@@ -814,7 +824,7 @@ function createOperationHandler() {
         const expectedTypeIds=[...new Set(kindContracts.map((item)=>String(item.typeId)))];
         if(!kindContracts.length||expectedTypeIds.length!==1||catalogId(query.typeId,'query.typeId')!==expectedTypeIds[0]) fail('GRA read-back query type does not match the governed APP/DB/OS/TOOL contract.');
         const result = await sdk.invokeStep('gra-readback', { riskAssessmentId });
-        const detailEntityCandidates=assessmentEntityCandidates(result,'GRA read-back');
+        const detailEntityCandidates=assessmentEntityCandidates(result,'GRA read-back',query.itElementType,query.inkContentId,expectedEntityId);
         let observedEntityId=detailEntityCandidates[0]||'';
         if(!observedEntityId){
           const [workItems,commonAccounts]=await Promise.all([

@@ -3,7 +3,7 @@
 Surface 只采集/展示；Worker 解析、验证、编译计划；Core Store 持久化；Connector 只托管签名 Operation。
 # Implementation map
 
-Version 0.2.23 keeps the four-plane boundary. Detail entity evidence has priority and conflicts fail closed. A zero-candidate detail may use only one current authoritative directory row with exact assessment ID, object ID, canonical GRA name, Workspace and object type; the reconciler obtains that directory through two explicit signed read-only routes. Directory merges record conflicting identity fields as ambiguous rather than selecting one silently. Empty RAIT remains a separate state intent requiring real PATCH/readback. The v4 Application settings protocol and all authority/safety/receipt boundaries remain unchanged.
+Version 0.2.24 keeps the four-plane boundary. The signed Operation selects primary active risk scopes by canonical object type and optional content identity before comparing entity GUIDs. Top-level direct identities remain authoritative candidates. Untyped and other-type scopes are not guessed; zero candidates use the existing strict current directory fallback. APP/DB/OS/TOOL use Application/Infrastructure/Infrastructure/ITTool, with GRA type IDs 3/4/4/5. Empty RAIT remains a separate state intent requiring real PATCH/readback.
 
 - Frontend: `frontend/surface.json` plus generic two-column workflow renderer, native picker/drop staging, explicit confirmation, post-render background action dispatch, signed-template Save As, artifacts, progress/issues, and issue editors.
 - Worker: `middle/worker.cjs` owns XLSX parsing, governance interpretation, plan/output compilation, revisions, and orchestration.

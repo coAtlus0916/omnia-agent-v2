@@ -1,4 +1,8 @@
-# 0.2.29 / sequence 31
+# 0.2.30 / sequence 32
+
+Generic DB/OS/Tool identity search now merges duplicate list representations by canonical object GUID. Identical representations no longer manufacture `identifier_ambiguous`; multiple GUIDs, missing key identity fields, field disagreement, and same-GUID active/recycle conflicts still fail closed. A unique active GUID is accepted only after the exact object detail and its unique Work Item-to-frozen-Workspace mapping pass. GRA directory rows are likewise deduplicated by assessment GUID while preserving representation and lifecycle conflicts. Existing exact objects and relationships are reused rather than renamed or recreated.
+
+# 0.2.29 / sequence 31 history
 
 Fixed relationship readback after Omnia successfully committed an association whose search-result row did not contain `workspaceId`. The previous predicate called strict `rowWorkspace` on every association row and failed before it could recognize the exact counterpart ID. Preflight and reconcile now prove source and target Workspace membership independently through signed object-detail plus Work Item Facet mapping routes, validate endpoint types, and then evaluate search rows by exact object ID. Bidirectional Infrastructure/Application consistency remains mandatory. An already committed relationship is recovered read-only and is never replayed.
 

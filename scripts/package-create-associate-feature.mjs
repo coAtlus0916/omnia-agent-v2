@@ -140,7 +140,7 @@ const runtimeBaseBytes = workerModule.buildRuntimeWorkbook(
 
 const userTemplateBytes = await readFile(userTemplatePath);
 if (userTemplateBytes.length < 1 || userTemplateBytes.length > 64 * 1024 * 1024) throw new Error('Phase1 user template V3 size is invalid.');
-const version = '0.2.29'; const sequence = 31;
+const version = '0.2.30'; const sequence = 32;
 const route = (stepId, method, routeTemplate, parameters, bodyMode = 'none', bodyParameter = '') => ({ stepId, method, routeTemplate, parameters, bodyMode, bodyParameter });
 const applicationIdentityRoutes = () => [
   route('workitem-directory', 'POST', '/work/v1/WorkQueries/getWorkitemDetails', [], 'signed_json'),
@@ -168,7 +168,8 @@ const operations = [
     route('application-search', 'POST', '/rapr/v0/engagements/{engagementId}/applications/search', [], 'signed_json'),
     route('infrastructure-search', 'POST', '/rapr/v0/engagements/{engagementId}/infrastructures/search', [], 'signed_json'),
     route('tool-search', 'POST', '/rapr/v0/engagements/{engagementId}/itelement/search', [], 'signed_json'),
-    route('object-detail', 'GET', '/rapr/v0/engagements/{engagementId}/itelement/{objectId}', [{ name: 'objectId', type: 'guid' }])
+    route('object-detail', 'GET', '/rapr/v0/engagements/{engagementId}/itelement/{objectId}', [{ name: 'objectId', type: 'guid' }]),
+    route('object-identity-workspace', 'GET', '/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}', [{ name: 'workItemId', type: 'guid' }])
   ] },
   { operationId: 'omnia.create-associate.object.identity.resolve.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.object-identity-resolve-request/v1', responseSchema: 'omnia.create-associate.object-identity-resolve-response/v1', enabledByDefault: true, grantsMutationPermit: false, routes: applicationIdentityRoutes() },
   { operationId: 'omnia.create-associate.object.create-preflight.v2', effect: 'read_only', requestSchema: 'omnia.create-associate.object-create-preflight-request/v2', responseSchema: 'omnia.create-associate.object-create-preflight-response/v2', enabledByDefault: true, grantsMutationPermit: true, permitsOperationId: 'omnia.create-associate.object.create.v1', routes: [

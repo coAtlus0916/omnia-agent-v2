@@ -120,7 +120,7 @@ async function searchObjectIdentities(sdk, stepId, query, sortField, extra) {
     const current = resultRows(payload);
     for (const item of current) {
       if (!objectIdentityValues(item).includes(wanted)) continue;
-      const itemType = normalizedObjectType(item && (item.itElementType || item.elementType || item.entityType || item.type)) || query.objectType;
+      const itemType = normalizedObjectType(item && (item.itElementType || item.elementType || item.entityType || item.type));
       const workspaceId = optionalGuid(item && (item.workspaceId || item.workspaceFacetId || item.facetId));
       const id = optionalGuid(item && (item.id || item.itElementId || item.applicationId || item.infrastructureId || item.toolId));
       const observedSubtype = text(item && (item.typeId || item.itElementTypeId));
@@ -142,6 +142,33 @@ async function searchObjectIdentities(sdk, stepId, query, sortField, extra) {
   }
   fail('Authoritative IT Element search exceeded the signed 20-page bound.');
 }
+function mergeObjectIdentityMatches(matches, query) {
+  const expectedWorkspaceId = guid(query.workspaceId, 'query.workspaceId');
+  const expectedSubtype = text(query.subtypeId); const byId = new Map(); let incompleteCount = 0;
+  for (const match of matches) {
+    if (!match.id || match.state === 'ambiguous') { incompleteCount += 1; continue; }
+    const item = match.item || {};
+    const objectType = normalizedObjectType(item.itElementType || item.elementType || item.entityType || item.type);
+    const workspaceId = optionalGuid(item.workspaceId || item.workspaceFacetId || item.facetId);
+    const subtype = text(item.typeId || item.itElementTypeId);
+    if (!objectType || !workspaceId || (expectedSubtype && !subtype)) { incompleteCount += 1; continue; }
+    const current = byId.get(match.id) || { id: match.id, states: new Set(), objectTypes: new Set(), workspaceIds: new Set(), subtypes: new Set(), item };
+    current.states.add(match.state); current.objectTypes.add(objectType); current.workspaceIds.add(workspaceId);
+    if (subtype) current.subtypes.add(subtype);
+    byId.set(match.id, current);
+  }
+  const active = []; const recycled = []; const conflictIds = [];
+  for (const current of byId.values()) {
+    const conflict = current.states.size !== 1 || current.objectTypes.size !== 1 || !current.objectTypes.has(query.objectType)
+      || current.workspaceIds.size !== 1 || !current.workspaceIds.has(expectedWorkspaceId)
+      || (expectedSubtype && (current.subtypes.size !== 1 || !current.subtypes.has(expectedSubtype)));
+    if (conflict) { conflictIds.push(current.id); continue; }
+    const merged = { id: current.id, state: [...current.states][0], item: current.item };
+    (merged.state === 'active' ? active : recycled).push(merged);
+  }
+  active.sort((left, right) => left.id.localeCompare(right.id)); recycled.sort((left, right) => left.id.localeCompare(right.id)); conflictIds.sort();
+  return { active, recycled, conflictIds, incompleteCount };
+}
 async function objectPreflight(request, sdk) {
   const queryKeys = Object.keys(request.query || {}).sort();
   if (queryKeys.join('|') !== ['externalId', 'objectType', 'workspaceId'].sort().join('|')
@@ -158,14 +185,8 @@ async function objectPreflight(request, sdk) {
     if (!['Database','OperatingSystem','Tool'].includes(expectedSubtype) || text(query.subtypeId) !== expectedSubtype) fail('Object preflight subtype identity is invalid.');
   }
   const search = await searchObjectIdentities(sdk, mapping[0], query, mapping[1], query.objectType === 'ITTool' ? { itElementType: 'ITTool' } : {});
-  const unique = new Map(); let incomplete = 0;
-  for (const match of search.matches) {
-    if (match.state === 'ambiguous') { incomplete += 1; continue; }
-    const key = `${match.state}|${match.id}`;
-    if (unique.has(key)) incomplete += 1; else unique.set(key, match);
-  }
-  const exact = [...unique.values()]; const active = exact.filter((item) => item.state === 'active');
-  const recycled = exact.filter((item) => item.state === 'recycle_bin');
+  const merged = mergeObjectIdentityMatches(search.matches, query);
+  const { active, recycled, conflictIds, incompleteCount } = merged;
   let graMatches = [];
   if (text(query.graName)) {
     const [workItems, commonAccounts] = await Promise.all([
@@ -174,13 +195,13 @@ async function objectPreflight(request, sdk) {
     ]);
     const directory = applicationGraDirectory(workItems, commonAccounts);
     graMatches = directory.rows.filter((item) => normalizedLabel(item.graName) === normalizedLabel(query.graName)
-      && (!item.objectType || item.objectType === query.objectType)
-      && (!item.workspaceId || item.workspaceId === workspaceId));
+      && (item.ambiguous || !item.objectType || item.objectType === query.objectType)
+      && (item.ambiguous || !item.workspaceId || item.workspaceId === workspaceId));
   }
   const recycledGra = graMatches.filter((item) => item.recycled);
   const activeGra = graMatches.filter((item) => !item.recycled);
   let matchState = 'none';
-  if (incomplete || active.length > 1 || recycled.length > 1 || active.length + recycled.length > 1 || activeGra.length > 1) matchState = 'ambiguous';
+  if (incompleteCount || conflictIds.length || active.length > 1 || recycled.length > 1 || active.length + recycled.length > 1 || activeGra.length > 1) matchState = 'ambiguous';
   else if (active.length === 1 && recycledGra.length) matchState = 'ambiguous';
   else if (active.length === 1) matchState = 'active';
   else if (recycled.length === 1 || recycledGra.length === 1) matchState = 'recycle_bin';
@@ -188,13 +209,25 @@ async function objectPreflight(request, sdk) {
   let item = null;
   if (matchState === 'active') {
     const objectId = active[0].id; const detail = await sdk.invokeStep('object-detail', { objectId });
-    if (deletedEntity(detail) || !assertObject(detail, query) || rowId(detail) !== objectId) matchState = 'ambiguous';
-    else item = detail;
+    const detailWorkspaceId = optionalGuid(detail && (detail.workspaceId || detail.workspaceFacetId || detail.facetId));
+    const detailExact = !deletedEntity(detail) && rowId(detail) === objectId
+      && normalizedObjectType(detail.itElementType || detail.elementType || detail.entityType || detail.type) === query.objectType
+      && objectIdentityValues(detail).includes(normalizedLabel(query.externalId))
+      && (!query.subtypeId || text(detail.typeId || detail.itElementTypeId) === text(query.subtypeId))
+      && (!detailWorkspaceId || detailWorkspaceId === workspaceId);
+    if (!detailExact) matchState = 'ambiguous';
+    else {
+      const authority = await assertObjectWorkspaceAuthority(sdk, 'object-identity-workspace', detail, workspaceId);
+      item = { ...detail, workItemId: authority.workItemId, workspaceId: authority.workspaceId };
+    }
   }
   return { source: 'live-generic-it-element-identity-contract/v1', found: matchState === 'active', item,
-    matchState, matchCount: exact.length + incomplete, activeCount: active.length, recycleBinCount: recycled.length + recycledGra.length,
+    matchState, matchCount: active.length + recycled.length + conflictIds.length + incompleteCount,
+    activeCount: active.length, recycleBinCount: recycled.length + recycledGra.length,
     graState: identityState(graMatches), graMatchCount: graMatches.length,
-    evidence: { pagesRead: search.pagesRead, observed: search.observed, total: search.total } };
+    evidence: { pagesRead: search.pagesRead, observed: search.observed, total: search.total,
+      uniqueActiveIds: active.slice(0, 10).map((value) => value.id), recycleIds: recycled.slice(0, 10).map((value) => value.id),
+      conflictIds: conflictIds.slice(0, 10), incompleteCount } };
 }
 
 function optionalGuid(value) {
@@ -272,14 +305,11 @@ function identityCandidates(item, objectType) {
 }
 function applicationGraDirectory(workItemsPayload, commonAccountsPayload) {
   const workItems = payloadRows(workItemsPayload); const commonAccounts = payloadRows(commonAccountsPayload);
-  const all = [...workItems, ...commonAccounts];
-  const deletedAssessmentIds = new Set(all.filter(deletedEntity)
-    .map((item) => optionalGuid(item && (item.externalId || item.id || item.riskAssessmentId))).filter(Boolean));
   const byId = new Map();
   const merge = (item, source) => {
     const id = assessmentId(item, source); if (!id) return;
     const current = byId.get(id) || { assessmentId: id, workItemId: '', objectId: '', identifiers: [], graName: '',
-      workspaceId: '', objectType: '', rait: '', recycled: false, ambiguous: false };
+      workspaceId: '', objectType: '', rait: '', recycled: false, ambiguous: false, activeSeen: false, recycleSeen: false };
     const mergeExact=(key,value,normalize=(candidate)=>candidate)=>{
       if(!value)return;
       if(current[key]&&normalize(current[key])!==normalize(value))current.ambiguous=true;
@@ -293,7 +323,10 @@ function applicationGraDirectory(workItemsPayload, commonAccountsPayload) {
     current.rait ||= normalizeRait(item.itElementRaitConclusionLevelId || item.itElementRaitConclusionLevel
       || item.itElementRaitConclusionLevelName || item.lastSubmittedITElementRaitConclusionLevelId || item.raitConclusionLevel);
     current.identifiers = [...new Set([...current.identifiers, ...identityCandidates(item, current.objectType)])];
-    current.recycled ||= deletedEntity(item) || deletedAssessmentIds.has(id);
+    const recycled = deletedEntity(item);
+    current.recycleSeen ||= recycled; current.activeSeen ||= !recycled;
+    current.recycled = current.recycleSeen && !current.activeSeen;
+    if (current.recycleSeen && current.activeSeen) current.ambiguous = true;
     byId.set(id, current);
   };
   for (const item of workItems) merge(item, 'work-item');
@@ -368,6 +401,7 @@ function prunedApplication(item, detail, authority) {
 }
 function identityState(matches) {
   if (!matches.length) return 'none';
+  if (matches.some((item) => item.ambiguous)) return 'ambiguous';
   const states = [...new Set(matches.map((item) => item.recycled ? 'recycle_bin' : 'active'))];
   return matches.length === 1 && states.length === 1 ? states[0] : 'ambiguous';
 }

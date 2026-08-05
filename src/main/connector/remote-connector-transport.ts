@@ -351,7 +351,7 @@ const DIAGNOSTIC_EVENT_NAMES = new Set<RemoteConnectorSupervisorEventName>([
 const diagnosticString = (value: unknown, maximum = 160): string =>
   typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/gu, ' ').trim().slice(0, maximum) : '';
 const diagnosticText = (value: unknown): string => diagnosticString(value, 2_000)
-  .replace(/\b(?:authorization|cookie|token|secret|password|credential)\b\s*[:=]\s*[^\s,;]+/giu, '$1=[redacted]')
+  .replace(/\b(authorization|cookie|token|secret|password|credential)\b\s*[:=]\s*[^\s,;]+/giu, '$1=[redacted]')
   .replace(/\bBearer\s+[^\s,;]+/giu, 'Bearer [redacted]')
   .replace(/(?:https?|wss?):\/\/[^\s]+/giu, '[url]')
   .replace(/(?:[A-Za-z]:\\|\\\\)[^\s"']+/gu, '[path]')

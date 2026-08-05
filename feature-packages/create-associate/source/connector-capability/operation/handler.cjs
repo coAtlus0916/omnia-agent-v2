@@ -541,7 +541,7 @@ async function resolveAuthority(request, sdk) {
   if (allowed.length < 1 || allowed.length !== rows(request.allowedWorkspaceIds).length) fail('Authority resolution safety scope is invalid.');
   const [hierarchy, facetPayload, graDirectory] = await Promise.all([
     sdk.invokeStep('authority-hierarchy'), sdk.invokeStep('authority-directory', { engagementId }),
-    sdk.invokeStep('authority-gra-directory')
+    sdk.invokeStep('authority-gra-directory', { catalogType: 'Standardized Accounts List', releaseDate: 'null' })
   ]);
   if (hierarchy === null || hierarchy === undefined) fail('Pack hierarchy authority is unavailable.');
   const directory = authorityFacetDirectory(facetPayload, engagementId);

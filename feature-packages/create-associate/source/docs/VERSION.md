@@ -1,4 +1,8 @@
-# 0.2.11 / sequence 13
+# 0.2.12 / sequence 14
+
+Immutable successor to 0.2.11 after package-manager startup rejected a literal `+` in the signed route template. The Standardized Accounts List and null release-date query values are now declared string parameters; the Operation handler supplies the frozen values and Operation Host performs the required percent encoding.
+
+# 0.2.11 / sequence 13 history
 
 Corrective release replacing the non-authoritative created-GRA `commonAccounts` lookup in `authority.resolve` with the live `Standardized Accounts List` reference-list publication. Each request and resolved identity carries `elementKind` and object subtype; APP/DB/OS/TOOL select their own exact live category child, so DB and OS cannot cross-resolve through the shared Infrastructure protocol type. Content IDs and IT Element type IDs come only from the live directory; GRA protocol type IDs are Application 3, Infrastructure 4, and ITTool 5. Governance aliases cover Generic, SAP ECC, SQL, UNIX, WIN, Ticketing Tool, and Identity & Access Management Tool values.
 

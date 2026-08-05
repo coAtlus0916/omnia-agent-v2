@@ -28,6 +28,18 @@ import type { InteractionLogService } from '../services/interaction-log-service.
 
 const PRODUCT_VERSION = '0.4.12';
 const OMNIA_MUTATION_WORKER_TIMEOUT_MS = 15 * 60_000;
+const MANAGED_PYTHON_DISTRIBUTION = 'cpython-3.13.14-embed-amd64';
+const MANAGED_PYTHON_ARCHIVE_SHA256 = '90b4e5b9898b72d744650524bff92377c367f44bd5fbd09e3148656c080ad907';
+const CREATE_ASSOCIATE_PYTHON_MEMBERS = [
+  'python/canonical.py',
+  'python/engine.py',
+  'python/errors.py',
+  'python/ooxml.py',
+  'python/protocol.py',
+  'python/return_plan.py',
+  'python/security.py',
+  'python/workbook_compile.py'
+] as const;
 const REQUIRED_FEATURE_MEMBERS = [
   'SIGNATURE.json',
   'backend/migrations/001.json',
@@ -116,6 +128,21 @@ interface InstalledFeaturePackage {
   surface: DeclarativeFeatureSurface;
   envelope: OfficialPackageEnvelope;
   root: string;
+  pythonSidecar: PythonSidecarDeclaration | null;
+}
+
+interface PythonSidecarDeclaration {
+  schemaVersion: 'omnia.python-sidecar-runtime/v1';
+  implementation: 'cpython';
+  version: '3.13.14';
+  architecture: 'win32-x64';
+  protocol: 'omnia.python-sidecar-rpc/v1';
+  bridgePath: 'middle/python-bridge.cjs';
+  entryPath: 'python/engine.py';
+  members: string[];
+  maxFrameBytes: number;
+  heartbeatIntervalMs: number;
+  heartbeatTimeoutMs: number;
 }
 
 export interface FeatureInstallResult {
@@ -845,7 +872,7 @@ function validateDocumentation(envelope: OfficialPackageEnvelope, manifest: Feat
   return crypto.createHash('sha256').update(packageFile(envelope, 'docs/manifest.json')).digest('hex');
 }
 
-function validateFeatureBundleContracts(envelope: OfficialPackageEnvelope, manifest: FeatureManifest): void {
+function validateFeatureBundleContracts(envelope: OfficialPackageEnvelope, manifest: FeatureManifest): PythonSidecarDeclaration | null {
   if(!manifest.contractsPath||!manifest.implementationMapPath||!manifest.testsManifestPath) throw new Error('Feature bundle contract extension is absent.');
   const runtime=parseJson(packageFile(envelope,manifest.contractsPath),'Feature runtime contract') as Record<string,unknown>;
   const mapping=parseJson(packageFile(envelope,manifest.implementationMapPath),'Feature implementation map') as Record<string,unknown>;
@@ -862,6 +889,35 @@ function validateFeatureBundleContracts(envelope: OfficialPackageEnvelope, manif
   if(vectors?.schemaVersion!=='omnia.feature-test-vectors/v1'||vectors.featureId!==manifest.featureId||!Array.isArray(vectors.vectors)||(vectors.vectors as unknown[]).length<1) throw new Error('Feature test vectors are invalid.');
   const ids=new Set((tests.testIds as unknown[]).map(String));
   if((vectors.vectors as Array<Record<string,unknown>>).some((vector)=>!ids.has(String(vector.testId||''))||!Object.hasOwn(vector,'expected'))) throw new Error('Feature test vectors differ from the signed test inventory.');
+  if (!Object.hasOwn(runtime, 'pythonSidecar')) return null;
+  const sidecar = runtime.pythonSidecar;
+  if (!sidecar || typeof sidecar !== 'object' || Array.isArray(sidecar)) throw new Error('Feature Python sidecar declaration is invalid.');
+  exactKeys(sidecar, [
+    'schemaVersion', 'implementation', 'version', 'architecture', 'protocol',
+    'bridgePath', 'entryPath', 'members', 'maxFrameBytes', 'heartbeatIntervalMs', 'heartbeatTimeoutMs'
+  ], 'Feature Python sidecar declaration');
+  const declaration = sidecar as PythonSidecarDeclaration;
+  if (
+    declaration.schemaVersion !== 'omnia.python-sidecar-runtime/v1'
+    || declaration.implementation !== 'cpython'
+    || declaration.version !== '3.13.14'
+    || declaration.architecture !== 'win32-x64'
+    || declaration.protocol !== 'omnia.python-sidecar-rpc/v1'
+    || declaration.bridgePath !== 'middle/python-bridge.cjs'
+    || declaration.entryPath !== 'python/engine.py'
+    || !Array.isArray(declaration.members)
+    || declaration.members.length !== CREATE_ASSOCIATE_PYTHON_MEMBERS.length
+    || new Set(declaration.members).size !== declaration.members.length
+    || [...declaration.members].sort().some((member, index) => member !== CREATE_ASSOCIATE_PYTHON_MEMBERS[index])
+    || !declaration.members.includes(declaration.entryPath)
+    || declaration.members.some((member) => !/^python\/[a-z][a-z0-9_]{1,63}\.py$/u.test(member))
+    || declaration.maxFrameBytes !== 1024 * 1024
+    || declaration.heartbeatIntervalMs !== 5_000
+    || declaration.heartbeatTimeoutMs !== 15_000
+  ) throw new Error('Feature Python sidecar runtime policy is invalid.');
+  packageFile(envelope, declaration.bridgePath);
+  for (const member of declaration.members) packageFile(envelope, member);
+  return declaration;
 }
 
 function validateOperationPackage(input: unknown, featureManifest: FeatureManifest): void {
@@ -1108,6 +1164,67 @@ function readEnvelope(filename: string): unknown {
     throw new Error('Official package file size is invalid.');
   }
   return JSON.parse(fs.readFileSync(filename, 'utf8')) as unknown;
+}
+
+function resolveManagedPythonRuntime(
+  paths: ProductPaths,
+  installed: InstalledFeaturePackage
+): import('./worker-supervisor.js').FeatureWorkerManagedRuntime | undefined {
+  const declaration = installed.pythonSidecar;
+  if (!declaration) return undefined;
+  const runtimeRoot = path.resolve(paths.root, 'runtime', 'python', MANAGED_PYTHON_DISTRIBUTION);
+  const expectedRuntimeRoot = path.join(path.resolve(paths.root), 'runtime', 'python', MANAGED_PYTHON_DISTRIBUTION);
+  if (runtimeRoot !== expectedRuntimeRoot || !path.isAbsolute(runtimeRoot)) {
+    throw new AppError('FEATURE.PYTHON_RUNTIME_PATH_INVALID', 'Managed Python runtime escaped the product root.');
+  }
+  const pythonExecutable = path.join(runtimeRoot, 'python.exe');
+  const runtimeManifestPath = path.join(runtimeRoot, 'runtime-manifest.json');
+  if (!fs.existsSync(pythonExecutable) || !fs.statSync(pythonExecutable).isFile()) {
+    throw new AppError(
+      'FEATURE.PYTHON_RUNTIME_MISSING',
+      `Managed CPython 3.13.14 runtime is missing at the fixed product path: runtime/python/${MANAGED_PYTHON_DISTRIBUTION}/python.exe. System Python and Anaconda fallback are forbidden.`
+    );
+  }
+  if (!fs.existsSync(runtimeManifestPath) || !fs.statSync(runtimeManifestPath).isFile()) {
+    throw new AppError('FEATURE.PYTHON_RUNTIME_MANIFEST_MISSING', 'Managed CPython runtime identity manifest is missing.');
+  }
+  let runtimeManifest: Record<string, unknown>;
+  try {
+    runtimeManifest = JSON.parse(fs.readFileSync(runtimeManifestPath, 'utf8')) as Record<string, unknown>;
+  } catch {
+    throw new AppError('FEATURE.PYTHON_RUNTIME_MANIFEST_INVALID', 'Managed CPython runtime identity manifest is invalid.');
+  }
+  exactKeys(runtimeManifest, [
+    'schemaVersion', 'product', 'implementation', 'version', 'architecture', 'distribution',
+    'sourceUrl', 'sourceSha256', 'sitePackagesEnabled', 'runtimePipEnabled'
+  ], 'Managed Python runtime manifest');
+  if (
+    runtimeManifest.schemaVersion !== 'omnia.managed-python-runtime/v1'
+    || runtimeManifest.product !== 'omnia-agent-v5'
+    || runtimeManifest.implementation !== 'CPython'
+    || runtimeManifest.version !== declaration.version
+    || runtimeManifest.architecture !== declaration.architecture
+    || runtimeManifest.distribution !== 'embeddable'
+    || runtimeManifest.sourceUrl !== 'https://www.python.org/ftp/python/3.13.14/python-3.13.14-embed-amd64.zip'
+    || runtimeManifest.sourceSha256 !== MANAGED_PYTHON_ARCHIVE_SHA256
+    || runtimeManifest.sitePackagesEnabled !== false
+    || runtimeManifest.runtimePipEnabled !== false
+  ) throw new AppError('FEATURE.PYTHON_RUNTIME_IDENTITY_MISMATCH', 'Managed CPython runtime identity differs from the signed Feature contract.');
+  const pythonEntry = path.resolve(installed.root, ...declaration.entryPath.split('/'));
+  const bridgePath = path.resolve(installed.root, ...declaration.bridgePath.split('/'));
+  if (
+    !pythonEntry.startsWith(`${installed.root}${path.sep}`)
+    || !bridgePath.startsWith(`${installed.root}${path.sep}`)
+    || !fs.existsSync(pythonEntry) || !fs.statSync(pythonEntry).isFile()
+    || !fs.existsSync(bridgePath) || !fs.statSync(bridgePath).isFile()
+  ) throw new AppError('FEATURE.PYTHON_SIDECAR_MEMBER_MISSING', 'Signed Feature Python sidecar members are unavailable.');
+  const tempRoot = path.resolve(paths.temp, 'features', installed.manifest.featureId);
+  const expectedTempParent = path.resolve(paths.temp, 'features');
+  if (!tempRoot.startsWith(`${expectedTempParent}${path.sep}`)) {
+    throw new AppError('FEATURE.PYTHON_TEMP_PATH_INVALID', 'Feature Python sidecar temp root escaped its owned namespace.');
+  }
+  fs.mkdirSync(tempRoot, { recursive: true });
+  return { pythonExecutable, pythonEntry, packageRoot: installed.root, tempRoot };
 }
 
 export class FeaturePackageManager {
@@ -1382,9 +1499,8 @@ export class FeaturePackageManager {
     const manifest = parseManifest(envelope);
     const surface = parseSurface(envelope, manifest);
     const documentationDigest = validateDocumentation(envelope, manifest);
-    if (manifest.contractsPath || manifest.implementationMapPath || manifest.testsManifestPath) {
-      validateFeatureBundleContracts(envelope, manifest);
-    }
+    const pythonSidecar = manifest.contractsPath || manifest.implementationMapPath || manifest.testsManifestPath
+      ? validateFeatureBundleContracts(envelope, manifest) : null;
     const docs = parseJson(packageFile(envelope, 'docs/manifest.json'), 'Documentation manifest') as DocumentationManifest;
     const members = [...envelope.files.map((member) => member.path)].sort();
     const required = [...new Set([
@@ -1393,7 +1509,8 @@ export class FeaturePackageManager {
       ...(manifest.assets || []).map((asset) => asset.path),
       ...(manifest.contractsPath?[manifest.contractsPath]:[]),
       ...(manifest.implementationMapPath?[manifest.implementationMapPath]:[]),
-      ...(manifest.testsManifestPath?[manifest.testsManifestPath,'tests/vectors.json','tests/self-test.cjs']:[])
+      ...(manifest.testsManifestPath?[manifest.testsManifestPath,'tests/vectors.json','tests/self-test.cjs']:[]),
+      ...(pythonSidecar ? [pythonSidecar.bridgePath, ...pythonSidecar.members] : [])
     ])].sort();
     if (members.length !== required.length || members.some((member, index) => member !== required[index])) {
       throw new Error('Feature package member inventory is incomplete or contains undeclared files.');
@@ -1755,7 +1872,10 @@ export class FeaturePackageManager {
     }
     const manifest = parseManifest(envelope);
     const surface = parseSurface(envelope, manifest);
-    const value = { manifest, surface, envelope, root };
+    const pythonSidecar = manifest.contractsPath && manifest.implementationMapPath && manifest.testsManifestPath
+      ? validateFeatureBundleContracts(envelope, manifest)
+      : null;
+    const value = { manifest, surface, envelope, root, pythonSidecar };
     this.installedPackages.set(head.featureId, { identity, value });
     return value;
   }
@@ -1807,6 +1927,7 @@ export class FeaturePackageManager {
   private async startRuntime(head: ActivationHead): Promise<void> {
     if (!this.runtime) throw new Error('Feature runtime dependencies are unavailable.');
     const installed = this.loadInstalled(head);
+    const managedRuntime = resolveManagedPythonRuntime(this.paths, installed);
     if (installed.manifest.requiredIsolation !== 'process') {
       throw new Error('This legacy Feature package has no process runtime contract.');
     }
@@ -2044,8 +2165,10 @@ export class FeaturePackageManager {
           const eventId = this.runtimeStore.emit(input, context);
           this.pendingRuntimeEvents.add(eventId);
           return eventId;
-        }
-      }
+        },
+        recoverInterruption: async (input, context) => this.runtimeStore.recoverWorkerInterruption(input, context)
+      },
+      managedRuntime
     );
     await supervisor.start();
     const health = await supervisor.invoke('health', null, { timeoutMs: 10_000 }) as Record<string, unknown>;
@@ -2402,6 +2525,11 @@ export class FeaturePackageManager {
     }, {
       allowMutation: action.effect === 'omnia_mutation',
       ...(action.effect === 'omnia_mutation' ? { timeoutMs: OMNIA_MUTATION_WORKER_TIMEOUT_MS } : {}),
+      ...(action.effect === 'omnia_mutation' ? { recovery: {
+        actionId: request.actionId,
+        runId: String(request.payload.runId || card?.runId || ''),
+        commandId: String(request.payload.commandId || '')
+      } } : {}),
       ...(this.interactionLogs?.current() ? { interactionContext: this.interactionLogs.current()! } : {})
     }) as Promise<Record<string, any>>;
     const result = this.interactionLogs ? await this.interactionLogs.run({

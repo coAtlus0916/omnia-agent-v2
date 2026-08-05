@@ -846,6 +846,8 @@ function createFeatureWorker(dependencies) {
   if (!dependencies?.store?.call) fail('WORKER.STORE_REQUIRED', 'A typed persistent Store port is required.');
   const store = dependencies.store;
   const connector = dependencies.connector;
+  const {createPythonSidecarBridge}=require('./python-bridge.cjs');
+  const python=createPythonSidecarBridge({ports:dependencies,maxFrameBytes:1024*1024,requestTimeoutMs:120000,heartbeatIntervalMs:5000,heartbeatTimeoutMs:15000});
   let activeReturnExecution = null;
   if (!connector?.invoke) fail('WORKER.CONNECTOR_REQUIRED', 'A signed Operation Connector port is required.');
   const governance = dependencies.governance || (GOVERNANCE.startsWith('__') ? null : JSON.parse(GOVERNANCE));
@@ -873,21 +875,36 @@ function createFeatureWorker(dependencies) {
   const graNameRule=governance.derivationRules.find((item)=>item.ruleId==='v4.phase1-gra-name-from-element-id.v1');
   if(!graNameRule||graNameRule.algorithm!=='prefix_literal'||graNameRule.prefix!=='GRA-')fail('GOVERNANCE.GRA_NAME_RULE_MISSING','Signed v4 canonical GRA naming rule is unavailable.');
 
+  async function invokePythonJson(method,payload,runId,maxBytes=32*1024*1024){
+    const resultHandle=await store.call('createPythonOutputHandle',{runId,kind:'transient_json',mediaType:'application/json',originalName:`${method}-${runId}.json`,maxBytes});
+    const value=await python.invoke(method,{...payload,resultHandle},{runId});
+    if(value?.artifact&&value.contentSchemaVersion){
+      const decoded=await store.call('readPythonJsonHandle',{handle:value.artifact});
+      if(!decoded||decoded.schemaVersion!==value.contentSchemaVersion||String(decoded.semanticDigest||'')!==String(value.semanticDigest||''))fail('PYTHON.RESULT_HANDLE_DRIFT','Managed Python JSON result identity drifted.');
+      return decoded;
+    }
+    return value;
+  }
+
   async function compileInstance(parsed, descriptor, runId, traceId) {
-    const runtimeBase = await store.call('readManagedAssetBytes', { memberPath: 'backend/runtime-template-base.xlsx' });
+    const runtimeBase = await store.call('openPythonArtifactHandle', { runId, memberPath: 'backend/runtime-template-base.xlsx' });
     if (runtimeBase.assetKind !== 'runtime_template_base' || !/^[0-9a-f]{64}$/u.test(String(runtimeBase.memberDigest || ''))) {
       fail('OUTPUT.BASE_NOT_MANAGED', 'The signed runtime-template base workbook is unavailable.');
     }
-    const compiled = buildRuntimeWorkbook(
-      parsed,
-      { runId, traceId, sourceArtifactId: descriptor.artifactId, governanceDigest: governance.sourceSha256 },
-      Buffer.from(runtimeBase.contentBase64, 'base64')
-    );
-    const output = await store.call('commitArtifact', {
-      runId, kind: 'template_instance', mediaType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      originalName: `create-associate-${runId}.xlsx`, extension: '.xlsx', sourceArtifactId: descriptor.artifactId,
-      sha256: digest(compiled.bytes), contentBase64: compiled.bytes.toString('base64')
+    const outputWorkbookHandle=await store.call('createPythonOutputHandle',{
+      runId,kind:'template_instance',mediaType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      originalName:`create-associate-${runId}.xlsx`,maxBytes:64*1024*1024
     });
+    const parsedHandle=await store.call('createPythonJsonInputHandle',{runId,value:parsed,maxBytes:32*1024*1024});
+    const result=await python.invoke('compile_workbook',{
+      schemaVersion:'omnia.create-associate.python-operation/v1',baseWorkbookHandle:runtimeBase,parsedHandle,
+      metadata:{runId,traceId,sourceArtifactId:descriptor.artifactId,governanceDigest:governance.sourceSha256},outputWorkbookHandle
+    },{runId});
+    const compiled=result?.workbook;
+    if(!compiled||compiled.schemaVersion!=='omnia.create-associate.compiled-workbook/v1'||result?.artifact?.handleId!==outputWorkbookHandle.handleId
+      ||compiled.sha256!==result.artifact.sha256||compiled.sizeBytes!==result.artifact.sizeBytes
+      ||compiled.baseDigest!==runtimeBase.memberDigest||!Array.isArray(compiled.declaredParts))fail('OUTPUT.PYTHON_COMPILE_INVALID','Managed Python workbook compiler returned an invalid deterministic descriptor.');
+    const output=await store.call('commitPythonOutputHandle',{handleId:result.artifact.handleId,sha256:compiled.sha256});
     const templateVersion = FEATURE_VERSION;
     const templateVersionId = `omnia.create-associate.runtime-template@${templateVersion}`;
     const templateInstanceId = crypto.randomUUID();
@@ -1220,6 +1237,7 @@ function createFeatureWorker(dependencies) {
 
   return Object.freeze({
     health: async () => {
+      await python.start();
       let latest=await store.call('loadLatestRun',{}); let run=latest?.run;
       if(run&&['waiting_confirmation','returning','verifying','uncertain','reconciling','succeeded','failed'].includes(String(run.state))) latest.returnProgress=await store.call('loadReturnProgress',{runId:String(run.run_id)});
       let recoveredSurfacePatch=null;
@@ -1843,11 +1861,16 @@ function createFeatureWorker(dependencies) {
       if(!run||run.state!=='processing')fail('RUN.NOT_PROCESSING','Background validation requires the current processing Run.');
       const stagedPlan=await store.call('loadPlan',String(run.run_id));const descriptor=stagedPlan?.descriptor;
       if(stagedPlan?.stageState!=='processing'||!descriptor||String(descriptor.runId)!==String(run.run_id)||String(descriptor.artifactId)!==String(run.source_artifact_id))fail('RUN.STAGED_SOURCE_MISMATCH','The processing Run has no matching durable staged descriptor.');
-      const artifact=await store.call('readArtifactBytes',{artifactId:descriptor.artifactId});
-      if(artifact.runId!==descriptor.runId||artifact.traceId!==descriptor.traceId||artifact.artifactId!==descriptor.artifactId)fail('ARTIFACT.RUN_BINDING_MISMATCH','Core-managed artifact Run/trace binding drifted.');
-      const runId=artifact.runId;const traceId=artifact.traceId;let revision=Number(run.state_revision);
+      const runId=String(run.run_id);const traceId=String(run.trace_id);let revision=Number(run.state_revision);
       let parsed;
-      try { parsed = parseUserWorkbook(Buffer.from(artifact.contentBase64, 'base64'), descriptor.artifactId, governance);recomputeLocalIssues(parsed); }
+      try {
+        const workbookHandle=await store.call('openPythonArtifactHandle',{runId,artifactId:descriptor.artifactId});
+        if(workbookHandle.runId!==descriptor.runId||workbookHandle.sha256!==descriptor.sha256||workbookHandle.sizeBytes!==descriptor.sizeBytes)fail('ARTIFACT.RUN_BINDING_MISMATCH','Core-managed Python input handle drifted from the staged Artifact descriptor.');
+        const governanceHandle=await store.call('createPythonJsonInputHandle',{runId,value:governance,maxBytes:16*1024*1024});
+        parsed=await invokePythonJson('parse_workbook',{schemaVersion:'omnia.create-associate.python-operation/v1',workbookHandle,sourceArtifactId:descriptor.artifactId,governanceHandle},runId);
+        if(Array.isArray(parsed?.rows)&&parsed.rows.length>MAX_USER_ELEMENTS)fail('PARSER.ELEMENT_LIMIT_EXCEEDED','当前版本单次最多处理200个元素，请拆分工作簿后重新上传；文件未写入后台。');
+        if(!parsed||parsed.schemaVersion!=='omnia.create-associate.parsed-workbook/v1'||parsed.sourceArtifactId!==descriptor.artifactId||!Array.isArray(parsed.rows))fail('PARSER.PYTHON_RESULT_INVALID','Managed Python parser returned an invalid workbook contract.');
+      }
       catch (error) {
         await store.call('transitionRun', { runId, expectedRevision: revision, toState: 'failed', eventType: 'workbook.rejected', error: error.message });
         throw error;

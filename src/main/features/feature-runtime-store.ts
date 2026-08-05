@@ -5,7 +5,11 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { ProductPaths } from '../paths.js';
 import type { FeatureReviewValidationCommit } from '../../shared/feature-contracts.js';
-import type { FeatureWorkerPortContext } from './worker-supervisor.js';
+import type {
+  FeatureWorkerInterruption,
+  FeatureWorkerInterruptionResult,
+  FeatureWorkerPortContext
+} from './worker-supervisor.js';
 
 function now(): string { return new Date().toISOString(); }
 
@@ -26,10 +30,160 @@ function canonical(value: unknown): string {
 }
 
 export class FeatureRuntimeStore {
+  private readonly pythonArtifactHandles = new Map<string, {
+    featureId: string;
+    featureVersion: string;
+    runId: string;
+    filename: string;
+    access: 'read' | 'write';
+    kind: string;
+    mediaType: string;
+    originalName: string;
+    maxBytes: number;
+  }>();
+
   constructor(
     private readonly core: DatabaseSync,
     private readonly paths: ProductPaths
   ) {}
+
+  recoverWorkerInterruption(
+    input: FeatureWorkerInterruption,
+    context: FeatureWorkerPortContext
+  ): FeatureWorkerInterruptionResult {
+    if (input.schemaVersion !== 'omnia.feature-worker-interruption/v1' || input.effect !== 'omnia_mutation') {
+      throw new Error('Feature worker interruption contract is invalid.');
+    }
+    const requestedRunId = String(input.runId || '');
+    const candidates = requestedRunId
+      ? this.core.prepare(`
+          SELECT run_id,state,state_revision FROM feature_runs
+          WHERE run_id=? AND feature_id=? AND feature_version=?
+        `).all(requestedRunId, context.featureId, context.featureVersion) as Array<{ run_id: string; state: string; state_revision: number }>
+      : this.core.prepare(`
+          SELECT run_id,state,state_revision FROM feature_runs
+          WHERE feature_id=? AND feature_version=?
+            AND state IN ('waiting_confirmation','returning','verifying','uncertain','reconciling')
+          ORDER BY updated_at DESC,created_at DESC,rowid DESC
+        `).all(context.featureId, context.featureVersion) as Array<{ run_id: string; state: string; state_revision: number }>;
+    if (candidates.length !== 1) {
+      return {
+        schemaVersion: 'omnia.feature-worker-interruption-result/v1',
+        classification: 'unresolved', retryable: false, effectState: 'possibly_started',
+        runId: requestedRunId, commandIds: input.commandId ? [String(input.commandId)] : []
+      };
+    }
+    const run = candidates[0]!;
+    const commands = this.core.prepare(`
+      SELECT command_id,intent_id,state,submitted_at,commit_point_at
+      FROM feature_commands WHERE run_id=? ORDER BY created_at,command_id
+    `).all(run.run_id) as Array<{
+      command_id: string; intent_id: string; state: string; submitted_at: string; commit_point_at: string;
+    }>;
+    const hazardous = commands.filter((command) =>
+      ['submitted', 'committed', 'verifying', 'uncertain'].includes(command.state)
+      || Boolean(command.submitted_at) || Boolean(command.commit_point_at)
+    ).filter((command) => !['readback_verified', 'closed_not_applied'].includes(command.state));
+    if (hazardous.length > 0) {
+      const occurredAt = now();
+      const fromState = run.state;
+      this.core.exec('BEGIN IMMEDIATE;');
+      try {
+        for (const command of hazardous) {
+          this.core.prepare(`
+            UPDATE feature_commands
+            SET state='uncertain',last_error=?
+            WHERE command_id=? AND run_id=?
+              AND state NOT IN ('readback_verified','closed_not_applied')
+          `).run('Worker/sidecar interruption after mutation submission; verified read-back is absent and automatic replay is forbidden.', command.command_id, run.run_id);
+          this.core.prepare(`
+            UPDATE managed_content_intents SET state='uncertain',updated_at=?
+            WHERE intent_id=? AND state<>'verified'
+          `).run(occurredAt, command.intent_id);
+        }
+        const transition = this.core.prepare(`
+          UPDATE feature_runs
+          SET state='uncertain',state_revision=state_revision+1,last_error=?,updated_at=?
+          WHERE run_id=? AND feature_id=? AND feature_version=? AND state<>'uncertain'
+        `).run(
+          'Mutation worker/sidecar interruption occurred after durable submission but before verified read-back; read-only reconcile is required.',
+          occurredAt, run.run_id, context.featureId, context.featureVersion
+        );
+        if (transition.changes === 1) {
+          this.core.prepare(`
+            INSERT INTO feature_run_events(event_id,run_id,revision,from_state,to_state,event_type,details_json,occurred_at)
+            SELECT ?,run_id,state_revision,?,'uncertain','return.worker_interruption_uncertain',?,?
+            FROM feature_runs WHERE run_id=?
+          `).run(
+            randomUUID(), fromState,
+            JSON.stringify({
+              reason: input.reason,
+              actionId: input.actionId,
+              invocationId: input.invocationId,
+              commandIds: hazardous.map((command) => command.command_id),
+              retryable: false,
+              effectState: 'possibly_started'
+            }),
+            occurredAt, run.run_id
+          );
+        }
+        this.core.exec('COMMIT;');
+      } catch (error) {
+        this.core.exec('ROLLBACK;');
+        throw error;
+      }
+      return {
+        schemaVersion: 'omnia.feature-worker-interruption-result/v1',
+        classification: 'uncertain', retryable: false, effectState: 'possibly_started',
+        runId: run.run_id, commandIds: hazardous.map((command) => command.command_id)
+      };
+    }
+    const allDurablyClosed = commands.length > 0
+      && commands.every((command) => ['readback_verified', 'closed_not_applied'].includes(command.state));
+    if (allDurablyClosed) {
+      return {
+        schemaVersion: 'omnia.feature-worker-interruption-result/v1',
+        classification: 'completed', retryable: false, effectState: 'completed',
+        runId: run.run_id, commandIds: commands.map((command) => command.command_id)
+      };
+    }
+    const occurredAt = now();
+    this.core.exec('BEGIN IMMEDIATE;');
+    try {
+      this.core.prepare(`
+        UPDATE feature_runs SET state_revision=state_revision+1,last_error=?,updated_at=?
+        WHERE run_id=? AND feature_id=? AND feature_version=?
+      `).run(
+        'Mutation worker/sidecar interruption was recovered before durable submission; automatic replay is forbidden and explicit continuation is required.',
+        occurredAt, run.run_id, context.featureId, context.featureVersion
+      );
+      this.core.prepare(`
+        INSERT INTO feature_run_events(event_id,run_id,revision,from_state,to_state,event_type,details_json,occurred_at)
+        SELECT ?,run_id,state_revision,state,state,'return.worker_interruption_pre_submit',?,?
+        FROM feature_runs WHERE run_id=?
+      `).run(
+        randomUUID(),
+        JSON.stringify({
+          reason: input.reason,
+          actionId: input.actionId,
+          invocationId: input.invocationId,
+          commandIds: commands.map((command) => command.command_id),
+          retryable: false,
+          effectState: 'not_started'
+        }),
+        occurredAt, run.run_id
+      );
+      this.core.exec('COMMIT;');
+    } catch (error) {
+      this.core.exec('ROLLBACK;');
+      throw error;
+    }
+    return {
+      schemaVersion: 'omnia.feature-worker-interruption-result/v1',
+      classification: 'not_started', retryable: false, effectState: 'not_started',
+      runId: run.run_id, commandIds: commands.map((command) => command.command_id)
+    };
+  }
 
   private open(featureId: string): DatabaseSync {
     const database = new DatabaseSync(path.join(this.paths.data, 'features', featureId, 'store.sqlite'));
@@ -82,6 +236,12 @@ export class FeatureRuntimeStore {
     if (method === 'upsertManagedContent') return this.upsertManagedContent(input, context);
     if (method === 'readArtifactBytes') return this.readArtifactBytes(input, context);
     if (method === 'readManagedAssetBytes') return this.readManagedAssetBytes(input, context);
+    if (method === 'openPythonArtifactHandle') return this.openPythonArtifactHandle(input, context);
+    if (method === 'createPythonJsonInputHandle') return this.createPythonJsonInputHandle(input, context);
+    if (method === 'createPythonOutputHandle') return this.createPythonOutputHandle(input, context);
+    if (method === 'readPythonJsonHandle') return this.readPythonJsonHandle(input, context);
+    if (method === 'commitPythonOutputHandle') return this.commitPythonOutputHandle(input, context);
+    if (method === 'releasePythonArtifactHandles') return this.releasePythonArtifactHandles(input, context);
     if (method === 'commitArtifact') return this.commitArtifact(input, context);
     if (method === 'proveOwnedCreatedObject') return this.proveOwnedCreatedObject(input, context);
     if (method === 'commitStandaloneArtifact') return this.commitStandaloneArtifact(input, context);
@@ -200,7 +360,8 @@ export class FeatureRuntimeStore {
         &&String(payload.number||payload.referenceNumber||payload.name||'').normalize('NFC').trim()===externalId;
     });
     if(matches.length!==1)return{proven:false};
-    return{proven:true,runId:String(matches[0].run_id),commandId:String(matches[0].command_id),objectId,workspaceId,externalId};
+    const match = matches[0]!;
+    return{proven:true,runId:String(match.run_id),commandId:String(match.command_id),objectId,workspaceId,externalId};
   }
 
   private createMutationRun(input: unknown, context: FeatureWorkerPortContext): Record<string, unknown> {
@@ -338,6 +499,242 @@ export class FeatureRuntimeStore {
       memberDigest: String(row.member_digest), assetKind: String(row.asset_kind),
       importedAt: String(row.imported_at), sizeBytes: bytes.length, contentBase64: bytes.toString('base64')
     };
+  }
+
+  private pythonHandleRoot(context: FeatureWorkerPortContext, runId: string, handleId: string): string {
+    if (!/^[0-9a-f-]{36}$/u.test(runId) || !/^[0-9a-f-]{36}$/u.test(handleId)) {
+      throw new Error('Python Artifact handle Run or handle identity is invalid.');
+    }
+    const featureRoot = path.resolve(this.paths.temp, 'features', context.featureId);
+    const handleRoot = path.resolve(featureRoot, runId, handleId);
+    if (!handleRoot.startsWith(`${featureRoot}${path.sep}`)) throw new Error('Python Artifact handle escaped its Feature/Run temp root.');
+    return handleRoot;
+  }
+
+  private openPythonArtifactHandle(input: unknown, context: FeatureWorkerPortContext): Record<string, unknown> {
+    const request = object(input, 'Python input Artifact handle');
+    const runId = String(request.runId || '');
+    if (!this.core.prepare(`SELECT 1 FROM feature_runs WHERE run_id=? AND feature_id=? AND feature_version=?`).get(
+      runId, context.featureId, context.featureVersion
+    )) throw new Error('Python input Artifact handle Run is not owned by the active Feature version.');
+    const artifactId = String(request.artifactId || '');
+    const memberPath = String(request.memberPath || '');
+    if (Boolean(artifactId) === Boolean(memberPath)) throw new Error('Python input handle requires exactly one Artifact or managed asset identity.');
+    let source: string;
+    let sha256: string;
+    let sizeBytes: number;
+    let originalName: string;
+    let mediaType: string;
+    let managedMetadata: Record<string, unknown> | undefined;
+    if (artifactId) {
+      const row = this.core.prepare(`
+        SELECT a.managed_path,a.sha256,a.size_bytes,a.original_name,a.media_type
+        FROM feature_artifacts a
+        WHERE a.artifact_id=? AND a.run_id=? AND a.feature_id=?
+      `).get(artifactId, runId, context.featureId) as Record<string, unknown> | undefined;
+      if (!row) throw new Error('Python input Artifact is not owned by the Feature Run.');
+      source = path.resolve(this.paths.data, ...String(row.managed_path).split('/'));
+      const artifactRoot = path.resolve(this.paths.data, 'features', context.featureId, 'artifacts');
+      if (!source.startsWith(`${artifactRoot}${path.sep}`)) throw new Error('Python input Artifact path escaped its managed Feature root.');
+      sha256 = String(row.sha256); sizeBytes = Number(row.size_bytes);
+      originalName = path.basename(String(row.original_name)); mediaType = String(row.media_type);
+    } else {
+      if (!/^backend\/[A-Za-z0-9._/-]{1,240}$/u.test(memberPath) || memberPath.includes('..')) throw new Error('Python managed asset member path is invalid.');
+      const row = this.core.prepare(`
+        SELECT package_digest,member_path,member_digest,asset_kind,managed_path FROM feature_managed_assets
+        WHERE feature_id=? AND feature_version=? AND member_path=?
+      `).get(context.featureId, context.featureVersion, memberPath) as Record<string, unknown> | undefined;
+      if (!row) throw new Error('Python managed asset is unavailable for the active Feature version.');
+      managedMetadata = row;
+      source = path.resolve(this.paths.data, ...String(row.managed_path).split('/'));
+      const installedRoot = path.resolve(this.paths.data, 'packages', 'installed', context.featureId, context.featureVersion);
+      if (!source.startsWith(`${installedRoot}${path.sep}`)) throw new Error('Python managed asset path escaped the immutable package root.');
+      sha256 = String(row.member_digest); sizeBytes = fs.statSync(source).size;
+      originalName = path.basename(memberPath); mediaType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    }
+    const sourceStat = fs.statSync(source);
+    if (!sourceStat.isFile() || sourceStat.size !== sizeBytes || sizeBytes < 1 || sizeBytes > 64 * 1024 * 1024) {
+      throw new Error('Python input Artifact size is invalid.');
+    }
+    const actualDigest = crypto.createHash('sha256').update(fs.readFileSync(source)).digest('hex');
+    if (actualDigest !== sha256) throw new Error('Python input Artifact digest drifted before handle creation.');
+    const handleId = randomUUID();
+    const handleRoot = this.pythonHandleRoot(context, runId, handleId);
+    const extension = path.extname(originalName).toLowerCase();
+    const filename = path.join(handleRoot, `input${/^\.[a-z0-9]{1,12}$/u.test(extension) ? extension : '.bin'}`);
+    fs.mkdirSync(path.dirname(handleRoot), { recursive: true });
+    fs.mkdirSync(handleRoot, { recursive: false });
+    try { fs.copyFileSync(source, filename, fs.constants.COPYFILE_EXCL); }
+    catch (error) { fs.rmSync(handleRoot, { recursive: true, force: true }); throw error; }
+    this.pythonArtifactHandles.set(handleId, {
+      featureId: context.featureId, featureVersion: context.featureVersion, runId, filename,
+      access: 'read', kind: 'input', mediaType, originalName, maxBytes: sizeBytes
+    });
+    return {
+      schemaVersion: 'omnia.python-artifact-handle/v1', handleId, runId, path: filename,
+      access: 'read', mediaType, originalName, sizeBytes, sha256,
+      ...(managedMetadata ? {
+        packageDigest: String(managedMetadata.package_digest),
+        memberPath: String(managedMetadata.member_path), memberDigest: sha256,
+        assetKind: String(managedMetadata.asset_kind)
+      } : {})
+    };
+  }
+
+  private createPythonOutputHandle(input: unknown, context: FeatureWorkerPortContext): Record<string, unknown> {
+    const request = object(input, 'Python output Artifact handle');
+    const runId = String(request.runId || '');
+    if (!this.core.prepare(`SELECT 1 FROM feature_runs WHERE run_id=? AND feature_id=? AND feature_version=?`).get(
+      runId, context.featureId, context.featureVersion
+    )) throw new Error('Python output Artifact handle Run is not owned by the active Feature version.');
+    const kind = String(request.kind || '');
+    if (!['template_candidate', 'template_instance', 'result', 'evidence', 'transient_json'].includes(kind)) throw new Error('Python output Artifact kind is not allowlisted.');
+    const originalName = path.basename(String(request.originalName || ''));
+    if (!originalName || originalName !== String(request.originalName) || originalName.length > 255) throw new Error('Python output Artifact name is invalid.');
+    const extension = path.extname(originalName).toLowerCase();
+    if (!/^\.[a-z0-9]{1,12}$/u.test(extension)) throw new Error('Python output Artifact extension is invalid.');
+    const maxBytes = Number(request.maxBytes || 0);
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 64 * 1024 * 1024) throw new Error('Python output Artifact size budget is invalid.');
+    const handleId = randomUUID();
+    const handleRoot = this.pythonHandleRoot(context, runId, handleId);
+    const filename = path.join(handleRoot, `output${extension}`);
+    fs.mkdirSync(path.dirname(handleRoot), { recursive: true });
+    fs.mkdirSync(handleRoot, { recursive: false });
+    fs.writeFileSync(filename, Buffer.alloc(0), { flag: 'wx' });
+    const mediaType = String(request.mediaType || 'application/octet-stream');
+    this.pythonArtifactHandles.set(handleId, {
+      featureId: context.featureId, featureVersion: context.featureVersion, runId, filename,
+      access: 'write', kind, mediaType, originalName, maxBytes
+    });
+    return {
+      schemaVersion: 'omnia.python-artifact-handle/v1', handleId, runId, path: filename,
+      access: 'write', mediaType, originalName, sizeBytes: 0, sha256: ''
+    };
+  }
+
+  private createPythonJsonInputHandle(input: unknown, context: FeatureWorkerPortContext): Record<string, unknown> {
+    const request = object(input, 'Python JSON input Artifact handle');
+    const runId = String(request.runId || '');
+    if (!this.core.prepare(`SELECT 1 FROM feature_runs WHERE run_id=? AND feature_id=? AND feature_version=?`).get(
+      runId, context.featureId, context.featureVersion
+    )) throw new Error('Python JSON input Artifact handle Run is not owned by the active Feature version.');
+    const maxBytes = Number(request.maxBytes || 0);
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 2 || maxBytes > 64 * 1024 * 1024) {
+      throw new Error('Python JSON input Artifact size budget is invalid.');
+    }
+    let bytes: Buffer;
+    try { bytes = Buffer.from(JSON.stringify(request.value), 'utf8'); }
+    catch { throw new Error('Python JSON input Artifact value is not serializable.'); }
+    if (bytes.length < 2 || bytes.length > maxBytes) throw new Error('Python JSON input Artifact exceeds its declared size budget.');
+    const handleId = randomUUID();
+    const handleRoot = this.pythonHandleRoot(context, runId, handleId);
+    fs.mkdirSync(path.dirname(handleRoot), { recursive: true });
+    fs.mkdirSync(handleRoot, { recursive: false });
+    const filename = path.join(handleRoot, 'input.json');
+    fs.writeFileSync(filename, bytes, { flag: 'wx' });
+    const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+    this.pythonArtifactHandles.set(handleId, {
+      featureId: context.featureId, featureVersion: context.featureVersion, runId, filename,
+      access: 'read', kind: 'transient_json', mediaType: 'application/json', originalName: 'input.json', maxBytes
+    });
+    return {
+      schemaVersion: 'omnia.python-artifact-handle/v1', handleId, runId, path: filename,
+      access: 'read', mediaType: 'application/json', originalName: 'input.json', sizeBytes: bytes.length, sha256
+    };
+  }
+
+  private readPythonJsonHandle(input: unknown, context: FeatureWorkerPortContext): unknown {
+    const request = object(input, 'Python JSON Artifact handle read');
+    const descriptor = object(request.handle, 'Python JSON Artifact handle descriptor');
+    const handleId = String(descriptor.handleId || '');
+    const handle = this.pythonArtifactHandles.get(handleId);
+    if (!handle || handle.access !== 'write' || handle.kind !== 'transient_json'
+      || handle.featureId !== context.featureId || handle.featureVersion !== context.featureVersion
+      || descriptor.schemaVersion !== 'omnia.python-artifact-handle/v1'
+      || String(descriptor.runId || '') !== handle.runId
+      || path.resolve(String(descriptor.path || '')) !== handle.filename) {
+      throw new Error('Python JSON Artifact handle is unavailable or not owned by this Feature Run.');
+    }
+    const stat = fs.statSync(handle.filename);
+    const sizeBytes = Number(descriptor.sizeBytes || 0);
+    if (!stat.isFile() || stat.size < 2 || stat.size !== sizeBytes || stat.size > handle.maxBytes) {
+      throw new Error('Python JSON Artifact handle size is invalid.');
+    }
+    const bytes = fs.readFileSync(handle.filename);
+    const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+    if (!/^[0-9a-f]{64}$/u.test(String(descriptor.sha256 || '')) || descriptor.sha256 !== sha256) {
+      throw new Error('Python JSON Artifact handle digest mismatch.');
+    }
+    let value: unknown;
+    try { value = JSON.parse(bytes.toString('utf8')); }
+    catch { throw new Error('Python JSON Artifact handle does not contain valid UTF-8 JSON.'); }
+    this.releasePythonHandle(handleId, context);
+    return value;
+  }
+
+  private commitPythonOutputHandle(input: unknown, context: FeatureWorkerPortContext): Record<string, unknown> {
+    const request = object(input, 'Python output Artifact commit');
+    const handleId = String(request.handleId || '');
+    const handle = this.pythonArtifactHandles.get(handleId);
+    if (!handle || handle.access !== 'write' || handle.kind === 'transient_json'
+      || handle.featureId !== context.featureId || handle.featureVersion !== context.featureVersion) {
+      throw new Error('Python output Artifact handle is unavailable or not owned by this Feature.');
+    }
+    const handleRoot = this.pythonHandleRoot(context, handle.runId, handleId);
+    if (!handle.filename.startsWith(`${handleRoot}${path.sep}`)) throw new Error('Python output Artifact handle path drifted.');
+    const stat = fs.statSync(handle.filename);
+    if (!stat.isFile() || stat.size < 1 || stat.size > handle.maxBytes) throw new Error('Python output Artifact exceeded its declared size budget.');
+    const sha256 = crypto.createHash('sha256').update(fs.readFileSync(handle.filename)).digest('hex');
+    if (request.sha256 && String(request.sha256) !== sha256) throw new Error('Python output Artifact digest mismatch.');
+    const run = this.core.prepare(`SELECT source_artifact_id FROM feature_runs WHERE run_id=? AND feature_id=? AND feature_version=?`).get(
+      handle.runId, context.featureId, context.featureVersion
+    ) as { source_artifact_id: string } | undefined;
+    if (!run) throw new Error('Python output Artifact Run is unavailable.');
+    const artifactId = randomUUID();
+    const extension = path.extname(handle.originalName).toLowerCase();
+    const relative = path.posix.join('features', context.featureId, 'artifacts', artifactId, `artifact${extension}`);
+    const destination = path.resolve(this.paths.data, ...relative.split('/'));
+    const artifactRoot = path.resolve(this.paths.data, 'features', context.featureId, 'artifacts');
+    if (!destination.startsWith(`${artifactRoot}${path.sep}`)) throw new Error('Python output Artifact destination escaped its Feature root.');
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.copyFileSync(handle.filename, destination, fs.constants.COPYFILE_EXCL);
+    const committedBytes = fs.readFileSync(destination);
+    if (committedBytes.length !== stat.size || crypto.createHash('sha256').update(committedBytes).digest('hex') !== sha256) {
+      fs.rmSync(destination, { force: true });
+      throw new Error('Python output Artifact drifted while entering managed storage.');
+    }
+    const createdAt = now();
+    try {
+      this.core.prepare(`
+        INSERT INTO feature_artifacts(
+          artifact_id,run_id,feature_id,kind,media_type,original_name,source_kind,source_ref,
+          managed_path,sha256,size_bytes,source_version,imported_at,created_at
+        ) VALUES(?,?,?,?,?,?,'worker_output',?,?,?,?,?,?,?)
+      `).run(
+        artifactId, handle.runId, context.featureId, handle.kind, handle.mediaType, handle.originalName,
+        run.source_artifact_id, relative, sha256, stat.size, context.featureVersion, createdAt, createdAt
+      );
+    } catch (error) { fs.rmSync(destination, { force: true }); throw error; }
+    this.releasePythonHandle(handleId, context);
+    return { artifactId, sha256, sizeBytes: stat.size, createdAt };
+  }
+
+  private releasePythonArtifactHandles(input: unknown, context: FeatureWorkerPortContext): true {
+    const request = object(input, 'Python Artifact handle release');
+    if (!Array.isArray(request.handleIds) || request.handleIds.length > 128) throw new Error('Python Artifact handle release list is invalid.');
+    for (const handleId of [...new Set(request.handleIds.map(String))]) this.releasePythonHandle(handleId, context);
+    return true;
+  }
+
+  private releasePythonHandle(handleId: string, context: FeatureWorkerPortContext): void {
+    const handle = this.pythonArtifactHandles.get(handleId);
+    if (!handle) return;
+    if (handle.featureId !== context.featureId || handle.featureVersion !== context.featureVersion) {
+      throw new Error('Python Artifact handle is owned by another Feature version.');
+    }
+    const handleRoot = this.pythonHandleRoot(context, handle.runId, handleId);
+    this.pythonArtifactHandles.delete(handleId);
+    fs.rmSync(handleRoot, { recursive: true, force: true });
   }
 
   private commitArtifact(input: unknown, context: FeatureWorkerPortContext): Record<string, unknown> {

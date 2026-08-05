@@ -5,6 +5,7 @@ const zlib = require('node:zlib');
 
 const FEATURE_ID = 'omnia.create-associate';
 const FEATURE_VERSION = '__FEATURE_VERSION__';
+const MAX_USER_ELEMENTS = 200;
 const RETURN_CAPABILITY = Object.freeze({
   scenarioId: 'create-associate-return-v1',
   capabilityId: 'phase1-full-return-v1'
@@ -237,6 +238,7 @@ function parseUserWorkbook(bytes, sourceArtifactId, governance = {}) {
         if (!elementId) continue;
         const populatedColumns = [...columns.values()].filter((column) => String(source[column] || '').trim()).length;
         if (populatedColumns < 2) continue;
+        if (rows.length >= MAX_USER_ELEMENTS) fail('PARSER.ELEMENT_LIMIT_EXCEEDED','当前版本单次最多处理200个元素，请拆分工作簿后重新上传；文件未写入后台。');
         const rowKey = digest(`${header.definition.kind}|${sheet.name.normalize('NFC')}|${sourceRow}`);
         const fields = Object.fromEntries([...columns].filter(([name]) => name).map(([name, column]) => [name, String(source[column] || '').trim()]));
         const relations = header.definition.relation
@@ -244,10 +246,11 @@ function parseUserWorkbook(bytes, sourceArtifactId, governance = {}) {
           : [];
         const logical = { rowKey, kind: header.definition.kind, elementId, sourceSheet: sheet.name, sourceRow, fields, relations };
         rows.push(logical);
+        const rowCandidatesByRawField = new Map();
         for (const [rawFieldKey, value] of Object.entries(fields)) {
           const canonicalFieldId = String(governance.fieldAliases?.[header.definition.kind]?.[rawFieldKey] || '');
           const fieldKey = canonicalFieldId ? `${rowKey}.${canonicalFieldId}` : `${rowKey}.unmapped.${digest(rawFieldKey)}`;
-          candidates.push({
+          const fieldCandidate = {
             fieldKey, rawFieldKey, canonicalFieldId, revision: 1, valueKind: 'source', value,
             status: value ? 'accepted' : 'needs_input',
             provenance: {
@@ -256,12 +259,14 @@ function parseUserWorkbook(bytes, sourceArtifactId, governance = {}) {
               sourceTraceId: `input:${digest(`${sourceArtifactId}|${sheet.name}|${sourceRow}|${rawFieldKey}`)}`,
               derivationRule: 'verbatim_user_workbook_cell'
             }
-          });
+          };
+          candidates.push(fieldCandidate);
+          rowCandidatesByRawField.set(rawFieldKey, fieldCandidate);
           if (!canonicalFieldId) issues.push(issue('parser','PARSER.UNMAPPED_FIELD',fieldKey,'ambiguous','blocking',
             `原始列 ${rawFieldKey} 无法唯一映射到 V8 canonical field_id。`,'template_structure'));
           if(rawFieldKey==='System Risk Classification'&&value&&!['Higher','Lower'].includes(value)) issues.push(issue('local','LOCAL.INVALID_ENUM',fieldKey,'invalid_enum','needs_input',`${header.definition.kind} ${elementId} 的 RAIT 仅允许 Higher 或 Lower。`,'valid_values'));
         }
-        const idCandidate=candidates.find((item)=>item.provenance.rowKey===rowKey&&item.rawFieldKey===header.definition.id);
+        const idCandidate=rowCandidatesByRawField.get(header.definition.id);
         const graRule=governance.derivationRules?.find((item)=>item.ruleId==='v4.phase1-gra-name-from-element-id.v1');
         if(!idCandidate||!graRule||graRule.algorithm!=='prefix_literal'||graRule.prefix!=='GRA-'||graRule.targetFieldId!=='P1.RUNTIME.GRA.NAME') fail('GOVERNANCE.GRA_NAME_RULE_MISSING','Signed GRA name derivation rule is unavailable.');
         const graFieldKey=`${rowKey}.P1.RUNTIME.GRA.NAME`;
@@ -305,7 +310,7 @@ function parseUserWorkbook(bytes, sourceArtifactId, governance = {}) {
         }
         for (const required of header.definition.required) {
           if (!String(fields[required] || '').trim()) {
-            const candidate = candidates.find((item) => item.provenance.rowKey === rowKey && item.rawFieldKey === required);
+            const candidate = rowCandidatesByRawField.get(required);
             const fieldKey=candidate?.fieldKey || `${rowKey}.missing.${digest(required)}`;
             issues.push(issue('local','LOCAL.REQUIRED_FIELD',fieldKey,'missing',candidate ? 'needs_input' : 'blocking',
               `${header.definition.kind} ${elementId} 缺少必填字段 ${required}。`,'required_fields'));
@@ -324,13 +329,23 @@ function parseUserWorkbook(bytes, sourceArtifactId, governance = {}) {
         ? `${row.kind} ${row.elementId} 在同一规范身份下重复；为防止重复创建，必须由用户在源资料中只保留一行。`
         : `${row.kind} ${row.elementId} 存在冲突的重复行。`,'unique_names')); else identity.set(key, row);
   }
-  const apps = new Set(rows.filter((row) => row.kind === 'APP').map((row) => row.elementId.toLocaleLowerCase('en-US')));
-  for (const row of rows.filter((item) => ['DB', 'OS'].includes(item.kind))) {
+  const appRowsByElementId = new Map();
+  const infrastructureRows = [];
+  for (const row of rows) {
+    if (row.kind === 'APP') {
+      const appIdentity = row.elementId.toLocaleLowerCase('en-US');
+      const matches = appRowsByElementId.get(appIdentity);
+      if (matches) matches.push(row); else appRowsByElementId.set(appIdentity, [row]);
+    } else if (row.kind === 'DB' || row.kind === 'OS') infrastructureRows.push(row);
+  }
+  const apps = new Set(appRowsByElementId.keys());
+  for (const row of infrastructureRows) {
     for (const target of row.relations) if (!apps.has(target.toLocaleLowerCase('en-US'))) issues.push(issue('local','UNSUPPORTED.EXTERNAL_APP_REFERENCE',`${row.rowKey}.relationship-target-live`,'contract_mismatch','blocking',
       `${row.kind} ${row.elementId} 引用的 APP ${target} 不在当前批次；0.2.1 未实现冻结外部目标与权威 RAIT 读回，禁止准备回传。`,'relationship_targets'));
   }
-  for(const row of rows.filter((item)=>['DB','OS'].includes(item.kind))){
-    const appRows=row.relations.map((target)=>rows.filter((item)=>item.kind==='APP'&&item.elementId.toLocaleLowerCase('en-US')===target.toLocaleLowerCase('en-US'))).flat();
+  for(const row of infrastructureRows){
+    const appRows=[];
+    for (const target of row.relations) appRows.push(...(appRowsByElementId.get(target.toLocaleLowerCase('en-US')) || []));
     const modes=[...new Set(appRows.map((app)=>String(app.fields['System Risk Classification']||'')))];
     if(appRows.length===1&&modes.length===1&&['Higher','Lower'].includes(modes[0])){
       const canonicalFieldId=`P1.${row.kind}.GRA.RAIT_CONCLUSION`;
@@ -762,9 +777,14 @@ function reviewPresentation(parsed){
 function recomputeLocalIssues(parsed){
   const rows=activeRows(parsed);const issues=(parsed.issues||[]).filter((candidate)=>candidate.origin==='parser');
   const add=(row,code,fieldKey,issueType,state,message,checkId)=>{const created=issue('local',code,fieldKey||`${row?.rowKey||'global'}.${issueType}`,issueType,state,message,checkId);created.issueId=issueId('local',`${parsed.issueNamespace||'legacy'}|${code}`,created.fieldKey);issues.push(created);};
-  for(const row of rows){for(const [raw,label,inputKind,required,maxLength] of REVIEW_MATRIX[row.kind]){const value=String(row.fields[raw]??'').normalize('NFC').trim(),candidate=reviewCandidate(parsed,row,raw);if(required&&!value)add(row,'LOCAL.REQUIRED_FIELD',candidate?.fieldKey||`${row.rowKey}.missing.${digest(raw)}`,'missing','needs_input',`${row.kind} ${row.elementId} 缺少必填字段 ${label}。`,'required_fields');if(value.length>Number(maxLength))add(row,'LOCAL.FIELD_TOO_LONG',candidate?.fieldKey,'invalid_enum','needs_input',`${row.kind} ${row.elementId} 的 ${label} 超过 ${maxLength} 字符上限。`,'valid_values');const allowed=REVIEW_ENUMS[raw];if(value&&allowed&&!allowed.includes(value))add(row,'LOCAL.INVALID_ENUM',candidate?.fieldKey,'invalid_enum','needs_input',`${row.kind} ${row.elementId} 的 ${label} 仅允许 ${allowed.join(' / ')}。`,'valid_values');if(raw===REVIEW_MATRIX[row.kind][0][0]){row.elementId=value;const illegal=/[\u0000-\u001f\u007f<>:"/\\|?*、，,;；]/u.test(value)||/^\.+$/u.test(value);if(illegal||deriveGraName(value).length>200)add(row,'LOCAL.ILLEGAL_ELEMENT_NAME',candidate?.fieldKey,'invalid_enum','needs_input',`${row.kind} 元素 ID 含非法字符，或派生 GRA 名超过 200 字符。`,'valid_values');}}}
+  const candidateByRowAndRawField=new Map();
+  for(const candidate of parsed.candidates||[]){const key=`${candidate.provenance?.rowKey||''}\u0000${candidate.rawFieldKey||''}`;if(!candidateByRowAndRawField.has(key))candidateByRowAndRawField.set(key,candidate);}
+  const indexedCandidate=(row,raw)=>candidateByRowAndRawField.get(`${row.rowKey}\u0000${raw}`);
+  for(const row of rows){for(const [raw,label,inputKind,required,maxLength] of REVIEW_MATRIX[row.kind]){const value=String(row.fields[raw]??'').normalize('NFC').trim(),candidate=indexedCandidate(row,raw);if(required&&!value)add(row,'LOCAL.REQUIRED_FIELD',candidate?.fieldKey||`${row.rowKey}.missing.${digest(raw)}`,'missing','needs_input',`${row.kind} ${row.elementId} 缺少必填字段 ${label}。`,'required_fields');if(value.length>Number(maxLength))add(row,'LOCAL.FIELD_TOO_LONG',candidate?.fieldKey,'invalid_enum','needs_input',`${row.kind} ${row.elementId} 的 ${label} 超过 ${maxLength} 字符上限。`,'valid_values');const allowed=REVIEW_ENUMS[raw];if(value&&allowed&&!allowed.includes(value))add(row,'LOCAL.INVALID_ENUM',candidate?.fieldKey,'invalid_enum','needs_input',`${row.kind} ${row.elementId} 的 ${label} 仅允许 ${allowed.join(' / ')}。`,'valid_values');if(raw===REVIEW_MATRIX[row.kind][0][0]){row.elementId=value;const illegal=/[\u0000-\u001f\u007f<>:"/\\|?*、，,;；]/u.test(value)||/^\.+$/u.test(value);if(illegal||deriveGraName(value).length>200)add(row,'LOCAL.ILLEGAL_ELEMENT_NAME',candidate?.fieldKey,'invalid_enum','needs_input',`${row.kind} 元素 ID 含非法字符，或派生 GRA 名超过 200 字符。`,'valid_values');}}}
   const identities=new Map(),graNames=new Map();for(const row of rows){const identity=String(row.elementId).toLocaleLowerCase('en-US'),gra=deriveGraName(row.elementId).toLocaleLowerCase('en-US');if(identities.has(identity)||graNames.has(gra))add(row,'LOCAL.DUPLICATE_IDENTITY',`${row.rowKey}.identity`,'conflict','blocking',`${row.kind} ${row.elementId} 的元素 ID 或派生 GRA 名在全批次重复。`,'unique_names');else{identities.set(identity,row);graNames.set(gra,row);}}
-  const apps=rows.filter((row)=>row.kind==='APP');for(const row of rows.filter((item)=>['DB','OS'].includes(item.kind))){row.relations=String(row.fields['关联系统ID']||'').split(/[、,，;；]/u).map((value)=>value.trim()).filter(Boolean);if(row.relations.length!==1)add(row,'LOCAL.EXACTLY_ONE_APP_REQUIRED',`${row.rowKey}.relations`,'ambiguous','blocking',`${row.kind} ${row.elementId} 必须恰好关联一个批内 APP；0.2.1 不支持零个或多个继承边。`,'infrastructure_links');const matches=row.relations.length===1?apps.filter((app)=>app.elementId.toLocaleLowerCase('en-US')===row.relations[0].toLocaleLowerCase('en-US')):[];if(row.relations.length===1&&matches.length===0)add(row,'UNSUPPORTED.EXTERNAL_APP_REFERENCE',`${row.rowKey}.relationship-target-live`,'contract_mismatch','blocking',`${row.kind} ${row.elementId} 引用批外 APP ${row.relations[0]}；0.2.1 未冻结外部目标与 RAIT，禁止回传。`,'relationship_targets');if(matches.length>1)add(row,'LOCAL.AMBIGUOUS_APP_REFERENCE',`${row.rowKey}.relations`,'ambiguous','blocking',`${row.kind} ${row.elementId} 的批内 APP 关联存在歧义。`,'infrastructure_links');if(matches.length===1){const source=matches[0],rowWorkspace=String(row.fields['Omnia工作区']||'').normalize('NFKC').trim(),sourceWorkspace=String(source.fields['Omnia工作区']||'').normalize('NFKC').trim();if(rowWorkspace!==sourceWorkspace)add(row,'LOCAL.CROSS_WORKSPACE_INHERITANCE',`${row.rowKey}.relations`,'contract_mismatch','blocking',`${row.kind} ${row.elementId} 与 APP ${source.elementId} 不在同一 Omnia 工作区。`,'infrastructure_links');const mode=String(source.fields['System Risk Classification']||'');if(!['Higher','Lower'].includes(mode))add(row,'LOCAL.RAIT_INHERITANCE_INVALID',`${row.rowKey}.inheritance`,'conflict','blocking',`${row.kind} ${row.elementId} 的唯一 APP RAIT 不可用。`,'infrastructure_rait');else row.fields['Inherited System Risk Classification']=mode;}}
+  const appRowsByElementId=new Map(),infrastructureRows=[];
+  for(const row of rows){if(row.kind==='APP'){const key=row.elementId.toLocaleLowerCase('en-US'),matches=appRowsByElementId.get(key);if(matches)matches.push(row);else appRowsByElementId.set(key,[row]);}else if(row.kind==='DB'||row.kind==='OS')infrastructureRows.push(row);}
+  for(const row of infrastructureRows){row.relations=String(row.fields['关联系统ID']||'').split(/[、,，;；]/u).map((value)=>value.trim()).filter(Boolean);if(row.relations.length!==1)add(row,'LOCAL.EXACTLY_ONE_APP_REQUIRED',`${row.rowKey}.relations`,'ambiguous','blocking',`${row.kind} ${row.elementId} 必须恰好关联一个批内 APP；0.2.1 不支持零个或多个继承边。`,'infrastructure_links');const matches=row.relations.length===1?(appRowsByElementId.get(row.relations[0].toLocaleLowerCase('en-US'))||[]):[];if(row.relations.length===1&&matches.length===0)add(row,'UNSUPPORTED.EXTERNAL_APP_REFERENCE',`${row.rowKey}.relationship-target-live`,'contract_mismatch','blocking',`${row.kind} ${row.elementId} 引用批外 APP ${row.relations[0]}；0.2.1 未冻结外部目标与 RAIT，禁止回传。`,'relationship_targets');if(matches.length>1)add(row,'LOCAL.AMBIGUOUS_APP_REFERENCE',`${row.rowKey}.relations`,'ambiguous','blocking',`${row.kind} ${row.elementId} 的批内 APP 关联存在歧义。`,'infrastructure_links');if(matches.length===1){const source=matches[0],rowWorkspace=String(row.fields['Omnia工作区']||'').normalize('NFKC').trim(),sourceWorkspace=String(source.fields['Omnia工作区']||'').normalize('NFKC').trim();if(rowWorkspace!==sourceWorkspace)add(row,'LOCAL.CROSS_WORKSPACE_INHERITANCE',`${row.rowKey}.relations`,'contract_mismatch','blocking',`${row.kind} ${row.elementId} 与 APP ${source.elementId} 不在同一 Omnia 工作区。`,'infrastructure_links');const mode=String(source.fields['System Risk Classification']||'');if(!['Higher','Lower'].includes(mode))add(row,'LOCAL.RAIT_INHERITANCE_INVALID',`${row.rowKey}.inheritance`,'conflict','blocking',`${row.kind} ${row.elementId} 的唯一 APP RAIT 不可用。`,'infrastructure_rait');else row.fields['Inherited System Risk Classification']=mode;}}
   parsed.issues=issues;return issues;
 }
 function reviewSurface(latest,plan,compiled,message){const parsed=plan.parsed,progress=progressSurface(latest,parsed),validation=validationPresentation(parsed,plan.liveValidation||{}),blocker=reviewBlocked(parsed,plan.liveValidation||{}),activeCount=activeRows(parsed).length;return{stateVersion:Number(latest.run.state_revision),status:blocker?'blocked':'ready',statusMessage:message,scopes:progress.scopes,items:progress.items,workflow:progress.workflow,progress:validation.progress,issues:validation.issues,review:reviewPresentation(parsed),editors:[],artifacts:[],actions:[

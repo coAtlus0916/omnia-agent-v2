@@ -6,7 +6,11 @@
 - Integration：Remote-only 签名 Operation，首次远程 action 才延迟注册。
 # Technical design
 
-## 0.2.41 live Return progress and catalog settlement
+## 0.2.44 authorized Return invocation lifetime
+
+`confirm-return` and `continue-return` await the serial executor before the Worker host emits the action result. Consequently `activeInvocationId` and the Supervisor's `allowMutation` entry remain live for `prepareReturnCommand`, signed mutation Operation calls, evidence, readback and final projection. No capability token is copied into the Worker, and Core does not accept a Feature-authored authorization claim. Mutation timeout or Worker loss still terminates the process tree and invokes the existing durable interruption classifier.
+
+## 0.2.41 live Return progress and catalog settlement history
 
 The Worker reserves a single execution slot before confirm/continue validation can yield. After durable approval it persists `execution.state=running`, obtains the initial Core Return projection, schedules the serial executor, and returns. Receipt-backed completion updates `loadReturnProgress` through the existing evidence port and saves the last verified target/command checkpoint before the next target. Health reads Return progress independently, so Surface refresh is concurrent with Connector waits. The slot prevents duplicate starts in one Worker; after process loss the durable `returning` state, frozen plan, command evidence and verified target map remain the sole recovery authority.
 

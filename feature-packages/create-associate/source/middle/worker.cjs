@@ -848,7 +848,6 @@ function createFeatureWorker(dependencies) {
   const connector = dependencies.connector;
   const {createPythonSidecarBridge}=require('./python-bridge.cjs');
   const python=createPythonSidecarBridge({ports:dependencies,maxFrameBytes:1024*1024,requestTimeoutMs:120000,heartbeatIntervalMs:5000,heartbeatTimeoutMs:15000});
-  let activeReturnExecution = null;
   if (!connector?.invoke) fail('WORKER.CONNECTOR_REQUIRED', 'A signed Operation Connector port is required.');
   const governance = dependencies.governance || (GOVERNANCE.startsWith('__') ? null : JSON.parse(GOVERNANCE));
   if (!governance || governance.sourceSha256 !== V8_SHA256 || governance.fieldCount !== 187 || governance.relationCount !== 68) {
@@ -1364,13 +1363,6 @@ function createFeatureWorker(dependencies) {
       if (input?.actionId === 'confirm-return' || input?.actionId === 'continue-return') {
         const actionLatest=await store.call('loadLatestRun',{});
         const runId = String(input.payload?.runId || actionLatest?.run?.run_id || '');
-        if(activeReturnExecution){
-          if(activeReturnExecution.runId!==runId) fail('RETURN.EXECUTION_BUSY',`Return execution is already active for Run ${activeReturnExecution.runId}.`);
-          actionLatest.returnProgress=await store.call('loadReturnProgress',{runId});
-          return{surfacePatch:returnSurface(actionLatest,'')};
-        }
-        const executionSlot={runId,promise:null};activeReturnExecution=executionSlot;
-        try {
         const checkpoint = await store.call('loadPlan', runId);
         if (!checkpoint?.returnPlan || !checkpoint?.confirmation) fail('RETURN.PLAN_MISSING', 'The frozen Return plan is unavailable.');
         const current = await buildReturnPreparation(checkpoint, input.context);
@@ -1404,7 +1396,7 @@ function createFeatureWorker(dependencies) {
         }
         async function persistVerifiedTarget(targetKey,commandId){
           progress.set(targetKey,'verified');
-          checkpoint.execution={state:'running',background:true,lastVerifiedTargetKey:targetKey,lastCommandId:commandId,verifiedTargets:[...progress.values()].filter((state)=>state==='verified').length};
+          checkpoint.execution={state:'running',background:false,lastVerifiedTargetKey:targetKey,lastCommandId:commandId,verifiedTargets:[...progress.values()].filter((state)=>state==='verified').length};
           await store.call('savePlan',{...checkpoint,updatedAt:new Date().toISOString()});
         }
         async function verifiedMutation(spec) {
@@ -1784,21 +1776,9 @@ function createFeatureWorker(dependencies) {
           return {surfacePatch:returnSurface(terminalLatest,'')};
         }
         };
-        checkpoint.execution={state:'running',background:true,startedAt:new Date().toISOString()};
+        checkpoint.execution={state:'running',background:false,startedAt:new Date().toISOString()};
         await store.call('savePlan',{...checkpoint,updatedAt:new Date().toISOString()});
-        const startedLatest=await store.call('loadLatestRun',{});
-        startedLatest.returnProgress=await store.call('loadReturnProgress',{runId});
-        const executionPromise=new Promise((resolve)=>setImmediate(resolve)).then(executeReturn)
-          .catch(async(error)=>{
-            const failedLatest=await store.call('loadLatestRun',{});
-            if(failedLatest?.run?.state==='returning'||failedLatest?.run?.state==='verifying') await store.call('finishReturn',{runId,outcome:'failed',error:String(error.message||error)});
-            checkpoint.execution={state:'failed',background:true,error:{code:String(error.code||'RETURN.BACKGROUND_FAILED'),message:String(error.message||error)}};checkpoint.updatedAt=new Date().toISOString();
-            await store.call('savePlan',checkpoint);
-          })
-          .finally(()=>{if(activeReturnExecution===executionSlot)activeReturnExecution=null;});
-        executionSlot.promise=executionPromise;
-        return{surfacePatch:returnSurface(startedLatest,'')};
-        }catch(error){if(activeReturnExecution===executionSlot)activeReturnExecution=null;throw error;}
+        return await executeReturn();
       }
       if (input?.actionId === 'prepare-return') {
         const latest = await store.call('loadLatestRun', {}); const run = latest?.run;

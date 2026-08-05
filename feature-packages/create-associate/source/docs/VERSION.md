@@ -1,4 +1,8 @@
-# 0.2.41 / sequence 43
+# 0.2.44 / sequence 46
+
+Return confirmation and continuation no longer detach the serial executor with `setImmediate` after returning the action result. The entire executor is awaited inside the originating `omnia_mutation` invocation, so Worker Store and Connector port calls retain the exact action authorization that passed safety, confirmation and effect gates. Core command validation remains unchanged and fail-closed. The 15-minute mutation deadline, process-interruption classification, durable per-target checkpoints, readback, uncertain handling and continuation semantics remain intact.
+
+# 0.2.41 / sequence 43 history
 
 Return confirmation and continuation now reserve one in-memory execution slot per Worker and return the initial persisted Surface without awaiting the full Return. The background task remains strictly serial, records authoritative Core evidence, and saves the checkpoint after every verified target; concurrent Surface refreshes load current Core Return progress. A Worker restart loses only the in-memory slot: the durable `returning` Run, frozen plan, command evidence, and target progress remain resumable through the existing continuation path without replaying verified targets.
 

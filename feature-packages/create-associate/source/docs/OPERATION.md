@@ -1,6 +1,6 @@
-# Signed Operation 0.2.41
+# Signed Operation 0.2.44
 
-Sequence 43 republishes the unchanged signed Operation inventory. Background Return scheduling and bounded catalog settlement are Feature Worker orchestration changes; no Operation route or safety contract changed.
+Sequence 46 republishes the unchanged signed Operation inventory. Retaining Return execution inside the originating authorized Worker invocation is a Feature Worker orchestration change; no Operation route, permit, readback, or safety contract changed.
 
 小型 object/relation/Risk-Control preflight、单次 mutation 与 read-only reconcile。不接受 Excel，不提供任意 URL/method/body。
 # Signed Operation inventory

@@ -115,7 +115,11 @@ function failed(id: string, code: string, message: string, retryable = false): C
 
 export class RemoteCommandGate {
   private readonly running = new Map<string, ConnectorOperation>();
+  private readonly queued: Array<QueuedCommand> = [];
+  private readonly queuedById = new Map<string, QueuedCommand>();
   private readonly maximumConcurrency = 4;
+  private readonly maximumQueueDepth = 64;
+  private readonly maximumQueueWaitMs = 30_000;
   private readonly exclusiveOperations = new Set<ConnectorOperation>([
     'connect',
     'refresh',
@@ -125,13 +129,30 @@ export class RemoteCommandGate {
     'operation_invoke'
   ]);
 
-  get active(): boolean { return this.running.size > 0; }
-  get activeCount(): number { return this.running.size; }
-  isActive(requestId: string): boolean { return this.running.has(requestId); }
+  get active(): boolean { return this.activeCount > 0; }
+  get activeCount(): number { return this.running.size + this.queued.length; }
+  isActive(requestId: string): boolean {
+    return this.running.has(requestId) || this.queuedById.has(requestId);
+  }
+
+  cancel(requestId: string): boolean {
+    const command = this.queuedById.get(requestId);
+    if (!command) return false;
+    this.removeQueued(command);
+    command.resolve(failed(
+      requestId,
+      'REMOTE.CANCELLED',
+      'Remote Connector 命令在分发前已取消。',
+      false
+    ));
+    this.pump();
+    return true;
+  }
 
   async handle(
     raw: unknown,
-    dispatch: (request: ConnectorRequest) => Promise<unknown>
+    dispatch: (request: ConnectorRequest) => Promise<unknown>,
+    deadlineAt?: string
   ): Promise<ConnectorResponse> {
     let request: ConnectorRequest;
     try {
@@ -144,7 +165,7 @@ export class RemoteCommandGate {
         wire?.message || 'Connector 请求无效。'
       );
     }
-    if (this.running.has(request.id)) {
+    if (this.isActive(request.id)) {
       return failed(
         request.id,
         'CONNECTOR.DUPLICATE_IN_FLIGHT',
@@ -152,31 +173,89 @@ export class RemoteCommandGate {
         true
       );
     }
-    const exclusive = this.exclusiveOperations.has(request.operation);
-    const exclusiveAlreadyRunning = [...this.running.values()].some((operation) => this.exclusiveOperations.has(operation));
-    if (this.running.size >= this.maximumConcurrency || (exclusive && this.running.size > 0) || exclusiveAlreadyRunning) {
-      return failed(request.id, 'CONNECTOR.BUSY', 'Remote Connector 已达到受控并发上限。', true);
+    if (this.queued.length >= this.maximumQueueDepth) {
+      return failed(request.id, 'CONNECTOR.BUSY', 'Remote Connector 有界等待队列已满。', true);
     }
-    this.running.set(request.id, request.operation);
-    try {
-      return {
-        schemaVersion,
-        id: request.id,
-        ok: true,
-        value: await dispatch(request)
+    const remoteDeadline = Date.parse(deadlineAt || '');
+    const waitUntil = Math.min(
+      Date.now() + this.maximumQueueWaitMs,
+      Number.isFinite(remoteDeadline) ? remoteDeadline : Number.POSITIVE_INFINITY
+    );
+    if (waitUntil <= Date.now()) {
+      return failed(request.id, 'REMOTE.DEADLINE_EXCEEDED', '命令在 Connector 分发前已超时。', true);
+    }
+    return new Promise<ConnectorResponse>((resolve) => {
+      const command: QueuedCommand = {
+        request,
+        dispatch,
+        exclusive: this.exclusiveOperations.has(request.operation),
+        resolve,
+        timer: undefined
       };
-    } catch (error) {
-      const candidate = error as { code?: unknown; message?: unknown; retryable?: unknown };
-      return failed(
-        request.id,
-        typeof candidate?.code === 'string' ? candidate.code : 'CONNECTOR.OPERATION_FAILED',
-        typeof candidate?.message === 'string' && candidate.message.trim()
-          ? candidate.message
-          : 'Remote Connector 操作失败。',
-        candidate?.retryable === true
-      );
-    } finally {
-      this.running.delete(request.id);
+      const timer = setTimeout(() => {
+        if (!this.queuedById.has(request.id)) return;
+        this.removeQueued(command);
+        resolve(failed(request.id, 'REMOTE.DEADLINE_EXCEEDED', '命令等待 Connector 分发时已超时。', true));
+        this.pump();
+      }, Math.max(1, waitUntil - Date.now()));
+      command.timer = timer;
+      timer.unref();
+      this.queued.push(command);
+      this.queuedById.set(request.id, command);
+      this.pump();
+    });
+  }
+
+  private pump(): void {
+    if (this.hasRunningExclusive()) return;
+    while (this.queued.length > 0 && this.running.size < this.maximumConcurrency) {
+      const next = this.queued[0];
+      if (!next) return;
+      if (next.exclusive && this.running.size > 0) return;
+      this.removeQueued(next);
+      this.start(next);
+      if (next.exclusive) return;
     }
   }
+
+  private start(command: QueuedCommand): void {
+    const { request } = command;
+    this.running.set(request.id, request.operation);
+    void Promise.resolve().then(() => command.dispatch(request)).then(
+      (value) => command.resolve({ schemaVersion, id: request.id, ok: true, value }),
+      (error) => {
+        const candidate = error as { code?: unknown; message?: unknown; retryable?: unknown };
+        command.resolve(failed(
+          request.id,
+          typeof candidate?.code === 'string' ? candidate.code : 'CONNECTOR.OPERATION_FAILED',
+          typeof candidate?.message === 'string' && candidate.message.trim()
+            ? candidate.message
+            : 'Remote Connector 操作失败。',
+          candidate?.retryable === true
+        ));
+      }
+    ).finally(() => {
+      this.running.delete(request.id);
+      this.pump();
+    });
+  }
+
+  private hasRunningExclusive(): boolean {
+    return [...this.running.values()].some((operation) => this.exclusiveOperations.has(operation));
+  }
+
+  private removeQueued(command: QueuedCommand): void {
+    const index = this.queued.indexOf(command);
+    if (index >= 0) this.queued.splice(index, 1);
+    this.queuedById.delete(command.request.id);
+    clearTimeout(command.timer);
+  }
+}
+
+interface QueuedCommand {
+  request: ConnectorRequest;
+  dispatch: (request: ConnectorRequest) => Promise<unknown>;
+  exclusive: boolean;
+  resolve: (response: ConnectorResponse) => void;
+  timer: NodeJS.Timeout | undefined;
 }

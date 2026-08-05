@@ -167,7 +167,10 @@ async function runSocket(): Promise<void> {
           return;
         }
         if (envelope.kind === 'cancel') {
-          if (commandGate.isActive(envelope.requestId)) cancelledRequests.add(envelope.requestId);
+          if (commandGate.isActive(envelope.requestId)) {
+            cancelledRequests.add(envelope.requestId);
+            commandGate.cancel(envelope.requestId);
+          }
           return;
         }
         if (envelope.kind !== 'command') return;
@@ -185,7 +188,7 @@ async function runSocket(): Promise<void> {
           }));
           return;
         }
-        const execution = commandGate.handle(request, dispatch);
+        const execution = commandGate.handle(request, dispatch, envelope.deadlineAt);
         activeOperations = commandGate.activeCount;
         status();
         void execution.then((response) => {

@@ -166,7 +166,7 @@ export async function pairRemoteConnector(input: {
         pairingCode,
         name: input.name.trim().slice(0, 160) || 'Omnia Agent v5 Remote Connector',
         connectorId: identity.connectorId,
-        connectorVersion: process.env.OMNIA_V5_REMOTE_CONNECTOR_VERSION || '0.3.15',
+        connectorVersion: process.env.OMNIA_V5_REMOTE_CONNECTOR_VERSION || '0.3.16',
         platform: `${process.platform}-${process.arch}`,
         product: BRIDGE_PRODUCT,
         protocol: BRIDGE_PROTOCOL

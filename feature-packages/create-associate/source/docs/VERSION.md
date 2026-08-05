@@ -1,4 +1,4 @@
-# 0.2.32 / sequence 34
+# 0.2.33 / sequence 35
 
 Return execution now follows the verified v4 dependency order: object/GRA/element association and EvaluationStarted/RAIT; SAP ECC Risk Factor writes/readbacks and documentation; Evaluation submit followed by bounded signed polling to EvaluationComplete for every GRA; generated Risk/Control catalog settlement; then each Risk/Control association and readback. Review defers Risk/Control identity resolution whenever an existing GRA has not reached EvaluationComplete. The polling window is 120 one-second reads, matching v4's 120-second bound. Pending states do not become uncertain on their first read; timeout fails closed while retaining the committed command's read-only reconcile specification. Existing verified target receipts are skipped during continuation.
 

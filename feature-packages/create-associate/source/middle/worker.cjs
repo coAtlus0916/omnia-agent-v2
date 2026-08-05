@@ -829,8 +829,8 @@ function createFeatureWorker(dependencies) {
       packId: String(context.connectorBinding.packId || ''),
       engagementId: String(context.connectorBinding.engagementId || '')
     };
-    if (!authority.authorityInstanceId || !authority.tenantOrOrgId || !authority.packId || !authority.engagementId) {
-      fail('RETURN.AUTHORITY_SCOPE_MISSING', 'Exact authority instance, tenant/org, Pack, and engagement identities are required.');
+    if (!authority.authorityInstanceId || !authority.packId || !authority.engagementId) {
+      fail('RETURN.AUTHORITY_SCOPE_MISSING', 'Exact authority instance, Pack, and engagement identities are required.');
     }
     const workspaces = new Map(authority.workspaces.map((item) => [String(item.name).normalize('NFKC'), item.workspaceId]));
     const graContents = new Map(authority.graContents.map((item) => [`${item.elementKind}|${String(item.contentName).normalize('NFKC')}`, item]));

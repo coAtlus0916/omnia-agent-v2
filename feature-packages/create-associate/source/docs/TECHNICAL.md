@@ -52,6 +52,10 @@ Worker response identity extraction and the signed Operation handler now share t
 
 The reference-list route template contains only declared placeholders. The handler freezes `catalogType=Standardized Accounts List` and `releaseDate=null` as string step parameters; Operation Host applies `encodeURIComponent` when constructing the request URL. No literal `+` or runtime-supplied transport field remains in the signed template.
 
+## 0.2.14 optional tenant/org binding identity
+
+Return preparation freezes `tenantOrOrgId` with exact string semantics and keeps it in authority equality and credential digests. The shared binding protocol permits an empty value, so only authority instance, Pack, and Engagement identities are non-empty prerequisites; the Worker never invents a tenant/org identity.
+
 The package contains a process-isolated CommonJS Worker, declarative Surface, private migration, managed V8-derived governance IR, signed runtime-template base XLSX, and a signed Operation package. Core passes base64 bytes (64 MiB maximum), never filesystem paths. Runtime output patches only declared OOXML worksheet/core parts and verifies every undeclared part digest.
 
 The governance IR contains 187 fields, 68 relation rules, and 15 scoring items. TemplateVersion semantic identity is stable across Runs; instance semantic/patch/output/governance digests are per Run.

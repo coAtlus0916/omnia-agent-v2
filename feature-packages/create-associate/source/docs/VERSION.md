@@ -1,4 +1,8 @@
-# 0.2.13 / sequence 15
+# 0.2.14 / sequence 16
+
+Corrective release aligning Return preparation with the shared Connector binding protocol: `tenantOrOrgId` remains an exact frozen string and participates in scope equality/digests, but may be empty. Non-empty authority instance, Pack, and Engagement identities remain mandatory.
+
+# 0.2.13 / sequence 15 history
 
 Corrective release aligning Review live validation with the signed non-APP object preflight exact schema. DB, OS, and Tool queries now carry the same governed `subtypeId` already used by Return preparation.
 

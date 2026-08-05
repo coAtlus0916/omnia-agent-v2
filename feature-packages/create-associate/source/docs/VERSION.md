@@ -1,4 +1,8 @@
-# 0.2.22 / sequence 24
+# 0.2.23 / sequence 25
+
+GRA identity and reconcile now use a strict current live-directory fallback only when detail exposes zero entity candidates. The fallback row must uniquely and completely match assessment ID, object ID, canonical GRA name, Workspace and canonical object type and must be active/non-ambiguous. Conflicting detail candidates never fall back. Reconcile signs the work-item and common-account directory routes and still verifies detail ID/name/Workspace/type/ink-content. Empty detail RAIT remains incomplete and is not inferred from directory data.
+
+# 0.2.22 / sequence 24 history
 
 Application GRA identity now reads `riskScopes` from a bare array or exactly one allowlisted Newtonsoft/list envelope (`$values`, `results`, `items`, `value`) without recursion. Active entity IDs are deduplicated and absence/conflict fails closed. An otherwise exact existing GRA with empty RAIT returns `exact_existing_incomplete_gra` while freezing the planned RAIT; its existing GRA-state intent must still execute signed PATCH and receipt-backed readback. Non-empty conflicting RAIT remains incompatible.
 

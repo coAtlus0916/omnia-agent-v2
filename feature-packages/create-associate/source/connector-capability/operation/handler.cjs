@@ -221,7 +221,7 @@ function explicitArrayRows(value, label) {
   if (keys.length !== 1 || !Array.isArray(value[keys[0]])) fail(`${label} must contain exactly one allowed array envelope.`);
   return value[keys[0]];
 }
-function assessmentEntityId(value, label) {
+function assessmentEntityCandidates(value, label) {
   const direct = [value && value.entityId, value && value.itElementId, value && value.applicationId]
     .map(optionalGuid).filter(Boolean);
   const scoped = explicitArrayRows(value && value.riskScopes, `${label} riskScopes`)
@@ -229,8 +229,8 @@ function assessmentEntityId(value, label) {
       && scope.isActive !== false && scope.active !== false)
     .map((scope) => optionalGuid(scope.entityId)).filter(Boolean);
   const exact = [...new Set([...direct, ...scoped])];
-  if (exact.length !== 1) fail(`${label} must contain one unique active IT Element entity GUID.`);
-  return exact[0];
+  if (exact.length > 1) fail(`${label} contains conflicting active IT Element entity GUIDs.`);
+  return exact;
 }
 function payloadRows(value) { return Array.isArray(value) ? value : resultRows(value); }
 function normalizedObjectType(value) {
@@ -269,12 +269,17 @@ function applicationGraDirectory(workItemsPayload, commonAccountsPayload) {
   const merge = (item, source) => {
     const id = assessmentId(item, source); if (!id) return;
     const current = byId.get(id) || { assessmentId: id, workItemId: '', objectId: '', identifiers: [], graName: '',
-      workspaceId: '', objectType: '', rait: '', recycled: false };
+      workspaceId: '', objectType: '', rait: '', recycled: false, ambiguous: false };
+    const mergeExact=(key,value,normalize=(candidate)=>candidate)=>{
+      if(!value)return;
+      if(current[key]&&normalize(current[key])!==normalize(value))current.ambiguous=true;
+      else current[key] ||= value;
+    };
     current.workItemId ||= optionalGuid(source === 'work-item' ? item.id : item.workItemId);
-    current.objectId ||= optionalGuid(item.entityId || item.itElementId || item.applicationId);
-    current.graName ||= text(item.graName || item.name || item.displayName);
-    current.workspaceId ||= optionalGuid(item.workspaceId || item.facetId);
-    current.objectType ||= normalizedObjectType(item.riskAssessmentType || item.itElementType || item.entityType || item.type);
+    mergeExact('objectId',optionalGuid(item.entityId || item.itElementId || item.applicationId));
+    mergeExact('graName',text(item.graName || item.name || item.displayName));
+    mergeExact('workspaceId',optionalGuid(item.workspaceId || item.facetId));
+    mergeExact('objectType',normalizedObjectType(item.riskAssessmentType || item.itElementType || item.entityType || item.type));
     current.rait ||= normalizeRait(item.itElementRaitConclusionLevelId || item.itElementRaitConclusionLevel
       || item.itElementRaitConclusionLevelName || item.lastSubmittedITElementRaitConclusionLevelId || item.raitConclusionLevel);
     current.identifiers = [...new Set([...current.identifiers, ...identityCandidates(item, current.objectType)])];
@@ -416,7 +421,10 @@ async function resolveApplicationIdentity(request, sdk) {
   const actualRait = normalizeRait(graDetail.itElementRaitConclusionLevelId || graDetail.itElementRaitConclusionLevel
     || graDetail.itElementRaitConclusionLevelName || graDetail.lastSubmittedITElementRaitConclusionLevelId
     || graDetail.raitConclusionLevel);
-  const graWorkspaceIds = detailWorkspaceIds(graDetail, gra); const graObjectId = assessmentEntityId(graDetail, 'Existing Application GRA');
+  const graWorkspaceIds = detailWorkspaceIds(graDetail, gra); const detailEntityCandidates=assessmentEntityCandidates(graDetail, 'Existing Application GRA');
+  const exactDirectoryFallback=!gra.ambiguous&&!gra.recycled&&gra.assessmentId===optionalGuid(graDetail.id||graDetail.riskAssessmentId)
+    &&gra.objectId===objectId&&text(gra.graName)===graName&&gra.workspaceId===workspaceId&&gra.objectType==='Application';
+  const graObjectId=detailEntityCandidates.length===1?detailEntityCandidates[0]:exactDirectoryFallback?gra.objectId:'';
   const graExact = optionalGuid(graDetail.id || graDetail.riskAssessmentId) === gra.assessmentId
     && graWorkspaceIds.length === 1 && graWorkspaceIds[0] === workspaceId && graObjectId === objectId
     && normalizedObjectType(graDetail.riskAssessmentType || graDetail.itElementType || graDetail.entityType || graDetail.type || gra.objectType) === 'Application'
@@ -801,12 +809,27 @@ function createOperationHandler() {
       if (operationId === 'omnia.create-associate.gra.reconcile.v1') {
         const frozen = target(request); const riskAssessmentId = guid(request.riskAssessmentId, 'riskAssessmentId');
         const query=exact(request.query,['entityId','name','itElementType','inkContentId','typeId'],'GRA read-back query');
+        const expectedEntityId=guid(query.entityId,'query.entityId');
         const kindContracts=Object.values(GRA_KIND_CONTRACT).filter((item)=>item.objectType===text(query.itElementType));
         const expectedTypeIds=[...new Set(kindContracts.map((item)=>String(item.typeId)))];
         if(!kindContracts.length||expectedTypeIds.length!==1||catalogId(query.typeId,'query.typeId')!==expectedTypeIds[0]) fail('GRA read-back query type does not match the governed APP/DB/OS/TOOL contract.');
         const result = await sdk.invokeStep('gra-readback', { riskAssessmentId });
+        const detailEntityCandidates=assessmentEntityCandidates(result,'GRA read-back');
+        let observedEntityId=detailEntityCandidates[0]||'';
+        if(!observedEntityId){
+          const [workItems,commonAccounts]=await Promise.all([
+            sdk.invokeStep('workitem-directory',{}, {workItemIds:[],engagementIds:[guid(sdk.binding.engagementId,'binding.engagementId')],workItemTypes:['RiskFactorEvaluation']}),
+            sdk.invokeStep('gra-directory',{}, {riskAssessmentType:[]})
+          ]);
+          const directory=applicationGraDirectory(workItems,commonAccounts);
+          const matches=directory.rows.filter((item)=>!item.ambiguous&&!item.recycled&&item.assessmentId===riskAssessmentId
+            &&item.objectId===expectedEntityId&&text(item.graName)===text(query.name)&&item.workspaceId===frozen.workspaceId
+            &&item.objectType===text(query.itElementType));
+          if(matches.length!==1)fail('GRA read-back live directory has no unique exact assessment/entity/name/Workspace/type binding.');
+          observedEntityId=matches[0].objectId;
+        }
         if (guid(result.id || result.riskAssessmentId, 'GRA result id') !== riskAssessmentId
-          || rowWorkspace(result) !== frozen.workspaceId||assessmentEntityId(result,'GRA read-back')!==guid(query.entityId,'query.entityId')
+          || rowWorkspace(result) !== frozen.workspaceId||observedEntityId!==expectedEntityId
           || text(result.name)!==text(query.name)||text(result.type||result.itElementType||result.entityType)!==text(query.itElementType)
           || catalogId(result.inkContentId||result.contentId,'GRA inkContentId')!==catalogId(query.inkContentId,'query.inkContentId')) fail('GRA read-back content/entity/type/name/Workspace binding mismatch.');
         return result;

@@ -140,7 +140,7 @@ const runtimeBaseBytes = workerModule.buildRuntimeWorkbook(
 
 const userTemplateBytes = await readFile(userTemplatePath);
 if (userTemplateBytes.length < 1 || userTemplateBytes.length > 64 * 1024 * 1024) throw new Error('Phase1 user template V3 size is invalid.');
-const version = '0.2.22'; const sequence = 24;
+const version = '0.2.23'; const sequence = 25;
 const route = (stepId, method, routeTemplate, parameters, bodyMode = 'none', bodyParameter = '') => ({ stepId, method, routeTemplate, parameters, bodyMode, bodyParameter });
 const applicationIdentityRoutes = () => [
   route('workitem-directory', 'POST', '/work/v1/WorkQueries/getWorkitemDetails', [], 'signed_json'),
@@ -208,7 +208,11 @@ const operations = [
   ] },
   { operationId: 'omnia.create-associate.gra.preflight.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.gra-preflight-request/v1', responseSchema: 'omnia.create-associate.gra-preflight-response/v1', enabledByDefault: true, grantsMutationPermit: true, permitsOperationId: 'omnia.create-associate.gra.create.v1', routes: [route('gra-directory', 'POST', '/rapr/v0/engagements/{engagementId}/riskassessments/commonAccounts', [], 'signed_json')] },
   { operationId: 'omnia.create-associate.gra.create.v1', effect: 'omnia_mutation', requestSchema: 'omnia.create-associate.gra-create-request/v1', responseSchema: 'omnia.create-associate.gra-create-response/v1', enabledByDefault: false, grantsMutationPermit: false, routes: [route('gra-create', 'POST', '/rapr/v0/engagements/{engagementId}/riskassessments/create', [], 'signed_json')] },
-  { operationId: 'omnia.create-associate.gra.reconcile.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.gra-reconcile-request/v1', responseSchema: 'omnia.create-associate.gra-reconcile-response/v1', enabledByDefault: true, grantsMutationPermit: false, routes: [route('gra-readback', 'GET', '/rapr/v0/engagements/{engagementId}/riskassessments/{riskAssessmentId}', [{ name: 'riskAssessmentId', type: 'guid' }])] },
+  { operationId: 'omnia.create-associate.gra.reconcile.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.gra-reconcile-request/v1', responseSchema: 'omnia.create-associate.gra-reconcile-response/v1', enabledByDefault: true, grantsMutationPermit: false, routes: [
+    route('gra-readback', 'GET', '/rapr/v0/engagements/{engagementId}/riskassessments/{riskAssessmentId}', [{ name: 'riskAssessmentId', type: 'guid' }]),
+    route('workitem-directory', 'POST', '/work/v1/WorkQueries/getWorkitemDetails', [], 'signed_json'),
+    route('gra-directory', 'POST', '/rapr/v0/engagements/{engagementId}/riskassessments/commonAccounts', [], 'signed_json')
+  ] },
   { operationId: 'omnia.create-associate.gra-state.preflight.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.gra-state-preflight-request/v1', responseSchema: 'omnia.create-associate.gra-state-preflight-response/v1', enabledByDefault: true, grantsMutationPermit: true, permitsOperationId: 'omnia.create-associate.gra-state.patch.v1', routes: [route('gra-state-read', 'GET', '/rapr/v0/engagements/{engagementId}/riskassessments/{riskAssessmentId}', [{ name: 'riskAssessmentId', type: 'guid' }])] },
   { operationId: 'omnia.create-associate.gra-state.patch.v1', effect: 'omnia_mutation', requestSchema: 'omnia.create-associate.gra-state-patch-request/v1', responseSchema: 'omnia.create-associate.gra-state-patch-response/v1', enabledByDefault: false, grantsMutationPermit: false, routes: [route('gra-state-patch', 'PATCH', '/rapr/v0/engagements/{engagementId}/riskassessments/{riskAssessmentId}', [{ name: 'riskAssessmentId', type: 'guid' }], 'signed_json')] },
   { operationId: 'omnia.create-associate.gra-state.reconcile.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.gra-state-reconcile-request/v1', responseSchema: 'omnia.create-associate.gra-state-reconcile-response/v1', enabledByDefault: true, grantsMutationPermit: false, routes: [route('gra-state-read', 'GET', '/rapr/v0/engagements/{engagementId}/riskassessments/{riskAssessmentId}', [{ name: 'riskAssessmentId', type: 'guid' }])] },

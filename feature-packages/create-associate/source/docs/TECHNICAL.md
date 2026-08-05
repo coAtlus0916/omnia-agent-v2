@@ -94,6 +94,10 @@ The signed readback accepts the recorded Omnia detail contract in which the IT E
 
 `riskScopes` is parsed only as a bare array or an object containing exactly one array under `$values`, `results`, `items`, or `value`. The parser does not recurse and does not infer arbitrary fields. Deleted or explicitly inactive scopes are ignored; all remaining valid entity GUIDs plus supported top-level candidates are deduplicated and exactly one must remain. APP identity follows v4 resume semantics: an exact GRA with no submitted RAIT is reusable but explicitly incomplete, the returned `resolved.rait` stays bound to the planned value, and the independent GRA-state intent remains responsible for a real PATCH and authoritative readback. Risk-derived inference is not used to pretend RAIT is already submitted.
 
+## 0.2.23 current live-directory fallback
+
+Entity candidate extraction now distinguishes zero, one and conflicting candidates. One candidate is authoritative and must equal the exact IT Element; conflicts fail immediately. Zero candidates may use `applicationGraDirectory`, but only a complete, active and non-conflicting merged row matching assessment ID, object ID, exact GRA name, Workspace and canonical type is accepted. Merge disagreement on those identity fields marks the row ambiguous. GRA reconcile obtains fresh work-item and common-account directory responses through its own signed allowlist and applies the same full match before independently validating the detail response. It never falls back on name alone or historical evidence, and it never takes RAIT from the directory.
+
 The package contains a process-isolated CommonJS Worker, declarative Surface, private migration, managed V8-derived governance IR, signed runtime-template base XLSX, and a signed Operation package. Core passes base64 bytes (64 MiB maximum), never filesystem paths. Runtime output patches only declared OOXML worksheet/core parts and verifies every undeclared part digest.
 
 The governance IR contains 187 fields, 68 relation rules, and 15 scoring items. TemplateVersion semantic identity is stable across Runs; instance semantic/patch/output/governance digests are per Run.

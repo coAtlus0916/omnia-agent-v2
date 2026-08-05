@@ -92,7 +92,7 @@ function FeatureNavigation({ snapshot, collapsed, run, openFeature, selectedFeat
   collapsed: boolean;
   run: Run;
   openFeature?: (featureId: string) => void;
-  selectedFeatureId?: string;
+  selectedFeatureId?: string | undefined;
 }) {
   return <aside id="feature-navigation" className={`feature-navigation ${collapsed ? 'collapsed' : ''}`} aria-label="FeatureNavigation">
     <div className="navigation-scroll">
@@ -534,7 +534,17 @@ function RemoteConnectionDialog({ snapshot, close, run }: { snapshot: ShellSnaps
   const binding = snapshot.settings.connection;
   const pairing = snapshot.remotePairing;
   const pairingCapability = snapshot.bridgePairing;
+  const diagnostics = snapshot.connection.remoteDiagnostics;
   const pairingBusy = ['waiting', 'candidate'].includes(pairing.state);
+  const bridgeStateLabels: Record<string, string> = {
+    unpaired: '未配对', repair_required: '需要修复', connector_incompatible: '版本不兼容',
+    connecting: '连接中', connected: '已连接 Bridge', disconnected: '已断开'
+  };
+  const supervisorEventLabels: Record<string, string> = {
+    worker_exited: 'Connector 进程退出', worker_start_failed: 'Connector 启动失败',
+    candidate_promoted: '托管更新已启用', candidate_rolled_back: '托管更新已回退',
+    update_check_failed: '托管更新检查失败', supervisor_failed: 'Supervisor 失败'
+  };
   const repair = () => {
     if (!window.confirm('重新配对会在新设备验证成功后撤销旧绑定。是否继续？')) return;
     run('remote-repair', () => window.omnia.beginRemotePairing({ repair: true, confirmed: true, expectedStateVersion: binding.stateVersion }));
@@ -557,6 +567,49 @@ function RemoteConnectionDialog({ snapshot, close, run }: { snapshot: ShellSnaps
           ? <p className="reason error" data-testid="remote-pairing-capability-reason">{pairingCapability.reason}</p>
           : null}
         {binding.remotePaired ? <dl className="connection-facts"><dt>状态</dt><dd>{binding.bindingState}</dd><dt>设备</dt><dd>{binding.connectorName || binding.connectorId}</dd><dt>Connector</dt><dd>{binding.connectorVersion || '未知'}</dd><dt>协议</dt><dd>{binding.protocolVersion || '未知'}</dd></dl> : null}
+        <section className="remote-diagnostics" aria-label="Remote Connector 实时诊断" data-testid="remote-diagnostics">
+          <header><h3>实时诊断</h3><span className={diagnostics ? (diagnostics.connectorOnline ? 'online' : 'offline') : 'unknown'}>{diagnostics ? (diagnostics.connectorOnline ? 'Connector 在线' : 'Connector 离线') : '暂无诊断'}</span></header>
+          {diagnostics ? <>
+            <dl className="diagnostic-facts">
+              <dt>Pair</dt><dd>{diagnostics.pairId || '—'}</dd>
+              <dt>Connector</dt><dd>{diagnostics.connectorId || '—'}</dd>
+              <dt>版本 / PID</dt><dd>{diagnostics.version || '—'} / {diagnostics.pid || '—'}</dd>
+              <dt>Bridge</dt><dd>{bridgeStateLabels[diagnostics.bridgeState] || diagnostics.bridgeState}</dd>
+              <dt>状态原因</dt><dd>{diagnostics.bridgeReason || '—'}</dd>
+              <dt>心跳</dt><dd>{formatTime(diagnostics.heartbeatAt)}</dd>
+              <dt>最近上报</dt><dd>{formatTime(diagnostics.lastSeenAt || diagnostics.reportedAt)}</dd>
+              <dt>进行中 / 不确定</dt><dd>{diagnostics.activeOperations} / {diagnostics.uncertainOperations}</dd>
+              <dt>断开时间</dt><dd>{formatTime(diagnostics.disconnectedAt)}</dd>
+              <dt>关闭代码</dt><dd>{diagnostics.closeCode ?? '—'}</dd>
+              <dt>关闭原因</dt><dd>{diagnostics.closeReason || '—'}</dd>
+            </dl>
+            <div className="managed-diagnostics">
+              <h4>托管更新</h4>
+              <dl className="diagnostic-facts">
+                <dt>当前版本</dt><dd>{diagnostics.managed.current || '—'}</dd>
+                <dt>上一版本</dt><dd>{diagnostics.managed.previous || '—'}</dd>
+                <dt>待启用版本</dt><dd>{diagnostics.managed.pending ? `${diagnostics.managed.pending.version} · sequence ${diagnostics.managed.pending.sequence} · ${formatTime(diagnostics.managed.pending.stagedAt)}` : '无'}</dd>
+                <dt>最高 sequence</dt><dd>{diagnostics.managed.highestSequence}</dd>
+              </dl>
+            </div>
+            <div className="supervisor-diagnostics">
+              <h4>最近监督事件</h4>
+              {diagnostics.supervisorEvents.length ? <ol>{diagnostics.supervisorEvents.map((event, index) => {
+                const details = [
+                  event.version ? `版本 ${event.version}` : '',
+                  event.current ? `当前 ${event.current}` : '', event.previous ? `上一版 ${event.previous}` : '',
+                  event.failedVersion ? `失败 ${event.failedVersion}` : '', event.restoredVersion ? `恢复 ${event.restoredVersion}` : '',
+                  event.sequence !== null ? `sequence ${event.sequence}` : '', event.exitCode !== null ? `exit ${event.exitCode}` : '',
+                  event.signal ? `signal ${event.signal}` : '', event.error
+                ].filter(Boolean).join('；');
+                return <li key={`${event.at}:${event.event}:${index}`} className={event.level}>
+                  <strong>{supervisorEventLabels[event.event] || event.event}</strong><time>{formatTime(event.at)}</time>
+                  {details ? <small>{details}</small> : null}
+                </li>;
+              })}</ol> : <p className="diagnostic-empty">最近没有记录到监督事件。</p>}
+            </div>
+          </> : <p className="diagnostic-empty">Bridge 尚未返回该 Pair 的 Connector 诊断记录。点击“诊断连接”会重新读取当前 Bridge 状态。</p>}
+        </section>
         <div className="button-row no-border">
           <button type="button" onClick={() => run('remote-diagnose', () => window.omnia.diagnoseRemoteConnection())}>诊断连接</button>
           {!pairingBusy && (binding.remotePaired || binding.bindingState === 'repair_required') ? <button type="button" disabled={!pairingCapability.canCreateSession} title={pairingCapability.reason} onClick={repair}>重新配对</button> : null}

@@ -1,4 +1,4 @@
-import type { BridgePairingCapabilityInspection } from './bridge-contracts.js';
+import type { BridgePairingCapabilityInspection, RemoteConnectorDiagnostics } from './bridge-contracts.js';
 
 export type ConnectionStatus =
   | 'not_configured'
@@ -37,6 +37,7 @@ export interface ConnectionSnapshot {
   connectorId: string;
   connectorName: string;
   connectorVersion: string;
+  remoteDiagnostics?: RemoteConnectorDiagnostics | null;
   sessionGeneration?: number;
   authorityInstanceId?: string;
   tenantOrOrgId?: string;

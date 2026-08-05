@@ -708,7 +708,7 @@ button.danger { color: var(--danger); border-color: #d8aaaa; }
 .log-detail pre { max-height: 160px; margin: 0; padding: 7px; overflow: auto; border: 1px solid var(--border); background: #f6f8fa; white-space: pre-wrap; }
 .log-query-error { flex: 0 0 auto; margin: 7px 10px 0; }
 .connection-dialog {
-  width: clamp(440px, 54vw, 620px);
+  width: clamp(560px, 70vw, 820px);
   max-width: calc(100vw - 32px);
   max-height: calc(100vh - 32px);
   display: flex;
@@ -728,4 +728,22 @@ button.danger { color: var(--danger); border-color: #d8aaaa; }
 .connection-facts { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 6px 10px; margin: 12px 0; }
 .connection-facts dt { color: var(--muted); }
 .connection-facts dd { margin: 0; overflow-wrap: anywhere; }
+.remote-diagnostics { margin: 14px 0; padding: 12px; border: 1px solid var(--border); border-radius: 5px; background: #f8fafb; }
+.remote-diagnostics > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.remote-diagnostics > header span { padding: 2px 8px; border-radius: 999px; font-size: 11px; }
+.remote-diagnostics > header span.online { color: #176947; background: #e1f3e9; }
+.remote-diagnostics > header span.offline { color: #8c3131; background: #f9e5e5; }
+.remote-diagnostics > header span.unknown { color: #5e6b75; background: #e9eef1; }
+.diagnostic-facts { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 5px 10px; margin: 0; font-size: 12px; }
+.diagnostic-facts dt { color: var(--muted); }
+.diagnostic-facts dd { margin: 0; overflow-wrap: anywhere; }
+.managed-diagnostics,.supervisor-diagnostics { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.managed-diagnostics h4,.supervisor-diagnostics h4 { margin: 0 0 8px; font-size: 12px; }
+.supervisor-diagnostics ol { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.supervisor-diagnostics li { display: grid; grid-template-columns:minmax(0,1fr) auto; gap: 2px 9px; padding: 7px 8px; border-left: 3px solid #8fa1af; background: #fff; }
+.supervisor-diagnostics li.warn { border-left-color: #c28b24; }
+.supervisor-diagnostics li.error { border-left-color: #b84a4a; }
+.supervisor-diagnostics time { color: var(--muted); font-size: 10px; }
+.supervisor-diagnostics small { grid-column: 1 / -1; color: var(--muted); overflow-wrap: anywhere; }
+.diagnostic-empty { margin: 0 !important; font-size: 12px; }
 .boot-screen { background: #eef1f4; }

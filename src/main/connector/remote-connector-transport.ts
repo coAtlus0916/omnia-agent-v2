@@ -15,11 +15,17 @@ import {
   BRIDGE_PROTOCOL,
   BRIDGE_SCHEMA,
   BRIDGE_VERSION,
+  REMOTE_CONNECTOR_DIAGNOSTICS_SCHEMA,
   type BridgeEnvelope,
   type BridgeHealthResponse,
   type BridgePairingCapabilityInspection,
   type BridgePairingPollResponse,
-  type BridgePairingSessionResponse
+  type BridgePairingSessionResponse,
+  type RemoteConnectorBridgeState,
+  type RemoteConnectorDiagnostics,
+  type RemoteConnectorDiagnosticsReport,
+  type RemoteConnectorSupervisorEvent,
+  type RemoteConnectorSupervisorEventName
 } from '../../shared/bridge-contracts.js';
 import type { ConnectionSnapshot, WorkspaceObservation } from '../../shared/contracts.js';
 import { AppError } from '../../shared/errors.js';
@@ -335,6 +341,95 @@ const connectorVersionCompatible = (value: string): boolean => {
   return Boolean(match && Number(match[1]) === 0 && Number(match[2]) === 3 && Number(match[3]) >= 4);
 };
 
+const DIAGNOSTIC_BRIDGE_STATES = new Set<RemoteConnectorBridgeState>([
+  'unpaired', 'repair_required', 'connector_incompatible', 'connecting', 'connected', 'disconnected'
+]);
+const DIAGNOSTIC_EVENT_NAMES = new Set<RemoteConnectorSupervisorEventName>([
+  'worker_exited', 'worker_start_failed', 'candidate_promoted', 'candidate_rolled_back',
+  'update_check_failed', 'supervisor_failed'
+]);
+const diagnosticString = (value: unknown, maximum = 160): string =>
+  typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/gu, ' ').trim().slice(0, maximum) : '';
+const diagnosticText = (value: unknown): string => diagnosticString(value, 2_000)
+  .replace(/\b(?:authorization|cookie|token|secret|password|credential)\b\s*[:=]\s*[^\s,;]+/giu, '$1=[redacted]')
+  .replace(/\bBearer\s+[^\s,;]+/giu, 'Bearer [redacted]')
+  .replace(/(?:https?|wss?):\/\/[^\s]+/giu, '[url]')
+  .replace(/(?:[A-Za-z]:\\|\\\\)[^\s"']+/gu, '[path]')
+  .replace(/\b[A-Za-z0-9+/=_-]{48,}\b/gu, '[redacted]')
+  .slice(0, 300);
+const diagnosticTime = (value: unknown): string => {
+  const text = diagnosticString(value, 40);
+  return Number.isFinite(Date.parse(text)) ? text : '';
+};
+const diagnosticInteger = (value: unknown, maximum = Number.MAX_SAFE_INTEGER): number | null =>
+  Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= maximum ? Number(value) : null;
+
+function normalizeSupervisorEvent(value: unknown): RemoteConnectorSupervisorEvent | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  const at = diagnosticTime(candidate.at);
+  const event = diagnosticString(candidate.event, 40) as RemoteConnectorSupervisorEventName;
+  const level = diagnosticString(candidate.level, 8);
+  if (!at || !DIAGNOSTIC_EVENT_NAMES.has(event) || !['info', 'warn', 'error'].includes(level)) return null;
+  return {
+    at,
+    level: level as RemoteConnectorSupervisorEvent['level'],
+    event,
+    version: diagnosticString(candidate.version, 40),
+    current: diagnosticString(candidate.current, 40),
+    previous: diagnosticString(candidate.previous, 40),
+    failedVersion: diagnosticString(candidate.failedVersion, 40),
+    restoredVersion: diagnosticString(candidate.restoredVersion, 40),
+    sequence: diagnosticInteger(candidate.sequence),
+    exitCode: diagnosticInteger(candidate.exitCode, 2 ** 31 - 1),
+    signal: diagnosticString(candidate.signal, 32),
+    error: diagnosticText(candidate.error)
+  };
+}
+
+function normalizeRemoteDiagnostics(value: unknown): RemoteConnectorDiagnosticsReport | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  if (candidate.schemaVersion !== REMOTE_CONNECTOR_DIAGNOSTICS_SCHEMA) return null;
+  const bridgeState = diagnosticString(candidate.bridgeState, 32) as RemoteConnectorBridgeState;
+  const reportedAt = diagnosticTime(candidate.reportedAt);
+  const heartbeatAt = diagnosticTime(candidate.heartbeatAt);
+  const pid = diagnosticInteger(candidate.pid, 2 ** 31 - 1);
+  const managed = candidate.managed;
+  if (!reportedAt || !heartbeatAt || pid === null || pid < 1 || !DIAGNOSTIC_BRIDGE_STATES.has(bridgeState)
+    || !managed || typeof managed !== 'object' || Array.isArray(managed)) return null;
+  const managedRecord = managed as Record<string, unknown>;
+  const pendingRecord = managedRecord.pending && typeof managedRecord.pending === 'object' && !Array.isArray(managedRecord.pending)
+    ? managedRecord.pending as Record<string, unknown> : null;
+  const pendingSequence = pendingRecord ? diagnosticInteger(pendingRecord.sequence) : null;
+  const pendingStagedAt = pendingRecord ? diagnosticTime(pendingRecord.stagedAt) : '';
+  const events = Array.isArray(candidate.supervisorEvents)
+    ? candidate.supervisorEvents.map(normalizeSupervisorEvent).filter((event): event is RemoteConnectorSupervisorEvent => Boolean(event)).slice(-20)
+    : [];
+  return {
+    schemaVersion: REMOTE_CONNECTOR_DIAGNOSTICS_SCHEMA,
+    reportedAt,
+    pairId: diagnosticString(candidate.pairId, 120),
+    connectorId: diagnosticString(candidate.connectorId, 120),
+    version: diagnosticString(candidate.version, 40),
+    pid,
+    bridgeState,
+    bridgeReason: diagnosticText(candidate.bridgeReason),
+    heartbeatAt,
+    activeOperations: diagnosticInteger(candidate.activeOperations, 10_000) ?? 0,
+    uncertainOperations: diagnosticInteger(candidate.uncertainOperations, 10_000) ?? 0,
+    managed: {
+      current: diagnosticString(managedRecord.current, 40),
+      previous: diagnosticString(managedRecord.previous, 40),
+      pending: pendingRecord && pendingSequence !== null && pendingStagedAt ? {
+        version: diagnosticString(pendingRecord.version, 40), sequence: pendingSequence, stagedAt: pendingStagedAt
+      } : null,
+      highestSequence: diagnosticInteger(managedRecord.highestSequence) ?? 0
+    },
+    supervisorEvents: events
+  };
+}
+
 export class RemoteConnectorTransport implements ConnectorTransport {
   readonly mode = 'remote' as const;
   private socket: WebSocket | null = null;
@@ -348,6 +443,7 @@ export class RemoteConnectorTransport implements ConnectorTransport {
   private connectorVersion = '';
   private generation = 0;
   private stateMessage = '';
+  private remoteDiagnostics: RemoteConnectorDiagnostics | null = null;
   private repairRequired = false;
   private configIdentity = '';
   private lastAuthorizationRefreshAt = 0;
@@ -372,6 +468,7 @@ export class RemoteConnectorTransport implements ConnectorTransport {
       this.protocolCompatible = true;
       this.reconnectAttempt = 0;
       this.stateMessage = '';
+      this.remoteDiagnostics = null;
       this.lastAuthorizationRefreshAt = 0;
     }
     if (!config.bridgeUrl || !config.pairId || !config.token) return;
@@ -478,6 +575,12 @@ export class RemoteConnectorTransport implements ConnectorTransport {
       this.connectorVersion = envelope.connectorVersion;
       this.generation = envelope.generation;
       this.stateMessage = envelope.message;
+      if (envelope.remoteDiagnostics) this.acceptRemoteDiagnostics(envelope.remoteDiagnostics);
+      this.events.emit('state');
+      return;
+    }
+    if (envelope.kind === 'diagnostics') {
+      this.acceptRemoteDiagnostics(envelope.diagnostics);
       this.events.emit('state');
       return;
     }
@@ -504,6 +607,25 @@ export class RemoteConnectorTransport implements ConnectorTransport {
       errorMessage,
       response.error?.retryable === true
     ));
+  }
+
+  private acceptRemoteDiagnostics(value: unknown): void {
+    const report = normalizeRemoteDiagnostics(value);
+    if (!report) return;
+    const configuredPairId = this.config().pairId;
+    if (configuredPairId && report.pairId !== configuredPairId) return;
+    const full = value as Partial<RemoteConnectorDiagnostics>;
+    const prior = this.remoteDiagnostics;
+    this.remoteDiagnostics = {
+      ...report,
+      connectorOnline: typeof full.connectorOnline === 'boolean'
+        ? full.connectorOnline
+        : report.bridgeState === 'connected',
+      lastSeenAt: diagnosticTime(full.lastSeenAt) || report.reportedAt,
+      disconnectedAt: diagnosticTime(full.disconnectedAt) || prior?.disconnectedAt || '',
+      closeCode: diagnosticInteger(full.closeCode, 65_535) ?? prior?.closeCode ?? null,
+      closeReason: diagnosticText(full.closeReason) || prior?.closeReason || ''
+    };
   }
 
   private sendCancel(requestId: string, reason: string): void {
@@ -586,7 +708,7 @@ export class RemoteConnectorTransport implements ConnectorTransport {
         : 'not_configured',
       connected: false, connecting: false,
       connectorId: this.connectorId, connectorName: 'Omnia Agent v5 Remote Connector',
-      connectorVersion: this.connectorVersion, sessionGeneration: this.generation,
+      connectorVersion: this.connectorVersion, remoteDiagnostics: configured ? this.remoteDiagnostics : null, sessionGeneration: this.generation,
       engagementId: '', engagementName: '', clientName: '', checkedAt: new Date().toISOString(),
       message: reason
     };
@@ -598,7 +720,8 @@ export class RemoteConnectorTransport implements ConnectorTransport {
       adapterReason: '', remoteAvailable: true, remoteReason: '',
       bridgeOnline: true, connectorOnline: this.connectorOnline,
       protocolCompatible: this.protocolCompatible, bindingState: 'bound',
-      ...raw
+      ...raw,
+      remoteDiagnostics: this.remoteDiagnostics
     };
   }
 

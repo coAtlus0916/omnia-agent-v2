@@ -6,7 +6,7 @@ V8 digest 固定为 `1ED937A50253CEDF431CE02A0CC7A3B3E576597BBD6CAA6C967738D7B2D
 
 # Contracts
 
-Version 0.2.33 retains the same canonical validation, identity, authority, safety and receipt contracts. Evaluation submission is complete only after a signed, frozen read specification observes EvaluationComplete within the bounded v4 polling window. Risk/Control catalogs cannot be resolved or mutated before all planned evaluations have verified receipts. An evaluation timeout preserves the committed command's read-only reconcile specification and never replays submission.
+Version 0.2.34 retains the same canonical validation, identity, authority, safety and receipt contracts. GRA preflight returns absent only when neither authoritative directory contains a related assessment. A related assessment must resolve to one active, non-conflicting assessment GUID and its detail must prove the exact entity, canonical name, frozen Workspace and object type. Recycled, incomplete or ambiguous evidence blocks creation.
 
 Canonical GRA names are `GRA-${elementId}` and participate with element IDs in batch uniqueness checks. DB/OS must reference exactly one in-batch APP in the same normalized Workspace. The InfrastructureApplication relation is written and read from both directions before Infrastructure GRA creation; DB/OS RAIT is then inherited from the exact live APP GRA. Tool has no relationship input in the template, so no Tool relationship is fabricated.
 

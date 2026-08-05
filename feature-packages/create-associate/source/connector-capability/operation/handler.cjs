@@ -757,16 +757,41 @@ async function riskControlCatalog(request, sdk) {
 async function graPreflight(request, sdk) {
   const query = exact(request.query, ['entityId', 'itElementType', 'name', 'workspaceId'], 'GRA preflight query');
   const entityId = guid(query.entityId, 'query.entityId'); const workspaceId = guid(query.workspaceId, 'query.workspaceId');
-  const payload = await sdk.invokeStep('gra-directory', {}, { riskAssessmentType: [] });
-  const matches = flattenObjects(payload).filter((item) => {
-    const id = text(item.entityId || item.itElementId).toLowerCase();
-    const workspace = text(item.workspaceId || item.facetId).toLowerCase();
-    return id === entityId && workspace === workspaceId && text(item.name) === text(query.name)
-      && text(item.type || item.itElementType) === query.itElementType
-      && item.isDeleted !== true;
-  });
-  if (matches.length > 1) fail('GRA preflight returned ambiguous exact identities.');
-  return { found: matches.length === 1, item: matches[0] || null };
+  const expectedType = normalizedObjectType(query.itElementType);
+  if (!expectedType || expectedType !== text(query.itElementType)) fail('GRA preflight object type is not canonical.');
+  const [workItems, commonAccounts] = await Promise.all([
+    sdk.invokeStep('workitem-directory', {}, { workItemIds: [], engagementIds: [guid(sdk.binding.engagementId, 'binding.engagementId')], workItemTypes: ['RiskFactorEvaluation'] }),
+    sdk.invokeStep('gra-directory', {}, { riskAssessmentType: [] })
+  ]);
+  const rawRelated = [
+    ...payloadRows(workItems).map((item) => ({ item, source: 'work-item' })),
+    ...payloadRows(commonAccounts).map((item) => ({ item, source: 'common-account' }))
+  ].filter(({ item }) => normalizedLabel(item && (item.graName || item.name || item.displayName)) === normalizedLabel(query.name)
+    || optionalGuid(item && (item.entityId || item.itElementId || item.applicationId)) === entityId);
+  if (rawRelated.some(({ item, source }) => !assessmentId(item, source))) {
+    fail('GRA preflight directory contains a related row without a canonical assessment GUID.');
+  }
+  const directory = applicationGraDirectory(workItems, commonAccounts);
+  const wantedName = normalizedLabel(query.name);
+  const related = directory.rows.filter((item) => normalizedLabel(item.graName) === wantedName || item.objectId === entityId);
+  if (!related.length) return { found: false, item: null, evidence: { directoryMatches: 0 } };
+  if (related.some((item) => item.ambiguous || item.recycled)) fail('GRA preflight directory contains an ambiguous or recycled assessment identity.');
+  const candidates = related.filter((item) => item.assessmentId && item.objectId === entityId
+    && normalizedLabel(item.graName) === wantedName && item.workspaceId === workspaceId && item.objectType === expectedType);
+  if (candidates.length !== 1 || related.length !== 1) fail('GRA preflight directory has no unique complete assessment/entity/name/Workspace/type binding.');
+  const indexed = candidates[0];
+  const detail = await sdk.invokeStep('gra-detail', { riskAssessmentId: indexed.assessmentId });
+  const detailId = optionalGuid(detail && (detail.id || detail.riskAssessmentId));
+  const detailType = normalizedObjectType(detail && (detail.type || detail.itElementType || detail.entityType || detail.riskAssessmentType));
+  const detailWorkspace = detailWorkspaceIds(detail, indexed);
+  const detailEntities = assessmentEntityCandidates(detail, 'GRA preflight detail', expectedType,
+    detail && (detail.inkContentId || detail.contentId), entityId);
+  if (detailId !== indexed.assessmentId || deletedEntity(detail) || detailEntities.length !== 1 || detailEntities[0] !== entityId
+    || normalizedLabel(detail && (detail.name || detail.graName || detail.displayName)) !== wantedName
+    || detailWorkspace.length !== 1 || detailWorkspace[0] !== workspaceId || detailType !== expectedType) {
+    fail('GRA preflight detail does not prove the exact assessment/entity/name/Workspace/type binding.');
+  }
+  return { found: true, item: detail, evidence: { directoryMatches: 1, assessmentId: indexed.assessmentId } };
 }
 function riskFactors(payload) { return rows(payload && payload.riskFactors); }
 function riskFactorByIdentity(payload, itemId) {

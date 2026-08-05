@@ -1,6 +1,10 @@
-# 0.2.33 / sequence 35
+# 0.2.34 / sequence 36
 
-Return execution now follows the verified v4 dependency order: object/GRA/element association and EvaluationStarted/RAIT; SAP ECC Risk Factor writes/readbacks and documentation; Evaluation submit followed by bounded signed polling to EvaluationComplete for every GRA; generated Risk/Control catalog settlement; then each Risk/Control association and readback. Review defers Risk/Control identity resolution whenever an existing GRA has not reached EvaluationComplete. The polling window is 120 one-second reads, matching v4's 120-second bound. Pending states do not become uncertain on their first read; timeout fails closed while retaining the committed command's read-only reconcile specification. Existing verified target receipts are skipped during continuation.
+GRA create preflight no longer assumes `commonAccounts` rows repeat entity, Workspace and type fields. It merges `getWorkitemDetails` and `commonAccounts` by canonical assessment GUID, requires one complete active directory binding for the requested entity/name/Workspace/type, then reads assessment detail and revalidates assessment ID, active state, entity candidates, name, Workspace and canonical type. Related incomplete, conflicting or recycled rows fail closed; only a genuinely unrelated directory returns `found=false`.
+
+# 0.2.33 / sequence 35 history
+
+Return execution follows the verified v4 dependency order: object/GRA/element association and EvaluationStarted/RAIT; SAP ECC Risk Factor writes/readbacks and documentation; Evaluation submit followed by bounded signed polling to EvaluationComplete for every GRA; generated Risk/Control catalog settlement; then each Risk/Control association and readback. Review defers Risk/Control identity resolution whenever an existing GRA has not reached EvaluationComplete. Existing verified target receipts are skipped during continuation.
 
 The user workflow is now exactly Upload, Validate and Return. Preparing Return no longer creates a Comments card, so the shell cannot switch to Comments; the frozen confirmation remains inside the Return Surface and is bound to the current durable Run and confirmation record. Return hides upload/review actions and generated workbook downloads. Its five category capsules use strictly validated persisted completed/total counts and green fill percentages; internal target IDs and raw backend errors remain in durable logs instead of the user surface.
 

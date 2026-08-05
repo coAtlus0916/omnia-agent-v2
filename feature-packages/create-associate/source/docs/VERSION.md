@@ -1,4 +1,8 @@
-# 0.2.14 / sequence 16
+# 0.2.15 / sequence 17
+
+Corrective release replacing the invalid IT Element detail `workspaceId` read-back with the authoritative Work Item Facet Mapping used by deletion. Object and Application-settings reads require one non-zero Work Item GUID and exactly one mapping to the frozen Workspace; detail identity, type, subtype, external identity, and Application description remain strict.
+
+# 0.2.14 / sequence 16 history
 
 Corrective release aligning Return preparation with the shared Connector binding protocol: `tenantOrOrgId` remains an exact frozen string and participates in scope equality/digests, but may be empty. Non-empty authority instance, Pack, and Engagement identities remain mandatory.
 

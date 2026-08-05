@@ -71,6 +71,22 @@ async function boundedSearch(sdk, stepId, bodyForPage, predicate) {
 }
 function rowId(item) { return guid(item && (item.id || item.itElementId || item.applicationId || item.infrastructureId || item.toolId), 'result.id'); }
 function rowWorkspace(item) { return guid(item && (item.workspaceId || item.workspaceFacetId || item.facetId), 'result.workspaceId'); }
+function objectWorkItemId(item) {
+  const ids = [...new Set([
+    item && item.workItemId, item && item.applicationWorkItemId, item && item.infrastructureWorkItemId, item && item.itToolWorkItemId
+  ].map(optionalGuid).filter(Boolean))];
+  if (ids.length !== 1) fail('IT Element detail must contain one non-zero Work Item GUID.');
+  return ids[0];
+}
+function mappingWorkspaceIds(mapping) {
+  return [...new Set(rows(mapping).map((item) => optionalGuid(item && (item.facetId || item.workspaceFacetId || item.workspaceId || item.id))).filter(Boolean))].sort();
+}
+async function assertObjectWorkspaceAuthority(sdk, stepId, item, frozenWorkspaceId) {
+  const workItemId = objectWorkItemId(item);
+  const workspaceIds = mappingWorkspaceIds(await sdk.invokeStep(stepId, { workItemId }));
+  if (workspaceIds.length !== 1 || workspaceIds[0] !== frozenWorkspaceId) fail('IT Element Work Item has no unique exact frozen Workspace mapping.');
+  return { workItemId, workspaceId: frozenWorkspaceId };
+}
 function assertObject(item, query) {
   const type = text(item.itElementType || item.elementType || item.type);
   if (rowWorkspace(item) !== guid(query.workspaceId, 'query.workspaceId') || !type || type !== query.objectType) return false;
@@ -682,15 +698,17 @@ function createOperationHandler() {
         const query=request.query;
         exact(query,query?.objectType==='Application'?['externalId','objectType','description']:['externalId','objectType','subtypeId'],'Object read-back query');
         const result = await sdk.invokeStep('object-readback', { objectId });
-        if (rowId(result) !== objectId || rowWorkspace(result) !== frozen.workspaceId||text(result.number||result.referenceNumber||result.name)!==text(query.externalId)
+        if (rowId(result) !== objectId || deletedEntity(result)||text(result.number||result.referenceNumber||result.name).normalize('NFC')!==text(query.externalId).normalize('NFC')
           || !text(result.itElementType||result.elementType||result.type)||text(result.itElementType||result.elementType||result.type)!==text(query.objectType)
           || (query.objectType!=='Application'&&text(result.typeId||result.itElementTypeId)!==text(query.subtypeId))) fail('Object read-back identity, type, subtype, external identity, or Workspace mismatch.');
         if(query.objectType==='Application'&&canonical(editorDescription(result.description,'Application read-back description'))!==canonical(editorDescription(query.description,'Frozen Application description'))) fail('Application description read-back differs from the frozen derived editor value.');
-        return result;
+        const authority=await assertObjectWorkspaceAuthority(sdk,'object-readback-workspace',result,frozen.workspaceId);
+        return {...result,...authority};
       }
       if (operationId === 'omnia.create-associate.object-settings.preflight.v1') {
         const frozen=target(request); const objectId=guid(request.objectId,'objectId'); const result=await sdk.invokeStep('object-settings-read',{objectId});
-        if(rowId(result)!==objectId||rowWorkspace(result)!==frozen.workspaceId) fail('IT Element settings preflight identity mismatch.'); return result;
+        if(rowId(result)!==objectId||deletedEntity(result)||text(result.itElementType||result.elementType||result.type)!=='Application') fail('IT Element settings preflight identity/type mismatch.');
+        const authority=await assertObjectWorkspaceAuthority(sdk,'object-settings-workspace',result,frozen.workspaceId); return {...result,...authority};
       }
       if (operationId === 'omnia.create-associate.object-settings.patch.v1') {
         const value=exactPatch(request,'patch_object_settings');
@@ -706,8 +724,10 @@ function createOperationHandler() {
       if (operationId === 'omnia.create-associate.object-settings.reconcile.v1') {
         const frozen=target(request); const query=exact(request.query,['objectId','typeId','isRelevant','isDataAvailable','number'],'IT Element settings readback query');
         const objectId=guid(query.objectId,'query.objectId'); const result=await sdk.invokeStep('object-settings-read',{objectId});
-        if(rowWorkspace(result)!==frozen.workspaceId||rowId(result)!==objectId) fail('IT Element settings readback identity mismatch.');
-        return {verified:text(result.number||result.referenceNumber)===text(query.number)&&text(result.typeId)===text(query.typeId)&&result.isRelevant===query.isRelevant&&result.isDataAvailable===query.isDataAvailable,result};
+        if(rowId(result)!==objectId||deletedEntity(result)||text(result.itElementType||result.elementType||result.type)!=='Application') fail('IT Element settings readback identity/type mismatch.');
+        const authority=await assertObjectWorkspaceAuthority(sdk,'object-settings-workspace',result,frozen.workspaceId);
+        const authoritativeResult={...result,...authority};
+        return {verified:text(result.number||result.referenceNumber)===text(query.number)&&text(result.typeId)===text(query.typeId)&&result.isRelevant===query.isRelevant&&result.isDataAvailable===query.isDataAvailable,result:authoritativeResult};
       }
       if (operationId === 'omnia.create-associate.relation.preflight.v1' || operationId === 'omnia.create-associate.relation.reconcile.v1') {
         return relationshipRead(request, sdk);

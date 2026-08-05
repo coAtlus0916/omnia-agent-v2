@@ -140,7 +140,7 @@ const runtimeBaseBytes = workerModule.buildRuntimeWorkbook(
 
 const userTemplateBytes = await readFile(userTemplatePath);
 if (userTemplateBytes.length < 1 || userTemplateBytes.length > 64 * 1024 * 1024) throw new Error('Phase1 user template V3 size is invalid.');
-const version = '0.2.14'; const sequence = 16;
+const version = '0.2.15'; const sequence = 17;
 const route = (stepId, method, routeTemplate, parameters, bodyMode = 'none', bodyParameter = '') => ({ stepId, method, routeTemplate, parameters, bodyMode, bodyParameter });
 const applicationIdentityRoutes = () => [
   route('workitem-directory', 'POST', '/work/v1/WorkQueries/getWorkitemDetails', [], 'signed_json'),
@@ -177,10 +177,19 @@ const operations = [
     route('tool-search', 'POST', '/rapr/v0/engagements/{engagementId}/itelement/search', [], 'signed_json')
   ] },
   { operationId: 'omnia.create-associate.object.create.v1', effect: 'omnia_mutation', requestSchema: 'omnia.create-associate.object-create-request/v1', responseSchema: 'omnia.create-associate.object-create-response/v1', enabledByDefault: false, grantsMutationPermit: false, routes: [route('object-create', 'POST', '/rapr/v0/engagements/{engagementId}/itelement', [], 'signed_json')] },
-  { operationId: 'omnia.create-associate.object.reconcile.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.object-reconcile-request/v1', responseSchema: 'omnia.create-associate.object-reconcile-response/v1', enabledByDefault: true, grantsMutationPermit: false, routes: [route('object-readback', 'GET', '/rapr/v0/engagements/{engagementId}/itelement/{objectId}', [{ name: 'objectId', type: 'guid' }])] },
-  { operationId: 'omnia.create-associate.object-settings.preflight.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.object-settings-preflight-request/v1', responseSchema: 'omnia.create-associate.object-settings-preflight-response/v1', enabledByDefault: true, grantsMutationPermit: true, permitsOperationId: 'omnia.create-associate.object-settings.patch.v1', routes: [route('object-settings-read','GET','/rapr/v0/engagements/{engagementId}/itelement/{objectId}',[{name:'objectId',type:'guid'}])] },
+  { operationId: 'omnia.create-associate.object.reconcile.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.object-reconcile-request/v1', responseSchema: 'omnia.create-associate.object-reconcile-response/v1', enabledByDefault: true, grantsMutationPermit: false, routes: [
+    route('object-readback', 'GET', '/rapr/v0/engagements/{engagementId}/itelement/{objectId}', [{ name: 'objectId', type: 'guid' }]),
+    route('object-readback-workspace', 'GET', '/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}', [{ name: 'workItemId', type: 'guid' }])
+  ] },
+  { operationId: 'omnia.create-associate.object-settings.preflight.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.object-settings-preflight-request/v1', responseSchema: 'omnia.create-associate.object-settings-preflight-response/v1', enabledByDefault: true, grantsMutationPermit: true, permitsOperationId: 'omnia.create-associate.object-settings.patch.v1', routes: [
+    route('object-settings-read','GET','/rapr/v0/engagements/{engagementId}/itelement/{objectId}',[{name:'objectId',type:'guid'}]),
+    route('object-settings-workspace','GET','/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}',[{name:'workItemId',type:'guid'}])
+  ] },
   { operationId: 'omnia.create-associate.object-settings.patch.v1', effect: 'omnia_mutation', requestSchema: 'omnia.create-associate.object-settings-patch-request/v1', responseSchema: 'omnia.create-associate.object-settings-patch-response/v1', enabledByDefault: false, grantsMutationPermit: false, routes: [route('object-settings-patch','PATCH','/rapr/v0/engagements/{engagementId}/itelement/{objectId}',[{name:'objectId',type:'guid'}],'signed_json')] },
-  { operationId: 'omnia.create-associate.object-settings.reconcile.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.object-settings-reconcile-request/v1', responseSchema: 'omnia.create-associate.object-settings-reconcile-response/v1', enabledByDefault: true, grantsMutationPermit: false, routes: [route('object-settings-read','GET','/rapr/v0/engagements/{engagementId}/itelement/{objectId}',[{name:'objectId',type:'guid'}])] },
+  { operationId: 'omnia.create-associate.object-settings.reconcile.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.object-settings-reconcile-request/v1', responseSchema: 'omnia.create-associate.object-settings-reconcile-response/v1', enabledByDefault: true, grantsMutationPermit: false, routes: [
+    route('object-settings-read','GET','/rapr/v0/engagements/{engagementId}/itelement/{objectId}',[{name:'objectId',type:'guid'}]),
+    route('object-settings-workspace','GET','/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}',[{name:'workItemId',type:'guid'}])
+  ] },
   { operationId: 'omnia.create-associate.relation.preflight.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.relation-preflight-request/v1', responseSchema: 'omnia.create-associate.relation-preflight-response/v1', enabledByDefault: true, grantsMutationPermit: true, permitsOperationId: 'omnia.create-associate.relation.associate.v1', routes: [
     route('applications-search', 'POST', '/rapr/v0/engagements/{engagementId}/applications/search', [], 'signed_json'),
     route('infrastructures-search', 'POST', '/rapr/v0/engagements/{engagementId}/infrastructures/search', [], 'signed_json'),

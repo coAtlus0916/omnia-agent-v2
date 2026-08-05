@@ -56,6 +56,10 @@ The reference-list route template contains only declared placeholders. The handl
 
 Return preparation freezes `tenantOrOrgId` with exact string semantics and keeps it in authority equality and credential digests. The shared binding protocol permits an empty value, so only authority instance, Pack, and Engagement identities are non-empty prerequisites; the Worker never invents a tenant/org identity.
 
+## 0.2.15 authoritative IT Element Workspace read-back
+
+Omnia IT Element detail may expose the all-zero `workspaceId`; this is not Workspace authority. Object and Application-settings read paths now extract one non-zero Work Item identity from the exact IT Element detail and resolve its Workspace through the signed read-only `WorkItemFacetMapping/workitem/{workItemId}` route. The mapping must contain exactly one Workspace and it must equal the frozen target. The Operation returns the original detail with the authoritative `workItemId` and `workspaceId`, while retaining strict object ID, type, subtype, external identity, deletion-state, and Application editor-description checks.
+
 The package contains a process-isolated CommonJS Worker, declarative Surface, private migration, managed V8-derived governance IR, signed runtime-template base XLSX, and a signed Operation package. Core passes base64 bytes (64 MiB maximum), never filesystem paths. Runtime output patches only declared OOXML worksheet/core parts and verifies every undeclared part digest.
 
 The governance IR contains 187 fields, 68 relation rules, and 15 scoring items. TemplateVersion semantic identity is stable across Runs; instance semantic/patch/output/governance digests are per Run.

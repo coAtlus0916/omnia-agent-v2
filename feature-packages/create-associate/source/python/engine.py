@@ -55,7 +55,7 @@ def normalize_header(value: object) -> str:
 def normalize_cell(value: object, declaration: dict | None = None) -> Any:
     if isinstance(value, bool):
         return value
-    text = unicodedata.normalize("NFC", str(value or "")).strip()
+    text = unicodedata.normalize("NFC", str("" if value is None else value)).strip()
     declaration = declaration or {}
     normalization = declaration.get("normalization") or declaration.get("normalizationRule") or "nfc_trim"
     rules = [normalization] if isinstance(normalization, str) else normalization
@@ -73,6 +73,10 @@ def normalize_cell(value: object, declaration: dict | None = None) -> Any:
         if text.casefold() in ("false", "0", "no", "n"):
             return False
     return text
+
+
+def _has_user_content(value: object) -> bool:
+    return value is not None and (not isinstance(value, str) or bool(value.strip()))
 
 
 def derive_gra_name(element_id: object) -> str:
@@ -121,13 +125,12 @@ def parse_workbook(source: object, *, source_artifact_id: str, governance: dict)
             require(identity_header in columns, "WORKBOOK.IDENTITY_COLUMN_MISSING", f"Identity column is absent in {sheet.name} row {header_row}.")
             for source_row_number in range(header_row + 1, end_row):
                 source_row = sheet.rows.get(source_row_number, [])
+                if not any(_has_user_content(value) for value in source_row):
+                    continue
                 identity_column = columns[identity_header]
-                element_id = unicodedata.normalize("NFC", str(source_row[identity_column] if identity_column < len(source_row) else "")).strip()
-                if not element_id:
-                    continue
-                populated = sum(1 for column in columns.values() if column < len(source_row) and str(source_row[column]).strip())
-                if populated < 2:
-                    continue
+                identity_value = source_row[identity_column] if identity_column < len(source_row) else ""
+                element_id = unicodedata.normalize("NFC", str("" if identity_value is None else identity_value)).strip()
+                populated = sum(1 for column in columns.values() if column < len(source_row) and _has_user_content(source_row[column]))
                 kind = str(definition["kind"])
                 row_key = sha256_hex(f"{kind}|{unicodedata.normalize('NFC', sheet.name)}|{source_row_number}")
                 fields: dict[str, Any] = {}
@@ -169,6 +172,12 @@ def parse_workbook(source: object, *, source_artifact_id: str, governance: dict)
                         issues.append(_issue("parser", "PARSER.UNMAPPED_FIELD", field_key, "ambiguous", "blocking", f"原始列 {raw_name} 无法唯一映射到 canonical field_id。", "template_structure"))
                     if raw_name == "System Risk Classification" and value and value not in ("Higher", "Lower"):
                         issues.append(_issue("local", "LOCAL.INVALID_ENUM", field_key, "invalid_enum", "needs_input", f"{kind} {element_id} 的 RAIT 仅允许 Higher 或 Lower。", "valid_values"))
+                identity_candidate = row_candidate_by_raw.get(identity_header)
+                if not element_id:
+                    field_key = identity_candidate["fieldKey"] if identity_candidate else f"{row_key}.identity"
+                    issues.append(_issue("parser", "PARSER.IDENTITY_VALUE_MISSING", field_key, "missing", "blocking", f"{sheet.name} 第 {source_row_number} 行包含用户内容，但 {identity_header} 为空；该候选行不能被静默忽略。", "template_structure"))
+                if populated < 2:
+                    issues.append(_issue("parser", "PARSER.INCOMPLETE_CANDIDATE_ROW", f"{row_key}.template-structure", "missing", "blocking", f"{sheet.name} 第 {source_row_number} 行包含用户内容，但已填写的声明列少于 2 个；请补齐必填字段或清空整行。", "template_structure"))
                 relation_field = normalize_header(definition.get("relation", ""))
                 logical["relations"] = [part.strip() for part in _RELATION_SPLIT.split(str(fields.get(relation_field, ""))) if part.strip()] if relation_field else []
                 _add_standard_derivations(

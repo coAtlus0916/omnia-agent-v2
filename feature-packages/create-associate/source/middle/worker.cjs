@@ -730,7 +730,7 @@ function progressSurface(latest,parsed){
 function validationPresentation(parsed,live={}){
   const normalizedLive={...live};
   if(live.workspace_live?.state==='failed'){
-    for(const checkId of ['omnia_id_conflicts','relationship_targets']){
+    for(const checkId of ['omnia_id_conflicts','relationship_targets','infrastructure_rait']){
       if(!normalizedLive[checkId]||normalizedLive[checkId].state==='pending') normalizedLive[checkId]={state:'failed',reason:live.workspace_live.reason};
     }
   }
@@ -749,8 +749,8 @@ function validationPresentation(parsed,live={}){
     ['unique_names','批次内元素 ID 与 GRA 名称唯一',checkFailed('unique_names')?'failed':'passed',checkFailed('unique_names')?'存在重复元素 ID 或派生 GRA 名。':'元素 ID 与派生 GRA 名在批内唯一。'],
     ['omnia_id_conflicts','已核验当前 Pack 与回收站中的同名元素影响',liveState('omnia_id_conflicts'),checkFailed('omnia_id_conflicts')?'活动对象、创建能力或回收站证明未闭合。':liveCheck('omnia_id_conflicts').reason],
     ['infrastructure_links','基础设施已关联系统',checkFailed('infrastructure_links')?'failed':'passed',checkFailed('infrastructure_links')?'DB/OS 必须恰好关联一个批内、同工作区 APP。':'DB/OS 已填写一个精确批内关联系统。'],
-    ['infrastructure_rait','多系统关联的 RAIT 一致',checkFailed('infrastructure_rait')?'failed':'passed',checkFailed('infrastructure_rait')?'继承 RAIT 不唯一。':'DB/OS RAIT 为只读一致继承值。'],
-    ['relationship_targets','关联目标存在且类型正确',liveState('relationship_targets'),checkFailed('relationship_targets')?'存在 0.2.1 不支持的批外 APP 或不精确目标。':liveCheck('relationship_targets').reason],
+    ['infrastructure_rait','多系统关联的 RAIT 一致',liveState('infrastructure_rait'),checkFailed('infrastructure_rait')?'继承 RAIT 不唯一，或其 APP 来源未通过实时身份、类型、状态、工作区与 RAIT 校验。':liveCheck('infrastructure_rait').reason],
+    ['relationship_targets','关联目标可解析且类型正确',liveState('relationship_targets'),checkFailed('relationship_targets')?'存在 0.2.1 不支持的批外 APP、不精确目标，或目标 APP 未通过实时身份校验。':liveCheck('relationship_targets').reason],
     ['workspace_presence','Omnia 工作区已填写',workspaceMissing?'failed':'passed',workspaceMissing?'存在缺失工作区。':'所有非排除行已填写工作区。'],
     ['factors_considered_ai_review','Factors Considered 智能复核',activeRows(parsed).some((row)=>row.kind==='APP')?'warning':'skipped',activeRows(parsed).some((row)=>row.kind==='APP')?'AI 复核未执行：当前 Provider 不可用或输入不满足评估条件；此项不参与阻断。':'本批无 APP，该项不适用。'],
     ['workspace_live','Omnia 工作区名称实时有效',liveCheck('workspace_live').state,liveCheck('workspace_live').reason]
@@ -805,7 +805,7 @@ function uploadSurface(latest,message,fresh=false){
     {actionId:'confirm-return',enabled:false,reason:'请先提交审核并冻结回传计划。'},{actionId:'continue-return',enabled:false,reason:'当前没有可继续的冻结计划。'},{actionId:'reconcile-return',enabled:false,reason:'当前没有待核验的写入结果。'}]};
 }
 function processingSurface(latest,message){
-  const labels=[['template_structure','模板结构可识别'],['required_fields','必填项目已填写'],['valid_values','名称与填写内容合法'],['unique_names','批次内元素 ID 与 GRA 名称唯一'],['omnia_id_conflicts','已核验当前 Pack 与回收站中的同名元素影响'],['infrastructure_links','基础设施已关联系统'],['infrastructure_rait','多系统关联的 RAIT 一致'],['relationship_targets','关联目标存在且类型正确'],['workspace_presence','Omnia 工作区已填写'],['factors_considered_ai_review','Factors Considered 智能复核'],['workspace_live','Omnia 工作区名称实时有效']];
+  const labels=[['template_structure','模板结构可识别'],['required_fields','必填项目已填写'],['valid_values','名称与填写内容合法'],['unique_names','批次内元素 ID 与 GRA 名称唯一'],['omnia_id_conflicts','已核验当前 Pack 与回收站中的同名元素影响'],['infrastructure_links','基础设施已关联系统'],['infrastructure_rait','多系统关联的 RAIT 一致'],['relationship_targets','关联目标可解析且类型正确'],['workspace_presence','Omnia 工作区已填写'],['factors_considered_ai_review','Factors Considered 智能复核'],['workspace_live','Omnia 工作区名称实时有效']];
   return{stateVersion:Number(latest.run.state_revision),status:'loading',statusMessage:message,scopes:[],items:[],workflow:workflowSurface(latest),progress:{label:'校验进度',completed:0,total:labels.length,percent:0,state:'running',message:'正在校验 0/11',items:labels.map(([itemId,label])=>({itemId,label,state:'pending',detail:'等待后台校验。'}))},issues:[],editors:[],artifacts:[],clearFields:['review'],actions:[
     {actionId:'download-source-template',enabled:false,reason:'正在校验。'},{actionId:'stage-source-workbook',enabled:false,reason:'正在校验。'},{actionId:'confirm-upload',enabled:false,reason:'已确认上传。'},{actionId:'validate-staged-upload',enabled:true,reason:''},{actionId:'restart-run',enabled:false,reason:'后台校验已开始，不允许重放或取消中间状态。'},{actionId:'apply-revisions',enabled:false,reason:'正在校验。'},{actionId:'remove-batch-row',enabled:false,reason:'正在校验。'},{actionId:'revalidate-all',enabled:false,reason:'正在校验。'},{actionId:'back-to-upload',enabled:false,reason:'正在校验。'},{actionId:'prepare-return',enabled:false,reason:'正在校验。'},
     {actionId:'confirm-return',enabled:false,reason:'请先提交审核并冻结回传计划。'},{actionId:'continue-return',enabled:false,reason:'当前没有可继续的冻结计划。'},{actionId:'reconcile-return',enabled:false,reason:'当前没有待核验的写入结果。'}]};
@@ -976,7 +976,7 @@ function createFeatureWorker(dependencies) {
   async function runReviewLiveValidation(checkpoint,context){
     checkpoint.parsed.issues=(checkpoint.parsed.issues||[]).filter((candidate)=>candidate.origin!=='live_validation'&&!String(candidate.issueId||'').startsWith('live-'));
     const liveIssue=(code,fieldKey,issueType,state,message,checkId)=>{const created=issue('live_validation',code,fieldKey,issueType,state,message,checkId);created.issueId=issueId('live_validation',`${checkpoint.parsed.issueNamespace||checkpoint.planId||'legacy'}|${code}`,fieldKey);return created;};
-    const failedLiveChecks=(reason)=>({omnia_id_conflicts:{state:'failed',reason},relationship_targets:{state:'failed',reason},workspace_live:{state:'failed',reason}});
+    const failedLiveChecks=(reason)=>({omnia_id_conflicts:{state:'failed',reason},relationship_targets:{state:'failed',reason},infrastructure_rait:{state:'failed',reason},workspace_live:{state:'failed',reason}});
     const binding=context?.connectorBinding,safety=context?.safetyLock;if(!binding?.connectorId||Number(binding.sessionGeneration)<1||!binding.engagementId){const reason='当前没有可用的 Remote Connector binding，无法执行 APP 身份/回收站、非 APP 活动对象、关系目标类型与工作区实时检查；连接后可在原 Run 重试。';checkpoint.parsed.issues.push(liveIssue('LIVE.WORKSPACE_UNAVAILABLE','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return failedLiveChecks(reason);}if(!Array.isArray(safety?.workspaceIds)||!safety.workspaceIds.length){const reason='当前 Pack Workspace 安全范围为空，无法执行 APP 身份/回收站、非 APP 活动对象、关系目标类型与工作区实时检查；请启用安全范围后在原 Run 重新校验。';checkpoint.parsed.issues.push(liveIssue('LIVE.SAFETY_SCOPE_UNAVAILABLE','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return failedLiveChecks(reason);}
     try{const query=authorityRequest(checkpoint,context).query;const authority=await invoke(RETURN_OPERATIONS.authority,binding,{allowedWorkspaceIds:safety.workspaceIds,query});const byName=new Map((authority.workspaces||[]).map((item)=>[String(item.name).normalize('NFKC'),item.workspaceId]));const missing=query.workspaceNames.filter((name)=>!byName.has(String(name).normalize('NFKC')));if(missing.length){const reason=`Omnia 工作区实时不存在或不在安全范围：${missing.join(', ')}；因此 APP 身份/回收站、非 APP 活动对象与关系目标类型检查未执行。`;checkpoint.parsed.issues.push(liveIssue('LIVE.WORKSPACE_NOT_FOUND','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return failedLiveChecks(reason);}
       checkpoint.liveIdentityResolutions={};
@@ -1009,10 +1009,24 @@ function createFeatureWorker(dependencies) {
         else if(identity.state==='active'){nameConflicts+=1;identityBlocks+=1;checkpoint.parsed.issues.push(liveIssue('LIVE.NON_APP_IDENTITY_CONFLICT',`${row.rowKey}.identity`,'conflict','blocking',`${row.kind} ${row.elementId} 与当前 Pack 中的活动同名对象冲突；当前对象类型没有已发布的 Agent-managed 归属恢复契约，因此不能静默复用。`,'omnia_id_conflicts'));}
         else if(identity.state==='none')creatable+=1;
       }
+      const active=activeRows(checkpoint.parsed),appRowsByIdentity=new Map();
+      for(const app of active.filter((candidate)=>candidate.kind==='APP')){const key=app.elementId.toLocaleLowerCase('en-US'),matches=appRowsByIdentity.get(key);if(matches)matches.push(app);else appRowsByIdentity.set(key,[app]);}
+      let liveTargetFailures=0;
+      for(const row of active.filter((candidate)=>candidate.kind==='DB'||candidate.kind==='OS')){
+        const matches=row.relations.length===1?(appRowsByIdentity.get(row.relations[0].toLocaleLowerCase('en-US'))||[]):[];
+        if(matches.length!==1)continue;
+        const source=matches[0],resolution=checkpoint.liveIdentityResolutions[source.rowKey];
+        const disposition=String(resolution?.disposition||''),targetReady=disposition==='create'||(['resume','reuse'].includes(disposition)&&resolution?.ownership?.proven===true);
+        if(targetReady)continue;
+        liveTargetFailures+=1;
+        checkpoint.parsed.issues.push(liveIssue('LIVE.RELATIONSHIP_APP_IDENTITY_FAILED',`${row.rowKey}.relationship-target-live`,'contract_mismatch','blocking',`${row.kind} ${row.elementId} 的关联 APP ${source.elementId} 未通过实时身份、Application 类型、活动状态与工作区校验。`,'relationship_targets'));
+        checkpoint.parsed.issues.push(liveIssue('LIVE.INFRASTRUCTURE_RAIT_SOURCE_FAILED',`${row.rowKey}.inheritance-live`,'contract_mismatch','blocking',`${row.kind} ${row.elementId} 的 RAIT 来源 APP ${source.elementId} 未通过实时身份、Application 类型、活动状态、工作区与 RAIT 校验。`,'infrastructure_rait'));
+      }
       const targetFailed=checkpoint.parsed.issues.some((candidate)=>candidate.state==='blocking'&&candidate.checkId==='relationship_targets');
+      const raitFailed=checkpoint.parsed.issues.some((candidate)=>candidate.state==='blocking'&&candidate.checkId==='infrastructure_rait');
       const conflictsFailed=identityBlocks>0;
       const conflictReason=`APP/DB/OS/Tool 活动、回收站与歧义身份解析已执行；发现 ${ownedRecoveries} 个具有严格 Agent-managed 归属证明的恢复对象、${creatable} 个可进入创建预检的新对象${nameConflicts?`，${nameConflicts} 个未授权活动同名冲突`:''}${identityBlocks-nameConflicts>0?`，${identityBlocks-nameConflicts} 个身份被拒绝或解析失败`:''}。`;
-      return{omnia_id_conflicts:{state:conflictsFailed?'failed':'passed',reason:conflictReason},relationship_targets:{state:targetFailed?'failed':'passed',reason:targetFailed?'存在 0.2.1 不支持的批外 APP 或不精确目标。':'所有 DB/OS 目标均为批内唯一、同工作区 APP。'},workspace_live:{state:'passed',reason:`${query.workspaceNames.length} 个工作区已按当前 Pack 权威目录精确匹配。`}};
+      return{omnia_id_conflicts:{state:conflictsFailed?'failed':'passed',reason:conflictReason},relationship_targets:{state:targetFailed?'failed':'passed',reason:targetFailed?`存在 0.2.1 不支持的批外 APP、不精确目标或 ${liveTargetFailures} 个未通过实时身份校验的 APP 目标。`:'所有 DB/OS 目标均可解析为批内唯一、同工作区且类型正确的 APP；批内新建 APP 使用计划身份，不声明远端已存在。'},infrastructure_rait:{state:raitFailed?'failed':'passed',reason:raitFailed?'存在继承 RAIT 不唯一，或 APP 来源未通过实时身份、类型、状态、工作区与 RAIT 校验。':'所有 DB/OS RAIT 来源均绑定到已通过实时校验的 APP；批内新建 APP 使用已校验的计划 RAIT。'},workspace_live:{state:'passed',reason:`${query.workspaceNames.length} 个工作区已按当前 Pack 权威目录精确匹配。`}};
     }catch(error){const reason=`实时校验失败（APP 身份/回收站、非 APP 活动对象、关系目标类型或工作区检查未闭合；可在原 Run 重试）：${String(error.message||error)}`;checkpoint.parsed.issues.push(liveIssue('LIVE.VALIDATION_FAILED','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return failedLiveChecks(reason);}
   }
   async function buildReturnPreparation(checkpoint, context) {

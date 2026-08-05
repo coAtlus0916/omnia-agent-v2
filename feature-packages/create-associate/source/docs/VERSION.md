@@ -1,6 +1,10 @@
-# 0.2.34 / sequence 36
+# 0.2.35 / sequence 37
 
-GRA create preflight no longer assumes `commonAccounts` rows repeat entity, Workspace and type fields. It merges `getWorkitemDetails` and `commonAccounts` by canonical assessment GUID, requires one complete active directory binding for the requested entity/name/Workspace/type, then reads assessment detail and revalidates assessment ID, active state, entity candidates, name, Workspace and canonical type. Related incomplete, conflicting or recycled rows fail closed; only a genuinely unrelated directory returns `found=false`.
+GRA create preflight treats Work Item/common-account directory rows as partial projections. Exact GRA name or explicit entity selects one canonical active assessment GUID; missing directory entity, Workspace and type fields are allowed, while any provided conflicting value, missing related assessment GUID, multiple assessment GUIDs, ambiguity or recycle state blocks. The selected assessment detail must independently prove its assessment ID, active state, exact entity candidates, exact name, frozen Workspace and canonical type. Only a genuinely unrelated directory returns `found=false`.
+
+# 0.2.34 / sequence 36 history
+
+GRA create preflight combines `getWorkitemDetails` and `commonAccounts` by canonical assessment GUID, then reads assessment detail and validates assessment ID, active state, entity candidates, name, Workspace and canonical type.
 
 # 0.2.33 / sequence 35 history
 

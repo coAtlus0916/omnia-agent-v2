@@ -102,6 +102,12 @@ Entity candidate extraction now distinguishes zero, one and conflicting candidat
 
 Risk-assessment detail can contain multiple `riskScopes` belonging to different entity kinds. Candidate extraction accepts only active scopes whose normalized `riskScopeType`, `entityType`, or `type` equals the expected canonical object type. If a scope carries `inkContentId` or `contentId`, it must also equal the detail/query content identity. Scopes without type are ignored rather than guessed. Top-level `entityId`/`itElementId`/`applicationId` remain candidates; the combined semantic set is deduplicated and must contain the exact planned object or be empty for the existing directory fallback. Application identity passes Application plus the current object ID and detail content; reconcile passes its signed type/content/entity query. Infrastructure covers both DB and OS, and ITTool covers Tool.
 
+## 0.2.35 partial GRA directory projections
+
+The merged Work Item/common-account directory is an identity index, not final authority. An exact GRA name or explicit entity may select one active canonical assessment GUID even when that row omits object ID, Workspace or object type. Provided values remain constraints: disagreement with the requested entity/name/Workspace/type blocks immediately, as do missing related assessment IDs, multiple assessment GUIDs, ambiguity and recycle state.
+
+The unique assessment detail then independently supplies all final proof. Entity candidates, detail-only Workspace identities, canonical object type, exact name, assessment GUID and deleted state must all agree. No directory fallback can fill a missing detail identity.
+
 ## 0.2.34 authoritative GRA preflight recovery
 
 The GRA preflight signs three fixed reads: RiskFactorEvaluation Work Items, common accounts, and the unique assessment detail. Directory representations are merged by assessment GUID through the same canonical GRA directory used by Application identity and reconcile. Exact name or entity relevance prevents an incomplete related row from being mistaken for absence. One complete active candidate must bind assessment ID, entity, name, Workspace and canonical type before detail is read.

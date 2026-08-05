@@ -776,14 +776,18 @@ async function graPreflight(request, sdk) {
   const related = directory.rows.filter((item) => normalizedLabel(item.graName) === wantedName || item.objectId === entityId);
   if (!related.length) return { found: false, item: null, evidence: { directoryMatches: 0 } };
   if (related.some((item) => item.ambiguous || item.recycled)) fail('GRA preflight directory contains an ambiguous or recycled assessment identity.');
-  const candidates = related.filter((item) => item.assessmentId && item.objectId === entityId
-    && normalizedLabel(item.graName) === wantedName && item.workspaceId === workspaceId && item.objectType === expectedType);
-  if (candidates.length !== 1 || related.length !== 1) fail('GRA preflight directory has no unique complete assessment/entity/name/Workspace/type binding.');
-  const indexed = candidates[0];
+  if (related.length !== 1) fail('GRA preflight directory contains multiple related active assessment GUIDs.');
+  const indexed = related[0];
+  if (!indexed.assessmentId || (indexed.objectId && indexed.objectId !== entityId)
+    || (indexed.graName && normalizedLabel(indexed.graName) !== wantedName)
+    || (indexed.workspaceId && indexed.workspaceId !== workspaceId)
+    || (indexed.objectType && indexed.objectType !== expectedType)) {
+    fail('GRA preflight directory contains explicit identity evidence that conflicts with the requested entity/name/Workspace/type.');
+  }
   const detail = await sdk.invokeStep('gra-detail', { riskAssessmentId: indexed.assessmentId });
   const detailId = optionalGuid(detail && (detail.id || detail.riskAssessmentId));
   const detailType = normalizedObjectType(detail && (detail.type || detail.itElementType || detail.entityType || detail.riskAssessmentType));
-  const detailWorkspace = detailWorkspaceIds(detail, indexed);
+  const detailWorkspace = detailWorkspaceIds(detail, null);
   const detailEntities = assessmentEntityCandidates(detail, 'GRA preflight detail', expectedType,
     detail && (detail.inkContentId || detail.contentId), entityId);
   if (detailId !== indexed.assessmentId || deletedEntity(detail) || detailEntities.length !== 1 || detailEntities[0] !== entityId

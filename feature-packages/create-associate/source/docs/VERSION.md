@@ -1,4 +1,8 @@
-# 0.2.19 / sequence 21
+# 0.2.20 / sequence 22
+
+GRA intent identity now freezes the real canonical GRA name (`GRA-${elementId}`) instead of the parent IT Element external ID. Preview, create/reuse command binding, signed preflight and final readback therefore compare one exact GRA identity; the parent object remains linked separately by its frozen target key.
+
+# 0.2.19 / sequence 21 history
 
 Application settings now follow the recorded v4 two-stage protocol inside the signed mutation Operation. New-object bootstrap may omit the initial 501 token only for frozen `create_bootstrap`; existing `resume`/`reuse` requires `existing_with_token`. A product-owned incomplete create can use `recover_owned_create_bootstrap` only after Core proves one exact prior create commit under the current Connector/session and authority/Pack/engagement/Workspace, including exact evidence engagement/object/external identity, and a signed live read proves settings/concurrency are still empty. Type/relevance PATCH is followed by an authoritative GET, strict identity/Workspace/type/relevance and unique-latest-token validation, then data-availability PATCH using only that fresh 501 token; outer reconcile retains final field and Workspace verification.
 

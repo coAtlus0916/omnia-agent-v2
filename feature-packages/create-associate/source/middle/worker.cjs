@@ -947,7 +947,7 @@ function createFeatureWorker(dependencies) {
         disposition:row.kind==='APP'?prepared.identityDisposition:(objectId?'reuse':'create'),resolvedObjectId:objectId,mutationOperationId:RETURN_OPERATIONS.objectCreate,
         identityResolution:prepared.identityResolution,description:row.kind==='APP'?prepared.description:undefined,operationTargetIdentityKey:objectTarget.targetIdentityKey,
         evidenceOperationIds:row.kind==='APP'?[RETURN_OPERATIONS.objectRead,RETURN_OPERATIONS.objectIdentityResolve,RETURN_OPERATIONS.objectCreatePreflight]:[RETURN_OPERATIONS.objectRead,RETURN_OPERATIONS.objectPreflight,RETURN_OPERATIONS.objectCreatePreflight] });
-      targets.push({ kind: 'object', key: `gra|${row.rowKey}`, rowKey: row.rowKey, workspace: workspaceId, objectType: 'GRA', externalId: row.elementId,
+      targets.push({ kind: 'object', key: `gra|${row.rowKey}`, rowKey: row.rowKey, workspace: workspaceId, objectType: 'GRA', externalId: prepared.graName,
         disposition:graObserved.found?'reuse':'create',resolvedObjectId:graObserved.found?responseId(graObserved.item,'GRA preflight'):'',entityObjectTargetKey:`object|${row.rowKey}`,
         contentIdentity:{inkContentId:content.inkContentId,typeId:content.typeId},mutationOperationId:RETURN_OPERATIONS.graCreate,
         operationTargetIdentityKey:identityKey('gra',[row.rowKey,workspaceId]),evidenceOperationIds:[RETURN_OPERATIONS.graRead,RETURN_OPERATIONS.graPreflight] });

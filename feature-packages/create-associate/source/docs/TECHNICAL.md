@@ -86,6 +86,10 @@ Core command binding requires the command/query `mode` to equal the immutable se
 
 The GRA object intent freezes its canonical derived `graName` in `externalId`; it no longer overloads the parent IT Element ID. The parent identity remains an exact target-key reference resolved from receipt-backed projection. Preview displays the same `graName`, create and reuse commands send/read that name, and Core validates both dispositions against the immutable GRA intent before any command can be prepared.
 
+## 0.2.21 authoritative GRA detail shape
+
+The signed readback accepts the recorded Omnia detail contract in which the IT Element identity may be present only in an active `riskScopes[].entityId`. All valid top-level and active-scope candidates are deduplicated and exactly one is required; missing or conflicting identities fail closed. `query.itElementType` must select one unambiguous governed GRA type ID from `GRA_KIND_CONTRACT`: Application/3, Infrastructure/4 (DB and OS), or ITTool/5. The response must return the exact canonical type string, GRA ID, canonical name, Workspace, and `inkContentId`; it need not echo the catalog type ID because Omnia does not return that field.
+
 The package contains a process-isolated CommonJS Worker, declarative Surface, private migration, managed V8-derived governance IR, signed runtime-template base XLSX, and a signed Operation package. Core passes base64 bytes (64 MiB maximum), never filesystem paths. Runtime output patches only declared OOXML worksheet/core parts and verifies every undeclared part digest.
 
 The governance IR contains 187 fields, 68 relation rules, and 15 scoring items. TemplateVersion semantic identity is stable across Runs; instance semantic/patch/output/governance digests are per Run.

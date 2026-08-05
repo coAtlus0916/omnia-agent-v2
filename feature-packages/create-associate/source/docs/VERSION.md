@@ -1,4 +1,8 @@
-# 0.2.20 / sequence 22
+# 0.2.21 / sequence 23
+
+GRA reconcile now matches Omnia's real risk-assessment detail shape. It resolves exactly one active IT Element GUID from supported top-level fields plus `riskScopes`, rejects conflicting identities, requires exact GRA ID/name/Workspace/canonical type/ink-content, and validates the signed query's type ID through `GRA_KIND_CONTRACT` (APP 3, DB/OS 4, TOOL 5) without demanding a non-existent server type-ID echo.
+
+# 0.2.20 / sequence 22 history
 
 GRA intent identity now freezes the real canonical GRA name (`GRA-${elementId}`) instead of the parent IT Element external ID. Preview, create/reuse command binding, signed preflight and final readback therefore compare one exact GRA identity; the parent object remains linked separately by its frozen target key.
 

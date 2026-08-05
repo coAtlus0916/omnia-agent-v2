@@ -140,7 +140,7 @@ const runtimeBaseBytes = workerModule.buildRuntimeWorkbook(
 
 const userTemplateBytes = await readFile(userTemplatePath);
 if (userTemplateBytes.length < 1 || userTemplateBytes.length > 64 * 1024 * 1024) throw new Error('Phase1 user template V3 size is invalid.');
-const version = '0.2.20'; const sequence = 22;
+const version = '0.2.21'; const sequence = 23;
 const route = (stepId, method, routeTemplate, parameters, bodyMode = 'none', bodyParameter = '') => ({ stepId, method, routeTemplate, parameters, bodyMode, bodyParameter });
 const applicationIdentityRoutes = () => [
   route('workitem-directory', 'POST', '/work/v1/WorkQueries/getWorkitemDetails', [], 'signed_json'),

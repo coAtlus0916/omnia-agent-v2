@@ -70,6 +70,12 @@ The workflow projection has four status phases: `upload`, `validate`, `comments`
 
 An exact APP `resume` disposition represents an authority-proven object whose GRA/settings sequence is incomplete. When and only when that object's authoritative settings read returns an unset `isDataAvailable`, the frozen disposition is `resume_unset_default_false`; confirmation-time execution must read it as still unset before PATCHing the governed false value and verifying read-back. `reuse` continues to require an authoritative boolean and fails closed on null.
 
+## 0.2.18 compact confirmation and grouped progress
+
+The full plan, preflights, target keys, Operation IDs, and evidence arrays remain in the immutable Core plan and intent/command/evidence tables. Comments projects only Pack/Workspace, the real element count and names, create versus reuse/resume counts, relationship count, Risk-Control count, and plan digest. Return progress groups the persisted `returnProgress` rows into Element, GRA, Relationship, Risk-Control, and Settings categories; group totals and state are derived from the underlying intent and command states.
+
+Core command binding handles exact non-GRA object `resume` through the same resolved-object read-query branch as `reuse`. It still requires the frozen resolved object ID, external identity, object type, Application editor description, mutation Operation, evidence Operation array, target identity, approved plan digest, and exact authority scope.
+
 The package contains a process-isolated CommonJS Worker, declarative Surface, private migration, managed V8-derived governance IR, signed runtime-template base XLSX, and a signed Operation package. Core passes base64 bytes (64 MiB maximum), never filesystem paths. Runtime output patches only declared OOXML worksheet/core parts and verifies every undeclared part digest.
 
 The governance IR contains 187 fields, 68 relation rules, and 15 scoring items. TemplateVersion semantic identity is stable across Runs; instance semantic/patch/output/governance digests are per Run.

@@ -1,4 +1,8 @@
-# 0.2.17 / sequence 19
+# 0.2.18 / sequence 20
+
+Comments now receives a compact user-facing frozen-plan summary instead of internal target, Operation, evidence, and preflight details; the full immutable plan remains durable in Core. Return progress groups real intent states into Element, GRA, Relationship, Risk-Control, and Settings categories. Core command binding treats an exact `resume` object like `reuse` for resolved-object read validation while retaining every target, description, Operation, evidence, and authority constraint.
+
+# 0.2.17 / sequence 19 history
 
 The workflow rail now exposes four real phases: Upload, Validate, Comments review, and Return. Comments review is a status-only host phase because the current declarative workflow contract has no trusted host-tab navigation action; it reports only durable unsubmitted, frozen-awaiting-confirmation, or confirmed state. Return becomes current only after confirmation and continues to reflect real progress, completion, failure, or uncertain read-only reconciliation.
 

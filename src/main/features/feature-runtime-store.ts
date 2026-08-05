@@ -921,7 +921,7 @@ export class FeatureRuntimeStore {
       ? commandRequest.query as Record<string, any> : commandRequest;
     let commandIntentValid = true;
     if (String(intended.kind) === 'object' && String(intended.objectType) !== 'GRA') {
-      if (String(intended.disposition) === 'reuse') commandIntentValid = String(commandRequest.objectId || '') === String(intended.resolvedObjectId || '')
+      if (['reuse','resume'].includes(String(intended.disposition))) commandIntentValid = String(commandRequest.objectId || '') === String(intended.resolvedObjectId || '')
         && String(desired.externalId || '') === String(intended.externalId || '') && String(desired.objectType || '') === String(intended.objectType || '')
         && (String(intended.objectType)!=='Application'||String(desired.description||'')===JSON.stringify({editorData:`<p>${String(intended.description||'').replace(/[&<>"]/gu,(char)=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[char] || char))}</p>`,suggestionsData:[],trackChangesEnableFlagInEditor:false,plainText:String(intended.description||'')}));
       else commandIntentValid = String(commandRequest.number || '') === String(intended.externalId || '')

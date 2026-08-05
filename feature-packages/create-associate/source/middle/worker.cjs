@@ -706,8 +706,16 @@ function returnSurface(latest,message){
   const run=latest?.run;const progress=progressSurface(latest);const state=String(run?.state||'');
   const terminal=['succeeded','failed','cancelled'].includes(state);const status=state==='succeeded'?'ready':state==='failed'?'error':state==='uncertain'?'stale':'loading';
   const intents=latest?.returnProgress||[]; const completed=intents.filter((item)=>item.state==='verified'||['readback_verified','closed_not_applied'].includes(item.command_state)).length; const percent=state==='succeeded'?100:intents.length?Math.floor(completed*100/intents.length):0;
+  const intentState=(item)=>item.state==='verified'||['readback_verified','closed_not_applied'].includes(item.command_state)?'passed':item.state==='uncertain'||item.command_state==='uncertain'?'uncertain':item.state==='failed'||item.command_state==='failed'?'failed':['submitted','committed'].includes(item.command_state)?'running':'pending';
+  const category=(item)=>{const key=String(item.target_key||''),kind=String(item.target_kind||'');if(kind==='object'&&key.startsWith('object|'))return'元素';if(kind==='object'&&key.startsWith('gra|'))return'GRA';if(kind==='relation')return'关系';if(kind==='risk_control')return'Risk-Control';return'设置';};
+  const categoryOrder=['元素','GRA','关系','Risk-Control','设置'];
+  const grouped=categoryOrder.map((label)=>({label,rows:intents.filter((item)=>category(item)===label)})).filter((group)=>group.rows.length).map((group,index)=>{
+    const states=group.rows.map(intentState),done=states.filter((value)=>value==='passed').length,failedCount=states.filter((value)=>value==='failed').length,uncertainCount=states.filter((value)=>value==='uncertain').length,runningCount=states.filter((value)=>value==='running').length;
+    const groupState=failedCount?'failed':uncertainCount?'uncertain':runningCount?'running':done===group.rows.length?'passed':'pending';
+    return{itemId:`return-group-${index}`,label:group.label,state:groupState,detail:`已完成 ${done}/${group.rows.length}${failedCount?`；失败 ${failedCount}`:''}${uncertainCount?`；待只读核验 ${uncertainCount}`:''}${runningCount?`；执行中 ${runningCount}`:''}`};
+  });
   return {stateVersion:Number(run?.state_revision||1),status,statusMessage:message||`回传阶段 ${state} / revision ${Number(run?.state_revision||0)}`,workflow:progress.workflow,clearFields:['review'],
-    progress:{label:'回传进度',completed:state==='succeeded'?intents.length:completed,total:intents.length,percent,state:state==='uncertain'?'uncertain':state==='failed'?'failed':state==='succeeded'?'passed':'running',message:state==='succeeded'?'已完成；停留在回传页面。':state==='uncertain'?'响应未知，禁止重放；请执行只读核验。':message||`当前阶段 ${state}`,items:intents.map((item,index)=>({itemId:`return-${index}`,label:String(item.target_key),state:item.state==='verified'?'passed':item.state==='uncertain'?'uncertain':item.state==='failed'?'failed':item.command_state==='submitted'||item.command_state==='committed'?'running':'pending',detail:`${item.target_kind} · intent=${item.state} · command=${item.command_state}`}))},
+    progress:{label:'回传进度',completed:state==='succeeded'?intents.length:completed,total:intents.length,percent,state:state==='uncertain'?'uncertain':state==='failed'?'failed':state==='succeeded'?'passed':'running',message:state==='succeeded'?'已完成；停留在回传页面。':state==='uncertain'?'响应未知，禁止重放；请执行只读核验。':message||`当前阶段 ${state}`,items:grouped},
     scopes:progress.scopes,items:progress.items,editors:[],issues:[],artifacts:(latest?.artifacts||[]).filter((item)=>String(item.kind)!=='source').map((item)=>({artifactId:String(item.artifact_id),kind:String(item.kind),name:String(item.original_name),sha256:String(item.sha256),sizeBytes:Number(item.size_bytes),available:true,reason:''})),actions:[
       {actionId:'stage-source-workbook',enabled:terminal,reason:terminal?'':'回传计划已冻结；请先完成、核验或终止当前 Run。'},
       {actionId:'restart-run',enabled:false,reason:'回传计划已冻结；重新开始不能掩盖确认、写入或 uncertain 状态。'},
@@ -1524,14 +1532,16 @@ function createFeatureWorker(dependencies) {
             tenantOrOrgId: input.context.connectorBinding.tenantOrOrgId, packId: input.context.connectorBinding.packId,
             workspaceIds: input.context.safetyLock.workspaceIds
           })));
+          const elementTargets=prepared.targets.filter((item)=>item.kind==='object'&&item.objectType!=='GRA');
+          const existingObjects=elementTargets.filter((item)=>['reuse','resume'].includes(item.disposition)).length;
+          const newObjects=elementTargets.filter((item)=>item.disposition==='create').length;
           const visibleDetails = [
-            { label: '计划摘要', value: '(freezing)' },
-            { label: '权威目标', value: `authority=${input.context.connectorBinding.authorityInstanceId} | tenant/org=${input.context.connectorBinding.tenantOrOrgId} | Pack=${input.context.connectorBinding.packId} | engagement=${input.context.connectorBinding.engagementId} | connector=${input.context.connectorBinding.connectorId}@${input.context.connectorBinding.sessionGeneration}` },
-            { label: '工作区', value: prepared.authority.workspaces.map((item) => `${item.name} -> ${item.workspaceId}`).join('; ') },
-            { label: '权威预检摘要', value: preflightDigest },
-            {label:'Risk-Control 精确清单',value:`${prepared.targets.filter((item)=>item.kind==='risk_control').length} 项：${prepared.targets.filter((item)=>item.kind==='risk_control').map((item)=>`${item.riskName} [${item.classification}] -> ${item.controlName}${item.resolvedCatalog?` (${item.resolvedCatalog.riskId}/${item.resolvedCatalog.controlId})`:' (post-create resolution；当前无 GRA，未伪装 live ID)'}`).join('; ')||'无'}`},
-            {label:'关系清单',value:`${prepared.targets.filter((item)=>item.kind==='relation').length} 项：${prepared.targets.filter((item)=>item.kind==='relation').map((item)=>`${item.sourceObjectTargetKey} -> ${item.targetObjectTargetKey} @ ${item.workspace}${item.resolvedOperationTargetIdentityKey?` | ${item.resolvedOperationTargetIdentityKey}`:' | post-create resolution（实际 ID 将在 receipt-backed 对象投影后解析）'}`).join('; ')||'无'}`},
-            ...prepared.preflights.flatMap((row)=>row.changes.map((change,index)=>({label:`${row.elementId} · ${index+1}`,value:`${change.targetKey} | disposition=${change.disposition} | current=${typeof change.current==='string'?change.current:canonical(change.current)} -> desired=${typeof change.desired==='string'?change.desired:canonical(change.desired)} | Operation=${change.operationId} | evidence=${change.evidenceOperationId||canonical(change.evidenceOperationIds||[])}`})))
+            {label:'Pack / Workspace',value:`${input.context.connectorBinding.packId} · ${prepared.authority.workspaces.map((item)=>item.name).join('、')}`},
+            {label:'元素',value:`${prepared.rows.length} 个：${prepared.rows.map((row)=>`${row.kind} ${row.elementId}`).join('；')}`},
+            {label:'对象处理',value:`${existingObjects} 个复用/恢复，${newObjects} 个新建`},
+            {label:'关系',value:`${prepared.targets.filter((item)=>item.kind==='relation').length} 项`},
+            {label:'Risk-Control',value:`${prepared.targets.filter((item)=>item.kind==='risk_control').length} 项`},
+            {label:'计划摘要',value:'(freezing)'}
           ];
           const frozen = await store.call('prepareReturnIntent', {
             runId: run.run_id, plan, connectorBinding: input.context.connectorBinding, safetyLock: input.context.safetyLock,
@@ -1544,7 +1554,7 @@ function createFeatureWorker(dependencies) {
             messageId: frozen.messageId, featureId: FEATURE_ID, featureVersion: FEATURE_VERSION,
             surfaceId: 'create-associate.workbench', runId: run.run_id, confirmationId: frozen.confirmationId,
             stateVersion: frozen.stateVersion, state: 'pending_confirmation', title: '新建与关联回传审核',
-            summary: `${capabilityState.verified?'当前 authority/Pack/Workspace scope 已验证。':'首次真实回传验证将在确认后写入当前 Pack。'} 已冻结实时 authority/Pack/Workspace、目标元素/GRA、对象 create/reuse、Risk-Control/关系清单及签名 Operation；确认后逐命令二次预检、写入并权威读回。`,
+            summary: `已冻结 ${prepared.rows.length} 个元素的回传计划：${existingObjects} 个复用/恢复，${newObjects} 个新建；确认后执行二次预检、写入与权威读回。`,
             details: visibleDetails.map((detail) => detail.label === '计划摘要' ? { ...detail, value: frozen.planDigest } : detail),
             actions: [{ actionId: 'confirm-return', label: '确认回传', effect: 'omnia_mutation', enabled: true,
               reason:'', selectionMode: 'none',

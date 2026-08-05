@@ -6,7 +6,7 @@
 - Integration：Remote-only 签名 Operation，首次远程 action 才延迟注册。
 # Technical design
 
-## 0.2.46 authorized Return invocation lifetime
+## 0.2.47 authorized Return invocation lifetime
 
 `confirm-return` and `continue-return` await the serial executor before the Worker host emits the action result. Consequently `activeInvocationId` and the Supervisor's `allowMutation` entry remain live for `prepareReturnCommand`, signed mutation Operation calls, evidence, readback and final projection. No capability token is copied into the Worker, and Core does not accept a Feature-authored authorization claim. Mutation timeout or Worker loss still terminates the process tree and invokes the existing durable interruption classifier.
 

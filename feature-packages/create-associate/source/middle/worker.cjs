@@ -1050,7 +1050,7 @@ function createFeatureWorker(dependencies) {
         for(const concern of reviewed.concerns){
           exactKeys(concern,['code','message','suggestion'],'Factors review concern');
           const code=String(concern.code||''),message=String(concern.message||''),suggestion=String(concern.suggestion||'');
-          if(!/^[a-z0-9][a-z0-9._-]{1,63}$/u.test(code)||!message||message.length>1000||suggestion.length>1000)fail('AI.REVIEW_OUTPUT_INVALID','AI review concern fields are invalid.');
+          if(!/^[a-z0-9][a-z0-9._-]{1,63}$/iu.test(code)||!message||message.length>1000||suggestion.length>1000)fail('AI.REVIEW_OUTPUT_INVALID','AI review concern fields are invalid.');
           parsed.issues.push(aiIssue(`AI.SUGGESTION.${code.toLocaleUpperCase('en-US')}`,fieldKey,`${message}${suggestion?` 建议：${suggestion}`:''}`));
         }
         if(assessment==='needs_attention')attention+=1;

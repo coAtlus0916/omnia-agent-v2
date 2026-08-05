@@ -1,4 +1,8 @@
-# 0.2.16 / sequence 18
+# 0.2.17 / sequence 19
+
+The workflow rail now exposes four real phases: Upload, Validate, Comments review, and Return. Comments review is a status-only host phase because the current declarative workflow contract has no trusted host-tab navigation action; it reports only durable unsubmitted, frozen-awaiting-confirmation, or confirmed state. Return becomes current only after confirmation and continues to reflect real progress, completion, failure, or uncertain read-only reconciliation.
+
+# 0.2.16 / sequence 18 history
 
 Corrective release applying the authoritative Work Item Facet Mapping to APP identity resolution and its action-time create preflight. An active Application is compatible only when its detail supplies one non-zero Work Item GUID whose unique mapping equals the frozen Workspace; the resolved object identity now carries that exact Work Item ID.
 

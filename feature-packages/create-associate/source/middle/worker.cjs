@@ -583,28 +583,42 @@ function descriptionPlainText(value){
   let editor=value; if(typeof editor==='string'){try{editor=JSON.parse(editor);}catch{return null;}}
   return editor&&typeof editor==='object'&&!Array.isArray(editor)&&typeof editor.plainText==='string'?editor.plainText.trim():null;
 }
-function freezeAppDataAvailability(preExistingObject,authoritativeValue,signedDefault){
-  if(preExistingObject){if(typeof authoritativeValue!=='boolean')fail('RETURN.DATA_AVAILABILITY_UNRESOLVED','Pre-existing APP has no authoritative isDataAvailable boolean.');return{disposition:'preserve_authoritative_existing',value:authoritativeValue};}
+function freezeAppDataAvailability(identityDisposition,authoritativeValue,signedDefault){
+  if(identityDisposition==='resume'&&(authoritativeValue===null||authoritativeValue===undefined)){
+    if(signedDefault!==false)fail('RETURN.DATA_AVAILABILITY_RULE_DRIFT','Resumed unset APP must freeze the signed false isDataAvailable default.');
+    return{disposition:'resume_unset_default_false',value:false};
+  }
+  if(['resume','reuse'].includes(identityDisposition)){if(typeof authoritativeValue!=='boolean')fail('RETURN.DATA_AVAILABILITY_UNRESOLVED','Pre-existing APP has no authoritative isDataAvailable boolean.');return{disposition:'preserve_authoritative_existing',value:authoritativeValue};}
+  if(identityDisposition!=='create')fail('RETURN.DATA_AVAILABILITY_DISPOSITION_DRIFT','APP identity disposition is unavailable for data-availability freeze.');
   if(signedDefault!==false)fail('RETURN.DATA_AVAILABILITY_RULE_DRIFT','New APP must freeze the signed false isDataAvailable default.');
   return{disposition:'signed_new_default_false',value:false};
 }
-function resolveFrozenAppDataAvailability(preExistingObject,before,frozen){
-  const expectedDisposition=preExistingObject?'preserve_authoritative_existing':'signed_new_default_false';
-  if(!frozen||frozen.disposition!==expectedDisposition||typeof frozen.value!=='boolean')fail('RETURN.DATA_AVAILABILITY_DISPOSITION_DRIFT','Frozen APP data-availability disposition differs between Review and execution.');
-  if(preExistingObject&&before?.isDataAvailable!==frozen.value)fail('RETURN.DATA_AVAILABILITY_AUTHORITY_DRIFT','Pre-existing APP authoritative isDataAvailable changed after Review; a new plan is required.');
-  if(!preExistingObject&&frozen.value!==false)fail('RETURN.DATA_AVAILABILITY_RULE_DRIFT','New APP execution may only use the signed false default.');
+function resolveFrozenAppDataAvailability(identityDisposition,before,frozen){
+  if(!frozen||typeof frozen.value!=='boolean')fail('RETURN.DATA_AVAILABILITY_DISPOSITION_DRIFT','Frozen APP data-availability disposition is invalid.');
+  if(identityDisposition==='resume'&&frozen.disposition==='resume_unset_default_false'){
+    if(frozen.value!==false||before?.isDataAvailable!==null&&before?.isDataAvailable!==undefined)fail('RETURN.DATA_AVAILABILITY_AUTHORITY_DRIFT','Resumed APP isDataAvailable is no longer unset; a new plan is required.');
+    return false;
+  }
+  const expectedDisposition=identityDisposition==='create'?'signed_new_default_false':['resume','reuse'].includes(identityDisposition)?'preserve_authoritative_existing':'';
+  if(!expectedDisposition||frozen.disposition!==expectedDisposition)fail('RETURN.DATA_AVAILABILITY_DISPOSITION_DRIFT','Frozen APP data-availability disposition differs between Review and execution.');
+  if(expectedDisposition==='preserve_authoritative_existing'&&before?.isDataAvailable!==frozen.value)fail('RETURN.DATA_AVAILABILITY_AUTHORITY_DRIFT','Pre-existing APP authoritative isDataAvailable changed after Review; a new plan is required.');
+  if(expectedDisposition==='signed_new_default_false'&&frozen.value!==false)fail('RETURN.DATA_AVAILABILITY_RULE_DRIFT','New APP execution may only use the signed false default.');
   return frozen.value;
 }
 function workflowSurface(latest){
   const run=latest?.run; const state=String(run?.state||''); const revision=Math.max(1,Number(run?.state_revision||1));
-  const returning=['waiting_confirmation','returning','verifying','uncertain','reconciling','succeeded'].includes(state);
+  const confirmationPending=state==='waiting_confirmation';
+  const confirmed=['returning','verifying','uncertain','reconciling','succeeded'].includes(state)
+    ||state==='failed'&&Array.isArray(latest?.returnProgress)&&latest.returnProgress.length>0;
+  const returning=confirmed;
   const validationStarted=Boolean(run)&&!['draft','acquiring'].includes(state);
   const validationDone=['ready_for_review','waiting_confirmation','returning','verifying','uncertain','reconciling','succeeded'].includes(state);
-  const failed=state==='failed'; const currentStepId=returning?'return':validationStarted?'validate':'upload';
+  const failed=state==='failed'; const currentStepId=returning?'return':confirmationPending?'comments':validationStarted?'validate':'upload';
   return {revision,currentStepId,steps:[
     {stepId:'upload',label:'上传资料',state:run?'completed':'current',detail:'上传系统信息'},
     {stepId:'validate',label:'校验',state:failed&&!returning?'failed':validationDone?'completed':validationStarted?'current':'pending',detail:validationDone?'解析、规则与输出校验已持久化':validationStarted?'正在按 Run 事件推进':'等待上传'},
-    {stepId:'return',label:'回传',state:state==='succeeded'?'completed':state==='uncertain'?'warning':failed&&returning?'failed':returning?'current':'pending',detail:state==='succeeded'?'全部命令读回完成':state==='uncertain'?'响应未知，仅允许只读核验':returning?`持久 Run 状态：${state}`:'等待校验通过'}
+    {stepId:'comments',label:'Comments 复核',state:confirmed?'completed':confirmationPending?'current':'pending',detail:confirmed?'已确认':confirmationPending?'计划已冻结，等待 Comments 确认':'未提交'},
+    {stepId:'return',label:'回传',state:state==='succeeded'?'completed':state==='uncertain'?'warning':failed&&returning?'failed':returning?'current':'pending',detail:state==='succeeded'?'全部命令读回完成':state==='uncertain'?'响应未知，仅允许只读核验':returning?`已确认；持久 Run 状态：${state}`:'等待 Comments 确认'}
   ]};
 }
 function progressSurface(latest,parsed){
@@ -675,7 +689,8 @@ function uploadSurface(latest,message,fresh=false){
   const workflow={revision:Math.max(1,Number(latest?.run?.state_revision||1)),currentStepId:'upload',steps:[
     {stepId:'upload',label:'上传资料',state:'current',detail:'上传系统信息'},
     {stepId:'validate',label:'校验',state:'pending',detail:'等待上传'},
-    {stepId:'return',label:'回传',state:'pending',detail:'等待校验通过'}
+    {stepId:'comments',label:'Comments 复核',state:'pending',detail:'未提交'},
+    {stepId:'return',label:'回传',state:'pending',detail:'等待 Comments 确认'}
   ]};
   const source=staged?(latest.artifacts||[]).filter((item)=>String(item.kind)==='source').slice(-1):[];
   return{stateVersion:Number(run?.state_revision||1),status:'ready',statusMessage:message,scopes:[],items:[],workflow,clearFields:['progress','review'],issues:[],editors:[],artifacts:source.map((item)=>({artifactId:String(item.artifact_id),kind:'source',name:String(item.original_name),sha256:String(item.sha256),sizeBytes:Number(item.size_bytes),available:false,reason:'待确认上传'})),actions:[
@@ -898,7 +913,7 @@ function createFeatureWorker(dependencies) {
         if(prepared.isRelevant!==false) fail('RETURN.IS_RELEVANT_RULE_DRIFT',`APP ${row.elementId} isRelevant differs from the signed constant-false rule revision.`);
         prepared.isDataAvailable=row.fields['Derived Application Is Data Available'];
         if(prepared.isDataAvailable!==false) fail('RETURN.DATA_AVAILABILITY_RULE_DRIFT',`APP ${row.elementId} isDataAvailable differs from the signed v4-compatible constant-false rule revision.`);
-        if(!objectId)prepared.dataAvailability=freezeAppDataAvailability(false,undefined,prepared.isDataAvailable);
+        if(!objectId)prepared.dataAvailability=freezeAppDataAvailability('create',undefined,prepared.isDataAvailable);
         if(!String(content.itElementTypeId||'')) fail('RETURN.APP_TYPE_AUTHORITY_MISSING',`APP ${row.elementId} has no live authority-resolved IT Element type identity.`);
       }
       rowsPrepared.push(prepared);
@@ -961,10 +976,10 @@ function createFeatureWorker(dependencies) {
         if(row.objectId){
           const target={targetIdentityKey:settingsIntent.operationTargetIdentityKey,workspaceId:row.workspaceId};
           const current=await invoke(RETURN_OPERATIONS.objectSettingsPreflight,context.connectorBinding,{target,objectId:row.objectId});
-           const frozenData=freezeAppDataAvailability(true,current.isDataAvailable,row.isDataAvailable);const desiredData=frozenData.value;
+           const frozenData=freezeAppDataAvailability(row.identityDisposition,current.isDataAvailable,row.isDataAvailable);const desiredData=frozenData.value;
            row.dataAvailability=frozenData;settingsIntent.isDataAvailable=desiredData;settingsIntent.dataAvailabilityDisposition=frozenData.disposition;
           rowPreview.changes.push({targetKey:settingsIntent.key,disposition:String(current.typeId)===String(settingsIntent.typeId)&&current.isRelevant===settingsIntent.isRelevant&&current.isDataAvailable===desiredData?'reuse':'patch',current:{typeId:current.typeId,isRelevant:current.isRelevant,isDataAvailable:current.isDataAvailable},desired:{typeId:settingsIntent.typeId,isRelevant:settingsIntent.isRelevant,isDataAvailable:desiredData},operationId:RETURN_OPERATIONS.objectSettingsWrite,evidenceOperationId:RETURN_OPERATIONS.objectSettingsRead});
-         }else{const frozenData=freezeAppDataAvailability(false,undefined,row.isDataAvailable);row.dataAvailability=frozenData;settingsIntent.isDataAvailable=frozenData.value;settingsIntent.dataAvailabilityDisposition=frozenData.disposition;rowPreview.changes.push({targetKey:settingsIntent.key,disposition:'post-create-resolution',current:'not-readable-before-object-create',desired:{typeId:settingsIntent.typeId,isRelevant:settingsIntent.isRelevant,isDataAvailable:frozenData.value,dataAvailabilityDisposition:frozenData.disposition},operationId:RETURN_OPERATIONS.objectSettingsWrite,evidenceOperationId:RETURN_OPERATIONS.objectSettingsRead});}
+         }else{const frozenData=freezeAppDataAvailability('create',undefined,row.isDataAvailable);row.dataAvailability=frozenData;settingsIntent.isDataAvailable=frozenData.value;settingsIntent.dataAvailabilityDisposition=frozenData.disposition;rowPreview.changes.push({targetKey:settingsIntent.key,disposition:'post-create-resolution',current:'not-readable-before-object-create',desired:{typeId:settingsIntent.typeId,isRelevant:settingsIntent.isRelevant,isDataAvailable:frozenData.value,dataAvailabilityDisposition:frozenData.disposition},operationId:RETURN_OPERATIONS.objectSettingsWrite,evidenceOperationId:RETURN_OPERATIONS.objectSettingsRead});}
       }
       if(row.graId){
         const stateTarget=(kind)=>({targetIdentityKey:identityKey('gra-state',[row.rowKey,kind]),workspaceId:row.workspaceId});
@@ -1287,7 +1302,7 @@ function createFeatureWorker(dependencies) {
               const settingsIntent=targetByKey.get(settingsKey);if(!settingsIntent)fail('RETURN.INTENT_MISSING',`Frozen APP settings target is missing: ${settingsKey}`);
               const before=await invoke(RETURN_OPERATIONS.objectSettingsPreflight,binding,{target:settingsTarget,objectId});
               const tab=(before.concurrencyTabs||[]).find((item)=>Number(item.entityTabTypeId)===501);
-              const desiredData=resolveFrozenAppDataAvailability(Boolean(row.objectId),before,{disposition:settingsIntent.dataAvailabilityDisposition,value:settingsIntent.isDataAvailable});
+              const desiredData=resolveFrozenAppDataAvailability(row.identityDisposition,before,{disposition:settingsIntent.dataAvailabilityDisposition,value:settingsIntent.isDataAvailable});
               if(typeof desiredData!=='boolean'||!tab?.updatedOn) fail('RETURN.OBJECT_SETTINGS_AUTHORITY_MISSING',`APP ${row.elementId} settings lack exact data-availability or concurrency authority.`);
               const query={objectId,typeId:row.content.itElementTypeId,isRelevant:row.isRelevant,isDataAvailable:desiredData,number:row.elementId};
               const settingsResult=String(before.typeId)===String(query.typeId)&&before.isRelevant===row.isRelevant&&before.isDataAvailable===desiredData&&String(before.number||before.referenceNumber)===row.elementId

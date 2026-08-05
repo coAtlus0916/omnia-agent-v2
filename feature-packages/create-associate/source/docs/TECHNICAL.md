@@ -64,6 +64,12 @@ Omnia IT Element detail may expose the all-zero `workspaceId`; this is not Works
 
 APP identity resolution and the APP branch of the action-time create preflight use the same signed Work Item Facet Mapping authority before classifying an active Application as `resume` or `reuse`. Search and detail Workspace fields are not authority. The pruned item and resolved identity carry the exact object Work Item ID and frozen Workspace after a unique mapping is proven.
 
+## 0.2.17 four-phase workflow projection
+
+The workflow projection has four status phases: `upload`, `validate`, `comments`, and `return`. The Comments phase reads durable Run state only: before plan freeze it is unsubmitted, `waiting_confirmation` means the plan is frozen and awaiting Comments confirmation, and post-confirmation Return states mark it completed. The declarative workflow contract exposes no host-tab navigation command, so the rail does not fabricate a clickable Comments control. Return state and progress remain sourced from persisted Return intents, commands, receipts, and read-back evidence.
+
+An exact APP `resume` disposition represents an authority-proven object whose GRA/settings sequence is incomplete. When and only when that object's authoritative settings read returns an unset `isDataAvailable`, the frozen disposition is `resume_unset_default_false`; confirmation-time execution must read it as still unset before PATCHing the governed false value and verifying read-back. `reuse` continues to require an authoritative boolean and fails closed on null.
+
 The package contains a process-isolated CommonJS Worker, declarative Surface, private migration, managed V8-derived governance IR, signed runtime-template base XLSX, and a signed Operation package. Core passes base64 bytes (64 MiB maximum), never filesystem paths. Runtime output patches only declared OOXML worksheet/core parts and verifies every undeclared part digest.
 
 The governance IR contains 187 fields, 68 relation rules, and 15 scoring items. TemplateVersion semantic identity is stable across Runs; instance semantic/patch/output/governance digests are per Run.

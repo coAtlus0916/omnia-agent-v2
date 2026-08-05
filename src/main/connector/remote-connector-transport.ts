@@ -84,6 +84,12 @@ const CONNECTOR_PROBE_OPERATIONS = new Set<ConnectorRequest['operation']>([
   'connect'
 ]);
 
+// A Connect action may leave the user on the Omnia login/Pack page for up to
+// ten minutes, but one wire command must never own that whole window. The
+// Shell continues the user wait with bounded status reads after this startup
+// command returns or times out.
+const CONNECT_COMMAND_TIMEOUT_MS = 30_000;
+
 const bridgeInspection = (
   status: BridgePairingCapabilityInspection['status'],
   reasonCode: string,
@@ -345,6 +351,7 @@ export class RemoteConnectorTransport implements ConnectorTransport {
   private repairRequired = false;
   private configIdentity = '';
   private lastAuthorizationRefreshAt = 0;
+  private connectSequence = 0;
   private readonly pending = new Map<string, Pending>();
   private readonly events = new EventEmitter();
 
@@ -499,8 +506,31 @@ export class RemoteConnectorTransport implements ConnectorTransport {
     ));
   }
 
-  private async call(operation: ConnectorRequest['operation'], payload: Record<string, unknown>, timeoutMs: number): Promise<any> {
+  private sendCancel(requestId: string, reason: string): void {
+    if (this.socket?.readyState !== WebSocket.OPEN) return;
+    try {
+      this.socket.send(JSON.stringify({
+        schemaVersion: BRIDGE_SCHEMA,
+        kind: 'cancel',
+        requestId,
+        reason
+      }));
+    } catch {
+      // The local pending request is still rejected below. A closed socket
+      // cannot acknowledge cancellation, and reconnect must not replay it.
+    }
+  }
+
+  private async call(
+    operation: ConnectorRequest['operation'],
+    payload: Record<string, unknown>,
+    timeoutMs: number,
+    stillCurrent?: () => boolean
+  ): Promise<any> {
     await this.ensureSocket();
+    if (stillCurrent && !stillCurrent()) {
+      throw new AppError('CONNECTOR.CONNECT_CANCELLED', 'Remote Connect 已取消。', true);
+    }
     if (!this.connectorOnline && !CONNECTOR_PROBE_OPERATIONS.has(operation)) {
       throw new AppError('REMOTE.CONNECTOR_OFFLINE', 'Remote Connector 离线。', true);
     }
@@ -510,9 +540,7 @@ export class RemoteConnectorTransport implements ConnectorTransport {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify({
-          schemaVersion: BRIDGE_SCHEMA, kind: 'cancel', requestId: id, reason: 'shell_timeout'
-        }));
+        this.sendCancel(id, 'shell_timeout');
         const mutationUncertain = operation === 'operation_invoke' && payload.mutationAuthorized === true;
         reject(new AppError(
           mutationUncertain ? 'REMOTE.MUTATION_UNCERTAIN' : 'REMOTE.TIMEOUT',
@@ -596,15 +624,22 @@ export class RemoteConnectorTransport implements ConnectorTransport {
     }
   }
 
-  async connect(): Promise<ConnectionSnapshot> { return this.map(await this.call('connect', {}, 90_000)); }
+  async connect(): Promise<ConnectionSnapshot> {
+    const sequence = ++this.connectSequence;
+    return this.map(await this.call(
+      'connect',
+      {},
+      CONNECT_COMMAND_TIMEOUT_MS,
+      () => sequence === this.connectSequence
+    ));
+  }
   async cancelConnect(): Promise<void> {
+    this.connectSequence += 1;
     for (const [id, pending] of this.pending) {
       if (!['connect', 'status'].includes(pending.operation)) continue;
       clearTimeout(pending.timer);
       this.pending.delete(id);
-      if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify({
-        schemaVersion: BRIDGE_SCHEMA, kind: 'cancel', requestId: id, reason: 'user_cancelled_connect'
-      }));
+      this.sendCancel(id, 'user_cancelled_connect');
       pending.reject(new AppError('CONNECTOR.CONNECT_CANCELLED', 'Remote Connect 已取消。', true));
     }
   }

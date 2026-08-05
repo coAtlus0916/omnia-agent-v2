@@ -34,7 +34,27 @@ export interface ShellServiceTiming {
   sleep: (milliseconds: number) => Promise<void>;
   connectTimeoutMs: number;
   connectPollMs: number;
+  connectStartupTimeoutMs: number;
 }
+
+const CONNECT_WAITING_STATES = new Set<ConnectionSnapshot['status']>([
+  'browser_starting',
+  'waiting_login',
+  'waiting_pack',
+  'waiting_authorization',
+  'identifying_pack',
+  'target_closed'
+]);
+
+const CONNECT_TERMINAL_STATES = new Set<ConnectionSnapshot['status']>([
+  'not_configured',
+  'connector_offline',
+  'connector_incompatible',
+  'multiple_targets',
+  'identity_changed',
+  'repair_required',
+  'error'
+]);
 
 interface RemoteLifecycleApi {
   inspectBridge: typeof inspectBridgePairingCapability;
@@ -57,6 +77,7 @@ export class ShellService {
   private timer: NodeJS.Timeout | null = null;
   private connectAttempt = 0;
   private cancelledConnectAttempt = 0;
+  private connectRunning: Promise<void> | null = null;
   private readonly events = new EventEmitter();
   private remotePairing: RemotePairingSnapshot = {
     state: 'idle', pairingCode: '', expiresAt: '', message: ''
@@ -103,7 +124,8 @@ export class ShellService {
       now: timing.now || Date.now,
       sleep: timing.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))),
       connectTimeoutMs: timing.connectTimeoutMs ?? 10 * 60_000,
-      connectPollMs: timing.connectPollMs ?? 2_500
+      connectPollMs: timing.connectPollMs ?? 2_500,
+      connectStartupTimeoutMs: timing.connectStartupTimeoutMs ?? 90_000
     };
     this.remoteLifecycle = {
       inspectBridge: remoteLifecycle.inspectBridge || inspectBridgePairingCapability,
@@ -451,57 +473,135 @@ export class ShellService {
         expectedStateVersion: binding.stateVersion
       });
     }
+    if (this.connection.connecting && this.connectRunning) return this.snapshot();
     const attempt = ++this.connectAttempt;
     const deadline = this.timing.now() + this.timing.connectTimeoutMs;
     this.connection = {
       ...this.connection,
       status: 'bridge_connecting',
       connecting: true,
+      connected: false,
+      authorityInstanceId: '',
+      tenantOrOrgId: '',
+      packId: '',
+      engagementId: '',
+      engagementName: '',
+      clientName: '',
       message: '正在连接 Connector…'
     };
+    this.database.saveConnectionPayload(this.connection);
     this.emitChanged();
-    try {
-      let connected = await this.adapter.connect();
-      while (!connected.connected && this.timing.now() < deadline) {
-        if (this.cancelledConnectAttempt === attempt) break;
-        if (['multiple_targets', 'identity_changed', 'connector_incompatible', 'repair_required'].includes(connected.status)) break;
-        this.connection = connected;
-        this.database.saveConnectionPayload(this.connection);
-        this.emitChanged();
-        await this.timing.sleep(this.timing.connectPollMs);
-        connected = await this.adapter.load();
-      }
-      if (this.cancelledConnectAttempt === attempt) {
-        this.connection = {
-          ...await this.adapter.load(),
-          status: 'cancelled', connecting: false, connected: false, message: '连接已取消。'
-        };
-        this.database.saveConnectionPayload(this.connection);
-        return this.snapshot();
-      }
-      this.connection = connected.connected ? connected : {
-        ...connected,
-        status: this.timing.now() >= deadline ? 'timed_out' : connected.status,
-        connecting: false,
-        message: this.timing.now() >= deadline ? '等待目标 Pack 超时。请确认 Omnia 已登录并打开唯一目标 Pack。' : connected.message
-      };
-      this.database.saveConnectionPayload(this.connection);
-    } catch (error) {
-      await this.syncConnection();
-      throw error;
-    } finally {
-      this.emitChanged();
-    }
-    if (this.connection.connected) {
-      await this.reconcileConnectedSession(true);
-    }
+    const running = this.runConnectAttempt(attempt, deadline);
+    this.connectRunning = running;
+    void running.finally(() => {
+      if (this.connectRunning === running) this.connectRunning = null;
+    }).catch(() => undefined);
     return this.snapshot();
+  }
+
+  private connectAttemptCancelled(attempt: number): boolean {
+    return this.cancelledConnectAttempt === attempt || this.connectAttempt !== attempt;
+  }
+
+  private projectConnectState(attempt: number, next: ConnectionSnapshot): boolean {
+    if (this.connectAttemptCancelled(attempt)) return false;
+    this.connection = next;
+    this.database.saveConnectionPayload(this.connection);
+    this.emitChanged();
+    return true;
+  }
+
+  private async runConnectAttempt(attempt: number, deadline: number): Promise<void> {
+    const startupDeadline = Math.min(deadline, this.timing.now() + this.timing.connectStartupTimeoutMs);
+    let reachedWaitingState = false;
+    let next: ConnectionSnapshot;
+    try {
+      const observed = await this.adapter.load();
+      if (this.connectAttemptCancelled(attempt)) return;
+      // A live Session that is already waiting for login/Pack/Authorization
+      // does not need another browser-start command. An offline Connector is
+      // also known before any long-running command is dispatched.
+      next = observed.connected
+        || (CONNECT_WAITING_STATES.has(observed.status)
+          && !['browser_starting', 'target_closed'].includes(observed.status))
+        || CONNECT_TERMINAL_STATES.has(observed.status)
+        ? observed
+        : await this.adapter.connect();
+    } catch (error) {
+      if (this.connectAttemptCancelled(attempt)) return;
+      const code = error instanceof AppError ? error.code : '';
+      if (code !== 'REMOTE.TIMEOUT') {
+        const unavailable = this.adapter.unavailableSnapshot(
+          error instanceof Error ? error.message : 'Remote Connect 启动失败。'
+        );
+        this.projectConnectState(attempt, {
+          ...unavailable,
+          status: code === 'REMOTE.CONNECTOR_OFFLINE' ? 'connector_offline' : unavailable.status,
+          connecting: false,
+          connected: false
+        });
+        return;
+      }
+      next = {
+        ...this.connection,
+        status: 'bridge_connecting',
+        connecting: true,
+        connected: false,
+        message: 'Remote Connect 启动命令已达到阶段时限；正在读取 Connector 的真实启动状态。'
+      };
+    }
+
+    while (!this.connectAttemptCancelled(attempt)) {
+      if (next.connected) {
+        if (!this.projectConnectState(attempt, next)) return;
+        await this.reconcileConnectedSession(true);
+        return;
+      }
+
+      if (CONNECT_TERMINAL_STATES.has(next.status)) {
+        this.projectConnectState(attempt, { ...next, connecting: false, connected: false });
+        return;
+      }
+
+      if (CONNECT_WAITING_STATES.has(next.status)) reachedWaitingState = true;
+      const activeDeadline = reachedWaitingState ? deadline : startupDeadline;
+      if (this.timing.now() >= activeDeadline) {
+        await this.adapter.cancelConnect().catch(() => undefined);
+        this.projectConnectState(attempt, {
+          ...next,
+          status: 'timed_out',
+          connecting: false,
+          connected: false,
+          message: reachedWaitingState
+            ? '等待目标 Pack 超时。请确认 Omnia 已登录并打开唯一目标 Pack。'
+            : 'Remote Connect 启动阶段超时；Connector 未返回可继续等待的登录或 Pack 状态。'
+        });
+        return;
+      }
+
+      if (!this.projectConnectState(attempt, { ...next, connecting: true, connected: false })) return;
+      await this.timing.sleep(this.timing.connectPollMs);
+      if (this.connectAttemptCancelled(attempt)) return;
+      try {
+        next = await this.adapter.load();
+      } catch (error) {
+        const unavailable = this.adapter.unavailableSnapshot(
+          error instanceof Error ? error.message : 'Remote Connector 状态读取失败。'
+        );
+        this.projectConnectState(attempt, {
+          ...unavailable,
+          status: unavailable.connectorOnline ? 'error' : 'connector_offline',
+          connecting: false,
+          connected: false
+        });
+        return;
+      }
+    }
   }
 
   async cancelConnect(): Promise<ShellSnapshot> {
     if (!this.connection.connecting) return this.snapshot();
     this.cancelledConnectAttempt = this.connectAttempt;
-    await this.adapter.cancelConnect();
     this.connection = {
       ...this.connection,
       status: 'cancelled',
@@ -511,6 +611,7 @@ export class ShellService {
     };
     this.database.saveConnectionPayload(this.connection);
     this.emitChanged();
+    await this.adapter.cancelConnect().catch(() => undefined);
     return this.snapshot();
   }
 

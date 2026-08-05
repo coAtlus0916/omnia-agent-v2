@@ -14,7 +14,7 @@ Shell 原装平台包含 Core Store、Feature/Documentation Registry、通用 Wo
 | 能力 | Delivery | Control & Data | Integration | 真实状态 |
 |---|---|---|---|---|
 | 首次配对 | 顶部 Connect 引导显示短期链接码/expiry | Core pairing session、safeStorage credential、Remote binding/generation/audit | Bridge 0.4.4 → Remote Connector 0.3.10 消费链接码 | 候选实现；真实公司电脑配对待 canary |
-| 连接 | 顶部 Connect/Cancel 与分阶段状态 | `ShellService` 持久 Remote-only connect state，最长 10 分钟只读 polling | Remote transport → Bridge → Remote Worker → `WorkstationOmniaSession` | 自动化收口中；真实 Omnia canary 待执行 |
+| 连接 | 顶部 Connect/Cancel 与分阶段状态 | `ShellService` 后台持久 Remote-only connect state；启动命令 30 秒有界、启动状态 90 秒有界，只有真实进入登录/Pack/授权/识别阶段后才保留最长 10 分钟只读 polling；Cancel 先收敛 Core 状态再通知远端 | Remote transport → Bridge → Remote Worker → `WorkstationOmniaSession` | 源码已实现有界启动与可靠取消；公司电脑离线，真实 Omnia canary 待执行 |
 | 刷新 | 顶部刷新按钮与错误提示 | `ShellService.refresh` 更新 Core 状态 | Remote Worker 的 Session Core 重新加载页面、识别 Pack，并触发轻抓取 | 失败不覆盖成功 observation；真实 Pack 待 canary |
 | 保活 | 启停、运行/下次/错误状态 | Core DB `keepalive_state` + 后台 5 秒调度扫描 | 到期调用真实只读 refresh | 已实现；重启恢复 |
 | 安全锁 | 大弹窗、搜索、Omnia 真实所在部分折叠、组内全选、右侧完整已选列表、全局所在部分关联锁 | Core 解析 v2 原始 Facet 目录；`workspace_safety` 单事务 CAS 保存显式 Workspace IDs、Group GUID 与冻结成员；成员漂移失败关闭 | Connector 0.3.15 固定 POST `facets/byEngagementIds`；打开/保存重叠读取按完整 authority identity 单飞合并 | 真实端点与 17 Group/193 Workspace 层级已现场只读采样；缺真实 parentId 时明确未归属且不冒充全局授权 |

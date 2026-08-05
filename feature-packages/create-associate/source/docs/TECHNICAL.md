@@ -102,6 +102,12 @@ Entity candidate extraction now distinguishes zero, one and conflicting candidat
 
 Risk-assessment detail can contain multiple `riskScopes` belonging to different entity kinds. Candidate extraction accepts only active scopes whose normalized `riskScopeType`, `entityType`, or `type` equals the expected canonical object type. If a scope carries `inkContentId` or `contentId`, it must also equal the detail/query content identity. Scopes without type are ignored rather than guessed. Top-level `entityId`/`itElementId`/`applicationId` remain candidates; the combined semantic set is deduplicated and must contain the exact planned object or be empty for the existing directory fallback. Application identity passes Application plus the current object ID and detail content; reconcile passes its signed type/content/entity query. Infrastructure covers both DB and OS, and ITTool covers Tool.
 
+## 0.2.37 frozen target mapping audit
+
+The audited target families are object, GRA, APP settings, GRA status, GRA RAIT, Infrastructure/Application relation, inheritance source, SAP ECC Risk Factor, documentation, evaluation and Risk-Control relation. Their target keys, mutation operation identities, evidence operation allowlists, resume checks and normal projections are aligned. Two mismatches were found: inheritance-source lacked a durable done guard, and uncertain Risk-Control reconcile selected the generic GRA object projection.
+
+Inheritance recovery now separates authority from mutation closure. It always reads the source APP GRA and validates the inherited mode, but only calls `closeVerified` and projects when the source target is not already verified. Risk-Control reconcile now uses its frozen preflight risk/control IDs to emit the same managed relation identity as normal execution.
+
 ## 0.2.36 execution-local verified progress
 
 `loadReturnProgress` initializes a target-state map once per confirm/continue action. All four successful closure paths now update that map immediately after recording durable verified evidence: mutation race closure, normal mutation readback, existing-identity readback and read-only authoritative close. The update is deliberately after evidence persistence so memory can never claim completion that Core rejected.

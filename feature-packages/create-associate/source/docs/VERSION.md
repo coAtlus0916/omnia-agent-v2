@@ -1,6 +1,10 @@
-# 0.2.36 / sequence 38
+# 0.2.37 / sequence 39
 
-The Return action's progress map is now monotonic during one execution. After verified mutation readback, race closure, existing-identity readback or authoritative close successfully records durable `readback_verified` evidence, the exact target key is immediately marked verified in memory. Later row/global passes therefore skip relationships or other intents completed earlier in the same action. No target is marked before evidence succeeds, and Core command reservation, binding and no-replay checks are unchanged.
+DB/OS inheritance-source execution now performs its live APP GRA preflight on every continuation to preserve authoritative RAIT derivation, then checks `done(sourceKey)` before any command preparation. A previously verified source intent therefore supplies the live mode without being claimed, read back or projected again. The full target mapping audit also found and corrected one recovery-only projection mismatch: an uncertain Risk-Control command was being projected as a GRA object after successful reconcile; it now projects the exact risk/control IDs as a `risk_control` relation. All other object, GRA, settings, state, element relation, factor, documentation, evaluation and Risk-Control target keys, operation identities, evidence operations, done checks and normal projections are aligned.
+
+# 0.2.36 / sequence 38 history
+
+The Return action's progress map becomes monotonic during one execution. Verified mutation readback, race closure, existing-identity readback and authoritative close update the exact target key only after durable `readback_verified` evidence succeeds.
 
 # 0.2.35 / sequence 37 history
 

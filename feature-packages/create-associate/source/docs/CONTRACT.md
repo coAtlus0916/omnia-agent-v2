@@ -6,7 +6,7 @@ V8 digest 固定为 `1ED937A50253CEDF431CE02A0CC7A3B3E576597BBD6CAA6C967738D7B2D
 
 # Contracts
 
-Version 0.2.36 retains the same canonical validation, identity, authority, safety and receipt contracts. Durable `readback_verified` evidence is the only event that advances an execution-local target to verified. Race closure, mutation readback, existing-object readback and authoritative close all update the local progress map only after that evidence succeeds, preventing duplicate command preparation within the same action without weakening Core reservations.
+Version 0.2.37 retains the same canonical validation, identity, authority, safety and receipt contracts. Every frozen target has one exact execution/recovery mapping. A verified inheritance-source target cannot be prepared again, although its APP GRA remains authoritatively read to derive the dependent mode. Risk-Control reconciliation projects the verified risk/control endpoints as a managed relation. Core reservations and command binding remain unchanged.
 
 Canonical GRA names are `GRA-${elementId}` and participate with element IDs in batch uniqueness checks. DB/OS must reference exactly one in-batch APP in the same normalized Workspace. The InfrastructureApplication relation is written and read from both directions before Infrastructure GRA creation; DB/OS RAIT is then inherited from the exact live APP GRA. Tool has no relationship input in the template, so no Tool relationship is fabricated.
 

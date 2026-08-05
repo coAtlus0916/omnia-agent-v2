@@ -1266,6 +1266,7 @@ function createFeatureWorker(dependencies) {
         await store.call('recordReturnEvidence',{runId,commandId:spec.commandId,evidenceType:'reconcile',commandState:applied?'readback_verified':manualUnresolved?'uncertain':'closed_not_applied',payload:observed,receiptId:observed?.__operationReceiptId||'',verified:applied,error:applied?'':manualUnresolved?'APP identity remains create/skip; the uncertain mutation is not replayed and requires manual reconcile.':'Authoritative reconcile proved the uncertain mutation was not applied.'});
         if(applied){
           if(targetSpec.kind==='relation') await store.call('projectVerifiedReturn',{runId,commandId:spec.commandId,binding,workspaceId:targetSpec.workspace,projectionKind:'relation',relationType:targetSpec.relationType,relationKey:targetSpec.key,sourceObjectId:spec.preflightRequest.query.itElementId,targetObjectId:spec.preflightRequest.query.associatingEntityId,payload:observed});
+          else if(targetSpec.kind==='risk_control') await store.call('projectVerifiedReturn',{runId,commandId:spec.commandId,binding,workspaceId:targetSpec.workspace,projectionKind:'relation',relationType:'risk_control',relationKey:targetSpec.key,sourceObjectId:spec.preflightRequest.query.riskId,targetObjectId:spec.preflightRequest.query.controlId,payload:observed});
           else {
             if(!objectId){ const current=await buildReturnPreparation(checkpoint,input.context); const currentRow=current.rows.find((item)=>item.rowKey===rowPlan.rowKey); objectId=targetSpec.objectType==='GRA'&&targetSpec.kind==='object'?currentRow.graId:targetSpec.objectType==='GRA'?currentRow.graId:currentRow.objectId; }
             await store.call('projectVerifiedReturn',{runId,commandId:spec.commandId,binding,workspaceId:targetSpec.workspace,projectionKind:'object',objectType:targetSpec.objectType,objectId,provenance:{rowKey:rowPlan.rowKey,targetKey:targetSpec.key,reconciled:true},payload:observed});
@@ -1546,8 +1547,11 @@ function createFeatureWorker(dependencies) {
               const sourceBefore=await invoke(RETURN_OPERATIONS.graStatePreflight,binding,{target:sourceTarget,riskAssessmentId:appGraId});
               const liveInheritedMode=normalizeRait(sourceBefore.itElementRaitConclusionLevelId||sourceBefore.itElementRaitConclusionLevelName);
               if(!['Higher','Lower'].includes(liveInheritedMode)||liveInheritedMode!==normalizeRait(appRow.mode)) fail('RETURN.RAIT_INHERITANCE_DRIFT',`${row.kind} ${row.elementId} live APP GRA RAIT differs from the frozen APP plan.`);
-              const sourceResult=await closeVerified(sourceKey,RETURN_OPERATIONS.graStateWrite,RETURN_OPERATIONS.graStateRead,{target:sourceTarget,query:{riskAssessmentId:appGraId,patchKind:'rait',value:liveInheritedMode}},(observed)=>observed.verified===true);
-              await projectGraRevision(sourceResult,appRow,sourceKey,appGraId); mode=liveInheritedMode;
+              if(!done(sourceKey)){
+                const sourceResult=await closeVerified(sourceKey,RETURN_OPERATIONS.graStateWrite,RETURN_OPERATIONS.graStateRead,{target:sourceTarget,query:{riskAssessmentId:appGraId,patchKind:'rait',value:liveInheritedMode}},(observed)=>observed.verified===true);
+                await projectGraRevision(sourceResult,appRow,sourceKey,appGraId);
+              }
+              mode=liveInheritedMode;
               const targetKey=`gra-rait|${row.rowKey}`;
               if(!done(targetKey)){
                 const target={targetIdentityKey:identityKey('gra-state',[row.rowKey,'rait']),workspaceId:row.workspaceId}; const before=await invoke(RETURN_OPERATIONS.graStatePreflight,binding,{target,riskAssessmentId:graId}); const currentValue=before.itElementRaitConclusionLevelId||before.itElementRaitConclusionLevelName;

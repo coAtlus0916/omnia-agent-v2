@@ -8,7 +8,7 @@ type IpcRequest = {
   input: unknown;
 };
 
-type PortName = 'connector.invoke' | 'store.call' | 'events.emit';
+type PortName = 'connector.invoke' | 'store.call' | 'events.emit' | 'ai.review';
 
 let activeInvocationId = '';
 let portSequence = 0;
@@ -60,6 +60,9 @@ const worker = required.createFeatureWorker({
   },
   events: {
     emit: (input: unknown) => portCall('events.emit', input)
+  },
+  ai: {
+    review: (input: unknown) => portCall('ai.review', input)
   }
 });
 

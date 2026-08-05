@@ -23,7 +23,7 @@ import {
   type OfficialPackageEnvelope
 } from './official-package.js';
 import { FeatureRuntimeStore } from './feature-runtime-store.js';
-import { FeatureWorkerSupervisor } from './worker-supervisor.js';
+import { FeatureWorkerSupervisor, type FeatureWorkerPortContext } from './worker-supervisor.js';
 import type { InteractionLogService } from '../services/interaction-log-service.js';
 
 const PRODUCT_VERSION = '0.4.14';
@@ -171,6 +171,7 @@ export interface FeatureRuntimeContext {
 export interface FeatureRuntimeDependencies {
   connector: ConnectorTransport;
   workerHostEntrypoint: string;
+  featureReview?: (input: unknown, context: FeatureWorkerPortContext) => Promise<unknown>;
 }
 
 function utcNow(): string {
@@ -2161,6 +2162,29 @@ export class FeaturePackageManager {
           }
         },
         storeCall: async (method, input, context) => this.runtimeStore.call(method, input, context),
+        featureReview: async (input, context) => {
+          if (!this.runtime?.featureReview) {
+            throw new AppError('FEATURE.AI_REVIEW_UNAVAILABLE', 'Feature AI review port is unavailable.');
+          }
+          if (!input || typeof input !== 'object' || Array.isArray(input)) {
+            throw new AppError('FEATURE.AI_REVIEW_REQUEST_INVALID', 'Feature AI review request must be an object.');
+          }
+          const request = input as Record<string, unknown>;
+          if (context.featureId !== 'omnia.create-associate'
+            || request.schemaVersion !== 'omnia.feature-ai-review-request/v1'
+            || request.capabilityId !== 'factors_considered_quality/v1') {
+            throw new AppError('FEATURE.AI_REVIEW_CAPABILITY_DENIED', 'Feature AI review capability is not allowed.');
+          }
+          const runId = String(request.runId || '');
+          const run = this.database.prepare('SELECT feature_id,feature_version FROM feature_runs WHERE run_id=?').get(runId) as Record<string, unknown> | undefined;
+          if (!run || String(run.feature_id) !== context.featureId || String(run.feature_version) !== context.featureVersion) {
+            throw new AppError('FEATURE.AI_REVIEW_RUN_MISMATCH', 'Feature AI review Run identity differs from the active Worker context.');
+          }
+          if (Buffer.byteLength(JSON.stringify(input), 'utf8') > 1024 * 1024) {
+            throw new AppError('FEATURE.AI_REVIEW_REQUEST_TOO_LARGE', 'Feature AI review request exceeds 1 MiB.');
+          }
+          return this.runtime.featureReview(input, context);
+        },
         emitEvent: async (input, context) => {
           const eventId = this.runtimeStore.emit(input, context);
           this.pendingRuntimeEvents.add(eventId);

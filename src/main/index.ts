@@ -325,7 +325,8 @@ app.whenReady().then(async () => {
   const attachments = new AttachmentService(database, path.join(paths.data, 'artifacts'), interactionLogs);
   featurePackages = new FeaturePackageManager(database.db, paths, undefined, {
     connector,
-    workerHostEntrypoint: path.resolve(__dirname, 'feature-worker-host.cjs')
+    workerHostEntrypoint: path.resolve(__dirname, 'feature-worker-host.cjs'),
+    featureReview: (input, context) => chat.reviewFeatureInput(input, context)
   }, interactionLogs);
   const hotApplicationRoot = resolveHotApplicationRoot();
   installBuiltinFeaturePackages(

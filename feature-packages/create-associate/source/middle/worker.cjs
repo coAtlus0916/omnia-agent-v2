@@ -752,11 +752,11 @@ function validationPresentation(parsed,live={}){
     ['infrastructure_rait','多系统关联的 RAIT 一致',liveState('infrastructure_rait'),checkFailed('infrastructure_rait')?'继承 RAIT 不唯一，或其 APP 来源未通过实时身份、类型、状态、工作区与 RAIT 校验。':liveCheck('infrastructure_rait').reason],
     ['relationship_targets','关联目标可解析且类型正确',liveState('relationship_targets'),checkFailed('relationship_targets')?'存在 0.2.1 不支持的批外 APP、不精确目标，或目标 APP 未通过实时身份校验。':liveCheck('relationship_targets').reason],
     ['workspace_presence','Omnia 工作区已填写',workspaceMissing?'failed':'passed',workspaceMissing?'存在缺失工作区。':'所有非排除行已填写工作区。'],
-    ['factors_considered_ai_review','Factors Considered 智能复核',activeRows(parsed).some((row)=>row.kind==='APP')?'warning':'skipped',activeRows(parsed).some((row)=>row.kind==='APP')?'AI 复核未执行：当前 Provider 不可用或输入不满足评估条件；此项不参与阻断。':'本批无 APP，该项不适用。'],
+    ['factors_considered_ai_review','Factors Considered 智能复核',liveCheck('factors_considered_ai_review').state,liveCheck('factors_considered_ai_review').reason],
     ['workspace_live','Omnia 工作区名称实时有效',liveCheck('workspace_live').state,liveCheck('workspace_live').reason]
   ];
   const pending=checks.filter((item)=>item[2]==='pending').length,failed=checks.filter((item)=>item[2]==='failed').length,completed=checks.length-pending;
-  return {progress:{label:'校验进度',completed,total:checks.length,percent:Math.floor(completed*100/checks.length),state:failed?'failed':checks.some((item)=>item[2]==='warning')||warnings.length?'warning':pending?'pending':'passed',message:`${completed}/${checks.length} 项已执行；error ${errors.length}，warning ${warnings.length+(activeRows(parsed).some((row)=>row.kind==='APP')?1:0)}。`,items:checks.map(([itemId,label,state,detail])=>({itemId,label,state,detail}))},issues:issues.map((issue)=>{const row=parsed.rows.find((candidate)=>String(issue.fieldKey).startsWith(`${candidate.rowKey}.`));return{issueId:issue.issueId,scope:row?(issue.fieldKey.includes('.identity')?'element':'field'):'global',severity:['needs_input','blocking'].includes(issue.state)?'error':'warning',elementId:row?.elementId||'',fieldKey:issue.fieldKey,message:issue.message};})};
+  return {progress:{label:'校验进度',completed,total:checks.length,percent:Math.floor(completed*100/checks.length),state:failed?'failed':checks.some((item)=>item[2]==='warning')||warnings.length?'warning':pending?'pending':'passed',message:`${completed}/${checks.length} 项已执行；error ${errors.length}，warning ${warnings.length}。`,items:checks.map(([itemId,label,state,detail])=>({itemId,label,state,detail}))},issues:issues.map((issue)=>{const row=parsed.rows.find((candidate)=>String(issue.fieldKey).startsWith(`${candidate.rowKey}.`));return{issueId:issue.issueId,scope:row?(issue.fieldKey.includes('.identity')?'element':'field'):'global',severity:['needs_input','blocking'].includes(issue.state)?'error':'warning',elementId:row?.elementId||'',fieldKey:issue.fieldKey,message:issue.message};})};
 }
 function reviewBlocked(parsed,live={}){return validationPresentation(parsed,live).progress.items.some((item)=>item.state==='failed'||item.state==='pending');}
 const REVIEW_MATRIX=Object.freeze({
@@ -846,6 +846,7 @@ function createFeatureWorker(dependencies) {
   if (!dependencies?.store?.call) fail('WORKER.STORE_REQUIRED', 'A typed persistent Store port is required.');
   const store = dependencies.store;
   const connector = dependencies.connector;
+  const ai = dependencies.ai;
   const {createPythonSidecarBridge}=require('./python-bridge.cjs');
   const python=createPythonSidecarBridge({ports:dependencies,maxFrameBytes:1024*1024,requestTimeoutMs:120000,heartbeatIntervalMs:5000,heartbeatTimeoutMs:15000});
   if (!connector?.invoke) fail('WORKER.CONNECTOR_REQUIRED', 'A signed Operation Connector port is required.');
@@ -973,12 +974,111 @@ function createFeatureWorker(dependencies) {
     if (workspaceNames.some((value) => !value) || graContents.some((value) => !value.contentName)) fail('RETURN.AUTHORITY_INPUT_MISSING', 'Workspace or GRA content input is missing.');
     return { connectorBinding: context.connectorBinding, allowedWorkspaceIds: context.safetyLock.workspaceIds, query: { workspaceNames, graContents } };
   }
+  async function runFactorsConsideredAiReview(checkpoint) {
+    const parsed=checkpoint.parsed;
+    parsed.issues=(parsed.issues||[]).filter((candidate)=>candidate.origin!=='ai_review'&&!String(candidate.issueId||'').startsWith('ai-review-'));
+    const apps=activeRows(parsed).filter((row)=>row.kind==='APP');
+    if(!apps.length){
+      checkpoint.aiReview={state:'skipped',reasonCode:'AI.REVIEW_NOT_APPLICABLE',capturedAt:new Date().toISOString()};
+      return{state:'skipped',reason:'本批无 APP，Factors Considered 智能复核不适用。'};
+    }
+    const aiIssue=(code,fieldKey,message)=>{const created=issue('ai_review',code,fieldKey,'ai_suggestion','waived',message,'factors_considered_ai_review');created.issueId=issueId('ai_review',`${parsed.issueNamespace||checkpoint.planId||'legacy'}|${code}`,fieldKey);return created;};
+    const factorCandidate=(row)=>reviewCandidate(parsed,row,'Factors Considered');
+    const missing=apps.filter((row)=>!String(row.fields['Factors Considered']||'').trim());
+    if(missing.length){
+      const reason=`${missing.length} 个 APP 缺少 Factors Considered；确定性必填校验已阻断，AI 不会替用户补写。`;
+      for(const row of missing)parsed.issues.push(aiIssue('AI.REVIEW_INPUT_INCOMPLETE',factorCandidate(row)?.fieldKey||`${row.rowKey}.factors-considered-ai`,reason));
+      checkpoint.aiReview={state:'not_evaluable',reasonCode:'AI.REVIEW_INPUT_INCOMPLETE',capturedAt:new Date().toISOString()};
+      return{state:'warning',reason};
+    }
+    if(!ai?.review){
+      const reason='AI 复核未执行：Shell 未提供受控 ai.review 端口；此项不视为通过。';
+      parsed.issues.push(aiIssue('AI.REVIEW_PORT_UNAVAILABLE','global.ai_review',reason));
+      checkpoint.aiReview={state:'not_evaluable',reasonCode:'AI.REVIEW_PORT_UNAVAILABLE',capturedAt:new Date().toISOString()};
+      return{state:'warning',reason};
+    }
+    const items=apps.map((row)=>({
+      rowKey:String(row.rowKey),elementId:String(row.elementId),applicationType:String(row.fields['APP类型']||''),
+      rait:String(row.fields['System Risk Classification']||''),factorsConsidered:String(row.fields['Factors Considered']||'')
+    }));
+    const instructions=[
+      'Review each APP Factors Considered value only as a non-authoritative quality suggestion.',
+      'Assess clarity, specificity, completeness, and internal consistency with the declared Higher/Lower RAIT. Do not invent business facts, change the field, authorize a mutation, or decide whether Return may proceed.',
+      'Return exactly {"schemaVersion":"omnia.create-associate.factors-review/v1","items":[...]} with one item for every input rowKey and no extras.',
+      'Each item must contain exactly rowKey, assessment, summary, concerns. assessment is clear, needs_attention, or not_evaluable. concerns is an array of at most 5 objects containing exactly code, message, suggestion.'
+    ].join(' ');
+    const exactKeys=(value,expected,label)=>{
+      if(!value||typeof value!=='object'||Array.isArray(value))fail('AI.REVIEW_OUTPUT_INVALID',`${label} must be an object.`);
+      const actual=Object.keys(value).sort(),wanted=[...expected].sort();
+      if(actual.length!==wanted.length||actual.some((key,index)=>key!==wanted[index]))fail('AI.REVIEW_OUTPUT_INVALID',`${label} fields are invalid.`);
+    };
+    const inputDigest=digest(Buffer.from(canonical({capabilityId:'factors_considered_quality/v1',instructions,items})));
+    const cached=checkpoint.aiReview;
+    if(cached?.inputDigest===inputDigest&&cached.reviewId&&['passed','warning'].includes(cached.state)&&Array.isArray(cached.items)
+      &&cached.items.length===items.length&&new Set(cached.items.map((item)=>String(item.rowKey||''))).size===items.length
+      &&cached.items.every((item)=>items.some((inputItem)=>inputItem.rowKey===String(item.rowKey||'')))){
+      for(const reviewed of cached.items){
+        const rowKey=String(reviewed.rowKey),row=apps.find((candidate)=>candidate.rowKey===rowKey),fieldKey=factorCandidate(row)?.fieldKey||`${rowKey}.factors-considered-ai`;
+        for(const concern of Array.isArray(reviewed.concerns)?reviewed.concerns:[]){
+          const code=String(concern?.code||'cached_review'),message=String(concern?.message||'AI review concern'),suggestion=String(concern?.suggestion||'');
+          parsed.issues.push(aiIssue(`AI.SUGGESTION.${code.toLocaleUpperCase('en-US')}`,fieldKey,`${message}${suggestion?` 建议：${suggestion}`:''}`));
+        }
+        if(reviewed.assessment==='not_evaluable'&&(!Array.isArray(reviewed.concerns)||!reviewed.concerns.length))parsed.issues.push(aiIssue('AI.REVIEW_ITEM_NOT_EVALUABLE',fieldKey,String(reviewed.summary||'AI could not evaluate this item.')));
+      }
+      return{state:cached.state,reason:String(cached.reason||`复用真实 AI 复核 ${cached.reviewId}（输入未变化）。`),reviewId:cached.reviewId,usage:cached.usage,capturedAt:cached.capturedAt,reused:true};
+    }
+    try{
+      const result=await ai.review({schemaVersion:'omnia.feature-ai-review-request/v1',capabilityId:'factors_considered_quality/v1',runId:String(checkpoint.runId||checkpoint.planId),instructions,input:{items}});
+      exactKeys(result,['schemaVersion','reviewId','capabilityId','provider','model','capturedAt','usage','output'],'AI review result');
+      if(result.schemaVersion!=='omnia.feature-ai-review-result/v1'||result.capabilityId!=='factors_considered_quality/v1'
+        ||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(String(result.reviewId||''))
+        ||!String(result.provider||'')||String(result.provider).length>80||!String(result.model||'')||String(result.model).length>160
+        ||!Number.isFinite(Date.parse(String(result.capturedAt||''))))fail('AI.REVIEW_RESULT_INVALID','AI review identity or provider metadata is invalid.');
+      exactKeys(result.usage,['inputTokens','outputTokens','totalTokens','cachedTokens','reasoningTokens'],'AI review usage');
+      for(const value of Object.values(result.usage))if(value!==null&&(!Number.isSafeInteger(value)||value<0))fail('AI.REVIEW_USAGE_INVALID','AI review usage values must be non-negative integers or null.');
+      exactKeys(result.output,['schemaVersion','items'],'Factors review output');
+      if(result.output.schemaVersion!=='omnia.create-associate.factors-review/v1'||!Array.isArray(result.output.items)||result.output.items.length!==items.length)fail('AI.REVIEW_COVERAGE_INVALID','AI review output row count differs from the exact APP input.');
+      const inputKeys=new Set(items.map((item)=>item.rowKey)),seen=new Set();let attention=0,notEvaluable=0;
+      for(const reviewed of result.output.items){
+        exactKeys(reviewed,['rowKey','assessment','summary','concerns'],'Factors review item');
+        const rowKey=String(reviewed.rowKey||''),assessment=String(reviewed.assessment||''),summary=String(reviewed.summary||'');
+        if(!inputKeys.has(rowKey)||seen.has(rowKey)||!['clear','needs_attention','not_evaluable'].includes(assessment)||!summary||summary.length>1000
+          ||!Array.isArray(reviewed.concerns)||reviewed.concerns.length>5)fail('AI.REVIEW_COVERAGE_INVALID','AI review output has invalid or duplicate row coverage.');
+        seen.add(rowKey);
+        if(assessment==='needs_attention'&&!reviewed.concerns.length)fail('AI.REVIEW_OUTPUT_INVALID','AI needs_attention result must include at least one concern.');
+        const row=apps.find((candidate)=>candidate.rowKey===rowKey),fieldKey=factorCandidate(row)?.fieldKey||`${rowKey}.factors-considered-ai`;
+        for(const concern of reviewed.concerns){
+          exactKeys(concern,['code','message','suggestion'],'Factors review concern');
+          const code=String(concern.code||''),message=String(concern.message||''),suggestion=String(concern.suggestion||'');
+          if(!/^[a-z0-9][a-z0-9._-]{1,63}$/u.test(code)||!message||message.length>1000||suggestion.length>1000)fail('AI.REVIEW_OUTPUT_INVALID','AI review concern fields are invalid.');
+          parsed.issues.push(aiIssue(`AI.SUGGESTION.${code.toLocaleUpperCase('en-US')}`,fieldKey,`${message}${suggestion?` 建议：${suggestion}`:''}`));
+        }
+        if(assessment==='needs_attention')attention+=1;
+        if(assessment==='not_evaluable')notEvaluable+=1;
+        if(assessment==='not_evaluable'&&!reviewed.concerns.length)parsed.issues.push(aiIssue('AI.REVIEW_ITEM_NOT_EVALUABLE',fieldKey,summary));
+      }
+      if(seen.size!==inputKeys.size)fail('AI.REVIEW_COVERAGE_INVALID','AI review output omitted an APP row.');
+      const usageText=`usage input=${result.usage.inputTokens??'unknown'}, output=${result.usage.outputTokens??'unknown'}, total=${result.usage.totalTokens??'unknown'}`;
+      const reason=attention||notEvaluable
+        ?`真实 AI 复核 ${result.reviewId} 已完成（${result.model}，${result.capturedAt}，${usageText}）；${attention} 个 APP 有质量建议，${notEvaluable} 个 APP 无法评估。建议不授权写入且不自动改字段。`
+        :`真实 AI 复核 ${result.reviewId} 已完成（${result.model}，${result.capturedAt}，${usageText}）；全部 ${items.length} 个 APP 无质量关注。该结论不授权写入。`;
+      checkpoint.aiReview={state:attention||notEvaluable?'warning':'passed',inputDigest,reviewId:result.reviewId,capabilityId:result.capabilityId,provider:result.provider,model:result.model,capturedAt:result.capturedAt,usage:result.usage,items:result.output.items,reason};
+      return{state:attention||notEvaluable?'warning':'passed',reason,reviewId:result.reviewId,usage:result.usage,capturedAt:result.capturedAt};
+    }catch(error){
+      const code=String(error?.code||'AI.REVIEW_FAILED'),message=String(error?.message||error).slice(0,500),reason=`AI 复核未完成（${code}）：${message}；此项不视为通过，且不自动改字段。`;
+      parsed.issues.push(aiIssue(code,'global.ai_review',reason));
+      checkpoint.aiReview={state:'not_evaluable',inputDigest,reasonCode:code,message,capturedAt:new Date().toISOString()};
+      return{state:'warning',reason};
+    }
+  }
   async function runReviewLiveValidation(checkpoint,context){
     checkpoint.parsed.issues=(checkpoint.parsed.issues||[]).filter((candidate)=>candidate.origin!=='live_validation'&&!String(candidate.issueId||'').startsWith('live-'));
+    const aiReview=await runFactorsConsideredAiReview(checkpoint);
+    const withAiReview=(checks)=>({...checks,factors_considered_ai_review:aiReview});
     const liveIssue=(code,fieldKey,issueType,state,message,checkId)=>{const created=issue('live_validation',code,fieldKey,issueType,state,message,checkId);created.issueId=issueId('live_validation',`${checkpoint.parsed.issueNamespace||checkpoint.planId||'legacy'}|${code}`,fieldKey);return created;};
     const failedLiveChecks=(reason)=>({omnia_id_conflicts:{state:'failed',reason},relationship_targets:{state:'failed',reason},infrastructure_rait:{state:'failed',reason},workspace_live:{state:'failed',reason}});
-    const binding=context?.connectorBinding,safety=context?.safetyLock;if(!binding?.connectorId||Number(binding.sessionGeneration)<1||!binding.engagementId){const reason='当前没有可用的 Remote Connector binding，无法执行 APP 身份/回收站、非 APP 活动对象、关系目标类型与工作区实时检查；连接后可在原 Run 重试。';checkpoint.parsed.issues.push(liveIssue('LIVE.WORKSPACE_UNAVAILABLE','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return failedLiveChecks(reason);}if(!Array.isArray(safety?.workspaceIds)||!safety.workspaceIds.length){const reason='当前 Pack Workspace 安全范围为空，无法执行 APP 身份/回收站、非 APP 活动对象、关系目标类型与工作区实时检查；请启用安全范围后在原 Run 重新校验。';checkpoint.parsed.issues.push(liveIssue('LIVE.SAFETY_SCOPE_UNAVAILABLE','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return failedLiveChecks(reason);}
-    try{const query=authorityRequest(checkpoint,context).query;const authority=await invoke(RETURN_OPERATIONS.authority,binding,{allowedWorkspaceIds:safety.workspaceIds,query});const byName=new Map((authority.workspaces||[]).map((item)=>[String(item.name).normalize('NFKC'),item.workspaceId]));const missing=query.workspaceNames.filter((name)=>!byName.has(String(name).normalize('NFKC')));if(missing.length){const reason=`Omnia 工作区实时不存在或不在安全范围：${missing.join(', ')}；因此 APP 身份/回收站、非 APP 活动对象与关系目标类型检查未执行。`;checkpoint.parsed.issues.push(liveIssue('LIVE.WORKSPACE_NOT_FOUND','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return failedLiveChecks(reason);}
+    const binding=context?.connectorBinding,safety=context?.safetyLock;if(!binding?.connectorId||Number(binding.sessionGeneration)<1||!binding.engagementId){const reason='当前没有可用的 Remote Connector binding，无法执行 APP 身份/回收站、非 APP 活动对象、关系目标类型与工作区实时检查；连接后可在原 Run 重试。';checkpoint.parsed.issues.push(liveIssue('LIVE.WORKSPACE_UNAVAILABLE','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return withAiReview(failedLiveChecks(reason));}if(!Array.isArray(safety?.workspaceIds)||!safety.workspaceIds.length){const reason='当前 Pack Workspace 安全范围为空，无法执行 APP 身份/回收站、非 APP 活动对象、关系目标类型与工作区实时检查；请启用安全范围后在原 Run 重新校验。';checkpoint.parsed.issues.push(liveIssue('LIVE.SAFETY_SCOPE_UNAVAILABLE','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return withAiReview(failedLiveChecks(reason));}
+    try{const query=authorityRequest(checkpoint,context).query;const authority=await invoke(RETURN_OPERATIONS.authority,binding,{allowedWorkspaceIds:safety.workspaceIds,query});const byName=new Map((authority.workspaces||[]).map((item)=>[String(item.name).normalize('NFKC'),item.workspaceId]));const missing=query.workspaceNames.filter((name)=>!byName.has(String(name).normalize('NFKC')));if(missing.length){const reason=`Omnia 工作区实时不存在或不在安全范围：${missing.join(', ')}；因此 APP 身份/回收站、非 APP 活动对象与关系目标类型检查未执行。`;checkpoint.parsed.issues.push(liveIssue('LIVE.WORKSPACE_NOT_FOUND','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return withAiReview(failedLiveChecks(reason));}
       checkpoint.liveIdentityResolutions={};
       let ownedRecoveries=0,creatable=0,nameConflicts=0,identityBlocks=0;
       for(const row of activeRows(checkpoint.parsed)){
@@ -1026,8 +1126,8 @@ function createFeatureWorker(dependencies) {
       const raitFailed=checkpoint.parsed.issues.some((candidate)=>candidate.state==='blocking'&&candidate.checkId==='infrastructure_rait');
       const conflictsFailed=identityBlocks>0;
       const conflictReason=`APP/DB/OS/Tool 活动、回收站与歧义身份解析已执行；发现 ${ownedRecoveries} 个具有严格 Agent-managed 归属证明的恢复对象、${creatable} 个可进入创建预检的新对象${nameConflicts?`，${nameConflicts} 个未授权活动同名冲突`:''}${identityBlocks-nameConflicts>0?`，${identityBlocks-nameConflicts} 个身份被拒绝或解析失败`:''}。`;
-      return{omnia_id_conflicts:{state:conflictsFailed?'failed':'passed',reason:conflictReason},relationship_targets:{state:targetFailed?'failed':'passed',reason:targetFailed?`存在 0.2.1 不支持的批外 APP、不精确目标或 ${liveTargetFailures} 个未通过实时身份校验的 APP 目标。`:'所有 DB/OS 目标均可解析为批内唯一、同工作区且类型正确的 APP；批内新建 APP 使用计划身份，不声明远端已存在。'},infrastructure_rait:{state:raitFailed?'failed':'passed',reason:raitFailed?'存在继承 RAIT 不唯一，或 APP 来源未通过实时身份、类型、状态、工作区与 RAIT 校验。':'所有 DB/OS RAIT 来源均绑定到已通过实时校验的 APP；批内新建 APP 使用已校验的计划 RAIT。'},workspace_live:{state:'passed',reason:`${query.workspaceNames.length} 个工作区已按当前 Pack 权威目录精确匹配。`}};
-    }catch(error){const reason=`实时校验失败（APP 身份/回收站、非 APP 活动对象、关系目标类型或工作区检查未闭合；可在原 Run 重试）：${String(error.message||error)}`;checkpoint.parsed.issues.push(liveIssue('LIVE.VALIDATION_FAILED','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return failedLiveChecks(reason);}
+      return withAiReview({omnia_id_conflicts:{state:conflictsFailed?'failed':'passed',reason:conflictReason},relationship_targets:{state:targetFailed?'failed':'passed',reason:targetFailed?`存在 0.2.1 不支持的批外 APP、不精确目标或 ${liveTargetFailures} 个未通过实时身份校验的 APP 目标。`:'所有 DB/OS 目标均可解析为批内唯一、同工作区且类型正确的 APP；批内新建 APP 使用计划身份，不声明远端已存在。'},infrastructure_rait:{state:raitFailed?'failed':'passed',reason:raitFailed?'存在继承 RAIT 不唯一，或 APP 来源未通过实时身份、类型、状态、工作区与 RAIT 校验。':'所有 DB/OS RAIT 来源均绑定到已通过实时校验的 APP；批内新建 APP 使用已校验的计划 RAIT。'},workspace_live:{state:'passed',reason:`${query.workspaceNames.length} 个工作区已按当前 Pack 权威目录精确匹配。`}});
+    }catch(error){const reason=`实时校验失败（APP 身份/回收站、非 APP 活动对象、关系目标类型或工作区检查未闭合；可在原 Run 重试）：${String(error.message||error)}`;checkpoint.parsed.issues.push(liveIssue('LIVE.VALIDATION_FAILED','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return withAiReview(failedLiveChecks(reason));}
   }
   async function buildReturnPreparation(checkpoint, context) {
     if(reviewBlocked(checkpoint.parsed,checkpoint.liveValidation||{})) fail('RETURN.REVIEW_BLOCKED','Canonical Review contains a failed or pending check; prepare-return is forbidden.');

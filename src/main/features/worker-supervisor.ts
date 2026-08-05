@@ -16,6 +16,7 @@ export interface FeatureWorkerPorts {
   connectorInvoke(input: unknown, context: FeatureWorkerPortContext): Promise<unknown>;
   storeCall(method: string, input: unknown, context: FeatureWorkerPortContext): Promise<unknown>;
   emitEvent(input: unknown, context: FeatureWorkerPortContext): Promise<unknown>;
+  featureReview?(input: unknown, context: FeatureWorkerPortContext): Promise<unknown>;
   recoverInterruption?(input: FeatureWorkerInterruption, context: FeatureWorkerPortContext): Promise<FeatureWorkerInterruptionResult>;
 }
 
@@ -188,6 +189,10 @@ export class FeatureWorkerSupervisor {
         if (message.port === 'connector.invoke') value = await this.ports.connectorInvoke(message.payload, context);
         else if (message.port === 'store.call') value = await this.ports.storeCall(String(message.payload?.method || ''), message.payload?.input, context);
         else if (message.port === 'events.emit') value = await this.ports.emitEvent(message.payload, context);
+        else if (message.port === 'ai.review') {
+          if (!this.ports.featureReview) throw new AppError('FEATURE.AI_REVIEW_UNAVAILABLE', 'Feature AI review port is unavailable.');
+          value = await this.ports.featureReview(message.payload, context);
+        }
         else throw new AppError('FEATURE.PORT_DENIED', 'Feature 请求了未注册的端口。');
         this.child?.send({ schemaVersion: 'omnia.feature-worker-ipc/v1', type: 'port_result', id: message.id, ok: true, value });
       } catch (error) {

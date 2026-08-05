@@ -102,6 +102,12 @@ Entity candidate extraction now distinguishes zero, one and conflicting candidat
 
 Risk-assessment detail can contain multiple `riskScopes` belonging to different entity kinds. Candidate extraction accepts only active scopes whose normalized `riskScopeType`, `entityType`, or `type` equals the expected canonical object type. If a scope carries `inkContentId` or `contentId`, it must also equal the detail/query content identity. Scopes without type are ignored rather than guessed. Top-level `entityId`/`itElementId`/`applicationId` remain candidates; the combined semantic set is deduplicated and must contain the exact planned object or be empty for the existing directory fallback. Application identity passes Application plus the current object ID and detail content; reconcile passes its signed type/content/entity query. Infrastructure covers both DB and OS, and ITTool covers Tool.
 
+## 0.2.32 v4 Return dependency phases
+
+Execution is split into dependency phases rather than completing every row independently. Phase one preserves object, GRA, element relationship, EvaluationStarted and RAIT work. Phase two applies and reads back SAP ECC Risk Factors and documentation. Phase three submits every unfinished evaluation and polls its frozen signed read for up to 120 seconds until EvaluationComplete. Phase four waits for generated Risk/Control catalog completeness and performs exact frozen/post-evaluation identity association and readback.
+
+Preparation never requires a generated Risk/Control catalog from a GRA whose evaluation is incomplete. Such targets freeze governed semantic identities under `post_evaluation_catalog`; after EvaluationComplete they resolve against the authoritative generated catalog. Resumption skips verified target receipts. Evaluation timeout retains a serialized read-only reconcile specification and does not replay the committed submit.
+
 ## 0.2.31 partial list evidence and authoritative detail
 
 The object kind is frozen by the signed endpoint mapping (`Application`, `Infrastructure`, or `ITTool`). Search rows may omit type, Workspace, and subtype; absence is recorded in bounded field-presence evidence and is deferred to detail. Explicit supported fields are normalized and any disagreement with the frozen query marks the GUID conflicting. Infrastructure subtype evidence follows the v4 field order vocabulary across `typeId`, `itElementTypeId`, `subtype`, `infrastructureType`, `databaseType`, and `category`, normalized to Database or OperatingSystem.

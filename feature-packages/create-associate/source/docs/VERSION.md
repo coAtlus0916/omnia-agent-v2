@@ -1,6 +1,10 @@
-# 0.2.31 / sequence 33
+# 0.2.32 / sequence 34
 
-Generic Infrastructure and IT Tool list rows are partial endpoint-scoped projections. A row with an exact identifier and canonical GUID is no longer rejected merely because it omits object type, Workspace, or subtype fields. Explicit list evidence still must agree with the frozen target. Infrastructure subtype evidence now recognizes the v4 fields `typeId`, `itElementTypeId`, `subtype`, `infrastructureType`, `databaseType`, and `category` and normalizes DB/OS families. The unique candidate must then pass exact detail GUID, name/number, type/subtype and authoritative Work Item-to-frozen-Workspace proof. Compact field-presence and explicit-conflict evidence is returned for live diagnosis.
+Return execution now follows the verified v4 dependency order: object/GRA/element association and EvaluationStarted/RAIT; SAP ECC Risk Factor writes/readbacks and documentation; Evaluation submit followed by bounded signed polling to EvaluationComplete for every GRA; generated Risk/Control catalog settlement; then each Risk/Control association and readback. Review defers Risk/Control identity resolution whenever an existing GRA has not reached EvaluationComplete. The polling window is 120 one-second reads, matching v4's 120-second bound. Pending states do not become uncertain on their first read; timeout fails closed while retaining the committed command's read-only reconcile specification. Existing verified target receipts are skipped during continuation.
+
+# 0.2.31 / sequence 33 history
+
+Generic Infrastructure and IT Tool list rows are partial endpoint-scoped projections. A row with an exact identifier and canonical GUID is no longer rejected merely because it omits object type, Workspace, or subtype fields. Explicit list evidence still must agree with the frozen target. Infrastructure subtype evidence recognizes the v4 fields `typeId`, `itElementTypeId`, `subtype`, `infrastructureType`, `databaseType`, and `category` and normalizes DB/OS families. The unique candidate must then pass exact detail GUID, name/number, type/subtype and authoritative Work Item-to-frozen-Workspace proof.
 
 # 0.2.30 / sequence 32 history
 

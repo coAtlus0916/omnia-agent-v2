@@ -860,6 +860,17 @@ function createFeatureWorker(dependencies) {
     }
     fail('RETURN.RISK_CONTROL_CATALOG_SETTLING_TIMEOUT', `Generated Risk/Control catalog remained incomplete after 4 bounded reads: ${missing.map((item) => item.relationId).join(', ')}.`);
   }
+  async function waitForEvaluationComplete(connectorBinding, request) {
+    let observed = null;
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      observed = await invoke(RETURN_OPERATIONS.evaluationRead, connectorBinding, request);
+      if (observed?.verified === true && observed.status === 'EvaluationComplete') return observed;
+      const status = String(observed?.status || 'unknown');
+      if (/failed|cancelled|canceled|deleted/iu.test(status)) fail('RETURN.EVALUATION_TERMINAL_FAILURE', `GRA evaluation entered terminal status ${status}.`);
+      if (attempt < 119) await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    fail('RETURN.EVALUATION_SETTLING_TIMEOUT', `GRA evaluation did not reach EvaluationComplete after 120 bounded reads; last status=${String(observed?.status || 'unknown')}.`);
+  }
   function authorityRequest(checkpoint, context) {
     const workspaceNames = [...new Set(activeRows(checkpoint.parsed).map((row) => rowField(row, governance, `P1.${row.kind}.IT.WORKSPACE`)))];
     const graContents = [...new Map(activeRows(checkpoint.parsed).map((row) => {
@@ -1073,6 +1084,7 @@ function createFeatureWorker(dependencies) {
         const desiredRait=rowTargets.find((item)=>String(item.key).startsWith('gra-rait|'))?.value;
         if(!desiredStatus||!desiredRait) fail('RETURN.GRA_STATE_INTENT_MISSING',`GRA ${row.graId} has no complete frozen status/RAIT target.`);
         const graStateReady=String(state.status)===String(desiredStatus)&&normalizeRait(state.itElementRaitConclusionLevelId||state.itElementRaitConclusionLevelName)===normalizeRait(desiredRait);
+        const evaluationComplete=String(state.status)==='EvaluationComplete';
         const deferred=rowTargets.filter((item)=>item.kind==='risk_control'||String(item.key).startsWith('risk-factor|')||item.kind==='documentation'||item.kind==='evaluation');
         if(!graStateReady){
           for(const intent of deferred){
@@ -1084,7 +1096,14 @@ function createFeatureWorker(dependencies) {
           }
         }else{
           const riskIntents=rowTargets.filter((item)=>item.kind==='risk_control');
-          if(riskIntents.length){
+          if(riskIntents.length&&!evaluationComplete){
+            for(const intent of riskIntents){
+              const desired={relationId:intent.relationId,riskName:intent.riskName,controlName:intent.controlName,classification:intent.classification};
+              if(Object.values(desired).some((value)=>value===undefined||value===null||value==='')) fail('RETURN.DEFERRED_INTENT_INVALID',`Deferred Risk-Control target ${intent.key} is incomplete.`);
+              intent.resolutionMode='post_evaluation_catalog';
+              rowPreview.changes.push({targetKey:intent.key,disposition:'post-evaluation-resolution',current:'Evaluation is not complete',desired,operationId:intent.mutationOperationId,evidenceOperationIds:intent.evidenceOperationIds});
+            }
+          }else if(riskIntents.length){
             const catalog=await invoke(RETURN_OPERATIONS.riskCatalog,context.connectorBinding,{target:{targetIdentityKey:identityKey('risk-catalog',[row.rowKey]),workspaceId:row.workspaceId},riskAssessmentId:row.graId});
             for(const intent of riskIntents){
               const risks=catalogRiskMatches(catalog,intent,intent.classification);
@@ -1228,7 +1247,11 @@ function createFeatureWorker(dependencies) {
         } else {
           if(!spec.readRequest) fail('RETURN.RECONCILE_READ_MISSING','Reconcile has no serialized exact read request.');
           await store.call('freezeReturnEvidenceSpec',{runId,commandId:spec.commandId,operationId:spec.readOperation,request:{connectorBinding:binding,...spec.readRequest}});
-          observed=await invoke(spec.readOperation,binding,{...spec.readRequest,receiptContext:{runId,commandId:spec.commandId}}); applied=observed?.verified===true;
+          const readRequest={...spec.readRequest,receiptContext:{runId,commandId:spec.commandId}};
+          observed=spec.waitForEvaluationComplete
+            ?await waitForEvaluationComplete(binding,readRequest)
+            :await invoke(spec.readOperation,binding,readRequest);
+          applied=observed?.verified===true;
         }
         await store.call('recordReturnEvidence',{runId,commandId:spec.commandId,evidenceType:'reconcile',commandState:applied?'readback_verified':manualUnresolved?'uncertain':'closed_not_applied',payload:observed,receiptId:observed?.__operationReceiptId||'',verified:applied,error:applied?'':manualUnresolved?'APP identity remains create/skip; the uncertain mutation is not replayed and requires manual reconcile.':'Authoritative reconcile proved the uncertain mutation was not applied.'});
         if(applied){
@@ -1298,6 +1321,7 @@ function createFeatureWorker(dependencies) {
             reconcileOperation: spec.reconcileOperation||spec.preflightOperation,
             reconcileRequest: spec.reconcileRequest||spec.preflightRequest,
             readOperation: spec.readOperation, readRequest: typeof spec.readRequest === 'function' ? null : spec.readRequest,
+            waitForEvaluationComplete:spec.waitForEvaluationComplete===true,
             mutationOperation: spec.mutationOperation, commandKind: spec.commandKind, mutationPayload:spec.mutationPayload };
           await store.call('saveReturnReconcileSpec', { runId, commandId: command.commandId, spec: durableReconcileSpec });
           await evidence(command.commandId, 'request', 'submitted', { operationId: spec.mutationOperation, request: spec.mutationPayload });
@@ -1319,7 +1343,10 @@ function createFeatureWorker(dependencies) {
           const query = typeof spec.readRequest === 'function' ? spec.readRequest(response) : spec.readRequest;
           try {
             await freezeRead(command.commandId,spec.readOperation,query);
-            const observed = await invoke(spec.readOperation, binding, { ...query, receiptContext: { runId, commandId: command.commandId } });
+            const readRequest = { ...query, receiptContext: { runId, commandId: command.commandId } };
+            const observed = spec.waitForEvaluationComplete
+              ? await waitForEvaluationComplete(binding, readRequest)
+              : await invoke(spec.readOperation, binding, readRequest);
             if (!spec.verify(observed, response)) fail('RETURN.READBACK_MISMATCH', `Verified read-back failed for ${spec.targetKey}.`);
             const readEvidence = await evidence(command.commandId, 'readback', 'readback_verified', observed, true);
             return { command, response, observed, readEvidence };
@@ -1366,6 +1393,7 @@ function createFeatureWorker(dependencies) {
         }
         try {
           const ordered = [...current.rows].sort((a, b) => (a.kind === 'APP' ? 0 : 1) - (b.kind === 'APP' ? 0 : 1));
+          const executionModes = new Map();
           for (const row of ordered) {
             let objectId = row.objectId;
             let objectResult;
@@ -1511,36 +1539,14 @@ function createFeatureWorker(dependencies) {
                 await projectGraRevision(stateResult,row,targetKey,graId);
               }
             }
-            const contentName = row.content.contentName; const selected = governance.relations.filter((relation) => relationApplicable(relation, row, contentName, mode));
-            const requiredRelations=selected.filter((item)=>linkRequired(item,mode));
-            const catalogRequest={target:{targetIdentityKey:identityKey('risk-catalog',[row.rowKey]),workspaceId:row.workspaceId},riskAssessmentId:graId};
-            let catalog = requiredRelations.length ? await waitForCompleteRiskControlCatalog(binding,catalogRequest,requiredRelations,mode) : { risks: [], controls: [] };
-            for (let relationIndex=0;relationIndex<requiredRelations.length;relationIndex+=1) {
-              const relation=requiredRelations[relationIndex];
-              if(relationIndex>0) catalog=await invoke(RETURN_OPERATIONS.riskCatalog,binding,catalogRequest);
-              const risks = catalogRiskMatches(catalog,relation,relation[`classification${mode}`]);
-              const controls = catalogControlMatches(catalog,relation);
-              if (risks.length !== 1 || controls.length !== 1) fail('RETURN.RISK_CONTROL_CATALOG_DRIFT', `Risk/Control catalog identity is absent or ambiguous: ${relation.relationId}.`);
-              const risk = risks[0]; const control = controls[0]; const targetKey = `risk-control|${row.rowKey}|${relation.relationId}`;
-              if (done(targetKey)) continue;
-              const frozenCatalog=targetByKey.get(targetKey).resolvedCatalog;
-              if(frozenCatalog&&(frozenCatalog.riskId!==risk.riskId||frozenCatalog.riskRiskScopeId!==risk.riskRiskScopeId||frozenCatalog.controlId!==control.controlId||frozenCatalog.assertion!==risk.assertion)) fail('RETURN.RISK_CONTROL_CATALOG_IDENTITY_DRIFT',`Risk/Control live identity changed after confirmation: ${relation.relationId}.`);
-              const target = { targetIdentityKey: identityKey('risk-control', [row.rowKey, relation.relationId]), workspaceId: row.workspaceId };
-              const riskQuery = { riskRiskScopeId: risk.riskRiskScopeId, riskId: risk.riskId, controlId: control.controlId, assertion: risk.assertion };
-              const existingRisk = await invoke(RETURN_OPERATIONS.riskRead, binding, { target, query: riskQuery });
-              if(existingRisk.verified===true&&!frozenCatalog&&targetByKey.get(targetKey).resolutionMode!=='post_state_catalog') fail('RETURN.POST_CREATE_RISK_ALREADY_ASSOCIATED',`Post-create Risk-Control ${relation.relationId} became associated before its frozen mutation; a new review is required.`);
-              const result = existingRisk.verified === true ? await closeVerified(targetKey,RETURN_OPERATIONS.riskWrite,RETURN_OPERATIONS.riskRead,{target,query:riskQuery},(observed)=>observed.verified===true) : await verifiedMutation({ targetKey, target, preflightOperation: RETURN_OPERATIONS.riskPreflight,
-                preflightRequest: { target, query: { riskId: risk.riskId, riskClassification: risk.classification, controlId: control.controlId } },
-                mutationOperation: RETURN_OPERATIONS.riskWrite, commandKind: 'associate_risk_control', mutationPayload: {
-                  engagementId:binding.engagementId,workspaceId:row.workspaceId,riskAssessmentId:graId,riskName:relation.riskName,
-                  controlName:relation.controlName,riskClassification:relation[`classification${mode}`],riskId:risk.riskId,updatedOn:risk.updatedOn,
-                  isPurgeControlHiddenData: false, controlRiskScopes: [{ controlId: control.controlId, riskScopeId: risk.riskRiskScopeId,
-                    assertionType: risk.assertion, riskId: risk.riskId, assertions: [{ assertion: risk.assertion }] }]
-                }, acceptPreflight: (preflight) => preflight.requiresPurge === false,
-                raceReadOperation:RETURN_OPERATIONS.riskRead,raceReadRequest:{target,query:riskQuery},raceAlreadyApplied:(observed)=>observed.verified===true,
-                readOperation: RETURN_OPERATIONS.riskRead, readRequest: { target, query: riskQuery }, verify: (observed) => observed.verified === true });
-              await store.call('projectVerifiedReturn',{runId,commandId:result.command.commandId,binding,workspaceId:row.workspaceId,projectionKind:'relation',relationType:'risk_control',relationKey:targetKey,sourceObjectId:risk.riskId,targetObjectId:control.controlId,payload:{...result.observed,riskRiskScopeId:risk.riskRiskScopeId,assertion:risk.assertion,graId}});
-            }
+            executionModes.set(row.rowKey, mode);
+          }
+          // v4 phase order: complete SAP ECC Risk Factors and documentation before
+          // submitting any evaluation. Verified receipts remain authoritative on resume.
+          for (const row of ordered) {
+            const mode=executionModes.get(row.rowKey)||row.mode;
+            const graId=graIds.get(runtimeKey(row.kind,row.elementId,row.workspaceId));
+            const contentName=row.content.contentName;
             if (row.kind === 'APP' && String(contentName).toLocaleLowerCase('en-US').includes('sap ecc')) {
               for (const item of governance.scoringItems) {
                 const targetKey = `risk-factor|${row.rowKey}|${item.itemId}`;
@@ -1584,6 +1590,12 @@ function createFeatureWorker(dependencies) {
                 await projectGraRevision(docResult, row, docKey, graId);
               }
             }
+          }
+          // Submission is not complete until the signed read operation observes
+          // EvaluationComplete. Pending/content generation states are polled within
+          // the bounded v4 window and do not become uncertain on the first read.
+          for (const row of ordered) {
+            const graId=graIds.get(runtimeKey(row.kind,row.elementId,row.workspaceId));
             const evaluationKey = `evaluation|${row.rowKey}`; const evaluationTarget = { targetIdentityKey: identityKey('evaluation', [row.rowKey]), workspaceId: row.workspaceId };
             if (done(evaluationKey)) continue;
             const currentEvaluation = await invoke(RETURN_OPERATIONS.evaluationPreflight, binding, { target: evaluationTarget, riskAssessmentId: graId });
@@ -1592,8 +1604,50 @@ function createFeatureWorker(dependencies) {
               : await verifiedMutation({ targetKey: evaluationKey, target: evaluationTarget, preflightOperation: RETURN_OPERATIONS.evaluationPreflight,
               preflightRequest: { target: evaluationTarget, riskAssessmentId: graId }, mutationOperation: RETURN_OPERATIONS.evaluationWrite, commandKind: 'submit_evaluation',
               mutationPayload: { engagementId: binding.engagementId, workspaceId: row.workspaceId, riskAssessmentId: graId },
-              readOperation: RETURN_OPERATIONS.evaluationRead, readRequest: { target: evaluationTarget, riskAssessmentId: graId }, verify: (observed) => observed.verified === true });
+              readOperation: RETURN_OPERATIONS.evaluationRead, readRequest: { target: evaluationTarget, riskAssessmentId: graId },
+              waitForEvaluationComplete:true, verify: (observed) => observed.verified === true });
             await projectGraRevision(evaluationResult, row, evaluationKey, graId);
+          }
+          // Generated Risk/Control identities are read only after every GRA has an
+          // authoritative EvaluationComplete receipt. Frozen identities remain exact;
+          // post-evaluation targets resolve against the newly generated catalog.
+          for (const row of ordered) {
+            const mode=executionModes.get(row.rowKey)||row.mode;
+            const graId=graIds.get(runtimeKey(row.kind,row.elementId,row.workspaceId));
+            const contentName=row.content.contentName;
+            const selected=governance.relations.filter((relation)=>relationApplicable(relation,row,contentName,mode));
+            const requiredRelations=selected.filter((item)=>linkRequired(item,mode));
+            const pendingRelations=requiredRelations.filter((relation)=>!done(`risk-control|${row.rowKey}|${relation.relationId}`));
+            if(!pendingRelations.length) continue;
+            const catalogRequest={target:{targetIdentityKey:identityKey('risk-catalog',[row.rowKey]),workspaceId:row.workspaceId},riskAssessmentId:graId};
+            let catalog=await waitForCompleteRiskControlCatalog(binding,catalogRequest,requiredRelations,mode);
+            for(let relationIndex=0;relationIndex<pendingRelations.length;relationIndex+=1){
+              const relation=pendingRelations[relationIndex];
+              if(relationIndex>0) catalog=await invoke(RETURN_OPERATIONS.riskCatalog,binding,catalogRequest);
+              const risks=catalogRiskMatches(catalog,relation,relation[`classification${mode}`]);
+              const controls=catalogControlMatches(catalog,relation);
+              if(risks.length!==1||controls.length!==1) fail('RETURN.RISK_CONTROL_CATALOG_DRIFT',`Risk/Control catalog identity is absent or ambiguous: ${relation.relationId}.`);
+              const risk=risks[0];const control=controls[0];const targetKey=`risk-control|${row.rowKey}|${relation.relationId}`;
+              const targetSpec=targetByKey.get(targetKey);const frozenCatalog=targetSpec.resolvedCatalog;
+              if(frozenCatalog&&(frozenCatalog.riskId!==risk.riskId||frozenCatalog.riskRiskScopeId!==risk.riskRiskScopeId||frozenCatalog.controlId!==control.controlId||frozenCatalog.assertion!==risk.assertion)) fail('RETURN.RISK_CONTROL_CATALOG_IDENTITY_DRIFT',`Risk/Control live identity changed after confirmation: ${relation.relationId}.`);
+              const target={targetIdentityKey:identityKey('risk-control',[row.rowKey,relation.relationId]),workspaceId:row.workspaceId};
+              const riskQuery={riskRiskScopeId:risk.riskRiskScopeId,riskId:risk.riskId,controlId:control.controlId,assertion:risk.assertion};
+              const existingRisk=await invoke(RETURN_OPERATIONS.riskRead,binding,{target,query:riskQuery});
+              if(existingRisk.verified===true&&!frozenCatalog&&!['post_state_catalog','post_evaluation_catalog'].includes(targetSpec.resolutionMode)) fail('RETURN.POST_CREATE_RISK_ALREADY_ASSOCIATED',`Post-create Risk-Control ${relation.relationId} became associated before its frozen mutation; a new review is required.`);
+              const result=existingRisk.verified===true
+                ?await closeVerified(targetKey,RETURN_OPERATIONS.riskWrite,RETURN_OPERATIONS.riskRead,{target,query:riskQuery},(observed)=>observed.verified===true)
+                :await verifiedMutation({targetKey,target,preflightOperation:RETURN_OPERATIONS.riskPreflight,
+                  preflightRequest:{target,query:{riskId:risk.riskId,riskClassification:risk.classification,controlId:control.controlId}},
+                  mutationOperation:RETURN_OPERATIONS.riskWrite,commandKind:'associate_risk_control',mutationPayload:{
+                    engagementId:binding.engagementId,workspaceId:row.workspaceId,riskAssessmentId:graId,riskName:relation.riskName,
+                    controlName:relation.controlName,riskClassification:relation[`classification${mode}`],riskId:risk.riskId,updatedOn:risk.updatedOn,
+                    isPurgeControlHiddenData:false,controlRiskScopes:[{controlId:control.controlId,riskScopeId:risk.riskRiskScopeId,
+                      assertionType:risk.assertion,riskId:risk.riskId,assertions:[{assertion:risk.assertion}]}]},
+                  acceptPreflight:(preflight)=>preflight.requiresPurge===false,
+                  raceReadOperation:RETURN_OPERATIONS.riskRead,raceReadRequest:{target,query:riskQuery},raceAlreadyApplied:(observed)=>observed.verified===true,
+                  readOperation:RETURN_OPERATIONS.riskRead,readRequest:{target,query:riskQuery},verify:(observed)=>observed.verified===true});
+              await store.call('projectVerifiedReturn',{runId,commandId:result.command.commandId,binding,workspaceId:row.workspaceId,projectionKind:'relation',relationType:'risk_control',relationKey:targetKey,sourceObjectId:risk.riskId,targetObjectId:control.controlId,payload:{...result.observed,riskRiskScopeId:risk.riskRiskScopeId,assertion:risk.assertion,graId}});
+            }
           }
           await store.call('recordBootstrapCapabilityEvidence',{
             schemaVersion:'omnia.feature-capability-evidence-bootstrap/v1',runId,...RETURN_CAPABILITY,

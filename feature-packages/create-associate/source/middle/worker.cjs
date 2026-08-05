@@ -980,7 +980,7 @@ function createFeatureWorker(dependencies) {
     const binding=context?.connectorBinding,safety=context?.safetyLock;if(!binding?.connectorId||Number(binding.sessionGeneration)<1||!binding.engagementId){const reason='当前没有可用的 Remote Connector binding，无法执行 APP 身份/回收站、非 APP 活动对象、关系目标类型与工作区实时检查；连接后可在原 Run 重试。';checkpoint.parsed.issues.push(liveIssue('LIVE.WORKSPACE_UNAVAILABLE','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return failedLiveChecks(reason);}if(!Array.isArray(safety?.workspaceIds)||!safety.workspaceIds.length){const reason='当前 Pack Workspace 安全范围为空，无法执行 APP 身份/回收站、非 APP 活动对象、关系目标类型与工作区实时检查；请启用安全范围后在原 Run 重新校验。';checkpoint.parsed.issues.push(liveIssue('LIVE.SAFETY_SCOPE_UNAVAILABLE','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return failedLiveChecks(reason);}
     try{const query=authorityRequest(checkpoint,context).query;const authority=await invoke(RETURN_OPERATIONS.authority,binding,{allowedWorkspaceIds:safety.workspaceIds,query});const byName=new Map((authority.workspaces||[]).map((item)=>[String(item.name).normalize('NFKC'),item.workspaceId]));const missing=query.workspaceNames.filter((name)=>!byName.has(String(name).normalize('NFKC')));if(missing.length){const reason=`Omnia 工作区实时不存在或不在安全范围：${missing.join(', ')}；因此 APP 身份/回收站、非 APP 活动对象与关系目标类型检查未执行。`;checkpoint.parsed.issues.push(liveIssue('LIVE.WORKSPACE_NOT_FOUND','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return failedLiveChecks(reason);}
       checkpoint.liveIdentityResolutions={};
-      let existing=0,creatable=0,identityBlocks=0;
+      let ownedRecoveries=0,creatable=0,nameConflicts=0,identityBlocks=0;
       for(const row of activeRows(checkpoint.parsed)){
         const workspaceId=byName.get(rowField(row,governance,`P1.${row.kind}.IT.WORKSPACE`).normalize('NFKC'));
         if(row.kind==='APP'){
@@ -990,7 +990,15 @@ function createFeatureWorker(dependencies) {
             const identity=inspectApplicationIdentity(observed,request);
             checkpoint.liveIdentityResolutions[row.rowKey]={operationId:RETURN_OPERATIONS.objectIdentityResolve,target:request.target,query:request.query,disposition:identity.disposition,reasonCode:identity.reasonCode,resolved:{objectId:identity.objectId,riskAssessmentId:identity.riskAssessmentId},evidence:observed?.evidence||null};
             if(!identity.accepted){identityBlocks+=1;checkpoint.parsed.issues.push(liveIssue('LIVE.APP_IDENTITY_BLOCKED',`${row.rowKey}.identity`,'conflict','blocking',`APP ${row.elementId} 身份解析被拒绝：${identity.reasonCode}。`,'omnia_id_conflicts'));}
-            else if(identity.disposition!=='create') existing+=1;
+            else if(identity.disposition==='create')creatable+=1;
+            else{
+              const proof=await store.call('proveOwnedCreatedObject',{objectId:identity.objectId,workspaceId,externalId:row.elementId,connectorBinding:binding});
+              checkpoint.liveIdentityResolutions[row.rowKey].ownership=proof?.proven===true
+                ?{proven:true,runId:proof.runId,commandId:proof.commandId,objectId:proof.objectId}
+                :{proven:false};
+              if(proof?.proven===true)ownedRecoveries+=1;
+              else{nameConflicts+=1;identityBlocks+=1;checkpoint.parsed.issues.push(liveIssue('LIVE.APP_IDENTITY_CONFLICT',`${row.rowKey}.identity`,'conflict','blocking',`APP ${row.elementId} 与当前 Pack 中的活动同名对象冲突；该对象没有与当前 Connector、Authority、Pack、Engagement 和 Workspace 严格匹配的 Agent-managed 创建证据。`,'omnia_id_conflicts'));}
+            }
           }catch(error){identityBlocks+=1;checkpoint.parsed.issues.push(liveIssue('LIVE.APP_IDENTITY_FAILED',`${row.rowKey}.identity`,'contract_mismatch','blocking',`APP ${row.elementId} 身份解析失败：${String(error.message||error)}`,'omnia_id_conflicts'));}
           continue;
         }
@@ -998,12 +1006,12 @@ function createFeatureWorker(dependencies) {
         const observed=await invoke(RETURN_OPERATIONS.objectPreflight,binding,request);const identity=inspectGenericIdentity(observed,request);
         checkpoint.liveIdentityResolutions[row.rowKey]={operationId:RETURN_OPERATIONS.objectPreflight,target:request.target,query:request.query,matchState:identity.state,resolved:{objectId:identity.objectId},evidence:identity.evidence};
         if(!identity.accepted){identityBlocks+=1;checkpoint.parsed.issues.push(liveIssue('LIVE.NON_APP_IDENTITY_BLOCKED',`${row.rowKey}.identity`,'conflict','blocking',`${row.kind} ${row.elementId} 身份解析被拒绝：${identity.reasonCode}。`,'omnia_id_conflicts'));}
-        else if(identity.state==='active')existing+=1;
+        else if(identity.state==='active'){nameConflicts+=1;identityBlocks+=1;checkpoint.parsed.issues.push(liveIssue('LIVE.NON_APP_IDENTITY_CONFLICT',`${row.rowKey}.identity`,'conflict','blocking',`${row.kind} ${row.elementId} 与当前 Pack 中的活动同名对象冲突；当前对象类型没有已发布的 Agent-managed 归属恢复契约，因此不能静默复用。`,'omnia_id_conflicts'));}
         else if(identity.state==='none')creatable+=1;
       }
       const targetFailed=checkpoint.parsed.issues.some((candidate)=>candidate.state==='blocking'&&candidate.checkId==='relationship_targets');
       const conflictsFailed=identityBlocks>0;
-      const conflictReason=`APP/DB/OS/Tool 活动、回收站与歧义身份解析已执行；发现 ${existing} 个可恢复/复用对象、${creatable} 个可进入创建预检的新对象${identityBlocks?`，${identityBlocks} 个身份被拒绝或解析失败`:''}。`;
+      const conflictReason=`APP/DB/OS/Tool 活动、回收站与歧义身份解析已执行；发现 ${ownedRecoveries} 个具有严格 Agent-managed 归属证明的恢复对象、${creatable} 个可进入创建预检的新对象${nameConflicts?`，${nameConflicts} 个未授权活动同名冲突`:''}${identityBlocks-nameConflicts>0?`，${identityBlocks-nameConflicts} 个身份被拒绝或解析失败`:''}。`;
       return{omnia_id_conflicts:{state:conflictsFailed?'failed':'passed',reason:conflictReason},relationship_targets:{state:targetFailed?'failed':'passed',reason:targetFailed?'存在 0.2.1 不支持的批外 APP 或不精确目标。':'所有 DB/OS 目标均为批内唯一、同工作区 APP。'},workspace_live:{state:'passed',reason:`${query.workspaceNames.length} 个工作区已按当前 Pack 权威目录精确匹配。`}};
     }catch(error){const reason=`实时校验失败（APP 身份/回收站、非 APP 活动对象、关系目标类型或工作区检查未闭合；可在原 Run 重试）：${String(error.message||error)}`;checkpoint.parsed.issues.push(liveIssue('LIVE.VALIDATION_FAILED','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return failedLiveChecks(reason);}
   }
@@ -1049,6 +1057,13 @@ function createFeatureWorker(dependencies) {
       const genericIdentity=row.kind==='APP'?null:inspectGenericIdentity(objectObserved,{target:objectTarget,query:objectQuery});
       if(appIdentity&&!appIdentity.accepted) fail('RETURN.APP_IDENTITY_BLOCKED',`APP ${row.elementId} identity resolution blocked Return preparation: ${appIdentity.reasonCode}.`);
       if(genericIdentity&&!genericIdentity.accepted) fail('RETURN.GENERIC_IDENTITY_BLOCKED',`${row.kind} ${row.elementId} identity resolution blocked Return preparation: ${genericIdentity.reasonCode}.`);
+      let ownedCreateProof=null;
+      if(appIdentity&&appIdentity.disposition!=='create'){
+        const proof=await store.call('proveOwnedCreatedObject',{objectId:appIdentity.objectId,workspaceId,externalId:row.elementId,connectorBinding:context.connectorBinding});
+        if(proof?.proven!==true)fail('RETURN.APP_IDENTITY_CONFLICT',`APP ${row.elementId} matches an active same-name object without exact Agent-managed ownership proof; Return preparation is forbidden.`);
+        ownedCreateProof={proven:true,runId:proof.runId,commandId:proof.commandId,objectId:proof.objectId};
+      }
+      if(genericIdentity?.state==='active')fail('RETURN.GENERIC_IDENTITY_CONFLICT',`${row.kind} ${row.elementId} matches an active same-name object and has no released Agent-managed ownership recovery contract; Return preparation is forbidden.`);
       if(objectObserved.found&&row.kind!=='APP'&&String(objectObserved.item?.typeId||objectObserved.item?.itElementTypeId||'')!==subtypeId){
         fail('RETURN.SUBTYPE_AUTHORITY_DRIFT',`${row.kind} ${row.elementId} live subtype does not match the exact signed content subtype identity.`);
       }
@@ -1081,7 +1096,7 @@ function createFeatureWorker(dependencies) {
       if (mode && !['Higher', 'Lower'].includes(mode)) fail('RETURN.RAIT_INVALID', `${row.kind} ${row.elementId} has an unsupported RAIT value.`);
       const prepared = { rowKey: row.rowKey, kind: row.kind, elementId: row.elementId, objectType: type,
         workspaceName, workspaceId, content, subtypeId, mode, declaredMode, inheritanceSources, objectTarget, objectQuery, objectObserved, objectId,graName:deriveGraName(row.elementId),
-        identityDisposition:appIdentity?.disposition||'',identityResolution:appIdentity?{operationId:RETURN_OPERATIONS.objectIdentityResolve,disposition:appIdentity.disposition,reasonCode:appIdentity.reasonCode,resolved:{objectId:appIdentity.objectId,riskAssessmentId:appIdentity.riskAssessmentId},evidence:objectObserved?.evidence||null}:null,
+        identityDisposition:appIdentity?.disposition||'',identityResolution:appIdentity?{operationId:RETURN_OPERATIONS.objectIdentityResolve,disposition:appIdentity.disposition,reasonCode:appIdentity.reasonCode,resolved:{objectId:appIdentity.objectId,riskAssessmentId:appIdentity.riskAssessmentId},ownership:ownedCreateProof,evidence:objectObserved?.evidence||null}:null,
         graObserved, graId: graObserved.found ? responseId(graObserved.item, 'GRA preflight') : '', relations: row.relations };
       prepared.description=String(row.fields[descriptionRawField(row.kind)]||'');
       if(prepared.description!==row.elementId) fail('RETURN.DESCRIPTION_DERIVATION_DRIFT',`${row.kind} ${row.elementId} description differs from the signed derived field revision.`);

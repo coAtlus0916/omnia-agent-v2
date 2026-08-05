@@ -1,4 +1,8 @@
-# 0.2.24 / sequence 26
+# 0.2.25 / sequence 27
+
+Risk-Control catalog routes now exactly match the v4 live API: planned responses use `plannedresponse/byRiskAssessmentId?riskAssessmentId={riskAssessmentId}&reviewMode=false`, and controls use `controls/byRiskAssessmentId/{riskAssessmentId}?includeContentDeleted=false`. Both the read-only catalog Operation and the mutation Operation's action-time re-read use these routes. Hidden-data validation, association POST, and exact risk-scope detail readback URLs were rechecked against v4 and remain unchanged.
+
+# 0.2.24 / sequence 26 history
 
 GRA entity proof now selects semantic primary scopes by expected canonical object type and optional content identity before deduplicating GUIDs. Other-type scopes no longer create false conflicts after content generation. Untyped scopes are not guessed; top-level direct IDs still participate and must equal the planned object. Zero candidates retain the strict signed live-directory fallback. APP/DB/OS/TOOL mappings are Application/Infrastructure/Infrastructure/ITTool with governed type IDs 3/4/4/5.
 

@@ -19,6 +19,8 @@ let hostPlacement: 'docked' | 'detached' | 'minimized' | 'closed' = 'docked';
 let recorderProjectedAt = Date.now();
 let renderedSurface = '';
 let renderedError = '';
+let pendingActionId = '';
+let renderedPendingActionId = '';
 let selectionUiIdentity = '';
 let selectionQuery = '';
 let selectedScopeId = '';
@@ -316,6 +318,50 @@ function surfaceProjection(value: DeclarativeFeatureSurface | null): string {
   return value ? JSON.stringify(value) : '';
 }
 
+type CreateAssociatePendingPresentation = {
+  actionId: 'confirm-upload' | 'prepare-return' | 'confirm-return';
+  currentStepId: 'validate' | 'return';
+  title: string;
+  message: string;
+};
+
+function createAssociatePendingPresentation(): CreateAssociatePendingPresentation | null {
+  if (surface?.featureId !== 'omnia.create-associate') return null;
+  if (pendingActionId === 'confirm-upload') return {
+    actionId: pendingActionId,
+    currentStepId: 'validate',
+    title: '正在进入校验',
+    message: '确认上传请求已发送；正在等待后台持久化 processing 状态。'
+  };
+  if (pendingActionId === 'prepare-return') return {
+    actionId: pendingActionId,
+    currentStepId: 'return',
+    title: '正在提交审核',
+    message: '正在通过 Remote Connector 复核实时对象、安全锁与回传范围；后台冻结计划后才会开放确认回传。'
+  };
+  if (pendingActionId === 'confirm-return') return {
+    actionId: pendingActionId,
+    currentStepId: 'return',
+    title: '正在确认回传',
+    message: '正在重新校验安全锁、Connector 会话与冻结计划；后台确认通过后才会开始写入。'
+  };
+  return null;
+}
+
+function pendingWorkflow(pending: CreateAssociatePendingPresentation): DeclarativeFeatureSurface['workflow'] {
+  if (!surface?.workflow) return undefined;
+  return {
+    ...surface.workflow,
+    currentStepId: pending.currentStepId,
+    steps: surface.workflow.steps.map((step) => {
+      if (step.stepId === pending.currentStepId) return {...step, state: 'current', detail: pending.message};
+      if (pending.currentStepId === 'validate' && step.stepId === 'upload') return {...step, state: 'completed'};
+      if (pending.currentStepId === 'return' && (step.stepId === 'upload' || step.stepId === 'validate')) return {...step, state: 'completed'};
+      return step;
+    })
+  };
+}
+
 function syncBusyState(): void {
   root.setAttribute('aria-busy', String(busy));
   root.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement | HTMLTextAreaElement>('button, input, select, textarea').forEach((control) => {
@@ -338,7 +384,7 @@ function setBusy(next: boolean): void {
 }
 
 function renderIfChanged(): void {
-  if (renderedSurface !== surfaceProjection(surface) || renderedError !== errorMessage) render();
+  if (renderedSurface !== surfaceProjection(surface) || renderedError !== errorMessage || renderedPendingActionId !== pendingActionId) render();
   else {
     syncBusyState();
     scheduleBackgroundActions();
@@ -353,7 +399,8 @@ function render(): void {
     syncBusyState();
     return;
   }
-  const workflow = surface.workflow;
+  const pending = createAssociatePendingPresentation();
+  const workflow = pending ? pendingWorkflow(pending) : surface.workflow;
   const hasWorkflowRail = Boolean(workflow?.steps.length);
   const steps = workflow?.steps.map((step, index) => `<li class="workflow-step ${esc(step.state)}" ${step.stepId === workflow.currentStepId ? 'aria-current="step"' : ''}><span>${index + 1}</span><div><strong>${esc(step.label)}</strong>${step.detail ? `<small>${esc(step.detail)}</small>` : ''}</div></li>`).join('') || '';
   const activeLayer = workflow?.currentStepId === 'upload' ? 'upload' : workflow?.currentStepId === 'return' ? 'return' : surface.review ? 'review' : 'default';
@@ -390,12 +437,16 @@ function render(): void {
   const header = hasSelectionBrowser ? '' : compactCreateAssociateReturn
     ? `<h1>${esc(surface.title)}</h1>`
     : `<span class="status">${esc(surface.status)}</span><h1>${esc(surface.title)}</h1><p>${esc(surface.description)}</p>${surface.statusMessage ? `<p class="state">${esc(surface.statusMessage)}</p>` : ''}`;
-  const layerContent = activeLayer === 'upload' && inputAction
+  const pendingContent = pending
+    ? `<section class="surface-layer ${pending.currentStepId === 'return' ? 'return-layer' : 'default-layer'}" data-surface-layer="${pending.currentStepId}" data-pending-action="${esc(pending.actionId)}">${header}<section class="progress-panel" role="status" aria-live="polite"><div class="check pending"><span>PENDING</span><div><strong>${esc(pending.title)}</strong><small>${esc(pending.message)}</small></div></div></section>${pending.actionId === 'confirm-return' ? progress : ''}</section>`
+    : '';
+  const layerContent = pendingContent || (activeLayer === 'upload' && inputAction
     ? `<section class="surface-layer upload-layer" data-surface-layer="upload">${header}<div class="upload-card"><h2>上传资料</h2><p class="state">选择或拖入官方 .xlsx 只会暂存文件；点击“确认上传”后才进入校验。</p>${drop}${artifacts ? `<div class="artifacts">${artifacts}</div>` : ''}${actions ? `<div class="actions">${actions}</div>` : ''}</div></section>`
-    : `<section class="surface-layer ${activeLayer === 'review' ? 'review-layer' : activeLayer === 'return' ? 'return-layer' : 'default-layer'}${hasSelectionBrowser ? ' catalog-priority-layer' : ''}" data-surface-layer="${activeLayer}">${header}${selectionBrowser}${recorder}${progress}${issues ? `<section class="issues">${issues}</section>` : ''}${review}${items ? `<div class="items">${items}</div>` : ''}${editors ? `<div class="editors">${editors}</div>` : ''}${artifacts ? `<div class="artifacts">${artifacts}</div>` : ''}${actions ? `<div class="actions">${actions}</div>` : ''}</section>`;
+    : `<section class="surface-layer ${activeLayer === 'review' ? 'review-layer' : activeLayer === 'return' ? 'return-layer' : 'default-layer'}${hasSelectionBrowser ? ' catalog-priority-layer' : ''}" data-surface-layer="${activeLayer}">${header}${selectionBrowser}${recorder}${progress}${issues ? `<section class="issues">${issues}</section>` : ''}${review}${items ? `<div class="items">${items}</div>` : ''}${editors ? `<div class="editors">${editors}</div>` : ''}${artifacts ? `<div class="artifacts">${artifacts}</div>` : ''}${actions ? `<div class="actions">${actions}</div>` : ''}</section>`);
   root.innerHTML = `${errorMessage ? `<p class="error page-error" role="alert">${esc(errorMessage)}</p>` : ''}<div class="feature-layout ${hasWorkflowRail ? 'has-workflow' : 'no-workflow'}">${hasWorkflowRail ? `<nav class="workflow-rail" aria-label="步骤"><ol>${steps}</ol>${railRestart}</nav>` : ''}<section class="operation-pane">${layerContent}</section></div>`;
   renderedSurface = surfaceProjection(surface);
   renderedError = errorMessage;
+  renderedPendingActionId = pendingActionId;
   renderHostToolbar();
   bindInteractions(inputAction);
   syncBusyState();
@@ -609,7 +660,9 @@ function bindInteractions(inputAction: DeclarativeFeatureAction | undefined): vo
 
 async function invoke(actionId: string, payload: Record<string, unknown>): Promise<void> {
   if (!surface || busy) return;
+  if (surface.featureId === 'omnia.create-associate' && ['confirm-upload', 'prepare-return', 'confirm-return'].includes(actionId)) pendingActionId = actionId;
   setBusy(true);
+  renderIfChanged();
   try {
     const snapshot = await window.featureSurface.featureAction({featureId: surface.featureId, featureVersion: surface.featureVersion, surfaceId: surface.surfaceId, actionId, expectedStateVersion: surface.stateVersion, payload});
     surface = snapshot.features.surface;
@@ -618,7 +671,7 @@ async function invoke(actionId: string, payload: Record<string, unknown>): Promi
     selectedReviewKind = '';
     selectedReviewRowKey = '';
   } catch (error) { errorMessage = error instanceof Error ? error.message : 'Feature 操作失败'; }
-  finally { setBusy(false); renderIfChanged(); }
+  finally { pendingActionId = ''; setBusy(false); renderIfChanged(); }
 }
 
 if (typeof window !== 'undefined' && root) {
@@ -637,6 +690,7 @@ if (typeof window !== 'undefined' && root) {
       && previous.surfaceId === next.surfaceId
       && previous.stateVersion === next.stateVersion;
     surface = next;
+    if (previous && next.stateVersion !== previous.stateVersion) pendingActionId = '';
     recorderProjectedAt = Date.now();
     errorMessage = '';
     dirtyReviewValues = preservedDrafts;

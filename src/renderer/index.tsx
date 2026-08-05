@@ -566,7 +566,7 @@ function RemoteConnectionDialog({ snapshot, close, run }: { snapshot: ShellSnaps
         {!pairingBusy && !pairingCapability.canCreateSession
           ? <p className="reason error" data-testid="remote-pairing-capability-reason">{pairingCapability.reason}</p>
           : null}
-        {binding.remotePaired ? <dl className="connection-facts"><dt>状态</dt><dd>{binding.bindingState}</dd><dt>设备</dt><dd>{binding.connectorName || binding.connectorId}</dd><dt>Connector</dt><dd>{binding.connectorVersion || '未知'}</dd><dt>协议</dt><dd>{binding.protocolVersion || '未知'}</dd></dl> : null}
+        {binding.remotePaired ? <dl className="connection-facts"><dt>状态</dt><dd>{binding.bindingState}</dd><dt>设备</dt><dd>{binding.connectorName || binding.connectorId}</dd><dt>Connector</dt><dd>{diagnostics?.version || snapshot.connection.connectorVersion || binding.connectorVersion || '未知'}</dd><dt>协议</dt><dd>{binding.protocolVersion || '未知'}</dd></dl> : null}
         <section className="remote-diagnostics" aria-label="Remote Connector 实时诊断" data-testid="remote-diagnostics">
           <header><h3>实时诊断</h3><span className={diagnostics ? (diagnostics.connectorOnline ? 'online' : 'offline') : 'unknown'}>{diagnostics ? (diagnostics.connectorOnline ? 'Connector 在线' : 'Connector 离线') : '暂无诊断'}</span></header>
           {diagnostics ? <>

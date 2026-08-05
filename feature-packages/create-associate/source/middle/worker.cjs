@@ -29,6 +29,17 @@ function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
 }
+function observedDocumentation(value){
+  const wrapped=value&&value.documentation;
+  const candidate=wrapped&&typeof wrapped==='object'&&!Array.isArray(wrapped)&&Object.prototype.hasOwnProperty.call(wrapped,'documentation')
+    ?wrapped.documentation:wrapped;
+  if(candidate===null||candidate===undefined||candidate==='')return null;
+  if(typeof candidate==='object'&&!Array.isArray(candidate))return candidate;
+  if(typeof candidate!=='string')fail('RETURN.DOCUMENTATION_INVALID','The authoritative Documentation payload is not an RTE JSON string.');
+  let parsed; try{parsed=JSON.parse(candidate);}catch{fail('RETURN.DOCUMENTATION_INVALID','The authoritative Documentation RTE JSON is invalid.');}
+  if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))fail('RETURN.DOCUMENTATION_INVALID','The authoritative Documentation RTE object is invalid.');
+  return parsed;
+}
 function xmlText(value) {
   return String(value || '').replace(/&lt;/gu, '<').replace(/&gt;/gu, '>').replace(/&quot;/gu, '"')
     .replace(/&apos;/gu, "'").replace(/&amp;/gu, '&').replace(/&#(\d+);/gu, (_, code) => String.fromCodePoint(Number(code)));
@@ -1121,9 +1132,9 @@ function createFeatureWorker(dependencies) {
               const risks=catalogRiskMatches(catalog,intent,intent.classification);
               const controls=catalogControlMatches(catalog,intent);
               if(risks.length!==1||controls.length!==1) fail('RETURN.RISK_CONTROL_CATALOG_DRIFT',`Risk/Control identity is absent or ambiguous during review: ${intent.relationId}.`);
-              const risk=risks[0],control=controls[0]; intent.resolvedCatalog={riskId:risk.riskId,riskRiskScopeId:risk.riskRiskScopeId,controlId:control.controlId,assertion:risk.assertion,updatedOn:risk.updatedOn};
-              const observed=await invoke(RETURN_OPERATIONS.riskRead,context.connectorBinding,{target:{targetIdentityKey:intent.operationTargetIdentityKey,workspaceId:row.workspaceId},query:{riskRiskScopeId:risk.riskRiskScopeId,riskId:risk.riskId,controlId:control.controlId,assertion:risk.assertion}});
-              rowPreview.changes.push({targetKey:intent.key,disposition:observed.verified===true?'reuse':'associate',current:observed.verified===true?'exact association':'absent',desired:{risk:intent.riskName,classification:intent.classification,control:intent.controlName,assertion:risk.assertion},resolvedIds:intent.resolvedCatalog,operationId:intent.mutationOperationId,evidenceOperationId:intent.evidenceOperationIds[0]});
+              const risk=risks[0],control=controls[0]; intent.resolvedCatalog={riskId:risk.riskId,riskRiskScopeId:risk.riskRiskScopeId,riskScopeId:risk.riskScopeId,controlId:control.controlId,assertionType:risk.assertionType,assertion:risk.assertion,updatedOn:risk.updatedOn};
+              const observed=await invoke(RETURN_OPERATIONS.riskRead,context.connectorBinding,{target:{targetIdentityKey:intent.operationTargetIdentityKey,workspaceId:row.workspaceId},query:{riskRiskScopeId:risk.riskRiskScopeId,riskScopeId:risk.riskScopeId,riskId:risk.riskId,controlId:control.controlId,assertionType:risk.assertionType,assertion:risk.assertion}});
+              rowPreview.changes.push({targetKey:intent.key,disposition:observed.verified===true?'reuse':'associate',current:observed.verified===true?'exact association':'absent',desired:{risk:intent.riskName,classification:intent.classification,control:intent.controlName,assertionType:risk.assertionType,assertion:risk.assertion},resolvedIds:intent.resolvedCatalog,operationId:intent.mutationOperationId,evidenceOperationId:intent.evidenceOperationIds[0]});
             }
           }
           for(const intent of rowTargets.filter((item)=>String(item.key).startsWith('risk-factor|'))){
@@ -1134,7 +1145,7 @@ function createFeatureWorker(dependencies) {
             rowPreview.changes.push({targetKey:intent.key,disposition:observed.applicable===false?'not-applicable':selected===current?'reuse':'patch',current:observed.current,desired:observed.selected,operationId:intent.mutationOperationId,evidenceOperationId:observed.applicable===false?RETURN_OPERATIONS.factorPreflight:RETURN_OPERATIONS.factorRead});
           }
           const docIntent=rowTargets.find((item)=>item.kind==='documentation');
-          if(docIntent){const current=await invoke(RETURN_OPERATIONS.documentationPreflight,context.connectorBinding,{target:{targetIdentityKey:docIntent.operationTargetIdentityKey,workspaceId:row.workspaceId},riskAssessmentId:row.graId}); const doc=current.documentation?.documentation||current.documentation;
+          if(docIntent){const current=await invoke(RETURN_OPERATIONS.documentationPreflight,context.connectorBinding,{target:{targetIdentityKey:docIntent.operationTargetIdentityKey,workspaceId:row.workspaceId},riskAssessmentId:row.graId}); const doc=observedDocumentation(current);
             rowPreview.changes.push({targetKey:docIntent.key,disposition:String(doc?.plainText||'')===String(docIntent.plainText)?'reuse':'patch',current:doc?.plainText||'',desired:docIntent.plainText,operationId:docIntent.mutationOperationId,evidenceOperationId:docIntent.evidenceOperationIds[0]});}
           const evalIntent=rowTargets.find((item)=>item.kind==='evaluation');
           const evaluation=await invoke(RETURN_OPERATIONS.evaluationPreflight,context.connectorBinding,{target:{targetIdentityKey:evalIntent.operationTargetIdentityKey,workspaceId:row.workspaceId},riskAssessmentId:row.graId});
@@ -1600,7 +1611,7 @@ function createFeatureWorker(dependencies) {
                 const target = { targetIdentityKey: identityKey('documentation', [row.rowKey]), workspaceId: row.workspaceId };
                 const plainText = docIntent.plainText; const editorData = `<p>${plainText.replace(/[&<>]/gu, (char) => ({ '&':'&amp;','<':'&lt;','>':'&gt;' }[char]))}</p>`;
                 const currentDoc = await invoke(RETURN_OPERATIONS.documentationPreflight, binding, { target, riskAssessmentId: graId });
-                const observedDoc = currentDoc.documentation?.documentation || currentDoc.documentation;
+                const observedDoc = observedDocumentation(currentDoc);
                 const docResult = String(observedDoc?.editorData || '') === editorData && String(observedDoc?.plainText || '') === plainText
                   ? await closeVerified(docKey,RETURN_OPERATIONS.documentationWrite,RETURN_OPERATIONS.documentationRead,{target,query:{riskAssessmentId:graId,editorData,plainText}},(observed)=>observed.verified===true)
                   : await verifiedMutation({ targetKey: docKey, target, preflightOperation: RETURN_OPERATIONS.documentationPreflight,
@@ -1649,9 +1660,10 @@ function createFeatureWorker(dependencies) {
               if(risks.length!==1||controls.length!==1) fail('RETURN.RISK_CONTROL_CATALOG_DRIFT',`Risk/Control catalog identity is absent or ambiguous: ${relation.relationId}.`);
               const risk=risks[0];const control=controls[0];const targetKey=`risk-control|${row.rowKey}|${relation.relationId}`;
               const targetSpec=targetByKey.get(targetKey);const frozenCatalog=targetSpec.resolvedCatalog;
-              if(frozenCatalog&&(frozenCatalog.riskId!==risk.riskId||frozenCatalog.riskRiskScopeId!==risk.riskRiskScopeId||frozenCatalog.controlId!==control.controlId||frozenCatalog.assertion!==risk.assertion)) fail('RETURN.RISK_CONTROL_CATALOG_IDENTITY_DRIFT',`Risk/Control live identity changed after confirmation: ${relation.relationId}.`);
+              if(frozenCatalog&&(frozenCatalog.riskId!==risk.riskId||frozenCatalog.riskRiskScopeId!==risk.riskRiskScopeId||(frozenCatalog.riskScopeId&&frozenCatalog.riskScopeId!==risk.riskScopeId)||frozenCatalog.controlId!==control.controlId
+                ||(frozenCatalog.assertionType&&frozenCatalog.assertionType!==risk.assertionType)||frozenCatalog.assertion!==risk.assertion)) fail('RETURN.RISK_CONTROL_CATALOG_IDENTITY_DRIFT',`Risk/Control live identity changed after confirmation: ${relation.relationId}.`);
               const target={targetIdentityKey:identityKey('risk-control',[row.rowKey,relation.relationId]),workspaceId:row.workspaceId};
-              const riskQuery={riskRiskScopeId:risk.riskRiskScopeId,riskId:risk.riskId,controlId:control.controlId,assertion:risk.assertion};
+              const riskQuery={riskRiskScopeId:risk.riskRiskScopeId,riskScopeId:risk.riskScopeId,riskId:risk.riskId,controlId:control.controlId,assertionType:risk.assertionType,assertion:risk.assertion};
               const existingRisk=await invoke(RETURN_OPERATIONS.riskRead,binding,{target,query:riskQuery});
               if(existingRisk.verified===true&&!frozenCatalog&&!['post_state_catalog','post_evaluation_catalog'].includes(targetSpec.resolutionMode)) fail('RETURN.POST_CREATE_RISK_ALREADY_ASSOCIATED',`Post-create Risk-Control ${relation.relationId} became associated before its frozen mutation; a new review is required.`);
               const result=existingRisk.verified===true
@@ -1661,12 +1673,12 @@ function createFeatureWorker(dependencies) {
                   mutationOperation:RETURN_OPERATIONS.riskWrite,commandKind:'associate_risk_control',mutationPayload:{
                     engagementId:binding.engagementId,workspaceId:row.workspaceId,riskAssessmentId:graId,riskName:relation.riskName,
                     controlName:relation.controlName,riskClassification:relation[`classification${mode}`],riskId:risk.riskId,updatedOn:risk.updatedOn,
-                    isPurgeControlHiddenData:false,controlRiskScopes:[{controlId:control.controlId,riskScopeId:risk.riskRiskScopeId,
-                      assertionType:risk.assertion,riskId:risk.riskId,assertions:[{assertion:risk.assertion}]}]},
+                    isPurgeControlHiddenData:false,controlRiskScopes:[{controlId:control.controlId,riskScopeId:risk.riskScopeId,
+                      assertionType:risk.assertionType,riskId:risk.riskId,assertions:[{assertion:risk.assertion}]}]},
                   acceptPreflight:(preflight)=>preflight.requiresPurge===false,
                   raceReadOperation:RETURN_OPERATIONS.riskRead,raceReadRequest:{target,query:riskQuery},raceAlreadyApplied:(observed)=>observed.verified===true,
                   readOperation:RETURN_OPERATIONS.riskRead,readRequest:{target,query:riskQuery},verify:(observed)=>observed.verified===true});
-              await store.call('projectVerifiedReturn',{runId,commandId:result.command.commandId,binding,workspaceId:row.workspaceId,projectionKind:'relation',relationType:'risk_control',relationKey:targetKey,sourceObjectId:risk.riskId,targetObjectId:control.controlId,payload:{...result.observed,riskRiskScopeId:risk.riskRiskScopeId,assertion:risk.assertion,graId}});
+              await store.call('projectVerifiedReturn',{runId,commandId:result.command.commandId,binding,workspaceId:row.workspaceId,projectionKind:'relation',relationType:'risk_control',relationKey:targetKey,sourceObjectId:risk.riskId,targetObjectId:control.controlId,payload:{...result.observed,riskRiskScopeId:risk.riskRiskScopeId,assertionType:risk.assertionType,assertion:risk.assertion,graId}});
             }
           }
           await store.call('recordBootstrapCapabilityEvidence',{

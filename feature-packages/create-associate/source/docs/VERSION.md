@@ -1,4 +1,10 @@
-# 0.2.37 / sequence 39
+# 0.2.38 / sequence 40
+
+Application Documentation now follows the recorded v4 request contract. The mutation Operation performs a fresh authoritative GRA detail read, proves the exact assessment and frozen Workspace, resolves the unique `entityTabTypeId=2` concurrency tab, serializes the RTE value as `{editorData,suggestionsData:[],trackChangesEnableFlagInEditor:false,plainText}`, and sends the recorded four-operation JSON Patch with live `updatedOn` values. Reconcile parses the returned RTE JSON string and verifies editor data, plain text and empty work items. Evaluation submit now sends the recorded `riskLevelOverride:null`.
+
+The complete Risk-Control audit also fixes proven live-shape mismatches. Catalog numbers strip the recorded per-GRA suffix and normalize `SAPECC.nn` to the governed `SAP.nn` identity. Each planned Risk is resolved through its recorded per-risk detail route, which supplies distinct RiskRiskScope, account Risk Scope, assertion type and assertion identities. Association sends the account `riskScopeId`, keeps `assertionType` distinct from `assertions[0].assertion`, and readback verifies the selected Control's exact `currentRiskScopes` entry. As in v4, the authoritative assessment supplies `updatedOn` when the slim Risk row omits it.
+
+# 0.2.37 / sequence 39 history
 
 DB/OS inheritance-source execution now performs its live APP GRA preflight on every continuation to preserve authoritative RAIT derivation, then checks `done(sourceKey)` before any command preparation. A previously verified source intent therefore supplies the live mode without being claimed, read back or projected again. The full target mapping audit also found and corrected one recovery-only projection mismatch: an uncertain Risk-Control command was being projected as a GRA object after successful reconcile; it now projects the exact risk/control IDs as a `risk_control` relation. All other object, GRA, settings, state, element relation, factor, documentation, evaluation and Risk-Control target keys, operation identities, evidence operations, done checks and normal projections are aligned.
 

@@ -22,7 +22,8 @@ function editorDescription(value,label){
 function rows(value) { return Array.isArray(value) ? value : []; }
 function guid(value, label) {
   const normalized = text(value).toLowerCase();
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(normalized)) fail(`${label} must be a GUID.`);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(normalized)
+    || normalized === '00000000-0000-0000-0000-000000000000') fail(`${label} must be a GUID.`);
   return normalized;
 }
 function catalogId(value,label){const normalized=text(value);if(!/^[A-Za-z0-9._:-]{1,128}$/u.test(normalized)) fail(`${label} must be a canonical live catalog identity.`);return normalized;}
@@ -169,7 +170,8 @@ async function objectPreflight(request, sdk) {
 
 function optionalGuid(value) {
   const normalized = text(value).toLowerCase();
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(normalized) ? normalized : '';
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(normalized)
+    && normalized !== '00000000-0000-0000-0000-000000000000' ? normalized : '';
 }
 function deletedEntity(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;

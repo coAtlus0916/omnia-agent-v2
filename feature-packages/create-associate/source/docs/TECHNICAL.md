@@ -40,6 +40,10 @@ Live validation fails closed before Connector invocation when the binding or exp
 
 `authority.resolve` keeps the mandatory Pack hierarchy and GRA content directory reads, but replaces the legacy menu-section and by-Facet-Type Workspace routes with `POST /engagements/v1/facets/byEngagementIds`. The handler validates the exact binding Engagement on the returned directory and every Facet, admits only the two recorded Custom Workspace Facet types, requires a real live group parent for each live Workspace, and resolves names only against that Workspace collection. Requested names must resolve uniquely and every resolved ID must be present in the explicit safety lock; Workspace names never create or infer Section membership.
 
+## 0.2.10 Omnia/Core GUID contract
+
+Worker response identity extraction and the signed Operation handler now share the Connector origin rule: normalize string input, require the canonical 8-4-4-4-12 hexadecimal shape, reject the all-zero value, and do not constrain RFC UUID version or variant positions. This preserves exact identity comparison while accepting valid Omnia/Core GUIDs that are not RFC-generated UUIDs.
+
 The package contains a process-isolated CommonJS Worker, declarative Surface, private migration, managed V8-derived governance IR, signed runtime-template base XLSX, and a signed Operation package. Core passes base64 bytes (64 MiB maximum), never filesystem paths. Runtime output patches only declared OOXML worksheet/core parts and verifies every undeclared part digest.
 
 The governance IR contains 187 fields, 68 relation rules, and 15 scoring items. TemplateVersion semantic identity is stable across Runs; instance semantic/patch/output/governance digests are per Run.

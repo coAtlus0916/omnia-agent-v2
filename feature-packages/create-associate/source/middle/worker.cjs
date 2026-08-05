@@ -519,9 +519,14 @@ function applicationIdentityRequest(elementId,workspaceId,rait,targetIdentityKey
     query:{objectType:'Application',externalId,workspaceId,graName:deriveGraName(externalId),rait:normalizedRait}
   };
 }
+function normalizedGuid(value) {
+  const candidate=String(value||'').trim().toLowerCase();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(candidate)
+    && candidate!=='00000000-0000-0000-0000-000000000000' ? candidate : '';
+}
 function exactResolvedGuid(value,key,label) {
-  const candidate=String(value?.[key]||'').toLowerCase();
-  if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(candidate)) fail('RETURN.IDENTITY_INVALID',`${label} did not return one canonical GUID.`);
+  const candidate=normalizedGuid(value?.[key]);
+  if(!candidate) fail('RETURN.IDENTITY_INVALID',`${label} did not return one canonical GUID.`);
   return candidate;
 }
 function inspectApplicationIdentity(resolution,request) {
@@ -554,8 +559,8 @@ function inspectGenericIdentity(resolution,request) {
     evidence:resolution?.evidence||null};
 }
 function responseId(value, label) {
-  const candidate = String(value?.id || value?.itElementId || value?.riskAssessmentId || value?.entityId || '').toLowerCase();
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(candidate)) fail('RETURN.IDENTITY_INVALID', `${label} did not return one canonical GUID.`);
+  const candidate = normalizedGuid(value?.id || value?.itElementId || value?.riskAssessmentId || value?.entityId);
+  if (!candidate) fail('RETURN.IDENTITY_INVALID', `${label} did not return one canonical GUID.`);
   return candidate;
 }
 function relationApplicable(relation, row, content, mode) {

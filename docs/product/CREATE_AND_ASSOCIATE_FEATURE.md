@@ -1,6 +1,6 @@
 # Feature 详细设计：新建与关联
 
-> 2026-08-05 current implementation: `omnia.create-associate@0.2.9` / sequence 11 is a Shell 0.4.12 hot-update builtin. Authority resolution shares the verified `POST /engagements/v1/facets/byEngagementIds` source with safety/delete, validates the current Engagement, ignores unrelated Facets, and strictly accepts real `CustomWorkspaceGroup -> CustomWorkspace.parentId` membership. Picker/drop creates a real recoverable `acquiring` Run and source Artifact but stays on step 1, displaying the real file. Only 确认上传 atomically enters `processing`; step 2 renders immediately at 0/11 before a generic declared non-mutation background action starts validation. The SAP ECC Omnia mutation/readback canary remains pending.
+> 2026-08-05 current implementation: `omnia.create-associate@0.2.10` / sequence 12 is the Shell 0.4.12 hot-update builtin source version; it has not been packaged. Worker and Operation GUID validation now matches Connector origin semantics: canonical non-zero 8-4-4-4-12 hexadecimal values are accepted without RFC UUID version/variant constraints, while string normalization remains. Authority resolution shares the verified `POST /engagements/v1/facets/byEngagementIds` source with safety/delete, validates the current Engagement, ignores unrelated Facets, and strictly accepts real `CustomWorkspaceGroup -> CustomWorkspace.parentId` membership. Picker/drop creates a real recoverable `acquiring` Run and source Artifact but stays on step 1, displaying the real file. Only 确认上传 atomically enters `processing`; step 2 renders immediately at 0/11 before a generic declared non-mutation background action starts validation. The SAP ECC Omnia mutation/readback canary remains pending.
 
 > 2026-08-03 implementation update: `omnia.create-associate@0.1.0` sequence 1 now implements the four-stage Remote control loop and is bundled as an auto-installed signed Feature in Shell 0.4.3. Production mutation remains disabled because a real target Omnia/Pack canary has not been executed; automated Connector-harness evidence is not a canary. The product is Remote-only and never falls back to Local transport.
 
@@ -9,7 +9,7 @@
 状态：Accepted Product Scope / Detailed Design Draft  
 用户可见名称：新建与关联  
 首批定位：第四开发切片；首批四 Plane 综合验收  
-DoR 状态：0.2.9 源码与 Operation 已完成，按 Shell 0.4.12 启动器热更新方式内置；真实 SAP ECC Pack mutation/readback canary 待完成；0.2.1 历史证据见[0.2.1 验收记录](../reviews/CREATE_ASSOCIATE_0_2_1_ACCEPTANCE.md)
+DoR 状态：0.2.10 / sequence 12 源码与 Operation handler 已完成，builtin 与打包脚本已指向该版本；本次未生成 `.ofp/.ofop`，也未执行构建、安装或 canary；真实 SAP ECC Pack mutation/readback canary 待完成；0.2.1 历史证据见[0.2.1 验收记录](../reviews/CREATE_ASSOCIATE_0_2_1_ACCEPTANCE.md)
 v4 对应能力：ITGC Toolbox 的 Phase 1
 
 ## 1. 用户目标

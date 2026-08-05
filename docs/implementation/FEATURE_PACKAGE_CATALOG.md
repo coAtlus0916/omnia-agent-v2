@@ -14,7 +14,7 @@ v5 便携产品根
 │  └─ RemoteConnectorTransport、Remote binding 与 Gate 基础设施（无 Local）
 ├─ 内置独立 Feature（官方签名 .ofp，随 Shell 携带并自动安装）
 │  ├─ omnia.recording 0.3.0
-│  ├─ omnia.create-associate 0.2.9
+│  ├─ omnia.create-associate 0.2.10（source only）
 │  └─ omnia.delete-elements 0.2.1
 ├─ Connector Operation 包（官方签名 .ofop，按 Feature/capability 装载）
 │  └─ 通过公司电脑 Remote Operation host 执行固定 step gate
@@ -44,7 +44,7 @@ v5 便携产品根
 | 1 | 录制 | 官方签名 omnia.recording 0.3.0 / sequence 4，已内置 Shell 0.4.8 | 独立 .ofp 随便携包内置；不是 Shell 硬编码业务 | 播放器式 start/pause/resume/stop/export；当前页自动采集 Risk/Control；分块进入 Core Artifact；公司电脑真实录制待 canary | 无 | 在授权 Pack/公司电脑完成现场录制 canary |
 | 2 | 删除元素 | 官方签名 .ofp 0.2.1 / sequence 8，随 Shell 0.4.12 内置 | builtin bootstrap 自动安装/升级；声明式真实目录、多选和 Comments 唯一删除图计划卡 | Information/TOOL 零 blocker；APP/DB/OS 展开派生 GRA、GRA Control 级联快照与 DB/OS–APP 解关联；每步独立 Core command/receipt/readback；Remote canary 待完成 | 无 | 完成目标 Pack 工作簿创建图的全量删除 canary；不得 fallback 到历史 Local 路径 |
 | 3 | 删除聊天记录 | 未交付，仅产品设计 | 未来独立后装 .ofp | 不依赖 Omnia 的本地事务仍未实现 | 无 | 开发真实本地事务、附件引用清理和恢复测试；没有闭环前不要显示入口 |
-| 4 | 新建与关联 | `omnia.create-associate@0.2.9 / sequence 11` 候选包 | 独立 .ofp + .ofop；随 Shell 0.4.12 内置并自动升级 | authority 改用已验证的 `facets/byEngagementIds`，忽略无关 Facet，严格使用真实 Workspace Group/parentId，并继续受显式安全锁约束 | 有 | 由发布负责人生成签名不可变包；完成真实 SAP ECC canary；接通真实 AI review port |
+| 4 | 新建与关联 | `omnia.create-associate@0.2.10 / sequence 12` 源码（未打包） | 独立 .ofp + .ofop 源码；Shell 0.4.12 builtin 已指向待生成的 0.2.10 包 | Worker/Operation 的 Omnia/Core GUID 统一为非全零 8-4-4-4-12 十六进制，不限制 RFC version/variant；authority 继续使用真实 `facets/byEngagementIds` 与 Workspace Group/parentId，并受显式安全锁约束 | 有 | 由发布负责人生成签名不可变包；完成真实 SAP ECC canary；接通真实 AI review port |
 
 ### 3.1 录制的准确边界
 
@@ -89,6 +89,6 @@ Candidate package: `feature-packages/create-associate/candidates/create-associat
 
 0.2.0 候选收紧为通用三步 Surface，不在 Renderer 硬编码 Feature 业务分支。create-associate 随包携带签名 `Phase1-用户填写模板V3.xlsx` 源模板并可精确导出；用户选择与拖放都建立真实 Run/输入 Artifact。升级不更改已有 `data/`、Remote binding、Pack 观测或历史 Run。自动化已通过；Feature 候选文件 SHA-256 为 `4b947b7d759f854fec68df254350c91a0302278f0e47b767e71058ccd874d1b8`，Operation 候选文件 SHA-256 为 `b60253ef82ebc57c6917d2a613632c8dcbccdf408607f603bfec5646b8d52260`；便携升级与真实 Omnia canary 仍待完成。
 
-## omnia.create-associate 0.2.9 / omnia.recording 0.3.0 / omnia.delete-elements 0.2.1 / Shell 0.4.12
+## omnia.create-associate 0.2.10 / omnia.recording 0.3.0 / omnia.delete-elements 0.2.1 / Shell 0.4.12
 
-create-associate 0.2.9 保留 staged upload，将 authority Workspace 解析迁移到安全锁/delete 已验证的 `facets/byEngagementIds`，并在 Engagement 校验后忽略无关 Facet；只接受真实 CustomWorkspace Facet 与真实 CustomWorkspaceGroup parentId，名称匹配不推断 membership。delete-elements 0.2.1 使用通用 `selectionBrowser` 呈现真实 Section/Workspace/元素类型目录和持久多选，Comments 卡是删除图计划唯一 owner；APP/DB/OS 的派生 GRA、Control 级联和关系清理均显式进入 Core intent/command/receipt/readback。Shell 仍为 0.4.12；真实 mutation/readback canary 仍待执行。
+create-associate 0.2.10 是未打包的源码版本；它保留 staged upload 和 0.2.9 authority 行为，并修正 Worker/Operation 把 Omnia/Core GUID 误套 RFC UUID version/variant 的问题。有效身份现在要求规范 8-4-4-4-12 十六进制且非全零，仍执行字符串规范化。delete-elements 0.2.1 使用通用 `selectionBrowser` 呈现真实 Section/Workspace/元素类型目录和持久多选，Comments 卡是删除图计划唯一 owner；APP/DB/OS 的派生 GRA、Control 级联和关系清理均显式进入 Core intent/command/receipt/readback。Shell 仍为 0.4.12；真实 mutation/readback canary 仍待执行。

@@ -1,4 +1,8 @@
-# 0.2.9 / sequence 11
+# 0.2.10 / sequence 12
+
+Source release correcting Omnia/Core GUID validation in the Worker and signed Operation handler. Canonical non-zero 8-4-4-4-12 hexadecimal identities are accepted regardless of RFC UUID version or variant bits; input trimming and lowercase normalization remain in force. This source version has not been packaged, installed, or canary-tested.
+
+# 0.2.9 / sequence 11 history
 
 Immutable successor to the already activated 0.2.8 digest. Unrelated Facets in the Engagement directory are now ignored after object-shape and Engagement validation; strict GUID, uniqueness, name, safety-scope and live-parent checks apply only to the recorded CustomWorkspaceGroup and CustomWorkspace Facet types.
 

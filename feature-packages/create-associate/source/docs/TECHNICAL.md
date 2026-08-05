@@ -90,6 +90,10 @@ The GRA object intent freezes its canonical derived `graName` in `externalId`; i
 
 The signed readback accepts the recorded Omnia detail contract in which the IT Element identity may be present only in an active `riskScopes[].entityId`. All valid top-level and active-scope candidates are deduplicated and exactly one is required; missing or conflicting identities fail closed. `query.itElementType` must select one unambiguous governed GRA type ID from `GRA_KIND_CONTRACT`: Application/3, Infrastructure/4 (DB and OS), or ITTool/5. The response must return the exact canonical type string, GRA ID, canonical name, Workspace, and `inkContentId`; it need not echo the catalog type ID because Omnia does not return that field.
 
+## 0.2.22 risk-scope envelopes and incomplete RAIT resume
+
+`riskScopes` is parsed only as a bare array or an object containing exactly one array under `$values`, `results`, `items`, or `value`. The parser does not recurse and does not infer arbitrary fields. Deleted or explicitly inactive scopes are ignored; all remaining valid entity GUIDs plus supported top-level candidates are deduplicated and exactly one must remain. APP identity follows v4 resume semantics: an exact GRA with no submitted RAIT is reusable but explicitly incomplete, the returned `resolved.rait` stays bound to the planned value, and the independent GRA-state intent remains responsible for a real PATCH and authoritative readback. Risk-derived inference is not used to pretend RAIT is already submitted.
+
 The package contains a process-isolated CommonJS Worker, declarative Surface, private migration, managed V8-derived governance IR, signed runtime-template base XLSX, and a signed Operation package. Core passes base64 bytes (64 MiB maximum), never filesystem paths. Runtime output patches only declared OOXML worksheet/core parts and verifies every undeclared part digest.
 
 The governance IR contains 187 fields, 68 relation rules, and 15 scoring items. TemplateVersion semantic identity is stable across Runs; instance semantic/patch/output/governance digests are per Run.

@@ -1,4 +1,8 @@
-# 0.2.21 / sequence 23
+# 0.2.22 / sequence 24
+
+Application GRA identity now reads `riskScopes` from a bare array or exactly one allowlisted Newtonsoft/list envelope (`$values`, `results`, `items`, `value`) without recursion. Active entity IDs are deduplicated and absence/conflict fails closed. An otherwise exact existing GRA with empty RAIT returns `exact_existing_incomplete_gra` while freezing the planned RAIT; its existing GRA-state intent must still execute signed PATCH and receipt-backed readback. Non-empty conflicting RAIT remains incompatible.
+
+# 0.2.21 / sequence 23 history
 
 GRA reconcile now matches Omnia's real risk-assessment detail shape. It resolves exactly one active IT Element GUID from supported top-level fields plus `riskScopes`, rejects conflicting identities, requires exact GRA ID/name/Workspace/canonical type/ink-content, and validates the signed query's type ID through `GRA_KIND_CONTRACT` (APP 3, DB/OS 4, TOOL 5) without demanding a non-existent server type-ID echo.
 

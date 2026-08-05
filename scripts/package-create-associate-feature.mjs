@@ -140,7 +140,7 @@ const runtimeBaseBytes = workerModule.buildRuntimeWorkbook(
 
 const userTemplateBytes = await readFile(userTemplatePath);
 if (userTemplateBytes.length < 1 || userTemplateBytes.length > 64 * 1024 * 1024) throw new Error('Phase1 user template V3 size is invalid.');
-const version = '0.2.21'; const sequence = 23;
+const version = '0.2.22'; const sequence = 24;
 const route = (stepId, method, routeTemplate, parameters, bodyMode = 'none', bodyParameter = '') => ({ stepId, method, routeTemplate, parameters, bodyMode, bodyParameter });
 const applicationIdentityRoutes = () => [
   route('workitem-directory', 'POST', '/work/v1/WorkQueries/getWorkitemDetails', [], 'signed_json'),
@@ -148,8 +148,7 @@ const applicationIdentityRoutes = () => [
   route('application-search', 'POST', '/rapr/v0/engagements/{engagementId}/applications/search', [], 'signed_json'),
   route('object-detail', 'GET', '/rapr/v0/engagements/{engagementId}/itelement/{objectId}', [{ name: 'objectId', type: 'guid' }]),
   route('object-identity-workspace', 'GET', '/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}', [{ name: 'workItemId', type: 'guid' }]),
-  route('gra-detail', 'GET', '/rapr/v0/engagements/{engagementId}/riskassessments/{riskAssessmentId}', [{ name: 'riskAssessmentId', type: 'guid' }]),
-  route('gra-risks', 'GET', '/rapr/v0/engagements/{engagementId}/plannedresponse/byRiskAssessmentId?riskAssessmentId={riskAssessmentId}&reviewMode=false', [{ name: 'riskAssessmentId', type: 'guid' }])
+  route('gra-detail', 'GET', '/rapr/v0/engagements/{engagementId}/riskassessments/{riskAssessmentId}', [{ name: 'riskAssessmentId', type: 'guid' }])
 ];
 const operations = [
   { operationId: 'omnia.create-associate.authority.resolve.v1', effect: 'read_only', requestSchema: 'omnia.create-associate.authority-resolve-request/v1', responseSchema: 'omnia.create-associate.authority-resolve-response/v1', enabledByDefault: true, grantsMutationPermit: false, routes: [

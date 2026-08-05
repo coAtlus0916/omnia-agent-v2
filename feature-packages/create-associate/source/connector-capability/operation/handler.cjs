@@ -213,10 +213,18 @@ function deletedEntity(value) {
     .map((item) => normalizedLabel(item).replace(/[\s_-]+/gu, ''))
     .some((item) => ['deleted', 'softdeleted', 'recycled', 'recyclebin', 'trashed', 'intrash', 'removed'].includes(item));
 }
+function explicitArrayRows(value, label) {
+  if (Array.isArray(value)) return value;
+  if (value === null || value === undefined) return [];
+  if (!value || typeof value !== 'object') fail(`${label} must be an array or an allowed array envelope.`);
+  const keys = ['$values','results','items','value'].filter((key) => Object.prototype.hasOwnProperty.call(value, key));
+  if (keys.length !== 1 || !Array.isArray(value[keys[0]])) fail(`${label} must contain exactly one allowed array envelope.`);
+  return value[keys[0]];
+}
 function assessmentEntityId(value, label) {
   const direct = [value && value.entityId, value && value.itElementId, value && value.applicationId]
     .map(optionalGuid).filter(Boolean);
-  const scoped = rows(value && value.riskScopes)
+  const scoped = explicitArrayRows(value && value.riskScopes, `${label} riskScopes`)
     .filter((scope) => scope && typeof scope === 'object' && !Array.isArray(scope) && !deletedEntity(scope)
       && scope.isActive !== false && scope.active !== false)
     .map((scope) => optionalGuid(scope.entityId)).filter(Boolean);
@@ -326,12 +334,6 @@ function explicitlyHasNoGra(value) {
     && value.riskAssessments.length === 0 && !optionalGuid(value.riskAssessmentId || value.graId)
     && !optionalGuid(value.riskAssessment && value.riskAssessment.id) && !optionalGuid(value.gra && value.gra.id);
 }
-function raitFromRisks(value) {
-  const classifications = flattenObjects(value).filter((item) => /^RAITCOR\d+/iu.test(text(item && item.riskNumber)))
-    .map((item) => normalizeRait(item && (item.classificationType || item.classification))).filter(Boolean);
-  if (classifications.includes('Higher')) return 'Higher';
-  return classifications.length ? 'Lower' : '';
-}
 function prunedApplication(item, detail, authority) {
   return {
     id: optionalGuid(detail && (detail.id || detail.itElementId || detail.applicationId))
@@ -411,19 +413,18 @@ async function resolveApplicationIdentity(request, sdk) {
   }
   if (activeGras.length !== 1) return { ...withItem, reasonCode: activeGras.length > 1 ? 'identifier_ambiguous' : 'active_pair_incompatible' };
   const gra = activeGras[0]; const graDetail = await sdk.invokeStep('gra-detail', { riskAssessmentId: gra.assessmentId });
-  let actualRait = normalizeRait(graDetail.itElementRaitConclusionLevelId || graDetail.itElementRaitConclusionLevel
+  const actualRait = normalizeRait(graDetail.itElementRaitConclusionLevelId || graDetail.itElementRaitConclusionLevel
     || graDetail.itElementRaitConclusionLevelName || graDetail.lastSubmittedITElementRaitConclusionLevelId
-    || graDetail.raitConclusionLevel || gra.rait);
-  if (!actualRait) actualRait = raitFromRisks(await sdk.invokeStep('gra-risks', { riskAssessmentId: gra.assessmentId }));
+    || graDetail.raitConclusionLevel);
   const graWorkspaceIds = detailWorkspaceIds(graDetail, gra); const graObjectId = assessmentEntityId(graDetail, 'Existing Application GRA');
   const graExact = optionalGuid(graDetail.id || graDetail.riskAssessmentId) === gra.assessmentId
     && graWorkspaceIds.length === 1 && graWorkspaceIds[0] === workspaceId && graObjectId === objectId
     && normalizedObjectType(graDetail.riskAssessmentType || graDetail.itElementType || graDetail.entityType || graDetail.type || gra.objectType) === 'Application'
-    && normalizedLabel(graDetail.name || gra.graName) === normalizedLabel(graName) && actualRait === expectedRait
+    && normalizedLabel(graDetail.name || gra.graName) === normalizedLabel(graName)
     && !deletedEntity(graDetail);
-  if (!graExact) return { ...withItem, reasonCode: 'active_pair_incompatible' };
-  return { ...withItem, disposition: 'reuse', reasonCode: 'exact_existing_pair', resolved: {
-    objectId, riskAssessmentId: gra.assessmentId, workItemId: authority.workItemId, workspaceId, graName, rait: actualRait
+  if (!graExact || (actualRait && actualRait !== expectedRait)) return { ...withItem, reasonCode: 'active_pair_incompatible' };
+  return { ...withItem, disposition: 'reuse', reasonCode: actualRait ? 'exact_existing_pair' : 'exact_existing_incomplete_gra', resolved: {
+    objectId, riskAssessmentId: gra.assessmentId, workItemId: authority.workItemId, workspaceId, graName, rait: expectedRait
   } };
 }
 async function applicationCreatePreflight(request, sdk) {

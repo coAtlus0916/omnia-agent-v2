@@ -127,6 +127,22 @@ export class SurfaceWindowManager {
     if (surface) this.bootstrapMatching(surface);
   }
 
+  /**
+   * Delivers a disposable read-only projection without replacing the cached
+   * authorization Surface used for actions and optimistic state checks.
+   */
+  publishSurfaceProjection(surface: DeclarativeFeatureSurface): void {
+    for (const state of this.states.values()) {
+      if (
+        state.placement !== 'closed'
+        && state.featureId === surface.featureId
+        && state.featureVersion === surface.featureVersion
+        && state.surfaceId === surface.surfaceId
+        && state.authorizedSurface.stateVersion === surface.stateVersion
+      ) this.bootstrap(state, surface);
+    }
+  }
+
   private async load(state: SurfaceWindowState, surface: DeclarativeFeatureSurface): Promise<void> {
     const contents = state.view?.webContents || state.window?.webContents;
     if (!contents) return;

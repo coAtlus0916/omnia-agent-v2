@@ -172,7 +172,25 @@ export interface FeatureRuntimeDependencies {
   connector: ConnectorTransport;
   workerHostEntrypoint: string;
   featureReview?: (input: unknown, context: FeatureWorkerPortContext) => Promise<unknown>;
+  /** Disposable read-only projection; it must never replace the authoritative runtime Surface. */
+  publishSurfaceProjection?: (surface: DeclarativeFeatureSurface) => void;
 }
+
+type ReturnProgressRow = {
+  target_key: string;
+  target_kind: string;
+  state: string;
+  object_type: string | null;
+  command_state: string;
+};
+
+const LIVE_RETURN_PROGRESS_METHODS = new Set([
+  'approveReturnIntent',
+  'prepareReturnCommand',
+  'recordReturnEvidence',
+  'projectVerifiedReturn',
+  'finishReturn'
+]);
 
 function utcNow(): string {
   return new Date().toISOString();
@@ -1232,6 +1250,7 @@ export class FeaturePackageManager {
   private selectedFeatureId = '';
   private readonly supervisors = new Map<string, FeatureWorkerSupervisor>();
   private readonly runtimeSurfaces = new Map<string, DeclarativeFeatureSurface>();
+  private readonly liveReturnProgressSignatures = new Map<string, string>();
   private readonly operationRegistrations = new Map<string, { sessionGeneration: number; packageDigest: string }>();
   private readonly installedPackages = new Map<string, { identity: string; value: InstalledFeaturePackage }>();
   private readonly pendingRuntimeEvents = new Set<string>();
@@ -1925,6 +1944,91 @@ export class FeaturePackageManager {
     }
   }
 
+  /**
+   * Projects receipt-backed Return progress while the owning Worker mutation is
+   * still running. This is intentionally a disposable Surface: changing the
+   * authoritative runtime Surface (or its optimistic stateVersion) here would
+   * race the final Worker result. The read occurs in the same port call and
+   * never invokes the Worker a second time.
+   */
+  private publishLiveReturnProgress(
+    featureId: string,
+    featureVersion: string,
+    runId: string,
+    context: FeatureWorkerPortContext
+  ): void {
+    const publish = this.runtime?.publishSurfaceProjection;
+    const head = this.head(featureId);
+    const surface = this.runtimeSurfaces.get(featureId);
+    if (!publish || !head || head.featureVersion !== featureVersion || !surface?.progress
+      || surface.workflow?.currentStepId !== 'return') return;
+    try {
+      const rows = this.runtimeStore.call('loadReturnProgress', { runId }, {
+        ...context,
+        allowMutation: false
+      }) as ReturnProgressRow[];
+      if (!Array.isArray(rows) || rows.length !== surface.progress.total || rows.length < 1) return;
+      const categories = [
+        rows.filter((row) => row.target_kind === 'object' && row.object_type !== 'GRA'),
+        rows.filter((row) => row.target_kind === 'object' && row.object_type === 'GRA'),
+        rows.filter((row) => row.target_kind === 'relation'),
+        rows.filter((row) => row.target_kind === 'risk_control'),
+        rows.filter((row) => !['object', 'relation', 'risk_control'].includes(row.target_kind))
+      ].filter((group) => group.length > 0);
+      if (categories.length !== surface.progress.items.length) return;
+      const rowState = (row: ReturnProgressRow): 'passed' | 'uncertain' | 'failed' | 'running' | 'pending' => {
+        if (row.state === 'verified' || ['readback_verified', 'closed_not_applied'].includes(row.command_state)) return 'passed';
+        if (row.state === 'uncertain' || row.command_state === 'uncertain') return 'uncertain';
+        if (row.state === 'failed' || row.command_state === 'failed') return 'failed';
+        if (['submitted', 'committed'].includes(row.command_state)) return 'running';
+        return 'pending';
+      };
+      const items = surface.progress.items.map((item, index) => {
+        const group = categories[index]!;
+        // The declarative Surface owns labels and ordering; Core only fills a
+        // capsule when its immutable target cardinality still matches.
+        if (item.itemId !== `return-group-${index}` || item.total !== group.length) return null;
+        const states = group.map(rowState);
+        const completed = states.filter((state) => state === 'passed').length;
+        const state = states.includes('failed') ? 'failed'
+          : states.includes('uncertain') ? 'uncertain'
+            : states.includes('running') ? 'running'
+              : completed === group.length ? 'passed' : 'pending';
+        return {
+          ...item,
+          state,
+          completed,
+          total: group.length,
+          percent: Math.floor(completed * 100 / group.length)
+        };
+      });
+      if (items.some((item) => item === null)) return;
+      const completed = rows.map(rowState).filter((state) => state === 'passed').length;
+      const states = rows.map(rowState);
+      const progressState = states.includes('failed') ? 'failed'
+        : states.includes('uncertain') ? 'uncertain'
+          : completed === rows.length ? 'passed' : 'running';
+      const progress = {
+        ...surface.progress,
+        completed,
+        total: rows.length,
+        percent: Math.floor(completed * 100 / rows.length),
+        state: progressState,
+        items: items as NonNullable<DeclarativeFeatureSurface['progress']>['items']
+      };
+      const signature = JSON.stringify(progress);
+      const signatureKey = `${featureId}\u0000${featureVersion}\u0000${runId}`;
+      if (this.liveReturnProgressSignatures.get(signatureKey) === signature) return;
+      const { manifest } = this.loadInstalled(head);
+      const projection = validateSurface({ ...surface, progress }, manifest);
+      this.liveReturnProgressSignatures.set(signatureKey, signature);
+      publish(projection);
+    } catch {
+      // A disposable projection can never fail or alter the owning mutation.
+      // The final Worker result remains the authoritative Surface transition.
+    }
+  }
+
   private async startRuntime(head: ActivationHead): Promise<void> {
     if (!this.runtime) throw new Error('Feature runtime dependencies are unavailable.');
     const installed = this.loadInstalled(head);
@@ -2161,7 +2265,16 @@ export class FeaturePackageManager {
             throw error;
           }
         },
-        storeCall: async (method, input, context) => this.runtimeStore.call(method, input, context),
+        storeCall: async (method, input, context) => {
+          const value = this.runtimeStore.call(method, input, context);
+          if (context.allowMutation && LIVE_RETURN_PROGRESS_METHODS.has(method)) {
+            const runId = input && typeof input === 'object' && !Array.isArray(input)
+              ? String((input as Record<string, unknown>).runId || '')
+              : '';
+            if (runId) this.publishLiveReturnProgress(context.featureId, context.featureVersion, runId, context);
+          }
+          return value;
+        },
         featureReview: async (input, context) => {
           if (!this.runtime?.featureReview) {
             throw new AppError('FEATURE.AI_REVIEW_UNAVAILABLE', 'Feature AI review port is unavailable.');

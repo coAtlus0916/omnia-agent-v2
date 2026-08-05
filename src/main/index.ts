@@ -326,7 +326,8 @@ app.whenReady().then(async () => {
   featurePackages = new FeaturePackageManager(database.db, paths, undefined, {
     connector,
     workerHostEntrypoint: path.resolve(__dirname, 'feature-worker-host.cjs'),
-    featureReview: (input, context) => chat.reviewFeatureInput(input, context)
+    featureReview: (input, context) => chat.reviewFeatureInput(input, context),
+    publishSurfaceProjection: (surface) => surfaceWindows?.publishSurfaceProjection(surface)
   }, interactionLogs);
   const hotApplicationRoot = resolveHotApplicationRoot();
   installBuiltinFeaturePackages(

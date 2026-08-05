@@ -275,7 +275,17 @@ export class FeatureRuntimeStore {
     if (method === 'loadReturnProgress') {
       const request=object(input,'Return progress'); const runId=String(request.runId||'');
       if(!this.core.prepare(`SELECT 1 FROM feature_runs WHERE run_id=? AND feature_id=? AND feature_version=?`).get(runId,context.featureId,context.featureVersion)) throw new Error('Return progress Run is not owned by this Feature.');
-      return this.core.prepare(`SELECT target_key,state FROM managed_content_intents WHERE run_id=? ORDER BY created_at`).all(runId);
+      return this.core.prepare(`
+        SELECT i.target_key,i.target_kind,i.state,
+          json_extract(i.intended_revision_json,'$.objectType') AS object_type,
+          COALESCE((
+            SELECT c.state FROM feature_commands c
+            WHERE c.intent_id=i.intent_id AND c.run_id=i.run_id
+            ORDER BY c.created_at DESC,c.command_id DESC LIMIT 1
+          ),'pending') AS command_state
+        FROM managed_content_intents i
+        WHERE i.run_id=? ORDER BY i.created_at,i.intent_id
+      `).all(runId);
     }
     if (method === 'saveReturnReconcileSpec') {
       const request=object(input,'Return reconcile specification'); const commandId=String(request.commandId||''); const runId=String(request.runId||'');
@@ -1395,6 +1405,42 @@ export class FeatureRuntimeStore {
       const expectedPatchKind = String(intended.fieldId) === 'status' ? 'status' : 'rait';
       commandIntentValid = String(desired.riskAssessmentId || '') === projectedObjectId(intended.graTargetKey)
         && String(desired.patchKind || '') === expectedPatchKind && String(desired.value || '') === String(intended.value || '');
+    } else if (String(intended.key || '').startsWith('risk-classification|')) {
+      const resolvedRisk = intended.resolvedRisk as Record<string, unknown> | undefined;
+      const target = commandRequest.target && typeof commandRequest.target === 'object' && !Array.isArray(commandRequest.target)
+        ? commandRequest.target as Record<string, unknown>
+        : undefined;
+      const queryMode = commandRequest.query && typeof commandRequest.query === 'object' && !Array.isArray(commandRequest.query);
+      const exactKeys = (value: Record<string, unknown>, expected: string[]): boolean => {
+        const actual = Object.keys(value).sort(); const required = [...expected].sort();
+        return actual.length === required.length && actual.every((key, index) => key === required[index]);
+      };
+      const immutableShape = String(intended.kind || '') === 'field'
+        && String(intended.objectType || '') === 'GRA'
+        && String(intended.fieldId || '') === 'classificationType'
+        && Boolean(String(intended.rowKey || '')) && Boolean(String(intended.riskNumber || ''))
+        && String(intended.key || '') === `risk-classification|${String(intended.rowKey)}|${String(intended.riskNumber)}`
+        && ['Higher','Lower'].includes(String(intended.value || ''))
+        && Boolean(String(intended.riskName || ''));
+      const commonPayload = immutableShape
+        && Boolean(projectedObjectId(intended.graTargetKey))
+        && String(desired.riskAssessmentId || '') === projectedObjectId(intended.graTargetKey)
+        && String(desired.riskName || '') === String(intended.riskName || '')
+        && String(desired.classification || '') === String(intended.value || '')
+        && Boolean(String(desired.riskId || ''))
+        && (!resolvedRisk || String(desired.riskId || '') === String(resolvedRisk.riskId || ''));
+      commandIntentValid = queryMode
+        ? Boolean(target)
+          && exactKeys(commandRequest, ['target','query'])
+          && exactKeys(desired, ['riskAssessmentId','riskName','riskId','classification'])
+          && exactKeys(target!, ['targetIdentityKey','workspaceId'])
+          && String(target!.targetIdentityKey || '') === intendedTargetIdentityKey
+          && String(target!.workspaceId || '') === String(intended.workspace || '')
+          && commonPayload
+        : exactKeys(commandRequest, ['engagementId','workspaceId','riskAssessmentId','riskName','riskId','classification'])
+          && String(commandRequest.engagementId || '') === String(binding.engagementId || '')
+          && String(commandRequest.workspaceId || '') === String(intended.workspace || '')
+          && commonPayload;
     } else if (String(intended.key || '').startsWith('risk-factor|')) {
       const factor=intended.resolvedFactor as Record<string,unknown>|undefined;
       commandIntentValid = String(desired.riskAssessmentId || '') === projectedObjectId(intended.graTargetKey)

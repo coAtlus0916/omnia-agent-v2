@@ -1,4 +1,8 @@
-# 0.2.15 / sequence 17
+# 0.2.16 / sequence 18
+
+Corrective release applying the authoritative Work Item Facet Mapping to APP identity resolution and its action-time create preflight. An active Application is compatible only when its detail supplies one non-zero Work Item GUID whose unique mapping equals the frozen Workspace; the resolved object identity now carries that exact Work Item ID.
+
+# 0.2.15 / sequence 17 history
 
 Corrective release replacing the invalid IT Element detail `workspaceId` read-back with the authoritative Work Item Facet Mapping used by deletion. Object and Application-settings reads require one non-zero Work Item GUID and exactly one mapping to the frozen Workspace; detail identity, type, subtype, external identity, and Application description remain strict.
 

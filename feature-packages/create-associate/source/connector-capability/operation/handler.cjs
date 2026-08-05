@@ -308,7 +308,7 @@ function raitFromRisks(value) {
   if (classifications.includes('Higher')) return 'Higher';
   return classifications.length ? 'Lower' : '';
 }
-function prunedApplication(item, detail) {
+function prunedApplication(item, detail, authority) {
   return {
     id: optionalGuid(detail && (detail.id || detail.itElementId || detail.applicationId))
       || optionalGuid(item && (item.id || item.itElementId || item.applicationId)),
@@ -318,7 +318,8 @@ function prunedApplication(item, detail) {
       || item && (item.name || item.displayName || item.itElementName)),
     itElementType: normalizedObjectType(detail && (detail.itElementType || detail.entityType || detail.elementType || detail.type)
       || item && (item.itElementType || item.entityType || item.elementType || item.type)),
-    workspaceId: detailWorkspaceIds(detail, item)[0] || '',
+    workItemId: authority.workItemId,
+    workspaceId: authority.workspaceId,
     riskAssessmentId: optionalGuid(detail && (detail.riskAssessmentId || detail.graId)
       || item && (item.riskAssessmentId || item.graId)),
     description: detail && Object.prototype.hasOwnProperty.call(detail, 'description') ? detail.description : null
@@ -365,11 +366,12 @@ async function resolveApplicationIdentity(request, sdk) {
         : recycledGraName.length ? 'gra_in_recycle_bin' : 'active_pair_incompatible' };
   }
   const indexed = search.active[0]; const objectId = optionalGuid(indexed.id || indexed.itElementId || indexed.applicationId);
-  const detail = await sdk.invokeStep('object-detail', { objectId }); const item = prunedApplication(indexed, detail);
-  const workspaceIds = detailWorkspaceIds(detail, indexed);
+  const detail = await sdk.invokeStep('object-detail', { objectId });
+  const authority = await assertObjectWorkspaceAuthority(sdk, 'object-identity-workspace', detail, workspaceId);
+  const item = prunedApplication(indexed, detail, authority);
   const objectExact = item.id === objectId && normalizedLabel(item.name) === normalizedLabel(externalId)
     && normalizedLabel(item.number) === normalizedLabel(externalId) && item.itElementType === 'Application'
-    && workspaceIds.length === 1 && workspaceIds[0] === workspaceId && !deletedEntity(detail);
+    && !deletedEntity(detail);
   const withItem = { ...base, item };
   if (!objectExact) return { ...withItem, reasonCode: 'active_pair_incompatible' };
   if (recycledGraName.length) return { ...withItem, reasonCode: 'gra_in_recycle_bin' };
@@ -381,7 +383,7 @@ async function resolveApplicationIdentity(request, sdk) {
     && (value.identifiers.includes(normalizedLabel(externalId)) || normalizedLabel(value.graName) === normalizedLabel(graName)));
   if (!activeGras.length && !indexedAssessmentId && explicitlyHasNoGra(detail) && base.graState === 'none') {
     return { ...withItem, disposition: 'resume', reasonCode: 'exact_element_without_gra',
-      resolved: { objectId, riskAssessmentId: '', workItemId: '', workspaceId, graName, rait: expectedRait } };
+      resolved: { objectId, riskAssessmentId: '', workItemId: authority.workItemId, workspaceId, graName, rait: expectedRait } };
   }
   if (activeGras.length !== 1) return { ...withItem, reasonCode: activeGras.length > 1 ? 'identifier_ambiguous' : 'active_pair_incompatible' };
   const gra = activeGras[0]; const graDetail = await sdk.invokeStep('gra-detail', { riskAssessmentId: gra.assessmentId });
@@ -398,7 +400,7 @@ async function resolveApplicationIdentity(request, sdk) {
     && !deletedEntity(graDetail);
   if (!graExact) return { ...withItem, reasonCode: 'active_pair_incompatible' };
   return { ...withItem, disposition: 'reuse', reasonCode: 'exact_existing_pair', resolved: {
-    objectId, riskAssessmentId: gra.assessmentId, workItemId: gra.workItemId, workspaceId, graName, rait: actualRait
+    objectId, riskAssessmentId: gra.assessmentId, workItemId: authority.workItemId, workspaceId, graName, rait: actualRait
   } };
 }
 async function applicationCreatePreflight(request, sdk) {

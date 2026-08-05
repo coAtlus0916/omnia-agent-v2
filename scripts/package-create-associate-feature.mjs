@@ -140,13 +140,14 @@ const runtimeBaseBytes = workerModule.buildRuntimeWorkbook(
 
 const userTemplateBytes = await readFile(userTemplatePath);
 if (userTemplateBytes.length < 1 || userTemplateBytes.length > 64 * 1024 * 1024) throw new Error('Phase1 user template V3 size is invalid.');
-const version = '0.2.15'; const sequence = 17;
+const version = '0.2.16'; const sequence = 18;
 const route = (stepId, method, routeTemplate, parameters, bodyMode = 'none', bodyParameter = '') => ({ stepId, method, routeTemplate, parameters, bodyMode, bodyParameter });
 const applicationIdentityRoutes = () => [
   route('workitem-directory', 'POST', '/work/v1/WorkQueries/getWorkitemDetails', [], 'signed_json'),
   route('gra-directory', 'POST', '/rapr/v0/engagements/{engagementId}/riskassessments/commonAccounts', [], 'signed_json'),
   route('application-search', 'POST', '/rapr/v0/engagements/{engagementId}/applications/search', [], 'signed_json'),
   route('object-detail', 'GET', '/rapr/v0/engagements/{engagementId}/itelement/{objectId}', [{ name: 'objectId', type: 'guid' }]),
+  route('object-identity-workspace', 'GET', '/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}', [{ name: 'workItemId', type: 'guid' }]),
   route('gra-detail', 'GET', '/rapr/v0/engagements/{engagementId}/riskassessments/{riskAssessmentId}', [{ name: 'riskAssessmentId', type: 'guid' }]),
   route('gra-risks', 'GET', '/rapr/v0/engagements/{engagementId}/plannedresponse/byRiskAssessmentId?riskAssessmentId={riskAssessmentId}&reviewMode=false', [{ name: 'riskAssessmentId', type: 'guid' }])
 ];

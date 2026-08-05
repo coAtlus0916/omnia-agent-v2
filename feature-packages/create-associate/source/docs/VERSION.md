@@ -1,6 +1,10 @@
-# 0.2.35 / sequence 37
+# 0.2.36 / sequence 38
 
-GRA create preflight treats Work Item/common-account directory rows as partial projections. Exact GRA name or explicit entity selects one canonical active assessment GUID; missing directory entity, Workspace and type fields are allowed, while any provided conflicting value, missing related assessment GUID, multiple assessment GUIDs, ambiguity or recycle state blocks. The selected assessment detail must independently prove its assessment ID, active state, exact entity candidates, exact name, frozen Workspace and canonical type. Only a genuinely unrelated directory returns `found=false`.
+The Return action's progress map is now monotonic during one execution. After verified mutation readback, race closure, existing-identity readback or authoritative close successfully records durable `readback_verified` evidence, the exact target key is immediately marked verified in memory. Later row/global passes therefore skip relationships or other intents completed earlier in the same action. No target is marked before evidence succeeds, and Core command reservation, binding and no-replay checks are unchanged.
+
+# 0.2.35 / sequence 37 history
+
+GRA create preflight treats Work Item/common-account directory rows as partial projections. Exact GRA name or explicit entity selects one canonical active assessment GUID; missing directory entity, Workspace and type fields are allowed, while explicit conflicts, missing related assessment GUIDs, multiple assessment GUIDs, ambiguity or recycle state block. The selected detail independently proves all final identity fields.
 
 # 0.2.34 / sequence 36 history
 

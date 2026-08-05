@@ -6,7 +6,7 @@ V8 digest 固定为 `1ED937A50253CEDF431CE02A0CC7A3B3E576597BBD6CAA6C967738D7B2D
 
 # Contracts
 
-Version 0.2.35 retains the same canonical validation, identity, authority, safety and receipt contracts. A directory projection may omit entity, Workspace or type, but any provided value must agree with the request. Exact name or explicit entity must select one active canonical assessment GUID. Assessment detail—not the partial directory row—must independently prove the exact entity, canonical name, frozen Workspace, object type and active state.
+Version 0.2.36 retains the same canonical validation, identity, authority, safety and receipt contracts. Durable `readback_verified` evidence is the only event that advances an execution-local target to verified. Race closure, mutation readback, existing-object readback and authoritative close all update the local progress map only after that evidence succeeds, preventing duplicate command preparation within the same action without weakening Core reservations.
 
 Canonical GRA names are `GRA-${elementId}` and participate with element IDs in batch uniqueness checks. DB/OS must reference exactly one in-batch APP in the same normalized Workspace. The InfrastructureApplication relation is written and read from both directions before Infrastructure GRA creation; DB/OS RAIT is then inherited from the exact live APP GRA. Tool has no relationship input in the template, so no Tool relationship is fabricated.
 

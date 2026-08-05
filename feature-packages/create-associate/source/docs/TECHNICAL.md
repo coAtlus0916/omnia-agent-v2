@@ -102,6 +102,12 @@ Entity candidate extraction now distinguishes zero, one and conflicting candidat
 
 Risk-assessment detail can contain multiple `riskScopes` belonging to different entity kinds. Candidate extraction accepts only active scopes whose normalized `riskScopeType`, `entityType`, or `type` equals the expected canonical object type. If a scope carries `inkContentId` or `contentId`, it must also equal the detail/query content identity. Scopes without type are ignored rather than guessed. Top-level `entityId`/`itElementId`/`applicationId` remain candidates; the combined semantic set is deduplicated and must contain the exact planned object or be empty for the existing directory fallback. Application identity passes Application plus the current object ID and detail content; reconcile passes its signed type/content/entity query. Infrastructure covers both DB and OS, and ITTool covers Tool.
 
+## 0.2.36 execution-local verified progress
+
+`loadReturnProgress` initializes a target-state map once per confirm/continue action. All four successful closure paths now update that map immediately after recording durable verified evidence: mutation race closure, normal mutation readback, existing-identity readback and read-only authoritative close. The update is deliberately after evidence persistence so memory can never claim completion that Core rejected.
+
+This preserves phase-local `done(targetKey)` semantics across the full action. An Infrastructure relationship completed during the early v4 ordering pass is skipped by the later global relation pass, avoiding a second reservation for the same frozen intent. Core remains unchanged and continues to reject any genuine duplicate preparation.
+
 ## 0.2.35 partial GRA directory projections
 
 The merged Work Item/common-account directory is an identity index, not final authority. An exact GRA name or explicit entity may select one active canonical assessment GUID even when that row omits object ID, Workspace or object type. Provided values remain constraints: disagreement with the requested entity/name/Workspace/type blocks immediately, as do missing related assessment IDs, multiple assessment GUIDs, ambiguity and recycle state.

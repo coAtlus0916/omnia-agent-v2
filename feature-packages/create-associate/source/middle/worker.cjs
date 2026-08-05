@@ -1325,6 +1325,7 @@ function createFeatureWorker(dependencies) {
             const raced=await invoke(spec.raceReadOperation,binding,{...spec.raceReadRequest,receiptContext:{runId,commandId:command.commandId}});
             if(spec.raceAlreadyApplied(raced)){
               const readEvidence=await evidence(command.commandId,'reconcile','readback_verified',raced,true);
+              progress.set(spec.targetKey,'verified');
               return {command,response:null,observed:raced,readEvidence,closedByRace:true};
             }
           }
@@ -1361,6 +1362,7 @@ function createFeatureWorker(dependencies) {
               : await invoke(spec.readOperation, binding, readRequest);
             if (!spec.verify(observed, response)) fail('RETURN.READBACK_MISMATCH', `Verified read-back failed for ${spec.targetKey}.`);
             const readEvidence = await evidence(command.commandId, 'readback', 'readback_verified', observed, true);
+            progress.set(spec.targetKey,'verified');
             return { command, response, observed, readEvidence };
           } catch (error) {
             await evidence(command.commandId, 'reconcile', 'uncertain', { code: error.code || 'RETURN.READBACK_FAILED', message: error.message }, false, error.message);
@@ -1379,6 +1381,7 @@ function createFeatureWorker(dependencies) {
             const observed = await invoke(spec.readOperation, binding, { ...spec.readRequest, receiptContext: { runId, commandId: command.commandId } });
             if (!spec.verify(observed)) fail('RETURN.READBACK_MISMATCH', `Existing read-back failed for ${spec.targetKey}.`);
             await evidence(command.commandId, 'readback', 'readback_verified', observed, true);
+            progress.set(spec.targetKey,'verified');
             return { command, observed };
           } catch (error) {
             await evidence(command.commandId, 'preflight', 'failed', { code: error.code || 'RETURN.EXISTING_READ_FAILED', message: error.message }, false, error.message);
@@ -1391,6 +1394,7 @@ function createFeatureWorker(dependencies) {
           const observed = await invoke(readOperation, binding, { ...readRequest, receiptContext: { runId, commandId: command.commandId } });
           if (!verify(observed)) fail('RETURN.READBACK_MISMATCH', `Existing authoritative read-back failed for ${targetKey}.`);
           await evidence(command.commandId, 'reconcile', 'readback_verified', observed, true);
+          progress.set(targetKey,'verified');
           return { command, observed };
         }
         async function projectObject(result, row, targetKey, objectTypeValue, objectId) {

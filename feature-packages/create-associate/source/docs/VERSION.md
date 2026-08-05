@@ -1,4 +1,4 @@
-# 0.2.44 / sequence 46
+# 0.2.45 / sequence 47
 
 Return confirmation and continuation no longer detach the serial executor with `setImmediate` after returning the action result. The entire executor is awaited inside the originating `omnia_mutation` invocation, so Worker Store and Connector port calls retain the exact action authorization that passed safety, confirmation and effect gates. Core command validation remains unchanged and fail-closed. The 15-minute mutation deadline, process-interruption classification, durable per-target checkpoints, readback, uncertain handling and continuation semantics remain intact.
 

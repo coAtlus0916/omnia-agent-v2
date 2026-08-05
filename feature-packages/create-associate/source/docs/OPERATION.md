@@ -1,4 +1,4 @@
-# Signed Operation 0.2.44
+# Signed Operation 0.2.45
 
 Sequence 46 republishes the unchanged signed Operation inventory. Retaining Return execution inside the originating authorized Worker invocation is a Feature Worker orchestration change; no Operation route, permit, readback, or safety contract changed.
 

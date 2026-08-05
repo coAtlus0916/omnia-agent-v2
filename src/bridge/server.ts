@@ -129,7 +129,6 @@ export function createBridgeServer(options: BridgeServerOptions) {
   const socketFresh = (socket: WebSocket | undefined) => Boolean(
     socket
     && socket.readyState === WebSocket.OPEN
-    && (socket as any).isAlive === true
     && Date.now() - Number((socket as any).lastPongAt || 0) <= staleSocketTimeoutMs
   );
   const bindingState = (pairId: string, online = socketFresh(connectors.get(pairId))) => {

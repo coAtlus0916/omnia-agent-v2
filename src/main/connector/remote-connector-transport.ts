@@ -78,9 +78,10 @@ const bridgeVersionCompatible = (value: string): boolean => {
   );
 };
 
-const CONNECTOR_OFFLINE_ERROR_CODES = new Set([
-  'REMOTE.CONNECTOR_OFFLINE',
-  'REMOTE.CONNECTOR_DISCONNECTED'
+const CONNECTOR_PROBE_OPERATIONS = new Set<ConnectorRequest['operation']>([
+  'health',
+  'status',
+  'connect'
 ]);
 
 const bridgeInspection = (
@@ -480,16 +481,17 @@ export class RemoteConnectorTransport implements ConnectorTransport {
     clearTimeout(pending.timer);
     this.pending.delete(response.id);
     if (response.ok) {
+      const wasOffline = !this.connectorOnline;
+      this.connectorOnline = true;
+      if (wasOffline) {
+        this.stateMessage = 'Remote Connector 在线。';
+        this.events.emit('state');
+      }
       pending.resolve(response.value);
       return;
     }
     const errorCode = response.error?.code || 'REMOTE.CONNECTOR_ERROR';
     const errorMessage = response.error?.message || 'Remote Connector 操作失败。';
-    if (CONNECTOR_OFFLINE_ERROR_CODES.has(errorCode)) {
-      this.connectorOnline = false;
-      this.stateMessage = errorMessage;
-      this.events.emit('state');
-    }
     pending.reject(new AppError(
       errorCode,
       errorMessage,
@@ -499,7 +501,9 @@ export class RemoteConnectorTransport implements ConnectorTransport {
 
   private async call(operation: ConnectorRequest['operation'], payload: Record<string, unknown>, timeoutMs: number): Promise<any> {
     await this.ensureSocket();
-    if (!this.connectorOnline && operation !== 'health') throw new AppError('REMOTE.CONNECTOR_OFFLINE', 'Remote Connector 离线。', true);
+    if (!this.connectorOnline && !CONNECTOR_PROBE_OPERATIONS.has(operation)) {
+      throw new AppError('REMOTE.CONNECTOR_OFFLINE', 'Remote Connector 离线。', true);
+    }
     if (!this.protocolCompatible) throw new AppError('REMOTE.CONNECTOR_INCOMPATIBLE', 'Remote Connector 协议不兼容。');
     const id = randomUUID();
     const request: ConnectorRequest = { schemaVersion: 'omnia.connector-ipc/v1', id, operation, payload };
@@ -574,7 +578,6 @@ export class RemoteConnectorTransport implements ConnectorTransport {
     if (!this.config().token) return this.unavailableSnapshot('Remote Connector 尚未配对。');
     try {
       await this.ensureSocket();
-      if (!this.connectorOnline) return this.unavailableSnapshot(this.stateMessage || 'Remote Connector 离线。');
       const status = await this.call('status', {}, 15_000) as ConnectorConnection;
       const authorizationExpired = !status.connected
         && /Omnia 只读 API 返回 HTTP (?:401|403)/u.test(String(status.message || ''));

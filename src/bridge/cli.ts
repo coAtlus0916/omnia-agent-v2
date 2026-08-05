@@ -8,7 +8,7 @@ const options: BridgeServerOptions = {
   statePath: process.env.OMNIA_V5_BRIDGE_STATE_PATH || (process.platform === 'win32'
     ? path.join(process.cwd(), 'data', 'bindings.json')
     : '/var/lib/omnia-agent-v5-bridge/bindings.json'),
-  buildIdentity: process.env.OMNIA_V5_BRIDGE_BUILD_ID || 'bridge-0.4.5'
+  buildIdentity: process.env.OMNIA_V5_BRIDGE_BUILD_ID || 'bridge-0.4.6'
 };
 
 async function main(): Promise<void> {

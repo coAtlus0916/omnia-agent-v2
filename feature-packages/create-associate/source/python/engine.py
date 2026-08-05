@@ -79,6 +79,21 @@ def _has_user_content(value: object) -> bool:
     return value is not None and (not isinstance(value, str) or bool(value.strip()))
 
 
+def _row_in_ranges(row_number: int, ranges: tuple[tuple[int, int], ...]) -> bool:
+    return any(start <= row_number <= end for start, end in ranges)
+
+
+def _is_candidate_data_row(sheet: object, row_number: int, source_row: list[str], declared_columns: set[int], populated_declared: int) -> bool:
+    if _row_in_ranges(row_number, sheet.data_entry_row_ranges):
+        return True
+    if populated_declared >= 2:
+        return True
+    if _row_in_ranges(row_number, sheet.merged_row_ranges):
+        return False
+    bordered = sheet.bordered_cells.get(row_number, frozenset())
+    return any(index in bordered and _has_user_content(value) for index, value in enumerate(source_row) if index in declared_columns)
+
+
 def derive_gra_name(element_id: object) -> str:
     return f"GRA-{unicodedata.normalize('NFC', str(element_id or '')).strip()}"
 
@@ -131,6 +146,8 @@ def parse_workbook(source: object, *, source_artifact_id: str, governance: dict)
                 identity_value = source_row[identity_column] if identity_column < len(source_row) else ""
                 element_id = unicodedata.normalize("NFC", str("" if identity_value is None else identity_value)).strip()
                 populated = sum(1 for column in columns.values() if column < len(source_row) and _has_user_content(source_row[column]))
+                if not _is_candidate_data_row(sheet, source_row_number, source_row, set(columns.values()), populated):
+                    continue
                 kind = str(definition["kind"])
                 row_key = sha256_hex(f"{kind}|{unicodedata.normalize('NFC', sheet.name)}|{source_row_number}")
                 fields: dict[str, Any] = {}

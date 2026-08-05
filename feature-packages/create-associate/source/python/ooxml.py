@@ -23,6 +23,7 @@ _REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 _DOC_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 _SHEET_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _CELL_REF = re.compile(r"^([A-Z]+)([1-9][0-9]*)$")
+_RANGE_REF = re.compile(r"^\$?([A-Z]+)\$?([1-9][0-9]*)(?::\$?([A-Z]+)\$?([1-9][0-9]*))?$")
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,9 @@ class Worksheet:
     name: str
     part_name: str
     rows: dict[int, list[str]]
+    bordered_cells: dict[int, frozenset[int]]
+    data_entry_row_ranges: tuple[tuple[int, int], ...]
+    merged_row_ranges: tuple[tuple[int, int], ...]
 
 
 @dataclass(frozen=True)
@@ -66,6 +70,7 @@ def read_xlsx(source: bytes | bytearray | memoryview | BinaryIO, *, allow_formul
     for name in required:
         require(name in parts, "WORKBOOK.REQUIRED_PART_MISSING", f"Required OOXML part is missing: {name}.")
     shared = _shared_strings(parts.get("xl/sharedStrings.xml"))
+    bordered_styles = _bordered_styles(parts.get("xl/styles.xml"))
     workbook_root = _parse_xml(parts["xl/workbook.xml"], "WORKBOOK.XML_INVALID")
     rel_root = _parse_xml(parts["xl/_rels/workbook.xml.rels"], "WORKBOOK.RELS_INVALID")
     relationships: dict[str, str] = {}
@@ -82,8 +87,11 @@ def read_xlsx(source: bytes | bytearray | memoryview | BinaryIO, *, allow_formul
         part_name = relationships.get(rel_id, "")
         require(name and part_name, "WORKBOOK.SHEET_RELATION_MISSING", f"Worksheet relationship is missing for {name or '(unnamed)' }.")
         require(part_name in parts, "WORKBOOK.SHEET_PART_MISSING", f"Worksheet part is missing for {name}.")
-        rows = _worksheet_rows(parts[part_name], shared, allow_formula_cache=allow_formula_cache)
-        sheets.append(Worksheet(name=name, part_name=part_name, rows=rows))
+        rows, bordered_cells, data_entry_row_ranges, merged_row_ranges = _worksheet_rows(
+            parts[part_name], shared, bordered_styles, allow_formula_cache=allow_formula_cache
+        )
+        sheets.append(Worksheet(name=name, part_name=part_name, rows=rows, bordered_cells=bordered_cells,
+            data_entry_row_ranges=data_entry_row_ranges, merged_row_ranges=merged_row_ranges))
     require(sheets, "WORKBOOK.SHEET_DIRECTORY_MISSING", "XLSX workbook contains no readable worksheets.")
     return Workbook(parts=parts, sheets=tuple(sheets))
 
@@ -185,6 +193,32 @@ def _shared_strings(data: bytes | None) -> tuple[str, ...]:
     return tuple(values)
 
 
+def _bordered_styles(data: bytes | None) -> tuple[bool, ...]:
+    if data is None:
+        return (False,)
+    root = _parse_xml(data, "WORKBOOK.STYLES_INVALID")
+    cell_xfs = root.find(f"{{{_SHEET_NS}}}cellXfs")
+    require(cell_xfs is not None, "WORKBOOK.STYLES_INVALID", "Workbook styles have no cellXfs collection.")
+    result: list[bool] = []
+    for xf in cell_xfs.findall(f"{{{_SHEET_NS}}}xf"):
+        border_id = xf.get("borderId", "0")
+        require(border_id.isdigit(), "WORKBOOK.STYLES_INVALID", "Cell style borderId is invalid.")
+        result.append(int(border_id) != 0)
+    require(result, "WORKBOOK.STYLES_INVALID", "Workbook styles have no cell formats.")
+    return tuple(result)
+
+
+def _row_ranges(reference_list: str, code: str) -> tuple[tuple[int, int], ...]:
+    ranges: list[tuple[int, int]] = []
+    for reference in reference_list.split():
+        match = _RANGE_REF.match(reference)
+        require(match is not None, code, f"Invalid worksheet range reference: {reference or '(empty)' }.")
+        start, end = int(match.group(2)), int(match.group(4) or match.group(2))
+        require(1 <= start <= end <= 1_048_576, code, f"Invalid worksheet row range: {reference}.")
+        ranges.append((start, end))
+    return tuple(ranges)
+
+
 def _column_index(reference: str) -> int:
     match = _CELL_REF.match(reference)
     require(match is not None, "WORKBOOK.CELL_REFERENCE_INVALID", f"Invalid cell reference: {reference or '(empty)'}.")
@@ -195,21 +229,29 @@ def _column_index(reference: str) -> int:
     return value - 1
 
 
-def _worksheet_rows(data: bytes, shared: tuple[str, ...], *, allow_formula_cache: bool) -> dict[int, list[str]]:
+def _worksheet_rows(data: bytes, shared: tuple[str, ...], bordered_styles: tuple[bool, ...], *, allow_formula_cache: bool) -> tuple[dict[int, list[str]], dict[int, frozenset[int]], tuple[tuple[int, int], ...], tuple[tuple[int, int], ...]]:
     root = _parse_xml(data, "WORKBOOK.WORKSHEET_XML_INVALID")
     rows: dict[int, list[str]] = {}
+    bordered_cells: dict[int, frozenset[int]] = {}
+    data_entry_row_ranges = tuple(item for node in root.findall(f"{{{_SHEET_NS}}}dataValidations/{{{_SHEET_NS}}}dataValidation") for item in _row_ranges(node.get("sqref", ""), "WORKBOOK.DATA_VALIDATION_RANGE_INVALID"))
+    merged_row_ranges = tuple(item for node in root.findall(f"{{{_SHEET_NS}}}mergeCells/{{{_SHEET_NS}}}mergeCell") for item in _row_ranges(node.get("ref", ""), "WORKBOOK.MERGE_RANGE_INVALID"))
     sheet_data = root.find(f"{{{_SHEET_NS}}}sheetData")
     if sheet_data is None:
-        return rows
+        return rows, bordered_cells, data_entry_row_ranges, merged_row_ranges
     implicit_row = 0
     for row in sheet_data.findall(f"{{{_SHEET_NS}}}row"):
         row_number = int(row.get("r") or implicit_row + 1)
         require(1 <= row_number <= 1_048_576, "WORKBOOK.ROW_LIMIT_EXCEEDED", "Worksheet row exceeds XLSX limit.")
         implicit_row = row_number
         values: list[str] = []
+        row_bordered: set[int] = set()
         for cell in row.findall(f"{{{_SHEET_NS}}}c"):
             ref = cell.get("r", "")
             index = _column_index(ref)
+            style_id = cell.get("s", "0")
+            require(style_id.isdigit() and int(style_id) < len(bordered_styles), "WORKBOOK.CELL_STYLE_INVALID", f"Invalid cell style in {ref}.")
+            if bordered_styles[int(style_id)]:
+                row_bordered.add(index)
             while len(values) <= index:
                 values.append("")
             formula = cell.find(f"{{{_SHEET_NS}}}f")
@@ -233,4 +275,6 @@ def _worksheet_rows(data: bytes, shared: tuple[str, ...], *, allow_formula_cache
                     value = "TRUE" if value == "1" else "FALSE"
             values[index] = value
         rows[row_number] = values
-    return rows
+        if row_bordered:
+            bordered_cells[row_number] = frozenset(row_bordered)
+    return rows, bordered_cells, data_entry_row_ranges, merged_row_ranges

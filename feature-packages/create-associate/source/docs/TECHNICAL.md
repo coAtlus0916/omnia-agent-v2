@@ -6,6 +6,12 @@
 - Integration：Remote-only 签名 Operation，首次远程 action 才延迟注册。
 # Technical design
 
+## 0.2.41 live Return progress and catalog settlement
+
+The Worker reserves a single execution slot before confirm/continue validation can yield. After durable approval it persists `execution.state=running`, obtains the initial Core Return projection, schedules the serial executor, and returns. Receipt-backed completion updates `loadReturnProgress` through the existing evidence port and saves the last verified target/command checkpoint before the next target. Health reads Return progress independently, so Surface refresh is concurrent with Connector waits. The slot prevents duplicate starts in one Worker; after process loss the durable `returning` state, frozen plan, command evidence and verified target map remain the sole recovery authority.
+
+Risk/Control settlement performs an immediate read and then bounded capped-exponential reads with deterministic jitter until the complete required relation multiset resolves, a 120-second deadline is reached, or 40 reads have occurred. Timeout includes exact missing relation IDs and last catalog counts. Associations remain serial and refresh the catalog between relations so mutation-time `updatedOn` concurrency tokens stay authoritative.
+
 ## 0.2.40 cross-Run business target identity
 
 Persistent remote target identities are derived from the exact Workspace-bound object/GRA business identity used by preflight and query semantics. GRA-scoped field, documentation, evaluation, risk-factor, Risk-Control and inheritance targets add their stable field or relation identity. Source `rowKey` is retained only for internal Run orchestration.

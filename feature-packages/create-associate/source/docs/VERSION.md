@@ -1,4 +1,10 @@
-# 0.2.40 / sequence 42
+# 0.2.41 / sequence 43
+
+Return confirmation and continuation now reserve one in-memory execution slot per Worker and return the initial persisted Surface without awaiting the full Return. The background task remains strictly serial, records authoritative Core evidence, and saves the checkpoint after every verified target; concurrent Surface refreshes load current Core Return progress. A Worker restart loses only the in-memory slot: the durable `returning` Run, frozen plan, command evidence, and target progress remain resumable through the existing continuation path without replaying verified targets.
+
+Generated Risk/Control settlement now shares the same explicit 120-second safety horizon as evaluation settlement, with a 40-read ceiling, capped exponential backoff, deterministic jitter, and terminal diagnostics containing elapsed/passive wait, catalog counts, and exact missing relation IDs. Every settling read validates the complete governed relation multiset. Subsequent associations retain a fresh catalog read so updated Risk concurrency tokens remain serially authoritative.
+
+# 0.2.40 / sequence 42 history
 
 Remote Operation target identities now use the current Pack business identity instead of workbook row position. GRA and GRA-scoped targets bind Workspace, element kind, external element ID, derived GRA name, and the applicable field or relation ID, so the same template row in different Runs cannot create a false persistent reservation conflict. Internal Run target keys remain row-scoped.
 

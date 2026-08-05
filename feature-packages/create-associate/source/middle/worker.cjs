@@ -826,6 +826,7 @@ function createFeatureWorker(dependencies) {
   if (!dependencies?.store?.call) fail('WORKER.STORE_REQUIRED', 'A typed persistent Store port is required.');
   const store = dependencies.store;
   const connector = dependencies.connector;
+  let activeReturnExecution = null;
   if (!connector?.invoke) fail('WORKER.CONNECTOR_REQUIRED', 'A signed Operation Connector port is required.');
   const governance = dependencies.governance || (GOVERNANCE.startsWith('__') ? null : JSON.parse(GOVERNANCE));
   if (!governance || governance.sourceSha256 !== V8_SHA256 || governance.fieldCount !== 187 || governance.relationCount !== 68) {
@@ -894,15 +895,26 @@ function createFeatureWorker(dependencies) {
       featureVersion: FEATURE_VERSION, operationId, request: { connectorBinding, ...request } });
   }
   async function waitForCompleteRiskControlCatalog(connectorBinding, request, relations, mode) {
-    const delays = [1000, 2000, 2000];
-    let catalog = { risks: [], controls: [], diagnostics: {} }; let missing = relations;
-    for (let attempt = 0; attempt < 4; attempt += 1) {
+    const maxSettlingMs = 120_000; const maxReads = 40; const startedAt = Date.now();
+    const jitterSeed = parseInt(digest(Buffer.from(canonical({ request, mode, relationIds: relations.map((item) => item.relationId) }))).slice(0, 8), 16);
+    let catalog = { risks: [], controls: [], diagnostics: {} }; let missing = relations; let attempts = 0; let waitedMs = 0;
+    while (attempts < maxReads) {
+      if(attempts>0&&Date.now()-startedAt>=maxSettlingMs) break;
+      attempts += 1;
       catalog = await invoke(RETURN_OPERATIONS.riskCatalog, connectorBinding, request);
       missing = unresolvedCatalogRelations(catalog, relations, mode);
       if (!missing.length) return catalog;
-      if (attempt < delays.length) await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+      const elapsedMs = Date.now() - startedAt;
+      const remainingMs = maxSettlingMs - elapsedMs;
+      if (remainingMs <= 0 || attempts >= maxReads) break;
+      const exponentialMs = Math.min(5_000, Math.round(750 * (1.55 ** (attempts - 1))));
+      const jitterRatio = 0.85 + (((jitterSeed + attempts * 2654435761) >>> 0) % 301) / 1000;
+      const delayMs = Math.min(remainingMs, Math.max(250, Math.round(exponentialMs * jitterRatio)));
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      waitedMs += delayMs;
     }
-    fail('RETURN.RISK_CONTROL_CATALOG_SETTLING_TIMEOUT', `Generated Risk/Control catalog remained incomplete after 4 bounded reads: ${missing.map((item) => item.relationId).join(', ')}.`);
+    const diagnostics = catalog?.diagnostics || {};
+    fail('RETURN.RISK_CONTROL_CATALOG_SETTLING_TIMEOUT', `Generated Risk/Control catalog remained incomplete after ${attempts} bounded reads (${waitedMs}ms passive wait, ${Date.now()-startedAt}ms elapsed); risks=${Number(diagnostics.riskCount??catalog?.risks?.length??0)}, controls=${Number(diagnostics.controlCount??catalog?.controls?.length??0)}, missing=${missing.map((item) => item.relationId).join(', ')}.`);
   }
   async function waitForEvaluationComplete(connectorBinding, request) {
     let observed = null;
@@ -1189,6 +1201,7 @@ function createFeatureWorker(dependencies) {
   return Object.freeze({
     health: async () => {
       let latest=await store.call('loadLatestRun',{}); let run=latest?.run;
+      if(run&&['waiting_confirmation','returning','verifying','uncertain','reconciling','succeeded','failed'].includes(String(run.state))) latest.returnProgress=await store.call('loadReturnProgress',{runId:String(run.run_id)});
       let recoveredSurfacePatch=null;
       if(run?.state==='acquiring'){
         await ensureStagedPlan(latest);
@@ -1312,6 +1325,13 @@ function createFeatureWorker(dependencies) {
       if (input?.actionId === 'confirm-return' || input?.actionId === 'continue-return') {
         const actionLatest=await store.call('loadLatestRun',{});
         const runId = String(input.payload?.runId || actionLatest?.run?.run_id || '');
+        if(activeReturnExecution){
+          if(activeReturnExecution.runId!==runId) fail('RETURN.EXECUTION_BUSY',`Return execution is already active for Run ${activeReturnExecution.runId}.`);
+          actionLatest.returnProgress=await store.call('loadReturnProgress',{runId});
+          return{surfacePatch:returnSurface(actionLatest,'')};
+        }
+        const executionSlot={runId,promise:null};activeReturnExecution=executionSlot;
+        try {
         const checkpoint = await store.call('loadPlan', runId);
         if (!checkpoint?.returnPlan || !checkpoint?.confirmation) fail('RETURN.PLAN_MISSING', 'The frozen Return plan is unavailable.');
         const current = await buildReturnPreparation(checkpoint, input.context);
@@ -1323,6 +1343,7 @@ function createFeatureWorker(dependencies) {
           expectedStateVersion: Number(checkpoint.confirmation.stateVersion), connectorBinding: input.context.connectorBinding,
           safetyLock: input.context.safetyLock, preflightDigest: currentPreflightDigest
         }) : (await store.call('validateReturnAuthority', { runId, connectorBinding: input.context.connectorBinding, safetyLock: input.context.safetyLock }), { planDigest: checkpoint.confirmation.planDigest });
+        const executeReturn=async()=>{
         const plan = checkpoint.returnPlan; const planDigest = approved.planDigest; const binding = input.context.connectorBinding;
         const targetByKey = new Map(plan.targets.map((item) => [item.key, item]));
         const progress = new Map((await store.call('loadReturnProgress', { runId })).map((item) => [item.target_key, item.state]));
@@ -1342,6 +1363,11 @@ function createFeatureWorker(dependencies) {
           return store.call('recordReturnEvidence', { runId, commandId, evidenceType, commandState, payload,
             receiptId: payload?.__operationReceiptId || '', verified, error });
         }
+        async function persistVerifiedTarget(targetKey,commandId){
+          progress.set(targetKey,'verified');
+          checkpoint.execution={state:'running',background:true,lastVerifiedTargetKey:targetKey,lastCommandId:commandId,verifiedTargets:[...progress.values()].filter((state)=>state==='verified').length};
+          await store.call('savePlan',{...checkpoint,updatedAt:new Date().toISOString()});
+        }
         async function verifiedMutation(spec) {
           const command = await commandFor(spec.targetKey,spec.mutationOperation,spec.mutationPayload,spec.target.targetIdentityKey);
           let before;
@@ -1358,7 +1384,7 @@ function createFeatureWorker(dependencies) {
             const raced=await invoke(spec.raceReadOperation,binding,{...spec.raceReadRequest,receiptContext:{runId,commandId:command.commandId}});
             if(spec.raceAlreadyApplied(raced)){
               const readEvidence=await evidence(command.commandId,'reconcile','readback_verified',raced,true);
-              progress.set(spec.targetKey,'verified');
+              await persistVerifiedTarget(spec.targetKey,command.commandId);
               return {command,response:null,observed:raced,readEvidence,closedByRace:true};
             }
           }
@@ -1395,7 +1421,7 @@ function createFeatureWorker(dependencies) {
               : await invoke(spec.readOperation, binding, readRequest);
             if (!spec.verify(observed, response)) fail('RETURN.READBACK_MISMATCH', `Verified read-back failed for ${spec.targetKey}.`);
             const readEvidence = await evidence(command.commandId, 'readback', 'readback_verified', observed, true);
-            progress.set(spec.targetKey,'verified');
+            await persistVerifiedTarget(spec.targetKey,command.commandId);
             return { command, response, observed, readEvidence };
           } catch (error) {
             await evidence(command.commandId, 'reconcile', 'uncertain', { code: error.code || 'RETURN.READBACK_FAILED', message: error.message }, false, error.message);
@@ -1414,7 +1440,7 @@ function createFeatureWorker(dependencies) {
             const observed = await invoke(spec.readOperation, binding, { ...spec.readRequest, receiptContext: { runId, commandId: command.commandId } });
             if (!spec.verify(observed)) fail('RETURN.READBACK_MISMATCH', `Existing read-back failed for ${spec.targetKey}.`);
             await evidence(command.commandId, 'readback', 'readback_verified', observed, true);
-            progress.set(spec.targetKey,'verified');
+            await persistVerifiedTarget(spec.targetKey,command.commandId);
             return { command, observed };
           } catch (error) {
             await evidence(command.commandId, 'preflight', 'failed', { code: error.code || 'RETURN.EXISTING_READ_FAILED', message: error.message }, false, error.message);
@@ -1427,7 +1453,7 @@ function createFeatureWorker(dependencies) {
           const observed = await invoke(readOperation, binding, { ...readRequest, receiptContext: { runId, commandId: command.commandId } });
           if (!verify(observed)) fail('RETURN.READBACK_MISMATCH', `Existing authoritative read-back failed for ${targetKey}.`);
           await evidence(command.commandId, 'reconcile', 'readback_verified', observed, true);
-          progress.set(targetKey,'verified');
+          await persistVerifiedTarget(targetKey,command.commandId);
           return { command, observed };
         }
         async function projectObject(result, row, targetKey, objectTypeValue, objectId) {
@@ -1718,6 +1744,22 @@ function createFeatureWorker(dependencies) {
           const terminalLatest=await store.call('loadLatestRun',{});
           return {surfacePatch:returnSurface(terminalLatest,'')};
         }
+        };
+        checkpoint.execution={state:'running',background:true,startedAt:new Date().toISOString()};
+        await store.call('savePlan',{...checkpoint,updatedAt:new Date().toISOString()});
+        const startedLatest=await store.call('loadLatestRun',{});
+        startedLatest.returnProgress=await store.call('loadReturnProgress',{runId});
+        const executionPromise=new Promise((resolve)=>setImmediate(resolve)).then(executeReturn)
+          .catch(async(error)=>{
+            const failedLatest=await store.call('loadLatestRun',{});
+            if(failedLatest?.run?.state==='returning'||failedLatest?.run?.state==='verifying') await store.call('finishReturn',{runId,outcome:'failed',error:String(error.message||error)});
+            checkpoint.execution={state:'failed',background:true,error:{code:String(error.code||'RETURN.BACKGROUND_FAILED'),message:String(error.message||error)}};checkpoint.updatedAt=new Date().toISOString();
+            await store.call('savePlan',checkpoint);
+          })
+          .finally(()=>{if(activeReturnExecution===executionSlot)activeReturnExecution=null;});
+        executionSlot.promise=executionPromise;
+        return{surfacePatch:returnSurface(startedLatest,'')};
+        }catch(error){if(activeReturnExecution===executionSlot)activeReturnExecution=null;throw error;}
       }
       if (input?.actionId === 'prepare-return') {
         const latest = await store.call('loadLatestRun', {}); const run = latest?.run;

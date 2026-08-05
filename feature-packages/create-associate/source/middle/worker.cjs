@@ -1092,7 +1092,7 @@ function createFeatureWorker(dependencies) {
             if(!identity.accepted){identityBlocks+=1;checkpoint.parsed.issues.push(liveIssue('LIVE.APP_IDENTITY_BLOCKED',`${row.rowKey}.identity`,'conflict','blocking',`APP ${row.elementId} 身份解析被拒绝：${identity.reasonCode}。`,'omnia_id_conflicts'));}
             else if(identity.disposition==='create')creatable+=1;
             else{
-              const proof=await store.call('proveOwnedCreatedObject',{objectId:identity.objectId,workspaceId,externalId:row.elementId,connectorBinding:binding});
+              const proof=await store.call('proveOwnedCreatedObject',{objectId:identity.objectId,workspaceId,externalId:row.elementId,expectedObjectType:'Application',connectorBinding:binding});
               checkpoint.liveIdentityResolutions[row.rowKey].ownership=proof?.proven===true
                 ?{proven:true,runId:proof.runId,commandId:proof.commandId,objectId:proof.objectId}
                 :{proven:false};
@@ -1104,9 +1104,17 @@ function createFeatureWorker(dependencies) {
         }
         const request={target:{targetIdentityKey:identityKey('review-object',[row.kind,row.elementId,workspaceId]),workspaceId},query:{objectType:objectType(row.kind),subtypeId:objectSubtypeId(row.kind),externalId:row.elementId,workspaceId,graName:deriveGraName(row.elementId)}};
         const observed=await invoke(RETURN_OPERATIONS.objectPreflight,binding,request);const identity=inspectGenericIdentity(observed,request);
-        checkpoint.liveIdentityResolutions[row.rowKey]={operationId:RETURN_OPERATIONS.objectPreflight,target:request.target,query:request.query,matchState:identity.state,resolved:{objectId:identity.objectId},evidence:identity.evidence};
+        const genericDisposition=identity.state==='active'?'resume':identity.state==='none'?'create':'blocked';
+        checkpoint.liveIdentityResolutions[row.rowKey]={operationId:RETURN_OPERATIONS.objectPreflight,target:request.target,query:request.query,matchState:identity.state,disposition:genericDisposition,reasonCode:identity.reasonCode,resolved:{objectId:identity.objectId},evidence:identity.evidence};
         if(!identity.accepted){identityBlocks+=1;checkpoint.parsed.issues.push(liveIssue('LIVE.NON_APP_IDENTITY_BLOCKED',`${row.rowKey}.identity`,'conflict','blocking',`${row.kind} ${row.elementId} 身份解析被拒绝：${identity.reasonCode}。`,'omnia_id_conflicts'));}
-        else if(identity.state==='active'){nameConflicts+=1;identityBlocks+=1;checkpoint.parsed.issues.push(liveIssue('LIVE.NON_APP_IDENTITY_CONFLICT',`${row.rowKey}.identity`,'conflict','blocking',`${row.kind} ${row.elementId} 与当前 Pack 中的活动同名对象冲突；当前对象类型没有已发布的 Agent-managed 归属恢复契约，因此不能静默复用。`,'omnia_id_conflicts'));}
+        else if(identity.state==='active'){
+          const proof=await store.call('proveOwnedCreatedObject',{objectId:identity.objectId,workspaceId,externalId:row.elementId,expectedObjectType:objectType(row.kind),connectorBinding:binding});
+          checkpoint.liveIdentityResolutions[row.rowKey].ownership=proof?.proven===true
+            ?{proven:true,runId:proof.runId,commandId:proof.commandId,objectId:proof.objectId,objectType:proof.objectType}
+            :{proven:false};
+          if(proof?.proven===true)ownedRecoveries+=1;
+          else{nameConflicts+=1;identityBlocks+=1;checkpoint.parsed.issues.push(liveIssue('LIVE.NON_APP_IDENTITY_CONFLICT',`${row.rowKey}.identity`,'conflict','blocking',`${row.kind} ${row.elementId} 与当前 Pack 中的活动同名对象冲突；该对象没有与当前 Connector、Authority、Pack、Engagement、Workspace、对象类型和外部标识严格匹配的 Agent-managed 创建证据。`,'omnia_id_conflicts'));}
+        }
         else if(identity.state==='none')creatable+=1;
       }
       const active=activeRows(checkpoint.parsed),appRowsByIdentity=new Map();
@@ -1173,11 +1181,15 @@ function createFeatureWorker(dependencies) {
       if(genericIdentity&&!genericIdentity.accepted) fail('RETURN.GENERIC_IDENTITY_BLOCKED',`${row.kind} ${row.elementId} identity resolution blocked Return preparation: ${genericIdentity.reasonCode}.`);
       let ownedCreateProof=null;
       if(appIdentity&&appIdentity.disposition!=='create'){
-        const proof=await store.call('proveOwnedCreatedObject',{objectId:appIdentity.objectId,workspaceId,externalId:row.elementId,connectorBinding:context.connectorBinding});
+        const proof=await store.call('proveOwnedCreatedObject',{objectId:appIdentity.objectId,workspaceId,externalId:row.elementId,expectedObjectType:'Application',connectorBinding:context.connectorBinding});
         if(proof?.proven!==true)fail('RETURN.APP_IDENTITY_CONFLICT',`APP ${row.elementId} matches an active same-name object without exact Agent-managed ownership proof; Return preparation is forbidden.`);
-        ownedCreateProof={proven:true,runId:proof.runId,commandId:proof.commandId,objectId:proof.objectId};
+        ownedCreateProof={proven:true,runId:proof.runId,commandId:proof.commandId,objectId:proof.objectId,objectType:proof.objectType};
       }
-      if(genericIdentity?.state==='active')fail('RETURN.GENERIC_IDENTITY_CONFLICT',`${row.kind} ${row.elementId} matches an active same-name object and has no released Agent-managed ownership recovery contract; Return preparation is forbidden.`);
+      if(genericIdentity?.state==='active'){
+        const proof=await store.call('proveOwnedCreatedObject',{objectId:genericIdentity.objectId,workspaceId,externalId:row.elementId,expectedObjectType:type,connectorBinding:context.connectorBinding});
+        if(proof?.proven!==true)fail('RETURN.GENERIC_IDENTITY_CONFLICT',`${row.kind} ${row.elementId} matches an active same-name object without exact Agent-managed ownership proof; Return preparation is forbidden.`);
+        ownedCreateProof={proven:true,runId:proof.runId,commandId:proof.commandId,objectId:proof.objectId,objectType:proof.objectType};
+      }
       if(objectObserved.found&&row.kind!=='APP'&&String(objectObserved.item?.typeId||objectObserved.item?.itElementTypeId||'')!==subtypeId){
         fail('RETURN.SUBTYPE_AUTHORITY_DRIFT',`${row.kind} ${row.elementId} live subtype does not match the exact signed content subtype identity.`);
       }
@@ -1208,9 +1220,13 @@ function createFeatureWorker(dependencies) {
         mode = modes[0];
       }
       if (mode && !['Higher', 'Lower'].includes(mode)) fail('RETURN.RAIT_INVALID', `${row.kind} ${row.elementId} has an unsupported RAIT value.`);
+      const identityDisposition=appIdentity?.disposition||(genericIdentity?.state==='active'?'resume':'create');
+      const identityResolution=appIdentity
+        ?{operationId:RETURN_OPERATIONS.objectIdentityResolve,disposition:identityDisposition,reasonCode:appIdentity.reasonCode,resolved:{objectId:appIdentity.objectId,riskAssessmentId:appIdentity.riskAssessmentId},ownership:ownedCreateProof,evidence:objectObserved?.evidence||null}
+        :{operationId:RETURN_OPERATIONS.objectPreflight,disposition:identityDisposition,reasonCode:genericIdentity?.reasonCode||'identity_resolution_missing',matchState:genericIdentity?.state||'',resolved:{objectId:genericIdentity?.objectId||''},ownership:ownedCreateProof,evidence:genericIdentity?.evidence||null};
       const prepared = { rowKey: row.rowKey, kind: row.kind, elementId: row.elementId, objectType: type,
         workspaceName, workspaceId, content, subtypeId, mode, declaredMode, inheritanceSources, objectTarget, objectQuery, objectObserved, objectId,graName:deriveGraName(row.elementId),
-        identityDisposition:appIdentity?.disposition||'',identityResolution:appIdentity?{operationId:RETURN_OPERATIONS.objectIdentityResolve,disposition:appIdentity.disposition,reasonCode:appIdentity.reasonCode,resolved:{objectId:appIdentity.objectId,riskAssessmentId:appIdentity.riskAssessmentId},ownership:ownedCreateProof,evidence:objectObserved?.evidence||null}:null,
+        identityDisposition,identityResolution,
         graObserved, graId: graObserved.found ? responseId(graObserved.item, 'GRA preflight') : '', relations: row.relations };
       prepared.description=String(row.fields[descriptionRawField(row.kind)]||'');
       if(prepared.description!==row.elementId) fail('RETURN.DESCRIPTION_DERIVATION_DRIFT',`${row.kind} ${row.elementId} description differs from the signed derived field revision.`);
@@ -1224,7 +1240,7 @@ function createFeatureWorker(dependencies) {
       }
       rowsPrepared.push(prepared);
       targets.push({ kind: 'object', key: `object|${row.rowKey}`, rowKey: row.rowKey, workspace: workspaceId, objectType: type, externalId: row.elementId,
-        disposition:row.kind==='APP'?prepared.identityDisposition:(objectId?'reuse':'create'),resolvedObjectId:objectId,mutationOperationId:RETURN_OPERATIONS.objectCreate,
+        disposition:prepared.identityDisposition,resolvedObjectId:objectId,mutationOperationId:RETURN_OPERATIONS.objectCreate,
         identityResolution:prepared.identityResolution,description:row.kind==='APP'?prepared.description:undefined,operationTargetIdentityKey:objectTarget.targetIdentityKey,
         evidenceOperationIds:row.kind==='APP'?[RETURN_OPERATIONS.objectRead,RETURN_OPERATIONS.objectIdentityResolve,RETURN_OPERATIONS.objectCreatePreflight]:[RETURN_OPERATIONS.objectRead,RETURN_OPERATIONS.objectPreflight,RETURN_OPERATIONS.objectCreatePreflight] });
       targets.push({ kind: 'object', key: `gra|${row.rowKey}`, rowKey: row.rowKey, workspace: workspaceId, objectType: 'GRA', externalId: prepared.graName,
@@ -1275,7 +1291,7 @@ function createFeatureWorker(dependencies) {
     for(const row of rowsPrepared){
       const rowTargets=targets.filter((item)=>item.rowKey===row.rowKey);
       const rowPreview={rowKey:row.rowKey,elementId:row.elementId,workspaceId:row.workspaceId,changes:[]};
-      rowPreview.changes.push({targetKey:`object|${row.rowKey}`,disposition:row.kind==='APP'?row.identityDisposition:(row.objectId?'reuse':'create'),current:row.objectId||'absent',desired:`${row.objectType}/${row.elementId}`,operationId:RETURN_OPERATIONS.objectCreate,evidenceOperationIds:row.kind==='APP'?[RETURN_OPERATIONS.objectIdentityResolve,RETURN_OPERATIONS.objectRead]:[RETURN_OPERATIONS.objectRead]});
+      rowPreview.changes.push({targetKey:`object|${row.rowKey}`,disposition:row.identityDisposition,current:row.objectId||'absent',desired:`${row.objectType}/${row.elementId}`,operationId:RETURN_OPERATIONS.objectCreate,evidenceOperationIds:row.kind==='APP'?[RETURN_OPERATIONS.objectIdentityResolve,RETURN_OPERATIONS.objectRead]:[RETURN_OPERATIONS.objectRead]});
       rowPreview.changes.push({targetKey:`gra|${row.rowKey}`,disposition:row.graId?'reuse':'create',current:row.graId||'absent',desired:`${row.content.contentName}/${row.graName}`,operationId:RETURN_OPERATIONS.graCreate,evidenceOperationId:RETURN_OPERATIONS.graRead});
       if(row.kind==='APP'){
         const settingsIntent=rowTargets.find((item)=>item.key===`object-settings|${row.rowKey}`);
@@ -1285,7 +1301,7 @@ function createFeatureWorker(dependencies) {
            const currentToken=latestApplicationSettingsToken(current,false,`APP ${row.elementId} settings preflight`);
            if(!currentToken){
              if(row.identityDisposition!=='resume'||!unsetApplicationSettings(current)||!exactApplicationSettingsIdentity(current,row.objectId,row.elementId))fail('RETURN.OBJECT_SETTINGS_AUTHORITY_MISSING',`APP ${row.elementId} has no reusable 501 token and is not an exact empty owned-create recovery candidate.`);
-             const proof=await store.call('proveOwnedCreatedObject',{objectId:row.objectId,workspaceId:row.workspaceId,externalId:row.elementId,connectorBinding:context.connectorBinding});
+             const proof=await store.call('proveOwnedCreatedObject',{objectId:row.objectId,workspaceId:row.workspaceId,externalId:row.elementId,expectedObjectType:'Application',connectorBinding:context.connectorBinding});
              if(proof?.proven!==true)fail('RETURN.OBJECT_SETTINGS_OWNERSHIP_MISSING',`APP ${row.elementId} has no exact prior product-owned object.create commit proof.`);
              settingsIntent.mode='recover_owned_create_bootstrap';settingsIntent.ownedCreateProof={runId:proof.runId,commandId:proof.commandId,objectId:proof.objectId};
            }
@@ -1634,11 +1650,16 @@ function createFeatureWorker(dependencies) {
             let objectResult;
             if (done(`object|${row.rowKey}`)) {
               if (!objectId) fail('RETURN.RESUME_OBJECT_MISSING', `Verified object ${row.elementId} is absent during continuation.`);
-            } else if (objectId) objectResult = await verifiedExisting({ targetKey: `object|${row.rowKey}`, mutationOperation: RETURN_OPERATIONS.objectCreate,
-              preflightOperation: row.kind==='APP'?RETURN_OPERATIONS.objectIdentityResolve:RETURN_OPERATIONS.objectPreflight, preflightRequest: { target: row.objectTarget, query: row.objectQuery },
-              acceptPreflight:row.kind==='APP'?(observed)=>{const identity=inspectApplicationIdentity(observed,{target:row.objectTarget,query:row.objectQuery});return identity.accepted&&identity.disposition===row.identityDisposition&&identity.objectId===objectId;}
-                :(observed)=>{const identity=inspectGenericIdentity(observed,{target:row.objectTarget,query:row.objectQuery});return identity.accepted&&identity.state==='active'&&identity.objectId===objectId;},
-              readOperation: RETURN_OPERATIONS.objectRead, readRequest: { target: row.objectTarget, objectId, query:{externalId:row.elementId,objectType:row.objectType,...(row.objectType==='Application'?{description:descriptionEditorJson(row.description)}:{subtypeId:row.subtypeId})} }, verify: (value) => responseId(value, 'IT Element read-back') === objectId });
+            } else if (objectId) {
+              const frozenOwnership=row.identityResolution?.ownership;
+              const proof=await store.call('proveOwnedCreatedObject',{objectId,workspaceId:row.workspaceId,externalId:row.elementId,expectedObjectType:row.objectType,connectorBinding:binding});
+              if(proof?.proven!==true||proof.runId!==frozenOwnership?.runId||proof.commandId!==frozenOwnership?.commandId||proof.objectId!==frozenOwnership?.objectId||proof.objectType!==frozenOwnership?.objectType)fail('RETURN.OBJECT_OWNERSHIP_DRIFT',`${row.kind} ${row.elementId} owned-create proof changed after plan freeze.`);
+              objectResult = await verifiedExisting({ targetKey: `object|${row.rowKey}`, mutationOperation: RETURN_OPERATIONS.objectCreate,
+                preflightOperation: row.kind==='APP'?RETURN_OPERATIONS.objectIdentityResolve:RETURN_OPERATIONS.objectPreflight, preflightRequest: { target: row.objectTarget, query: row.objectQuery },
+                acceptPreflight:row.kind==='APP'?(observed)=>{const identity=inspectApplicationIdentity(observed,{target:row.objectTarget,query:row.objectQuery});return identity.accepted&&identity.disposition===row.identityDisposition&&identity.objectId===objectId;}
+                  :(observed)=>{const identity=inspectGenericIdentity(observed,{target:row.objectTarget,query:row.objectQuery});return row.identityDisposition==='resume'&&identity.accepted&&identity.state==='active'&&identity.objectId===objectId;},
+                readOperation: RETURN_OPERATIONS.objectRead, readRequest: { target: row.objectTarget, objectId, query:{externalId:row.elementId,objectType:row.objectType,...(row.objectType==='Application'?{description:descriptionEditorJson(row.description)}:{subtypeId:row.subtypeId})} }, verify: (value) => responseId(value, 'IT Element read-back') === objectId });
+            }
             else {
               const description=descriptionEditorJson(row.description);
               const payload = { name: row.elementId, workspaceId: row.workspaceId, engagementId: binding.engagementId,
@@ -1666,7 +1687,7 @@ function createFeatureWorker(dependencies) {
               if(['create_bootstrap','recover_owned_create_bootstrap'].includes(settingsIntent.mode)&&beforeToken)fail('RETURN.OBJECT_SETTINGS_MODE_DRIFT',`APP ${row.elementId} bootstrap mode cannot consume a pre-existing concurrency token.`);
               if(settingsIntent.mode==='recover_owned_create_bootstrap'){
                 if(!unsetApplicationSettings(before)||!exactApplicationSettingsIdentity(before,objectId,row.elementId))fail('RETURN.OBJECT_SETTINGS_AUTHORITY_DRIFT',`APP ${row.elementId} is no longer an exact empty owned-create recovery candidate.`);
-                const proof=await store.call('proveOwnedCreatedObject',{objectId,workspaceId:row.workspaceId,externalId:row.elementId,connectorBinding:binding});
+                const proof=await store.call('proveOwnedCreatedObject',{objectId,workspaceId:row.workspaceId,externalId:row.elementId,expectedObjectType:'Application',connectorBinding:binding});
                 if(proof?.proven!==true||proof.runId!==settingsIntent.ownedCreateProof?.runId||proof.commandId!==settingsIntent.ownedCreateProof?.commandId)fail('RETURN.OBJECT_SETTINGS_OWNERSHIP_DRIFT',`APP ${row.elementId} owned-create proof changed after plan freeze.`);
               }
               const desiredData=resolveFrozenAppDataAvailability(row.identityDisposition,before,{disposition:settingsIntent.dataAvailabilityDisposition,value:settingsIntent.isDataAvailable});

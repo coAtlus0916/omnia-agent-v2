@@ -329,7 +329,9 @@ export class FeatureRuntimeStore {
   private proveOwnedCreatedObject(input: unknown, context: FeatureWorkerPortContext): Record<string, unknown> {
     const request=object(input,'Owned created object proof'); const objectId=String(request.objectId||'').toLowerCase();
     const workspaceId=String(request.workspaceId||'').toLowerCase(); const externalId=String(request.externalId||'').normalize('NFC').trim();
+    const expectedObjectType=String(request.expectedObjectType||'');
     const binding=returnAuthorityBinding(request.connectorBinding,'Owned created object current binding');
+    if(!['Application','Infrastructure','ITTool'].includes(expectedObjectType))throw new Error('Owned created object proof requires one exact supported object type.');
     if(!objectId||!workspaceId||!externalId||!binding.connectorId||Number(binding.sessionGeneration)<1||!binding.engagementId||!binding.authorityInstanceId||!binding.packId)throw new Error('Owned created object proof request is incomplete.');
     const safety=this.core.prepare(`SELECT enabled,engagement_id,workspace_ids_json FROM workspace_safety WHERE singleton=1`).get() as {enabled:number;engagement_id:string;workspace_ids_json:string}|undefined;
     const allowed=safety?JSON.parse(safety.workspace_ids_json) as string[]:[];
@@ -351,7 +353,7 @@ export class FeatureRuntimeStore {
         ||String(row.authority_instance_id)!==String(binding.authorityInstanceId)||String(row.tenant_or_org_id)!==String(binding.tenantOrOrgId)
         ||String(row.pack_id)!==String(binding.packId)||String(row.confirmation_engagement_id)!==String(binding.engagementId))return false;
       const intended=JSON.parse(String(row.intended_revision_json||'{}')) as Record<string,unknown>;
-      if(intended.kind!=='object'||intended.objectType!=='Application'||intended.disposition!=='create'
+      if(intended.kind!=='object'||intended.objectType!==expectedObjectType||intended.disposition!=='create'
         ||String(intended.workspace||'').toLowerCase()!==workspaceId||String(intended.externalId||'').normalize('NFC').trim()!==externalId
         ||intended.mutationOperationId!=='omnia.create-associate.object.create.v1')return false;
       const payload=JSON.parse(String(row.payload_json||'{}')) as Record<string,unknown>;
@@ -361,7 +363,7 @@ export class FeatureRuntimeStore {
     });
     if(matches.length!==1)return{proven:false};
     const match = matches[0]!;
-    return{proven:true,runId:String(match.run_id),commandId:String(match.command_id),objectId,workspaceId,externalId};
+    return{proven:true,runId:String(match.run_id),commandId:String(match.command_id),objectId,workspaceId,externalId,objectType:expectedObjectType};
   }
 
   private createMutationRun(input: unknown, context: FeatureWorkerPortContext): Record<string, unknown> {
@@ -1379,7 +1381,7 @@ export class FeatureRuntimeStore {
       const parentId = projectedObjectId(intended.objectTargetKey);
       const ownedProof=intended.ownedCreateProof as Record<string,unknown>|undefined;
       const currentOwnedProof=String(intended.mode||'')==='recover_owned_create_bootstrap'
-        ?this.proveOwnedCreatedObject({objectId:parentId,workspaceId:intended.workspace,externalId:intended.externalId,connectorBinding:binding},context)
+        ?this.proveOwnedCreatedObject({objectId:parentId,workspaceId:intended.workspace,externalId:intended.externalId,expectedObjectType:'Application',connectorBinding:binding},context)
         :{proven:true};
       commandIntentValid = String(desired.objectId || '') === parentId
         && String(desired.typeId || '') === String(intended.typeId || '')

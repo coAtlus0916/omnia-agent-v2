@@ -1,4 +1,8 @@
-# 0.2.27 / sequence 29
+# 0.2.28 / sequence 30
+
+Fixed the local prepare failure `Cannot convert undefined or null to object` for incomplete existing GRAs. The signed state response can omit both RAIT properties; the 0.2.27 preview copied that JavaScript `undefined` into `rowPreview.changes.current`, and strict canonicalization then reached `Object.keys(undefined)`. Missing status/RAIT is now explicit JSON `null`. Deferred previews freeze validated typed desired objects, so optional fallback values cannot introduce another undefined. The post-state catalog wait, completeness rules and execution order remain unchanged.
+
+# 0.2.27 / sequence 29 history
 
 Existing but incomplete GRAs no longer fail prepare because generated Risk/Control or Risk Factor catalogs have not settled. Prepare freezes stable V8 relation IDs, scoring item IDs, documentation and evaluation intent, marks their live identity resolution as post-state, and previews the required state repair. Execution patches and verifies GRA status/RAIT first, then performs four strict catalog reads within the v4 five-second wait budget. All required relations must resolve exactly; no target is skipped. Complete existing GRAs retain prepare-time catalog/readback validation, and frozen live IDs must still match the action-time catalog.
 

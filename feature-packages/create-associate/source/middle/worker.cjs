@@ -1066,15 +1066,22 @@ function createFeatureWorker(dependencies) {
         const stateTarget=(kind)=>({targetIdentityKey:identityKey('gra-state',[row.rowKey,kind]),workspaceId:row.workspaceId});
         const state=await invoke(RETURN_OPERATIONS.graStatePreflight,context.connectorBinding,{target:stateTarget('status'),riskAssessmentId:row.graId});
         for(const intent of rowTargets.filter((item)=>String(item.key).startsWith('gra-status|')||String(item.key).startsWith('gra-rait|'))){
-          const patchKind=intent.fieldId==='status'?'status':'rait'; const current=patchKind==='status'?state.status:state.itElementRaitConclusionLevelId||state.itElementRaitConclusionLevelName;
+          const patchKind=intent.fieldId==='status'?'status':'rait'; const current=patchKind==='status'?(state.status??null):(state.itElementRaitConclusionLevelId||state.itElementRaitConclusionLevelName||null);
           rowPreview.changes.push({targetKey:intent.key,disposition:String(current)===String(intent.value)?'reuse':'patch',current,desired:intent.value,operationId:intent.mutationOperationId,evidenceOperationId:intent.evidenceOperationIds[0]});
         }
         const desiredStatus=rowTargets.find((item)=>String(item.key).startsWith('gra-status|'))?.value;
         const desiredRait=rowTargets.find((item)=>String(item.key).startsWith('gra-rait|'))?.value;
+        if(!desiredStatus||!desiredRait) fail('RETURN.GRA_STATE_INTENT_MISSING',`GRA ${row.graId} has no complete frozen status/RAIT target.`);
         const graStateReady=String(state.status)===String(desiredStatus)&&normalizeRait(state.itElementRaitConclusionLevelId||state.itElementRaitConclusionLevelName)===normalizeRait(desiredRait);
         const deferred=rowTargets.filter((item)=>item.kind==='risk_control'||String(item.key).startsWith('risk-factor|')||item.kind==='documentation'||item.kind==='evaluation');
         if(!graStateReady){
-          for(const intent of deferred){intent.resolutionMode='post_state_catalog';rowPreview.changes.push({targetKey:intent.key,disposition:'post-state-resolution',current:'GRA state/RAIT not ready',desired:intent.relationId||intent.fieldId||intent.plainText||intent.value,operationId:intent.mutationOperationId,evidenceOperationIds:intent.evidenceOperationIds});}
+          for(const intent of deferred){
+            const desired=intent.kind==='risk_control'?{relationId:intent.relationId,riskName:intent.riskName,controlName:intent.controlName,classification:intent.classification}
+              :String(intent.key).startsWith('risk-factor|')?{itemId:intent.fieldId,selectionMode:intent.value}
+                :intent.kind==='documentation'?{plainText:intent.plainText}:{value:intent.value};
+            if(Object.values(desired).some((value)=>value===undefined||value===null||value==='')||!Array.isArray(intent.evidenceOperationIds)) fail('RETURN.DEFERRED_INTENT_INVALID',`Deferred GRA target ${intent.key} is incomplete.`);
+            intent.resolutionMode='post_state_catalog';rowPreview.changes.push({targetKey:intent.key,disposition:'post-state-resolution',current:'GRA state/RAIT not ready',desired,operationId:intent.mutationOperationId,evidenceOperationIds:intent.evidenceOperationIds});
+          }
         }else{
           const riskIntents=rowTargets.filter((item)=>item.kind==='risk_control');
           if(riskIntents.length){

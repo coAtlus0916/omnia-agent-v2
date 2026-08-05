@@ -527,6 +527,7 @@ const RETURN_OPERATIONS = Object.freeze({
   factorPreflight: 'omnia.create-associate.risk-factor.preflight.v1', factorWrite: 'omnia.create-associate.risk-factor.patch.v1', factorRead: 'omnia.create-associate.risk-factor.reconcile.v1',
   documentationPreflight: 'omnia.create-associate.documentation.preflight.v1', documentationWrite: 'omnia.create-associate.documentation.patch.v1', documentationRead: 'omnia.create-associate.documentation.reconcile.v1',
   evaluationPreflight: 'omnia.create-associate.evaluation.preflight.v1', evaluationWrite: 'omnia.create-associate.evaluation.submit.v1', evaluationRead: 'omnia.create-associate.evaluation.reconcile.v1',
+  riskClassificationPreflight: 'omnia.create-associate.risk-classification.preflight.v1', riskClassificationWrite: 'omnia.create-associate.risk-classification.patch.v1', riskClassificationRead: 'omnia.create-associate.risk-classification.reconcile.v1',
   riskCatalog: 'omnia.create-associate.risk-control.catalog.v1', riskPreflight: 'omnia.create-associate.risk-control.preflight.v1', riskWrite: 'omnia.create-associate.risk-control.associate.v1', riskRead: 'omnia.create-associate.risk-control.reconcile.v1'
 });
 function rowField(row, governance, fieldId) {
@@ -616,15 +617,17 @@ function governedCatalogNumber(value) {
   const label = String(value || '').normalize('NFKC').trim();
   return label.split(/[｜|]/u, 1)[0].trim();
 }
-function catalogRiskMatches(catalog, relation, classification) {
+function catalogRiskIdentityMatches(catalog, relation) {
   const number = catalogIdentityText(governedCatalogNumber(relation.riskName));
   const expectedName = catalogIdentityText(relation.riskName);
-  const expectedClassification = catalogIdentityText(classification);
   return (Array.isArray(catalog?.risks) ? catalog.risks : []).filter((item) => {
     const liveNumber = catalogIdentityText(item.riskNumber);
-    const identityMatches = liveNumber ? liveNumber === number : catalogIdentityText(item.name) === expectedName;
-    return identityMatches && catalogIdentityText(item.classification) === expectedClassification;
+    return liveNumber ? liveNumber === number : catalogIdentityText(item.name) === expectedName;
   });
+}
+function catalogRiskMatches(catalog, relation, classification) {
+  const expectedClassification = catalogIdentityText(classification);
+  return catalogRiskIdentityMatches(catalog,relation).filter((item)=>catalogIdentityText(item.classification)===expectedClassification);
 }
 function catalogControlMatches(catalog, relation) {
   const number = catalogIdentityText(governedCatalogNumber(relation.controlName));
@@ -951,7 +954,28 @@ function createFeatureWorker(dependencies) {
       waitedMs += delayMs;
     }
     const diagnostics = catalog?.diagnostics || {};
-    fail('RETURN.RISK_CONTROL_CATALOG_SETTLING_TIMEOUT', `Generated Risk/Control catalog remained incomplete after ${attempts} bounded reads (${waitedMs}ms passive wait, ${Date.now()-startedAt}ms elapsed); risks=${Number(diagnostics.riskCount??catalog?.risks?.length??0)}, controls=${Number(diagnostics.controlCount??catalog?.controls?.length??0)}, missing=${missing.map((item) => item.relationId).join(', ')}.`);
+    fail('RETURN.RISK_CONTROL_CATALOG_SETTLING_TIMEOUT', `Generated Risk/Control catalog remained incomplete after ${attempts} bounded reads (${waitedMs}ms passive wait, ${Date.now()-startedAt}ms elapsed); risks=${Number(diagnostics.acceptedRisks??catalog?.risks?.length??0)}, controls=${Number(diagnostics.acceptedControls??catalog?.controls?.length??0)}, missing=${missing.map((item) => item.relationId).join(', ')}.`);
+  }
+  async function waitForGeneratedRiskIdentities(connectorBinding,row,riskAssessmentId,intents){
+    const maxSettlingMs=120_000;const maxReads=40;const startedAt=Date.now();let attempts=0;let waitedMs=0;let missing=intents;
+    const jitterSeed=parseInt(digest(Buffer.from(canonical({riskAssessmentId,rowKey:row.rowKey,risks:intents.map((item)=>item.riskNumber)}))).slice(0,8),16);
+    while(attempts<maxReads){
+      if(attempts>0&&Date.now()-startedAt>=maxSettlingMs)break;
+      attempts+=1;
+      const results=await Promise.all(intents.map(async(intent)=>{
+        const target={targetIdentityKey:intent.operationTargetIdentityKey,workspaceId:row.workspaceId};
+        const observed=await invoke(RETURN_OPERATIONS.riskClassificationPreflight,connectorBinding,{target,query:{riskAssessmentId,riskName:intent.riskName,riskId:intent.resolvedRisk?.riskId||'',classification:intent.value}});
+        return {intent,observed};
+      }));
+      missing=results.filter((item)=>item.observed?.found!==true).map((item)=>item.intent);
+      if(!missing.length)return new Map(results.map((item)=>[item.intent.key,item.observed.risk]));
+      const remainingMs=maxSettlingMs-(Date.now()-startedAt);if(remainingMs<=0||attempts>=maxReads)break;
+      const exponentialMs=Math.min(5_000,Math.round(750*(1.55**(attempts-1))));
+      const jitterRatio=0.85+(((jitterSeed+attempts*2654435761)>>>0)%301)/1000;
+      const delayMs=Math.min(remainingMs,Math.max(250,Math.round(exponentialMs*jitterRatio)));
+      await new Promise((resolve)=>setTimeout(resolve,delayMs));waitedMs+=delayMs;
+    }
+    fail('RETURN.RISK_IDENTITY_SETTLING_TIMEOUT',`Generated Risk identities remained incomplete after ${attempts} bounded reads (${waitedMs}ms passive wait, ${Date.now()-startedAt}ms elapsed); missing=${missing.map((item)=>item.riskNumber).join(', ')}.`);
   }
   async function waitForEvaluationComplete(connectorBinding, request) {
     let observed = null;
@@ -1257,7 +1281,17 @@ function createFeatureWorker(dependencies) {
         sourceObjectTargetKey:`object|${row.rowKey}`,targetExternalId:relation,mutationOperationId:RETURN_OPERATIONS.relationWrite,
         operationTargetIdentityMode:'resolved_relation',operationTargetIdentityKey:'post-create-resolution',evidenceOperationIds:[RETURN_OPERATIONS.relationRead] });
       const selectedGovernance = governance.relations.filter((relation) => relationApplicable(relation, row, contentName, mode || 'Higher'));
-      for (const relation of selectedGovernance.filter((item) => linkRequired(item, mode || 'Higher'))) targets.push({
+      const requiredGovernance=selectedGovernance.filter((item)=>linkRequired(item,mode||'Higher'));
+      const classificationTargets=new Map();
+      for(const relation of requiredGovernance){
+        const classification=relation[`classification${mode||'Higher'}`];const riskNumber=governedCatalogNumber(relation.riskName);
+        const uniqueKey=catalogIdentityText(riskNumber);const existing=classificationTargets.get(uniqueKey);
+        if(existing&&catalogIdentityText(existing.classification)!==catalogIdentityText(classification))fail('RETURN.RISK_CLASSIFICATION_GOVERNANCE_CONFLICT',`Generated Risk ${riskNumber} has conflicting governed classifications.`);
+        if(!existing)classificationTargets.set(uniqueKey,{riskName:relation.riskName,riskNumber,classification});
+      }
+      for(const risk of classificationTargets.values()) targets.push({kind:'field',key:`risk-classification|${row.rowKey}|${risk.riskNumber}`,rowKey:row.rowKey,workspace:workspaceId,objectType:'GRA',graTargetKey:`gra|${row.rowKey}`,fieldId:'classificationType',value:risk.classification,riskName:risk.riskName,riskNumber:risk.riskNumber,
+        mutationOperationId:RETURN_OPERATIONS.riskClassificationWrite,operationTargetIdentityKey:graOperationIdentity('risk-classification',prepared,`${risk.riskNumber}|${risk.classification}`),evidenceOperationIds:[RETURN_OPERATIONS.riskClassificationRead,RETURN_OPERATIONS.riskClassificationPreflight]});
+      for (const relation of requiredGovernance) targets.push({
         kind: 'risk_control', key: `risk-control|${row.rowKey}|${relation.relationId}`, rowKey: row.rowKey, workspace: workspaceId,
         objectType: 'GRA', graTargetKey: `gra|${row.rowKey}`, relationId: relation.relationId, riskName: relation.riskName, controlName: relation.controlName,
         classification: relation[`classification${mode || 'Higher'}`],mutationOperationId:RETURN_OPERATIONS.riskWrite,operationTargetIdentityKey:graOperationIdentity('risk-control',prepared,relation.relationId),evidenceOperationIds:[RETURN_OPERATIONS.riskRead]
@@ -1322,28 +1356,38 @@ function createFeatureWorker(dependencies) {
         if(!desiredStatus||!desiredRait) fail('RETURN.GRA_STATE_INTENT_MISSING',`GRA ${row.graId} has no complete frozen status/RAIT target.`);
         const graStateReady=String(state.status)===String(desiredStatus)&&normalizeRait(state.itElementRaitConclusionLevelId||state.itElementRaitConclusionLevelName)===normalizeRait(desiredRait);
         const evaluationComplete=String(state.status)==='EvaluationComplete';
-        const deferred=rowTargets.filter((item)=>item.kind==='risk_control'||String(item.key).startsWith('risk-factor|')||item.kind==='documentation'||item.kind==='evaluation');
+        const deferred=rowTargets.filter((item)=>item.kind==='risk_control'||String(item.key).startsWith('risk-classification|')||String(item.key).startsWith('risk-factor|')||item.kind==='documentation'||item.kind==='evaluation');
         if(!graStateReady){
           for(const intent of deferred){
             const desired=intent.kind==='risk_control'?{relationId:intent.relationId,riskName:intent.riskName,controlName:intent.controlName,classification:intent.classification}
-              :String(intent.key).startsWith('risk-factor|')?{itemId:intent.fieldId,selectionMode:intent.value}
+              :String(intent.key).startsWith('risk-classification|')?{riskName:intent.riskName,classification:intent.value}
+                :String(intent.key).startsWith('risk-factor|')?{itemId:intent.fieldId,selectionMode:intent.value}
                 :intent.kind==='documentation'?{plainText:intent.plainText}:{value:intent.value};
             if(Object.values(desired).some((value)=>value===undefined||value===null||value==='')||!Array.isArray(intent.evidenceOperationIds)) fail('RETURN.DEFERRED_INTENT_INVALID',`Deferred GRA target ${intent.key} is incomplete.`);
             intent.resolutionMode='post_state_catalog';rowPreview.changes.push({targetKey:intent.key,disposition:'post-state-resolution',current:'GRA state/RAIT not ready',desired,operationId:intent.mutationOperationId,evidenceOperationIds:intent.evidenceOperationIds});
           }
         }else{
           const riskIntents=rowTargets.filter((item)=>item.kind==='risk_control');
-          if(riskIntents.length&&!evaluationComplete){
-            for(const intent of riskIntents){
-              const desired={relationId:intent.relationId,riskName:intent.riskName,controlName:intent.controlName,classification:intent.classification};
+          const classificationIntents=rowTargets.filter((item)=>String(item.key).startsWith('risk-classification|'));
+          if((riskIntents.length||classificationIntents.length)&&!evaluationComplete){
+            for(const intent of [...classificationIntents,...riskIntents]){
+              const desired=intent.kind==='risk_control'
+                ?{relationId:intent.relationId,riskName:intent.riskName,controlName:intent.controlName,classification:intent.classification}
+                :{riskName:intent.riskName,classification:intent.value};
               if(Object.values(desired).some((value)=>value===undefined||value===null||value==='')) fail('RETURN.DEFERRED_INTENT_INVALID',`Deferred Risk-Control target ${intent.key} is incomplete.`);
               intent.resolutionMode='post_evaluation_catalog';
               rowPreview.changes.push({targetKey:intent.key,disposition:'post-evaluation-resolution',current:'Evaluation is not complete',desired,operationId:intent.mutationOperationId,evidenceOperationIds:intent.evidenceOperationIds});
             }
-          }else if(riskIntents.length){
+          }else if(riskIntents.length||classificationIntents.length){
             const catalog=await invoke(RETURN_OPERATIONS.riskCatalog,context.connectorBinding,{target:{targetIdentityKey:graOperationIdentity('risk-catalog',row,'generated-catalog'),workspaceId:row.workspaceId},riskAssessmentId:row.graId});
+            for(const intent of classificationIntents){
+              const risks=catalogRiskIdentityMatches(catalog,intent);
+              if(risks.length!==1) fail('RETURN.RISK_CLASSIFICATION_IDENTITY_DRIFT',`Generated Risk identity is absent or ambiguous during review: ${intent.riskNumber}.`);
+              const risk=risks[0];intent.resolvedRisk={riskId:risk.riskId,riskRiskScopeId:risk.riskRiskScopeId,riskScopeId:risk.riskScopeId,assertionType:risk.assertionType,assertion:risk.assertion};
+              rowPreview.changes.push({targetKey:intent.key,disposition:catalogIdentityText(risk.classification)===catalogIdentityText(intent.value)?'reuse':'patch',current:risk.classification||'',desired:intent.value,resolvedIds:intent.resolvedRisk,operationId:intent.mutationOperationId,evidenceOperationId:intent.evidenceOperationIds[0]});
+            }
             for(const intent of riskIntents){
-              const risks=catalogRiskMatches(catalog,intent,intent.classification);
+              const risks=catalogRiskIdentityMatches(catalog,intent);
               const controls=catalogControlMatches(catalog,intent);
               if(risks.length!==1||controls.length!==1) fail('RETURN.RISK_CONTROL_CATALOG_DRIFT',`Risk/Control identity is absent or ambiguous during review: ${intent.relationId}.`);
               const risk=risks[0],control=controls[0]; intent.resolvedCatalog={riskId:risk.riskId,riskRiskScopeId:risk.riskRiskScopeId,riskScopeId:risk.riskScopeId,controlId:control.controlId,assertionType:risk.assertionType,assertion:risk.assertion,updatedOn:risk.updatedOn};
@@ -1877,8 +1921,25 @@ function createFeatureWorker(dependencies) {
             const selected=governance.relations.filter((relation)=>relationApplicable(relation,row,contentName,mode));
             const requiredRelations=selected.filter((item)=>linkRequired(item,mode));
             const pendingRelations=requiredRelations.filter((relation)=>!done(`risk-control|${row.rowKey}|${relation.relationId}`));
-            if(!pendingRelations.length) continue;
+            const classificationIntents=plan.targets.filter((item)=>item.rowKey===row.rowKey&&String(item.key).startsWith('risk-classification|'));
+            const pendingClassifications=classificationIntents.filter((item)=>!done(item.key));
+            if(!pendingRelations.length&&!pendingClassifications.length) continue;
             const catalogRequest={target:{targetIdentityKey:graOperationIdentity('risk-catalog',row,'generated-catalog'),workspaceId:row.workspaceId},riskAssessmentId:graId};
+            const generatedRisks=await waitForGeneratedRiskIdentities(binding,row,graId,pendingClassifications);
+            for(const intent of pendingClassifications){
+              const risk=generatedRisks.get(intent.key);if(!risk)fail('RETURN.RISK_CLASSIFICATION_IDENTITY_DRIFT',`Generated Risk identity is absent: ${intent.riskNumber}.`);
+              const target={targetIdentityKey:intent.operationTargetIdentityKey,workspaceId:row.workspaceId};
+              const query={riskAssessmentId:graId,riskName:intent.riskName,riskId:risk.riskId,classification:intent.value};
+              const readRequest={target,query};
+              const classificationResult=catalogIdentityText(risk.classification)===catalogIdentityText(intent.value)
+                ?await closeVerified(intent.key,RETURN_OPERATIONS.riskClassificationWrite,RETURN_OPERATIONS.riskClassificationRead,readRequest,(observed)=>observed.verified===true)
+                :await verifiedMutation({targetKey:intent.key,target,preflightOperation:RETURN_OPERATIONS.riskClassificationPreflight,
+                  preflightRequest:readRequest,acceptPreflight:(preflight)=>preflight.found===true,mutationOperation:RETURN_OPERATIONS.riskClassificationWrite,commandKind:'patch_risk_classification',
+                  mutationPayload:{engagementId:binding.engagementId,workspaceId:row.workspaceId,riskAssessmentId:graId,riskName:intent.riskName,riskId:risk.riskId,classification:intent.value},
+                  raceReadOperation:RETURN_OPERATIONS.riskClassificationRead,raceReadRequest:readRequest,raceAlreadyApplied:(observed)=>observed.verified===true,
+                  readOperation:RETURN_OPERATIONS.riskClassificationRead,readRequest,verify:(observed)=>observed.verified===true});
+              await projectGraRevision(classificationResult,row,intent.key,graId);
+            }
             let catalog=await waitForCompleteRiskControlCatalog(binding,catalogRequest,requiredRelations,mode);
             for(let relationIndex=0;relationIndex<pendingRelations.length;relationIndex+=1){
               const relation=pendingRelations[relationIndex];

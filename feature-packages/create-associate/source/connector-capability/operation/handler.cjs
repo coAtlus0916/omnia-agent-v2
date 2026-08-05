@@ -744,50 +744,83 @@ function catalogAssertions(item) {
     ...rows(item&&item.riskRiskScopes).map((scope)=>scope&&scope.assertionType)].map(text).filter(Boolean);
   return {assertion:assertionCandidates[0]||'',assertionType:assertionTypeCandidates[0]||'10005'};
 }
-async function riskControlCatalog(request, sdk) {
+async function generatedRiskIdentityCatalog(request, sdk) {
   const frozen=target(request);
   const riskAssessmentId = guid(request.riskAssessmentId, 'riskAssessmentId');
-  const [riskPayload, controlPayload, assessment] = await Promise.all([
-    sdk.invokeStep('risk-catalog', { riskAssessmentId }), sdk.invokeStep('control-catalog', { riskAssessmentId }),
-    sdk.invokeStep('risk-assessment-read',{riskAssessmentId})
+  const [riskPayload, assessment] = await Promise.all([
+    sdk.invokeStep('risk-catalog', { riskAssessmentId }), sdk.invokeStep('risk-assessment-read',{riskAssessmentId})
+  ]);
+  if(guid(assessment.id||assessment.riskAssessmentId,'Generated Risk assessment id')!==riskAssessmentId
+    ||assessmentWorkspace(assessment)!==frozen.workspaceId) fail('Generated Risk catalog assessment identity or Workspace mismatch.');
+  const assessmentUpdatedOn=text(assessment.updatedOn);
+  if(!assessmentUpdatedOn) fail('Generated Risk catalog assessment has no live updatedOn value.');
+  const riskRows = catalogRows(riskPayload, 'plannedResponses', 'Risk catalog');
+  const risks=riskRows.filter((item)=>item&&(item.riskId||item.id)).map((item)=>{
+    const riskNumber=recordedRiskNumber(catalogNumber(item,['riskNumber','inkRiskNumber']));
+    return {riskId:catalogEntryId(item,['riskId','id'],'riskId'),riskNumber,
+      name:catalogDisplayName(riskNumber,item.name||item.riskName||item.title||item.description),
+      classification:text(item.classificationType||item.riskClassification||item.classification||item.classificationName),
+      updatedOn:text(item.updatedOn||item.updatedAt||assessmentUpdatedOn)};
+  }).filter((item)=>(item.riskNumber||item.name)&&item.updatedOn);
+  return { riskAssessmentId, risks, diagnostics: {
+    riskRows: riskRows.length, acceptedRisks: risks.length,
+    riskNumbers: risks.map((item) => item.riskNumber).filter(Boolean).sort(),
+    classifications: [...new Set(risks.map((item) => item.classification).filter(Boolean))].sort()
+  } };
+}
+async function riskControlCatalog(request, sdk) {
+  const frozen=target(request);const riskAssessmentId=guid(request.riskAssessmentId,'riskAssessmentId');
+  const [riskPayload,controlPayload,assessment]=await Promise.all([
+    sdk.invokeStep('risk-catalog',{riskAssessmentId}),sdk.invokeStep('control-catalog',{riskAssessmentId}),sdk.invokeStep('risk-assessment-read',{riskAssessmentId})
   ]);
   if(guid(assessment.id||assessment.riskAssessmentId,'Risk-Control assessment id')!==riskAssessmentId
-    ||assessmentWorkspace(assessment)!==frozen.workspaceId) fail('Risk-Control catalog assessment identity or Workspace mismatch.');
-  const assessmentUpdatedOn=text(assessment.updatedOn);
-  if(!assessmentUpdatedOn) fail('Risk-Control catalog assessment has no live updatedOn value.');
-  const riskRows = catalogRows(riskPayload, 'plannedResponses', 'Risk catalog');
-  const controlRows = catalogRows(controlPayload, 'controls', 'Control catalog');
-  const risks = (await Promise.all(riskRows.filter((item) => item && (item.riskId || item.id)).map(async(item) => {
-    const riskId=catalogEntryId(item,['riskId','id'],'riskId'); const riskRiskScopeId=riskRiskScopeLookupId(item);
-    const detail=await sdk.invokeStep('risk-detail',{riskRiskScopeId});
-    const detailRows=catalogRows(detail,'planResponseRisk','Risk detail');
+    ||assessmentWorkspace(assessment)!==frozen.workspaceId)fail('Risk-Control catalog assessment identity or Workspace mismatch.');
+  const assessmentUpdatedOn=text(assessment.updatedOn);if(!assessmentUpdatedOn)fail('Risk-Control catalog assessment has no live updatedOn value.');
+  const riskRows=catalogRows(riskPayload,'plannedResponses','Risk catalog');
+  const risks=(await Promise.all(riskRows.filter((item)=>item&&(item.riskId||item.id)).map(async(item)=>{
+    const riskId=catalogEntryId(item,['riskId','id'],'riskId');const riskRiskScopeId=riskRiskScopeLookupId(item);
+    const detail=await sdk.invokeStep('risk-detail',{riskRiskScopeId});const detailRows=catalogRows(detail,'planResponseRisk','Risk detail');
     const detailMatches=detailRows.filter((candidate)=>optionalGuid(candidate&&(candidate.riskId||candidate.id))===riskId);
-    if(detailMatches.length!==1) fail('Risk detail did not return one exact planned-response Risk.');
-    const detailedRisk=detailMatches[0];
-    const scopeMatches=rows(detailedRisk.riskRiskScopes).filter((scope)=>optionalGuid(scope&&scope.id)===riskRiskScopeId);
-    if(scopeMatches.length!==1) fail('Risk detail did not return one exact RiskRiskScope.');
+    if(detailMatches.length!==1)fail('Risk detail did not return one exact planned-response Risk.');
+    const detailedRisk=detailMatches[0];const scopeMatches=rows(detailedRisk.riskRiskScopes).filter((scope)=>optionalGuid(scope&&scope.id)===riskRiskScopeId);
+    if(scopeMatches.length!==1)fail('Risk detail did not return one exact RiskRiskScope.');
     const riskScopeId=guid(scopeMatches[0].riskScopeId,'Risk detail riskScopeId');
-    const riskNumber = recordedRiskNumber(catalogNumber(detailedRisk, ['riskNumber', 'inkRiskNumber'])||catalogNumber(item,['riskNumber','inkRiskNumber']));
+    const riskNumber=recordedRiskNumber(catalogNumber(detailedRisk,['riskNumber','inkRiskNumber'])||catalogNumber(item,['riskNumber','inkRiskNumber']));
     const assertion=catalogAssertions({...detailedRisk,riskRiskScopes:scopeMatches});
-    return ({
-    riskId,riskRiskScopeId,riskScopeId,riskNumber,
-    name: catalogDisplayName(riskNumber, detailedRisk.name || detailedRisk.riskName || detailedRisk.title || detailedRisk.description || item.name || item.description),
-    classification: text(detailedRisk.classificationType || detailedRisk.riskClassification || detailedRisk.classification || detailedRisk.classificationName
-      ||item.classificationType || item.riskClassification || item.classification || item.classificationName),
-    assertion: assertion.assertion, assertionType: assertion.assertionType,
-    updatedOn: text(item.updatedOn || item.updatedAt || assessmentUpdatedOn)
-  }); }))).filter((item) => (item.riskNumber || item.name) && item.classification && item.assertion && item.assertionType && item.updatedOn);
+    return {riskId,riskRiskScopeId,riskScopeId,riskNumber,
+      name:catalogDisplayName(riskNumber,detailedRisk.name||detailedRisk.riskName||detailedRisk.title||detailedRisk.description||item.name||item.description),
+      classification:text(detailedRisk.classificationType||detailedRisk.riskClassification||detailedRisk.classification||detailedRisk.classificationName
+        ||item.classificationType||item.riskClassification||item.classification||item.classificationName),
+      assertion:assertion.assertion,assertionType:assertion.assertionType,
+      updatedOn:text(item.updatedOn||item.updatedAt||detailedRisk.updatedOn||detailedRisk.updatedAt||assessmentUpdatedOn)};
+  }))).filter((item)=>(item.riskNumber||item.name)&&item.assertion&&item.assertionType&&item.updatedOn);
+  const controlRows = catalogRows(controlPayload, 'controls', 'Control catalog');
   const controls = controlRows.filter((item) => item && (item.controlId || item.id)).map((item) => {
     const controlNumber = recordedControlNumber(catalogNumber(item, ['controlNumber']));
     return { controlId: catalogEntryId(item, ['controlId', 'id'], 'controlId'), controlNumber,
       name: catalogDisplayName(controlNumber, item.name || item.controlName || item.title || item.description) };
   }).filter((item) => item.controlNumber || item.name);
   return { riskAssessmentId, risks, controls, diagnostics: {
-    riskRows: riskRows.length, acceptedRisks: risks.length, controlRows: controlRows.length, acceptedControls: controls.length,
-    riskNumbers: risks.map((item) => item.riskNumber).filter(Boolean).sort(),
+    riskRows:riskRows.length,acceptedRisks:risks.length,controlRows:controlRows.length,acceptedControls:controls.length,
+    riskNumbers:risks.map((item)=>item.riskNumber).filter(Boolean).sort(),
+    classifications:[...new Set(risks.map((item)=>item.classification).filter(Boolean))].sort(),
     controlNumbers: controls.map((item) => item.controlNumber).filter(Boolean).sort(),
-    classifications: [...new Set(risks.map((item) => item.classification).filter(Boolean))].sort()
   } };
+}
+function generatedRiskMatches(catalog, riskName) {
+  const number=recordedRiskNumber(text(riskName).split(/[｜|]/u,1)[0]);
+  const normalizedNumber=normalizedLabel(number); const normalizedName=normalizedLabel(riskName);
+  return rows(catalog&&catalog.risks).filter((item)=>item&&(item.riskNumber
+    ?normalizedLabel(item.riskNumber)===normalizedNumber:normalizedLabel(item.name)===normalizedName));
+}
+function exactGeneratedRisk(catalog, riskName, expectedRiskId='') {
+  const matches=generatedRiskMatches(catalog,riskName).filter((item)=>!expectedRiskId||item.riskId===expectedRiskId);
+  if(matches.length!==1) fail('Generated Risk identity is absent or ambiguous.');
+  return matches[0];
+}
+function governedRiskClassification(value){
+  const classification=text(value);if(!['Higher','Lower'].includes(classification))fail('Risk classification must be exactly Higher or Lower.');
+  return classification;
 }
 async function graPreflight(request, sdk) {
   const query = exact(request.query, ['entityId', 'itElementType', 'name', 'workspaceId'], 'GRA preflight query');
@@ -1124,6 +1157,36 @@ function createOperationHandler() {
         if (guid(result.id || result.riskAssessmentId, 'Evaluation readback assessment id') !== riskAssessmentId
           || assessmentWorkspace(result) !== frozen.workspaceId) fail('Evaluation readback identity or Workspace mismatch.');
         return { verified: result.status === 'EvaluationComplete', status: result.status, result };
+      }
+      if (operationId === 'omnia.create-associate.risk-classification.preflight.v1') {
+        target(request); const query=exact(request.query,['riskAssessmentId','riskName','riskId','classification'],'Risk classification preflight query');
+        const riskAssessmentId=guid(query.riskAssessmentId,'query.riskAssessmentId'); const rawRiskId=text(query.riskId);const riskId=rawRiskId?guid(rawRiskId,'query.riskId'):'';
+        const classification=governedRiskClassification(query.classification);
+        const catalog=await generatedRiskIdentityCatalog({target:request.target,riskAssessmentId},sdk);
+        const matches=generatedRiskMatches(catalog,text(query.riskName)).filter((item)=>!riskId||item.riskId===riskId);
+        if(matches.length>1)fail('Generated Risk identity is ambiguous.');
+        if(!matches.length)return {found:false,verified:false,risk:null};
+        const risk=matches[0];return {found:true,verified:risk.classification===classification,risk};
+      }
+      if (operationId === 'omnia.create-associate.risk-classification.patch.v1') {
+        const value=exactPatch(request,'patch_risk_classification');
+        const payload=exact(value,['engagementId','workspaceId','riskAssessmentId','riskName','riskId','classification'],'Risk classification payload');
+        assertScope(request,sdk,payload); const riskAssessmentId=guid(payload.riskAssessmentId,'payload.riskAssessmentId');
+        const riskId=guid(payload.riskId,'payload.riskId'); const classification=governedRiskClassification(payload.classification);
+        const catalog=await generatedRiskIdentityCatalog({target:request.target,riskAssessmentId},sdk);
+        const risk=exactGeneratedRisk(catalog,text(payload.riskName),riskId);
+        return sdk.invokeStep('risk-classification-patch',{riskId},[
+          {op:'test',path:'/updatedOn',value:risk.updatedOn},
+          {op:'replace',path:'/classificationType',value:classification}
+        ]);
+      }
+      if (operationId === 'omnia.create-associate.risk-classification.reconcile.v1') {
+        target(request); const query=exact(request.query,['riskAssessmentId','riskName','riskId','classification'],'Risk classification readback query');
+        const riskAssessmentId=guid(query.riskAssessmentId,'query.riskAssessmentId'); const riskId=guid(query.riskId,'query.riskId');
+        const classification=governedRiskClassification(query.classification);
+        const catalog=await generatedRiskIdentityCatalog({target:request.target,riskAssessmentId},sdk);
+        const risk=exactGeneratedRisk(catalog,text(query.riskName),riskId);
+        return {verified:risk.classification===classification,risk};
       }
       if (operationId === 'omnia.create-associate.risk-control.preflight.v1') {
         target(request); const query = exact(request.query, ['riskId', 'riskClassification', 'controlId'], 'Risk-Control validation query');

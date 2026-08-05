@@ -105,5 +105,15 @@ process.on('message', (message: any) => {
   });
 });
 
-process.on('disconnect', () => process.exit(0));
+process.on('disconnect', () => {
+  const deadline = setTimeout(() => process.exit(0), 5_000);
+  deadline.unref();
+  const shutdown = worker.shutdown;
+  void Promise.resolve(typeof shutdown === 'function' ? shutdown.call(worker, null) : undefined)
+    .catch(() => undefined)
+    .finally(() => {
+      clearTimeout(deadline);
+      process.exit(0);
+    });
+});
 send({ schemaVersion: 'omnia.feature-worker-ipc/v1', type: 'ready' });

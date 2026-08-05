@@ -1236,6 +1236,7 @@ function createFeatureWorker(dependencies) {
   }
 
   return Object.freeze({
+    shutdown: async () => { await python.close(); return true; },
     health: async () => {
       await python.start();
       let latest=await store.call('loadLatestRun',{}); let run=latest?.run;

@@ -27,6 +27,7 @@ import { FeatureWorkerSupervisor } from './worker-supervisor.js';
 import type { InteractionLogService } from '../services/interaction-log-service.js';
 
 const PRODUCT_VERSION = '0.4.12';
+const OMNIA_MUTATION_WORKER_TIMEOUT_MS = 15 * 60_000;
 const REQUIRED_FEATURE_MEMBERS = [
   'SIGNATURE.json',
   'backend/migrations/001.json',
@@ -2400,6 +2401,7 @@ export class FeaturePackageManager {
       }
     }, {
       allowMutation: action.effect === 'omnia_mutation',
+      ...(action.effect === 'omnia_mutation' ? { timeoutMs: OMNIA_MUTATION_WORKER_TIMEOUT_MS } : {}),
       ...(this.interactionLogs?.current() ? { interactionContext: this.interactionLogs.current()! } : {})
     }) as Promise<Record<string, any>>;
     const result = this.interactionLogs ? await this.interactionLogs.run({

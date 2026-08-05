@@ -982,7 +982,7 @@ function createFeatureWorker(dependencies) {
       checkpoint.aiReview={state:'skipped',reasonCode:'AI.REVIEW_NOT_APPLICABLE',capturedAt:new Date().toISOString()};
       return{state:'skipped',reason:'本批无 APP，Factors Considered 智能复核不适用。'};
     }
-    const aiIssue=(code,fieldKey,message)=>{const created=issue('ai_review',code,fieldKey,'ai_suggestion','waived',message,'factors_considered_ai_review');created.issueId=issueId('ai_review',`${parsed.issueNamespace||checkpoint.planId||'legacy'}|${code}`,fieldKey);return created;};
+    const aiIssue=(code,fieldKey,message)=>{const created=issue('ai_review',code,fieldKey,'ambiguous','waived',message,'factors_considered_ai_review');created.issueId=issueId('ai_review',`${parsed.issueNamespace||checkpoint.planId||'legacy'}|${code}`,fieldKey);return created;};
     const factorCandidate=(row)=>reviewCandidate(parsed,row,'Factors Considered');
     const missing=apps.filter((row)=>!String(row.fields['Factors Considered']||'').trim());
     if(missing.length){

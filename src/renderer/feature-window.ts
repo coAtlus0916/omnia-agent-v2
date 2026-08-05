@@ -354,6 +354,7 @@ function render(): void {
     return;
   }
   const workflow = surface.workflow;
+  const hasWorkflowRail = Boolean(workflow?.steps.length);
   const steps = workflow?.steps.map((step, index) => `<li class="workflow-step ${esc(step.state)}" ${step.stepId === workflow.currentStepId ? 'aria-current="step"' : ''}><span>${index + 1}</span><div><strong>${esc(step.label)}</strong>${step.detail ? `<small>${esc(step.detail)}</small>` : ''}</div></li>`).join('') || '';
   const activeLayer = workflow?.currentStepId === 'upload' ? 'upload' : workflow?.currentStepId === 'return' ? 'return' : surface.review ? 'review' : 'default';
   const visibleReview = activeLayer === 'review' ? surface.review : undefined;
@@ -382,7 +383,7 @@ function render(): void {
   const layerContent = activeLayer === 'upload' && inputAction
     ? `<section class="surface-layer upload-layer" data-surface-layer="upload">${header}<div class="upload-card"><h2>上传资料</h2><p class="state">选择或拖入官方 .xlsx 只会暂存文件；点击“确认上传”后才进入校验。</p>${drop}${artifacts ? `<div class="artifacts">${artifacts}</div>` : ''}${actions ? `<div class="actions">${actions}</div>` : ''}</div></section>`
     : `<section class="surface-layer ${activeLayer === 'review' ? 'review-layer' : activeLayer === 'return' ? 'return-layer' : 'default-layer'}" data-surface-layer="${activeLayer}">${header}${selectionBrowser}${recorder}${progress}${issues ? `<section class="issues">${issues}</section>` : ''}${review}${items ? `<div class="items">${items}</div>` : ''}${editors ? `<div class="editors">${editors}</div>` : ''}${artifacts ? `<div class="artifacts">${artifacts}</div>` : ''}${actions ? `<div class="actions">${actions}</div>` : ''}</section>`;
-  root.innerHTML = `${errorMessage ? `<p class="error page-error" role="alert">${esc(errorMessage)}</p>` : ''}<div class="feature-layout">${workflow ? `<nav class="workflow-rail" aria-label="步骤"><ol>${steps}</ol>${railRestart}</nav>` : ''}<section class="operation-pane">${layerContent}</section></div>`;
+  root.innerHTML = `${errorMessage ? `<p class="error page-error" role="alert">${esc(errorMessage)}</p>` : ''}<div class="feature-layout ${hasWorkflowRail ? 'has-workflow' : 'no-workflow'}">${hasWorkflowRail ? `<nav class="workflow-rail" aria-label="步骤"><ol>${steps}</ol>${railRestart}</nav>` : ''}<section class="operation-pane">${layerContent}</section></div>`;
   renderedSurface = surfaceProjection(surface);
   renderedError = errorMessage;
   renderHostToolbar();

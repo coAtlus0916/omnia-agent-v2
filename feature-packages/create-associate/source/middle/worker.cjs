@@ -91,19 +91,19 @@ function zipEntries(bytes) {
 function sharedStrings(entries) {
   const xml = entries.get('xl/sharedStrings.xml');
   if (!xml) return [];
-  return [...xml.toString('utf8').matchAll(/<si(?:\s[^>]*)?>([\s\S]*?)<\/si>/gu)].map((match) =>
-    xmlText([...match[1].matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/gu)].map((part) => part[1]).join(''))
+  return [...xml.toString('utf8').matchAll(/<(?:[A-Za-z_][\w.-]*:)?si(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?si>/gu)].map((match) =>
+    xmlText([...match[1].matchAll(/<(?:[A-Za-z_][\w.-]*:)?t(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?t>/gu)].map((part) => part[1]).join(''))
   );
 }
 
 function workbook(entries) {
   const workbookXml = entries.get('xl/workbook.xml')?.toString('utf8') || '';
   const relsXml = entries.get('xl/_rels/workbook.xml.rels')?.toString('utf8') || '';
-  const rels = new Map([...relsXml.matchAll(/<Relationship\b([^>]*)\/?\s*>/gu)].map((match) => {
+  const rels = new Map([...relsXml.matchAll(/<(?:[A-Za-z_][\w.-]*:)?Relationship\b([^>]*)\/?\s*>/gu)].map((match) => {
     const attrs = Object.fromEntries([...match[1].matchAll(/([A-Za-z:]+)="([^"]*)"/gu)].map((item) => [item[1], xmlText(item[2])]));
     return [attrs.Id, attrs.Target];
   }));
-  return [...workbookXml.matchAll(/<sheet\b([^>]*)\/?\s*>/gu)].map((match) => {
+  return [...workbookXml.matchAll(/<(?:[A-Za-z_][\w.-]*:)?sheet\b([^>]*)\/?\s*>/gu)].map((match) => {
     const attrs = Object.fromEntries([...match[1].matchAll(/([A-Za-z:]+)="([^"]*)"/gu)].map((item) => [item[1], xmlText(item[2])]));
     const target = rels.get(attrs['r:id']);
     return { name: attrs.name, path: target ? `xl/${String(target).replace(/^\//u, '').replace(/^xl\//u, '')}` : '' };
@@ -120,22 +120,22 @@ function columnIndex(reference) {
 function sheetRows(xmlBytes,strings,allowManagedFormulaCache=false){
   const rows = [];
   const xml = xmlBytes.toString('utf8');
-  for (const rowMatch of xml.matchAll(/<row\b([^>]*)>([\s\S]*?)<\/row>/gu)) {
+  for (const rowMatch of xml.matchAll(/<(?:[A-Za-z_][\w.-]*:)?row\b([^>]*)>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?row>/gu)) {
     const rowNumber = Number(rowMatch[1].match(/\br="(\d+)"/u)?.[1] || rows.length + 1);
     const cells = [];
-    for(const cellMatch of rowMatch[2].matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/gu)){
+    for(const cellMatch of rowMatch[2].matchAll(/<(?:[A-Za-z_][\w.-]*:)?c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?c>)/gu)){
       const attrs = cellMatch[1];
       const ref = attrs.match(/\br="([A-Z]+\d+)"/u)?.[1] || '';
       const type = attrs.match(/\bt="([^"]+)"/u)?.[1] || '';
       const body = cellMatch[2]||'';
-      const hasFormula=/<f\b/iu.test(body);
+      const hasFormula=/<(?:[A-Za-z_][\w.-]*:)?f\b/iu.test(body);
       if(hasFormula&&!allowManagedFormulaCache) fail('WORKBOOK.FORMULA_UNSUPPORTED',`Formula cell ${ref||'(unknown)'} is unsupported in user input; cached values are never treated as source data.`);
       if(hasFormula&&type==='s') fail('WORKBOOK.FORMULA_CACHE_INVALID',`Formula cell ${ref||'(unknown)'} cannot use a shared-string index as its cached value.`);
-      const raw = body.match(/<v>([\s\S]*?)<\/v>/u)?.[1];
-      const inline = body.match(/<is>([\s\S]*?)<\/is>/u)?.[1];
+      const raw = body.match(/<(?:[A-Za-z_][\w.-]*:)?v>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?v>/u)?.[1];
+      const inline = body.match(/<(?:[A-Za-z_][\w.-]*:)?is>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?is>/u)?.[1];
       let value = raw === undefined ? '' : xmlText(raw);
       if(type==='s'&&raw!==undefined&&!hasFormula)value=strings[Number(raw)]||'';
-      if (type === 'inlineStr' && inline) value = xmlText([...inline.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/gu)].map((part) => part[1]).join(''));
+      if (type === 'inlineStr' && inline) value = xmlText([...inline.matchAll(/<(?:[A-Za-z_][\w.-]*:)?t(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?t>/gu)].map((part) => part[1]).join(''));
       cells[columnIndex(ref)] = value;
     }
     rows[rowNumber] = cells;
@@ -202,6 +202,7 @@ function parseUserWorkbook(bytes, sourceArtifactId, governance = {}) {
   const entries = zipEntries(bytes);
   const strings = sharedStrings(entries);
   const sheets = workbook(entries);
+  if (sheets.length === 0) fail('WORKBOOK.SHEET_DIRECTORY_MISSING', 'XLSX workbook contains no readable worksheet directory.');
   const definitions = [
     { kind: 'APP', id: '系统ID', required: ['系统ID', 'APP类型', 'System Risk Classification', 'Factors Considered', 'Omnia工作区'], relation: '' },
     { kind: 'DB', id: '数据库ID', required: ['数据库ID', 'DB 类型', 'Omnia工作区', '关联系统ID'], relation: '关联系统ID' },
@@ -212,7 +213,9 @@ function parseUserWorkbook(bytes, sourceArtifactId, governance = {}) {
   const candidates = [];
   const issues = [];
   for (const sheet of sheets) {
-    const values = sheetRows(entries.get(sheet.path), strings);
+    const sheetBytes = entries.get(sheet.path);
+    if (!sheet.path || !sheetBytes) fail('WORKBOOK.SHEET_PART_MISSING', `XLSX worksheet part is missing for ${sheet.name || '(unnamed sheet)'}.`);
+    const values = sheetRows(sheetBytes, strings);
     const headers = [];
     for (let rowNumber = 1; rowNumber < values.length; rowNumber += 1) {
       const row = values[rowNumber] || [];
@@ -341,8 +344,8 @@ function parseUserWorkbook(bytes, sourceArtifactId, governance = {}) {
       row.fields['Inherited System Risk Classification']=modes[0];
     }
   }
-  if (rows.length === 0) issues.push(issue('parser','PARSER.NO_SUPPORTED_ROWS','workbook.sections','missing','blocking',
-    '未在用户资料中找到 APP/DB/OS/Tool 四区段数据行。','template_structure'));
+  if (rows.length === 0 || candidates.length === 0) fail('PARSER.NO_SUPPORTED_ROWS',
+    'No populated APP/DB/OS/Tool rows were found in the workbook; field revisions were not created.');
   const issueNamespace=digest(Buffer.from(String(sourceArtifactId)));
   for(const candidate of issues)candidate.issueId=issueId(candidate.origin||'parser',`${issueNamespace}|${candidate.code||candidate.issueType}`,candidate.fieldKey);
   return { rows, candidates, issues, issueNamespace, sheetNames: sheets.map((sheet) => sheet.name) };

@@ -6,7 +6,7 @@ V8 digest 固定为 `1ED937A50253CEDF431CE02A0CC7A3B3E576597BBD6CAA6C967738D7B2D
 
 # Contracts
 
-Version 0.2.38 retains the same canonical validation, identity, authority, safety and receipt contracts. Documentation mutation rereads the exact GRA inside the signed mutation Operation, verifies its frozen Workspace, and derives the unique assessment-tab identity and both concurrency values only from that live response. The RTE document is a JSON string with the four recorded editor fields and empty work items; readback parses and verifies that string. Evaluation submit has the recorded null risk-level override. Core reservations and command binding remain unchanged.
+Version 0.2.39 makes supported OOXML element matching namespace-prefix neutral. ZIP bounds and user-formula rejection remain fail-closed. Missing worksheet directories/parts and zero supported rows fail with WORKBOOK/PARSER errors before field revisions are recorded. All identity, authority, mutation, readback and receipt contracts remain unchanged.
 
 Canonical GRA names are `GRA-${elementId}` and participate with element IDs in batch uniqueness checks. DB/OS must reference exactly one in-batch APP in the same normalized Workspace. The InfrastructureApplication relation is written and read from both directions before Infrastructure GRA creation; DB/OS RAIT is then inherited from the exact live APP GRA. Tool has no relationship input in the template, so no Tool relationship is fabricated.
 

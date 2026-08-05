@@ -1,4 +1,8 @@
-# 0.2.38 / sequence 40
+# 0.2.39 / sequence 41
+
+The XLSX reader accepts optional XML namespace prefixes emitted by artifact-tool while retaining unprefixed compatibility. Formula rejection and ZIP safety limits are unchanged. Missing worksheet directories/parts and empty supported parses fail with precise WORKBOOK/PARSER errors before Core field-revision persistence. The unchanged signed Operation inventory is repackaged for the release.
+
+# 0.2.38 / sequence 40 history
 
 Application Documentation now follows the recorded v4 request contract. The mutation Operation performs a fresh authoritative GRA detail read, proves the exact assessment and frozen Workspace, resolves the unique `entityTabTypeId=2` concurrency tab, serializes the RTE value as `{editorData,suggestionsData:[],trackChangesEnableFlagInEditor:false,plainText}`, and sends the recorded four-operation JSON Patch with live `updatedOn` values. Reconcile parses the returned RTE JSON string and verifies editor data, plain text and empty work items. Evaluation submit now sends the recorded `riskLevelOverride:null`.
 

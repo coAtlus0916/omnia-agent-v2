@@ -6,6 +6,10 @@
 - Integration：Remote-only 签名 Operation，首次远程 action 才延迟注册。
 # Technical design
 
+## 0.2.39 namespace-neutral OOXML input
+
+The bounded XLSX reader accepts optional XML namespace prefixes on supported workbook, relationship, shared-string, worksheet, value, inline-string and formula tags. Unprefixed OOXML remains compatible. Formula rejection and ZIP limits are unchanged. Missing worksheet directories/parts and zero rows/candidates fail with `WORKBOOK.*` or `PARSER.NO_SUPPORTED_ROWS` before `recordFieldRevisions`.
+
 ## 0.2.0 durable workflow and provenance notes
 
 - Surface workflow/progress/issues are Worker projections from durable Run/Event/Command/Evidence revision; Renderer does not time or poll progress.

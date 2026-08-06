@@ -11,7 +11,6 @@ const operations = new Set<ConnectorOperation>([
   'refresh',
   'status',
   'workspace_authority_read',
-  'recording_command',
   'operation_register',
   'operation_invoke'
 ]);
@@ -69,27 +68,6 @@ export function validateConnectorWireRequest(value: unknown): ConnectorRequest {
         id
       );
     }
-  } else if (operation === 'recording_command') {
-    const payload = value.payload;
-    const binding = record(payload.connectorBinding) ? payload.connectorBinding : null;
-    if (
-      payload.schemaVersion !== 'omnia.v5.recording-command/v1'
-      || payload.featureId !== 'omnia.recording'
-      || typeof payload.featureVersion !== 'string'
-      || !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/.test(payload.featureVersion)
-      || !['status', 'start', 'pause', 'resume', 'stop', 'export', 'export_chunk', 'stop_export', 'cancel', 'capture_current_gra_catalog'].includes(String(payload.kind || ''))
-      || !binding
-      || typeof binding.connectorId !== 'string'
-      || !binding.connectorId
-      || !Number.isSafeInteger(binding.sessionGeneration)
-      || Number(binding.sessionGeneration) <= 0
-      || typeof binding.engagementId !== 'string'
-      || !binding.engagementId
-      || (payload.recordingId !== undefined && (typeof payload.recordingId !== 'string' || !payload.recordingId))
-      || (payload.chunkIndex !== undefined && (!Number.isSafeInteger(payload.chunkIndex) || Number(payload.chunkIndex) < 0))
-      || (payload.kind === 'export_chunk' && payload.chunkIndex === undefined)
-      || keys.some((key) => !['schemaVersion', 'featureId', 'featureVersion', 'kind', 'connectorBinding', 'recordingId', 'chunkIndex'].includes(key))
-    ) throw new ConnectorWireError('CONNECTOR.INVALID_PAYLOAD', 'recording_command payload 不符合签名 Feature 合同。', id);
   } else if (operation === 'operation_register') {
     if (value.payload.schemaVersion !== 'omnia.operation-registration/v1') {
       throw new ConnectorWireError('CONNECTOR.INVALID_PAYLOAD', 'operation_register payload schemaVersion 不受支持。', id);
@@ -124,7 +102,12 @@ export class RemoteCommandGate {
     'connect',
     'refresh',
     'workspace_authority_read',
-    'recording_command',
+    'operation_register',
+    'operation_invoke'
+  ]);
+  private readonly businessOperations = new Set<ConnectorOperation>([
+    'connect',
+    'workspace_authority_read',
     'operation_register',
     'operation_invoke'
   ]);
@@ -170,6 +153,14 @@ export class RemoteCommandGate {
         request.id,
         'CONNECTOR.DUPLICATE_IN_FLIGHT',
         '相同 Connector request ID 已在执行，未重复分发。',
+        true
+      );
+    }
+    if (request.operation === 'refresh' && this.hasBusinessActivity()) {
+      return failed(
+        request.id,
+        'CONNECTOR.BUSY',
+        'Remote Connector maintenance refresh skipped while a business command is running or queued.',
         true
       );
     }
@@ -242,6 +233,11 @@ export class RemoteCommandGate {
 
   private hasRunningExclusive(): boolean {
     return [...this.running.values()].some((operation) => this.exclusiveOperations.has(operation));
+  }
+
+  private hasBusinessActivity(): boolean {
+    return [...this.running.values()].some((operation) => this.businessOperations.has(operation))
+      || this.queued.some((command) => this.businessOperations.has(command.request.operation));
   }
 
   private removeQueued(command: QueuedCommand): void {

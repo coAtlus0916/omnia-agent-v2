@@ -133,6 +133,7 @@ export type RemoteConnectorBridgeState =
 export type RemoteConnectorSupervisorEventName =
   | 'worker_exited'
   | 'worker_start_failed'
+  | 'worker_heartbeat_recovery'
   | 'candidate_promoted'
   | 'candidate_rolled_back'
   | 'update_check_failed'

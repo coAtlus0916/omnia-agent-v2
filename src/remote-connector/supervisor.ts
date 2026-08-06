@@ -23,12 +23,20 @@ import {
   verifyPortableRoot,
   type UpdateManifest
 } from './release-contract.js';
-import { assertUpdateSequenceAdmitted, workerStatusAllowsActivation } from './update-policy.js';
+import {
+  assertUpdateSequenceAdmitted,
+  workerHeartbeatRecoveryDecision,
+  workerLifecycleAllowsActivation
+} from './update-policy.js';
 
 const paths = resolveRemoteConnectorPaths();
 ensureRemoteConnectorDirectories(paths);
 const once = process.argv.includes('--once');
 let worker: ChildProcess | null = null;
+let workerHasStarted = false;
+let workerStartedAt = 0;
+let workerHeartbeatStaleSince = 0;
+let lastWorkerWatchdogAt = 0;
 let stopping = false;
 let transitioning = false;
 let ownsLock = false;
@@ -40,10 +48,16 @@ const SUPERVISOR_STARTING_GRACE_MS = 10_000;
 const SUPERVISOR_RECOVERY_GATE_LEASE_MS = 15_000;
 const WORKER_RECOVERY_HANDOFF_WAIT_MS = 20_000;
 const WORKER_RECOVERY_HANDOFF_MAX_AGE_MS = 60_000;
+const WORKER_STATUS_STARTUP_GRACE_MS = 15_000;
+const WORKER_STATUS_HEARTBEAT_FRESH_MS = 5_000;
+const WORKER_STATUS_RECOVERY_DELAY_MS = 30_000;
+const UPDATE_EXTRACTION_TIMEOUT_MS = 5 * 60_000;
 let heartbeatFailureSince = 0;
 let heartbeatTickRunning = false;
 let workerRestartFailures = 0;
 let nextWorkerStartAt = 0;
+let automaticUpdateTask: Promise<void> | null = null;
+let automaticUpdateAbort: AbortController | null = null;
 
 interface SupervisorLock {
   schemaVersion: 'omnia.v5.remote-connector-supervisor-lock/v1';
@@ -235,27 +249,47 @@ function clearWorkerRecoveryHandoff(recoveryId: string): void {
   } catch { /* best effort */ }
 }
 
-async function waitForRecoveringWorkerExit(lock: ParsedSupervisorLock): Promise<boolean> {
-  const handoff = readWorkerRecoveryHandoff(lock);
-  if (!handoff) return false;
+function recoveryHandoffStillMatches(recoveryId: string): boolean {
+  try {
+    const current = JSON.parse(fs.readFileSync(paths.workerRecoveryHandoff, 'utf8')) as Partial<WorkerRecoveryHandoff>;
+    return current.recoveryId === recoveryId;
+  } catch {
+    return false;
+  }
+}
+
+function handoffWorkerIsLive(handoff: WorkerRecoveryHandoff): boolean {
+  return processIsAlive(handoff.workerPid)
+    && !pidWasReused({ pid: handoff.workerPid, createdAt: handoff.createdAt });
+}
+
+async function waitForHandoffWorkerExit(
+  lock: ParsedSupervisorLock,
+  handoff: WorkerRecoveryHandoff
+): Promise<boolean> {
   const deadline = Math.min(Date.parse(handoff.expiresAt), Date.now() + WORKER_RECOVERY_HANDOFF_WAIT_MS);
-  log('info', 'Verified an orphan Worker recovery handoff; waiting for the exiting Worker before takeover.', {
+  let nextHeartbeatAt = 0;
+  log('info', 'Verified an orphan Worker recovery handoff; waiting for the quiesced Worker to exit.', {
     ownerPid: lock.pid,
     workerPid: handoff.workerPid
   });
   while (Date.now() < deadline) {
-    if (!orphanWorkerIsLive(lock)) {
+    if (ownsLock && Date.now() >= nextHeartbeatAt) {
+      if (!await publishHeartbeat()) return false;
+      nextHeartbeatAt = Date.now() + SUPERVISOR_HEARTBEAT_INTERVAL_MS;
+    }
+    if (!handoffWorkerIsLive(handoff)) {
       clearWorkerRecoveryHandoff(handoff.recoveryId);
-      log('info', 'Recovery handoff Worker exited; Supervisor takeover may proceed.', {
+      log('info', 'Recovery handoff Worker exited; replacement Worker startup may proceed.', {
         ownerPid: lock.pid,
         workerPid: handoff.workerPid
       });
       return true;
     }
-    if (readWorkerRecoveryHandoff(lock)?.recoveryId !== handoff.recoveryId) return false;
+    if (!recoveryHandoffStillMatches(handoff.recoveryId)) return false;
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
-  if (!orphanWorkerIsLive(lock)) {
+  if (!handoffWorkerIsLive(handoff)) {
     clearWorkerRecoveryHandoff(handoff.recoveryId);
     return true;
   }
@@ -476,40 +510,46 @@ async function acquireLock(): Promise<boolean> {
       return false;
     }
     if (observed && lockIsLive(observed)) return false;
+    let recoveryHandoff: WorkerRecoveryHandoff | null = null;
+    if (observed) recoveryHandoff = readWorkerRecoveryHandoff(observed);
     if (observed && lockOwnerIsLive(observed)) {
-      fs.writeFileSync(paths.stopRequest, new Date().toISOString(), { encoding: 'utf8', mode: 0o600 });
-      log('error', 'Stale Supervisor heartbeat still belongs to a live PID; requested stop and refused dual startup.', {
-        ownerPid: observed.pid,
-        legacy: observed.legacy
-      });
-      return false;
-    }
-    if (observed && orphanWorkerIsLive(observed)) {
-      if (!await waitForRecoveringWorkerExit(observed)) {
-        log('error', 'Supervisor exited without proving that its Worker stopped; refusing an unsafe replacement.', {
+      if (!recoveryHandoff) {
+        log('error', 'Stale Supervisor heartbeat still belongs to a live PID; refused dual startup without a verified Worker recovery handoff.', {
           ownerPid: observed.pid,
-          workerPid: readHeartbeat()?.workerPid
+          legacy: observed.legacy
         });
         return false;
       }
+      log('warn', 'Verified a Worker recovery handoff from a stale live Supervisor; fencing the old owner token.', {
+        ownerPid: observed.pid,
+        workerPid: recoveryHandoff.workerPid
+      });
+    }
+    if (observed && orphanWorkerIsLive(observed) && !recoveryHandoff) {
+      log('error', 'Supervisor exited without a verified Worker recovery handoff; refusing an unsafe replacement.', {
+        ownerPid: observed.pid,
+        workerPid: readHeartbeat()?.workerPid
+      });
+      return false;
+    }
+    if (!ownsRecoveryGate()) return false;
+    if (observed) {
       const confirmed = readLock();
       if (!confirmed || confirmed.pid !== observed.pid || confirmed.token !== observed.token) return false;
     }
-    if (observed) {
-      const completedHandoff = readWorkerRecoveryHandoff(observed);
-      if (completedHandoff && !orphanWorkerIsLive(observed)) {
-        clearWorkerRecoveryHandoff(completedHandoff.recoveryId);
-        log('info', 'Accepted a completed Worker recovery handoff.', {
-          ownerPid: observed.pid,
-          workerPid: completedHandoff.workerPid
-        });
-      }
-    }
-    if (!ownsRecoveryGate()) return false;
     fs.rmSync(paths.supervisorLock, { force: true });
     try {
       publish();
-      await publishHeartbeat();
+      if (!await publishHeartbeat()) return false;
+      if (observed && recoveryHandoff) {
+        log('info', 'Published the fenced Supervisor heartbeat; waiting for the quiesced Worker to acknowledge takeover and exit.', {
+          ownerPid: observed.pid,
+          workerPid: recoveryHandoff.workerPid
+        });
+        if (!await waitForHandoffWorkerExit(observed, recoveryHandoff)) {
+          throw new Error('Quiesced Worker did not exit after the fenced Supervisor takeover acknowledgement.');
+        }
+      }
       return ownsCurrentLock();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
@@ -565,6 +605,9 @@ function startWorker(): ChildProcess {
     }
   );
   worker = child;
+  workerHasStarted = true;
+  workerStartedAt = Date.now();
+  workerHeartbeatStaleSince = 0;
   let failureRecorded = false;
   const recordFailureBackoff = () => {
     if (failureRecorded || stopping || transitioning) return;
@@ -573,7 +616,10 @@ function startWorker(): ChildProcess {
     nextWorkerStartAt = Date.now() + Math.min(30_000, 1_000 * (2 ** (workerRestartFailures - 1)));
   };
   child.once('exit', (code, signal) => {
-    if (worker === child) worker = null;
+    if (worker === child) {
+      worker = null;
+      workerHeartbeatStaleSince = 0;
+    }
     if (!stopping && !transitioning) {
       recordFailureBackoff();
       log('warn', 'Versioned Remote Connector worker exited; Supervisor will restart it.', {
@@ -584,7 +630,14 @@ function startWorker(): ChildProcess {
     }
   });
   child.once('error', (error) => {
-    if (worker === child) worker = null;
+    const childPid = Number(child.pid || 0);
+    const processConfirmedAbsent = child.exitCode !== null
+      || childPid <= 0
+      || !processIsAlive(childPid);
+    if (worker === child && processConfirmedAbsent) {
+      worker = null;
+      workerHeartbeatStaleSince = 0;
+    }
     recordFailureBackoff();
     log('error', 'Versioned Remote Connector worker failed to start.', {
       version: state.current,
@@ -594,10 +647,25 @@ function startWorker(): ChildProcess {
   return child;
 }
 
-async function stopWorker(): Promise<void> {
+function abandonWorkerForOwnerLoss(): void {
   const child = worker;
   worker = null;
   if (!child || child.exitCode !== null) return;
+  child.removeAllListeners();
+  child.unref();
+}
+
+async function stopWorker(): Promise<void> {
+  const child = worker;
+  if (!child) return;
+  const clearConfirmedWorker = () => {
+    if (worker === child) worker = null;
+    workerHeartbeatStaleSince = 0;
+  };
+  if (child.exitCode !== null) {
+    clearConfirmedWorker();
+    return;
+  }
   child.kill('SIGTERM');
   const exitedAfterTerminate = await new Promise<boolean>((resolve) => {
     const timeout = setTimeout(() => resolve(false), 5_000);
@@ -606,7 +674,10 @@ async function stopWorker(): Promise<void> {
       resolve(true);
     });
   });
-  if (exitedAfterTerminate || child.exitCode !== null) return;
+  if (exitedAfterTerminate || child.exitCode !== null) {
+    clearConfirmedWorker();
+    return;
+  }
   child.kill('SIGKILL');
   const exitedAfterKill = await new Promise<boolean>((resolve) => {
     if (child.exitCode !== null) {
@@ -622,6 +693,7 @@ async function stopWorker(): Promise<void> {
   if (!exitedAfterKill && child.exitCode === null) {
     throw new Error(`Worker ${child.pid || 'unknown'} did not exit after owned-process termination.`);
   }
+  clearConfirmedWorker();
 }
 
 function readWorkerStatus(): Record<string, unknown> | null {
@@ -638,15 +710,16 @@ function readWorkerStatus(): Record<string, unknown> | null {
   }
 }
 
-function safeWindowAvailable(): boolean {
-  return workerStatusAllowsActivation(readWorkerStatus(), REMOTE_CONNECTOR_PRODUCT);
+function updateAbortSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
-async function fetchUpdateManifest(): Promise<UpdateManifest> {
+async function fetchUpdateManifest(signal?: AbortSignal): Promise<UpdateManifest> {
   const response = await fetch(REMOTE_CONNECTOR_UPDATE_MANIFEST_URL, {
     headers: { Accept: 'application/json' },
     cache: 'no-store',
-    signal: AbortSignal.timeout(20_000)
+    signal: updateAbortSignal(signal, 20_000)
   });
   if (!response.ok) throw new Error(`v5 Remote Connector update manifest returned HTTP ${response.status}.`);
   const length = Number(response.headers.get('content-length') || 0);
@@ -656,7 +729,7 @@ async function fetchUpdateManifest(): Promise<UpdateManifest> {
   return validateUpdateManifest(JSON.parse(text));
 }
 
-async function downloadRelease(manifest: UpdateManifest): Promise<string> {
+async function downloadRelease(manifest: UpdateManifest, signal?: AbortSignal): Promise<string> {
   if (manifest.size > REMOTE_CONNECTOR_MAX_ARCHIVE_BYTES) {
     throw new Error('v5 Remote Connector update exceeds the signed package size limit.');
   }
@@ -664,7 +737,7 @@ async function downloadRelease(manifest: UpdateManifest): Promise<string> {
   const temporaryPath = `${finalPath}.${process.pid}.partial`;
   const response = await fetch(manifest.url, {
     cache: 'no-store',
-    signal: AbortSignal.timeout(30 * 60_000)
+    signal: updateAbortSignal(signal, 30 * 60_000)
   });
   if (!response.ok || !response.body) throw new Error(`v5 Remote Connector update download returned HTTP ${response.status}.`);
   const contentLength = Number(response.headers.get('content-length') || 0);
@@ -674,46 +747,84 @@ async function downloadRelease(manifest: UpdateManifest): Promise<string> {
   const hash = crypto.createHash('sha256');
   const handle = fs.openSync(temporaryPath, 'wx', 0o600);
   let received = 0;
+  let completed = false;
   try {
-    const reader = response.body.getReader();
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      const bytes = Buffer.from(chunk.value);
-      received += bytes.length;
-      if (received > manifest.size || received > REMOTE_CONNECTOR_MAX_ARCHIVE_BYTES) {
-        throw new Error('v5 Remote Connector update download exceeded the signed size.');
+    try {
+      const reader = response.body.getReader();
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        const bytes = Buffer.from(chunk.value);
+        received += bytes.length;
+        if (received > manifest.size || received > REMOTE_CONNECTOR_MAX_ARCHIVE_BYTES) {
+          throw new Error('v5 Remote Connector update download exceeded the signed size.');
+        }
+        fs.writeSync(handle, bytes);
+        hash.update(bytes);
       }
-      fs.writeSync(handle, bytes);
-      hash.update(bytes);
+      fs.fsyncSync(handle);
+    } finally {
+      fs.closeSync(handle);
     }
-    fs.fsyncSync(handle);
+    if (received !== manifest.size || hash.digest('hex') !== manifest.sha256) {
+      throw new Error('v5 Remote Connector update archive failed size or SHA-256 verification.');
+    }
+    fs.renameSync(temporaryPath, finalPath);
+    completed = true;
+    return finalPath;
   } finally {
-    fs.closeSync(handle);
+    if (!completed) fs.rmSync(temporaryPath, { force: true });
   }
-  if (received !== manifest.size || hash.digest('hex') !== manifest.sha256) {
-    fs.rmSync(temporaryPath, { force: true });
-    throw new Error('v5 Remote Connector update archive failed size or SHA-256 verification.');
-  }
-  fs.renameSync(temporaryPath, finalPath);
-  return finalPath;
 }
 
-function extractRelease(manifest: UpdateManifest, archivePath: string): string {
+async function extractRelease(
+  manifest: UpdateManifest,
+  archivePath: string,
+  signal?: AbortSignal
+): Promise<string> {
   const extraction = path.join(paths.updates, `extract-${manifest.version}-${manifest.sequence}`);
   fs.rmSync(extraction, { recursive: true, force: true });
   fs.mkdirSync(extraction, { recursive: true, mode: 0o700 });
-  const result = spawnSync(
+  const child = spawn(
     'tar.exe',
     ['-xf', archivePath, '-C', extraction],
     {
       windowsHide: true,
-      encoding: 'utf8'
+      stdio: ['ignore', 'pipe', 'pipe']
     }
   );
-  if (result.status !== 0) {
-    throw new Error(`v5 Remote Connector update extraction failed: ${String(result.stderr || result.stdout).slice(0, 500)}`);
+  let output = '';
+  const capture = (chunk: Buffer | string) => {
+    if (output.length < 500) output += chunk.toString().slice(0, 500 - output.length);
+  };
+  child.stdout?.on('data', capture);
+  child.stderr?.on('data', capture);
+  const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', abort);
+      callback();
+    };
+    const terminate = (error: Error) => {
+      try { child.kill('SIGKILL'); } catch { /* timeout/abort still rejects the staging task */ }
+      finish(() => reject(error));
+    };
+    const abort = () => terminate(new Error('v5 Remote Connector update extraction was cancelled.'));
+    const timeout = setTimeout(() => {
+      terminate(new Error(`v5 Remote Connector update extraction exceeded ${UPDATE_EXTRACTION_TIMEOUT_MS}ms.`));
+    }, UPDATE_EXTRACTION_TIMEOUT_MS);
+    child.once('error', (error) => finish(() => reject(error)));
+    child.once('exit', (code, exitSignal) => finish(() => resolve({ code, signal: exitSignal })));
+    if (signal?.aborted) abort();
+    else signal?.addEventListener('abort', abort, { once: true });
+  });
+  if (result.code !== 0) {
+    throw new Error(`v5 Remote Connector update extraction failed (${result.signal || result.code}): ${output}`);
   }
+  signal?.throwIfAborted();
   const entries = fs.readdirSync(extraction, { withFileTypes: true });
   if (entries.length !== 1 || !entries[0]?.isDirectory()) {
     throw new Error('v5 Remote Connector update archive must contain exactly one portable root.');
@@ -775,17 +886,16 @@ async function probation(expectedVersion: string, child: ChildProcess): Promise<
   throw new Error('v5 Remote Connector candidate did not remain healthy throughout probation.');
 }
 
-async function activatePending(state: ManagedState): Promise<ManagedState> {
+async function activatePendingBeforeWorkerStart(state: ManagedState): Promise<ManagedState> {
   const pending = state.pending;
-  if (!pending || !safeWindowAvailable()) return state;
+  if (!pending || !workerLifecycleAllowsActivation(worker !== null, workerHasStarted)) return state;
   const oldCurrent = state.current;
   const oldPrevious = state.previous;
   const candidateRoot = versionRoot(paths, pending.version);
-  healthProbe(candidateRoot, pending.version);
   transitioning = true;
-  await stopWorker();
   let candidate: ChildProcess | null = null;
   try {
+    healthProbe(candidateRoot, pending.version);
     state = writeManagedState(paths, {
       ...state,
       current: pending.version,
@@ -802,7 +912,7 @@ async function activatePending(state: ManagedState): Promise<ManagedState> {
     });
     return state;
   } catch (error) {
-    if (candidate && candidate.exitCode === null) candidate.kill('SIGTERM');
+    if (candidate && candidate.exitCode === null) await stopWorker();
     state = writeManagedState(paths, {
       ...state,
       current: oldCurrent,
@@ -830,13 +940,10 @@ async function activatePending(state: ManagedState): Promise<ManagedState> {
   }
 }
 
-async function checkForUpdate(): Promise<void> {
+async function checkForUpdate(signal?: AbortSignal): Promise<void> {
   let state = readManagedState(paths);
-  if (state.pending) {
-    state = await activatePending(state);
-    if (state.pending) return;
-  }
-  const manifest = await fetchUpdateManifest();
+  if (state.pending) return;
+  const manifest = await fetchUpdateManifest(signal);
   if (compareVersions(REMOTE_CONNECTOR_SUPERVISOR_VERSION, manifest.minimumSupervisorVersion) < 0) {
     throw new Error('v5 Remote Connector Supervisor is below the signed minimum version; a new bootstrap is required.');
   }
@@ -848,12 +955,13 @@ async function checkForUpdate(): Promise<void> {
     return;
   }
   assertUpdateSequenceAdmitted(manifest, state);
-  const archive = await downloadRelease(manifest);
+  const archive = await downloadRelease(manifest, signal);
   try {
-    extractRelease(manifest, archive);
+    await extractRelease(manifest, archive, signal);
   } finally {
     fs.rmSync(archive, { force: true });
   }
+  signal?.throwIfAborted();
   state = writeManagedState(paths, {
     ...state,
     pending: {
@@ -862,16 +970,50 @@ async function checkForUpdate(): Promise<void> {
       stagedAt: new Date().toISOString()
     }
   });
-  await activatePending(state);
+  log('info', 'Staged a signed v5 Remote Connector update for the next cold Supervisor start.', {
+    current: state.current,
+    pending: manifest.version,
+    sequence: manifest.sequence
+  });
 }
 
-async function shutdown(): Promise<void> {
+function startAutomaticUpdateCheck(): void {
+  if (automaticUpdateTask || stopping) return;
+  const controller = new AbortController();
+  automaticUpdateAbort = controller;
+  let task!: Promise<void>;
+  task = (async () => {
+    try {
+      await checkForUpdate(controller.signal);
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        log('warn', 'v5 Remote Connector automatic update check failed safely.', {
+          error: error instanceof Error ? error.message : 'unknown update error'
+        });
+      }
+    } finally {
+      if (automaticUpdateTask === task) automaticUpdateTask = null;
+      if (automaticUpdateAbort === controller) automaticUpdateAbort = null;
+    }
+  })();
+  automaticUpdateTask = task;
+}
+
+async function stopAutomaticUpdateCheck(): Promise<void> {
+  const task = automaticUpdateTask;
+  automaticUpdateAbort?.abort();
+  if (task) await task;
+}
+
+async function shutdown(stopOwnedWorker = true): Promise<void> {
   if (stopping) return;
   stopping = true;
   transitioning = true;
+  await stopAutomaticUpdateCheck();
   if (lockHeartbeatTimer) clearInterval(lockHeartbeatTimer);
   lockHeartbeatTimer = null;
-  await stopWorker();
+  if (stopOwnedWorker) await stopWorker();
+  else abandonWorkerForOwnerLoss();
   releaseLock();
 }
 
@@ -881,7 +1023,7 @@ async function heartbeatTick(): Promise<void> {
   try {
     if (!await publishHeartbeat()) {
       try { log('error', 'Supervisor ownership token was replaced; stopping the fenced process.'); } catch { /* best effort */ }
-      await shutdown();
+      await shutdown(false);
       process.exitCode = 1;
       return;
     }
@@ -902,7 +1044,7 @@ async function heartbeatTick(): Promise<void> {
           error: error instanceof Error ? error.message : 'unknown heartbeat error'
         });
       } catch { /* shutdown must still proceed when logging storage is unavailable */ }
-      await shutdown();
+      await shutdown(false);
       process.exitCode = 1;
     }
   } finally {
@@ -915,8 +1057,29 @@ async function main(): Promise<void> {
     if (once) fs.writeFileSync(paths.updateRequest, new Date().toISOString(), { mode: 0o600 });
     return;
   }
+  if (once) {
+    try {
+      await checkForUpdate();
+    } catch (error) {
+      log('warn', 'v5 Remote Connector one-shot update check failed safely.', {
+        error: error instanceof Error ? error.message : 'unknown update error'
+      });
+    }
+    await shutdown(false);
+    return;
+  }
   fs.rmSync(paths.stopRequest, { force: true });
-  startWorker();
+  const initialState = readManagedState(paths);
+  if (initialState.pending) {
+    try {
+      await activatePendingBeforeWorkerStart(initialState);
+    } catch (error) {
+      log('warn', 'Cold-start activation failed; restored the previous v5 Remote Connector Worker.', {
+        error: error instanceof Error ? error.message : 'unknown activation error'
+      });
+    }
+  }
+  if (!worker) startWorker();
   if (!await publishHeartbeat()) throw new Error('Supervisor lost its ownership token before worker startup completed.');
   lockHeartbeatTimer = setInterval(() => { void heartbeatTick(); }, SUPERVISOR_HEARTBEAT_INTERVAL_MS);
   lockHeartbeatTimer.unref();
@@ -924,26 +1087,45 @@ async function main(): Promise<void> {
   do {
     if (fs.existsSync(paths.stopRequest)) break;
     const requested = fs.existsSync(paths.updateRequest);
-    if (requested) fs.rmSync(paths.updateRequest, { force: true });
-    if (requested || Date.now() >= nextUpdateAt) {
-      try {
-        await checkForUpdate();
-      } catch (error) {
-        log('warn', 'v5 Remote Connector automatic update check failed safely.', {
-          error: error instanceof Error ? error.message : 'unknown update error'
-        });
-      }
+    if (!automaticUpdateTask && (requested || Date.now() >= nextUpdateAt)) {
+      if (requested) fs.rmSync(paths.updateRequest, { force: true });
       nextUpdateAt = Date.now() + REMOTE_CONNECTOR_UPDATE_INTERVAL_MS;
-      if (once) break;
+      startAutomaticUpdateCheck();
     }
     if (worker) {
       const status = readWorkerStatus();
-      if (
-        Number(status?.pid || 0) === Number(worker.pid || 0)
-        && Date.now() - Date.parse(String(status?.heartbeatAt || '')) < 5_000
-      ) {
+      const now = Date.now();
+      const watchdog = workerHeartbeatRecoveryDecision({
+        expectedPid: Number(worker.pid || 0),
+        statusPid: Number(status?.pid || 0),
+        heartbeatAt: String(status?.heartbeatAt || ''),
+        workerStartedAt,
+        staleSince: workerHeartbeatStaleSince,
+        loopGapMs: lastWorkerWatchdogAt ? now - lastWorkerWatchdogAt : 0,
+        now,
+        startupGraceMs: WORKER_STATUS_STARTUP_GRACE_MS,
+        heartbeatFreshMs: WORKER_STATUS_HEARTBEAT_FRESH_MS,
+        recoveryDelayMs: WORKER_STATUS_RECOVERY_DELAY_MS
+      });
+      lastWorkerWatchdogAt = now;
+      workerHeartbeatStaleSince = watchdog.staleSince;
+      if (watchdog.fresh) {
         workerRestartFailures = 0;
         nextWorkerStartAt = 0;
+      } else if (watchdog.recover && !transitioning && !stopping) {
+        const stalePid = Number(worker.pid || 0);
+        log('warn', 'Remote Connector Worker heartbeat remained stale; Supervisor is recovering the owned Worker.', {
+          version: readManagedState(paths).current,
+          pid: stalePid,
+          staleForMs: now - watchdog.staleSince
+        });
+        transitioning = true;
+        try {
+          await stopWorker();
+        } finally {
+          transitioning = false;
+        }
+        if (!stopping) startWorker();
       }
     } else if (!transitioning && !stopping && Date.now() >= nextWorkerStartAt) {
       startWorker();
@@ -961,10 +1143,10 @@ void main().catch((error) => {
   log('error', 'v5 Remote Connector Supervisor stopped after an unrecoverable error.', {
     error: error instanceof Error ? error.message : 'unknown supervisor error'
   });
-  void shutdown().finally(() => process.exitCode = 1);
+  void shutdown(false).finally(() => process.exitCode = 1);
 });
 
 export const _test = {
-  safeWindowAvailable,
+  activatePendingBeforeWorkerStart,
   readWorkerStatus
 };

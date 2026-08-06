@@ -64,7 +64,14 @@ try {
   if (!refresh.connected || refresh.engagementId !== verifiedEngagementId) {
     throw new Error('refresh changed or lost the verified Pack identity.');
   }
-  const observation = await transport.lightRead(verifiedEngagementId);
+  const observation = await transport.lightRead({
+    connectorId: refresh.connectorId,
+    sessionGeneration: Number(refresh.sessionGeneration || 0),
+    authorityInstanceId: String(refresh.authorityInstanceId || ''),
+    tenantOrOrgId: String(refresh.tenantOrOrgId || ''),
+    packId: String(refresh.packId || ''),
+    engagementId: verifiedEngagementId
+  });
   if (observation.engagementId !== verifiedEngagementId) {
     throw new Error('workspace_light_read returned a different Engagement identity.');
   }

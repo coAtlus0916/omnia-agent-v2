@@ -24,9 +24,16 @@ export async function verifyRemoteConnectorArchiveTarget(
   fetchImpl: typeof fetch = fetch
 ): Promise<UpdateManifest> {
   const manifest = validateUpdateManifest(manifestInput);
-  const response = await fetchImpl(manifest.url, {
+  const archiveUrl = new URL(manifest.url);
+  // Never poison the immutable, query-free release URL with a CDN-cached 404
+  // when this preflight runs before the archive has been staged.
+  archiveUrl.searchParams.set('omniaPreflight', `${manifest.sequence}-${Date.now()}`);
+  const response = await fetchImpl(archiveUrl, {
     headers: { Accept: 'application/zip' },
-    signal: AbortSignal.timeout(180_000)
+    // The immutable archive is ~37 MB today and can legitimately take more than
+    // three minutes over the deployment route. Keep the preflight bounded, but
+    // do not fail a complete staged release merely because the route is slow.
+    signal: AbortSignal.timeout(10 * 60_000)
   });
   if (!response.ok) {
     throw new Error(`Remote Connector target ZIP is unavailable (HTTP ${response.status}).`);

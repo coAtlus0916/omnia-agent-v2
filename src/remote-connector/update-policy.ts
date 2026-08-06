@@ -1,20 +1,45 @@
 import type { ManagedState } from './managed-state.js';
 import { compareVersions, type UpdateManifest } from './release-contract.js';
 
-export function workerStatusAllowsActivation(
-  status: Record<string, unknown> | null,
-  product: string,
-  now = Date.now()
-): boolean {
-  return Boolean(
-    status
-    && status.schemaVersion === 'omnia.v5.remote-connector-status/v1'
-    && status.product === product
-    && Number.isFinite(Date.parse(String(status.heartbeatAt || '')))
-    && now - Date.parse(String(status.heartbeatAt)) < 5_000
-    && Number(status.activeOperations || 0) === 0
-    && Number(status.uncertainOperations || 0) === 0
-  );
+export function workerLifecycleAllowsActivation(workerStarted: boolean, workerHasStarted: boolean): boolean {
+  return workerStarted === false && workerHasStarted === false;
+}
+
+export function workerHeartbeatRecoveryDecision(input: {
+  expectedPid: number;
+  statusPid: number;
+  heartbeatAt: string;
+  workerStartedAt: number;
+  staleSince: number;
+  loopGapMs: number;
+  now: number;
+  startupGraceMs: number;
+  heartbeatFreshMs: number;
+  recoveryDelayMs: number;
+}): { fresh: boolean; staleSince: number; recover: boolean } {
+  const heartbeatTime = Date.parse(input.heartbeatAt);
+  const heartbeatAge = input.now - heartbeatTime;
+  const fresh = input.expectedPid > 0
+    && input.statusPid === input.expectedPid
+    && Number.isFinite(heartbeatTime)
+    && heartbeatAge >= -input.heartbeatFreshMs
+    && heartbeatAge < input.heartbeatFreshMs;
+  if (fresh) return { fresh: true, staleSince: 0, recover: false };
+  if (input.now - input.workerStartedAt < input.startupGraceMs) {
+    return { fresh: false, staleSince: 0, recover: false };
+  }
+  const staleSince = input.staleSince || input.now;
+  // A single long loop gap may start a new recovery window after suspend/resume,
+  // but it must not erase an already observed stale interval. Otherwise any
+  // repeatedly slow side task can postpone Worker recovery forever.
+  if (input.loopGapMs > input.heartbeatFreshMs && input.staleSince === 0) {
+    return { fresh: false, staleSince, recover: false };
+  }
+  return {
+    fresh: false,
+    staleSince,
+    recover: input.now - staleSince >= input.recoveryDelayMs
+  };
 }
 
 export function assertUpdateSequenceAdmitted(manifest: UpdateManifest, state: ManagedState): void {

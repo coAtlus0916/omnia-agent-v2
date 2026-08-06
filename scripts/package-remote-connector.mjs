@@ -8,12 +8,30 @@ if (process.platform !== 'win32') throw new Error('v5 Remote Connector portable 
 
 const root = path.resolve(import.meta.dirname, '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-const version = '0.3.23';
-const sequence = Number(process.env.OMNIA_V5_REMOTE_CONNECTOR_RELEASE_SEQUENCE || 26);
-const supervisorVersion = '0.1.1';
+const version = '0.3.31';
+const sequence = Number(process.env.OMNIA_V5_REMOTE_CONNECTOR_RELEASE_SEQUENCE || 34);
+const supervisorVersion = '0.1.5';
 const product = 'omnia-agent-v5-remote-connector';
 const platform = 'win32-x64';
 const keyId = 'v5-remote-connector-release-2026-01';
+const gitStatus = spawnSync('git', ['status', '--porcelain', '--untracked-files=no'], {
+  cwd: root,
+  encoding: 'utf8',
+  windowsHide: true
+});
+if (gitStatus.status !== 0) throw new Error('Unable to verify the Connector source worktree before packaging.');
+if (String(gitStatus.stdout || '').trim()) {
+  throw new Error('Refusing to package Remote Connector from a dirty tracked worktree. Commit the exact source first.');
+}
+const sourceCommitResult = spawnSync('git', ['rev-parse', 'HEAD'], {
+  cwd: root,
+  encoding: 'utf8',
+  windowsHide: true
+});
+const sourceCommit = String(sourceCommitResult.stdout || '').trim();
+if (sourceCommitResult.status !== 0 || !/^[0-9a-f]{40}$/i.test(sourceCommit)) {
+  throw new Error('Unable to bind the Connector package to an exact Git source commit.');
+}
 const packageName = `Omnia-Agent-v5-Remote-Connector-v${version}-Portable`;
 const runId = `${process.pid}-${Date.now()}`;
 const releasesRoot = path.join(root, 'remote-connector', 'releases');
@@ -85,6 +103,22 @@ fs.cpSync(
   path.join(portableRoot, 'app', 'node_modules', 'playwright-core'),
   { recursive: true }
 );
+// Playwright CLI skill markdown is development-only and contains paths that
+// Windows tar.exe cannot round-trip under the portable root. Runtime code does
+// not load it; excluding it keeps the signed inventory extractable on the
+// managed company-machine path.
+fs.rmSync(
+  path.join(portableRoot, 'app', 'node_modules', 'playwright-core', 'lib', 'tools', 'skills'),
+  { recursive: true, force: true }
+);
+// The Connector never installs browsers or runs Playwright's CLI. Excluding
+// the cross-platform installer scripts prevents corporate endpoint controls
+// from removing .ps1/.sh files between extraction and signed inventory
+// verification. The browser connection runtime remains unchanged.
+fs.rmSync(
+  path.join(portableRoot, 'app', 'node_modules', 'playwright-core', 'bin'),
+  { recursive: true, force: true }
+);
 fs.copyFileSync(process.execPath, path.join(portableRoot, 'runtime', 'node.exe'));
 
 writeText('StartRemoteConnector.cmd', [
@@ -155,6 +189,7 @@ writeText('package-identity.json', `${JSON.stringify({
   version,
   sequence,
   supervisorVersion,
+  sourceCommit,
   platform,
   installDirectory: 'OmniaAgentV5RemoteConnector',
   dataDirectory: 'OmniaAgentV5RemoteConnector',
@@ -186,6 +221,7 @@ fs.writeFileSync(
 
 smokeTest();
 createZip();
+verifyArchiveRoundTrip();
 fs.copyFileSync(zipPath, publicZipPath);
 
 const archiveSize = fs.statSync(zipPath).size;
@@ -201,8 +237,8 @@ const updateManifest = {
   url: `https://download.labcaspian.com/files/v5-remote-connector/releases/${version}/${path.basename(zipPath)}`,
   sha256: archiveSha256,
   size: archiveSize,
-  // 0.3.23 is the transition release: deployed 0.1.0 must admit and verify the
-  // worker package, whose startup then migrates the persistent bootstrap to 0.1.1.
+  // Deployed 0.1.0/0.1.1 Supervisors admit the verified worker package; the
+  // worker then migrates the persistent bootstrap to 0.1.5.
   minimumSupervisorVersion: '0.1.0',
   rolloutPolicy: 'automatic_safe_window',
   securitySeverity: 'normal',
@@ -296,11 +332,11 @@ function sign(value) {
   return crypto.sign(null, Buffer.from(canonicalJson(payload)), privateKey).toString('base64');
 }
 
-function smokeTest() {
+function smokeTest(targetRoot = portableRoot) {
   const probe = spawnSync(
-    path.join(portableRoot, 'runtime', 'node.exe'),
-    [path.join(portableRoot, 'app', 'worker.cjs'), '--health-probe'],
-    { cwd: portableRoot, encoding: 'utf8', windowsHide: true }
+    path.join(targetRoot, 'runtime', 'node.exe'),
+    [path.join(targetRoot, 'app', 'worker.cjs'), '--health-probe'],
+    { cwd: targetRoot, encoding: 'utf8', windowsHide: true }
   );
   if (probe.status !== 0) throw new Error(`Remote Connector health probe failed: ${probe.stderr || probe.stdout}`);
   const status = JSON.parse(probe.stdout);
@@ -313,10 +349,10 @@ function smokeTest() {
     const dataRoot = path.join(smokeRoot, 'data');
     const startupEntry = path.join(smokeRoot, 'startup', 'Omnia Agent v5 Remote Connector.cmd');
     const install = spawnSync(
-      path.join(portableRoot, 'runtime', 'node.exe'),
-      [path.join(portableRoot, 'app', 'cli.cjs'), 'install'],
+      path.join(targetRoot, 'runtime', 'node.exe'),
+      [path.join(targetRoot, 'app', 'cli.cjs'), 'install'],
       {
-        cwd: portableRoot,
+        cwd: targetRoot,
         encoding: 'utf8',
         windowsHide: true,
         env: {
@@ -346,4 +382,22 @@ function createZip() {
   );
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`Remote Connector ZIP creation failed with exit code ${result.status}.`);
+}
+
+function verifyArchiveRoundTrip() {
+  const extraction = fs.mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-remote-connector-archive-'));
+  try {
+    const result = spawnSync('tar.exe', ['-xf', zipPath, '-C', extraction], {
+      encoding: 'utf8',
+      windowsHide: true
+    });
+    if (result.status !== 0) {
+      throw new Error(`Remote Connector archive round-trip extraction failed: ${result.stderr || result.stdout}`);
+    }
+    const roots = fs.readdirSync(extraction, { withFileTypes: true }).filter((entry) => entry.isDirectory());
+    if (roots.length !== 1) throw new Error('Remote Connector archive round-trip did not contain exactly one portable root.');
+    smokeTest(path.join(extraction, roots[0].name));
+  } finally {
+    fs.rmSync(extraction, { recursive: true, force: true });
+  }
 }

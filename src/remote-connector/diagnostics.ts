@@ -11,6 +11,7 @@ const MAX_EVENTS = 20;
 const EVENT_NAMES = new Map<string, RemoteConnectorSupervisorEventName>([
   ['Versioned Remote Connector worker exited; Supervisor will restart it.', 'worker_exited'],
   ['Versioned Remote Connector worker failed to start.', 'worker_start_failed'],
+  ['Remote Connector Worker heartbeat remained stale; Supervisor is recovering the owned Worker.', 'worker_heartbeat_recovery'],
   ['Promoted a signed v5 Remote Connector candidate.', 'candidate_promoted'],
   ['Rolled back a failed v5 Remote Connector candidate.', 'candidate_rolled_back'],
   ['v5 Remote Connector automatic update check failed safely.', 'update_check_failed'],
@@ -22,8 +23,8 @@ const limitedString = (value: unknown, maximum = 120): string =>
 
 export function redactDiagnosticText(value: unknown): string {
   return limitedString(value, 2_000)
-    .replace(/\b(authorization|cookie|token|secret|password|credential)\b\s*[:=]\s*[^\s,;]+/giu, '$1=[redacted]')
     .replace(/\bBearer\s+[^\s,;]+/giu, 'Bearer [redacted]')
+    .replace(/\b(authorization|cookie|token|secret|password|credential)\b\s*[:=]\s*[^\s,;]+/giu, '$1=[redacted]')
     .replace(/(?:https?|wss?):\/\/[^\s]+/giu, '[url]')
     .replace(/(?:[A-Za-z]:\\|\\\\)[^\s"']+/gu, '[path]')
     .replace(/\/(?:[^\s/]+\/){2,}[^\s"']*/gu, '[path]')

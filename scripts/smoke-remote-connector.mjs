@@ -29,7 +29,8 @@ try {
   const statusPath = path.join(dataRoot, 'status.json');
   const lockPath = path.join(dataRoot, 'supervisor.lock');
   await waitFor(() => fs.existsSync(statusPath) && fs.existsSync(lockPath), 15_000);
-  supervisorPid = Number(JSON.parse(fs.readFileSync(lockPath, 'utf8')).pid);
+  const firstLock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+  supervisorPid = Number(firstLock.pid);
   assert.ok(supervisorPid > 0);
   const status = JSON.parse(fs.readFileSync(statusPath, 'utf8'));
   assert.equal(status.product, 'omnia-agent-v5-remote-connector');
@@ -40,9 +41,26 @@ try {
   assert.equal(status.uncertainOperations, 0);
   assert.match(status.updateManifestUrl, /\/files\/v5-remote-connector\/stable\.json$/);
 
+  const firstHeartbeat = JSON.parse(fs.readFileSync(path.join(dataRoot, 'supervisor-heartbeat.json'), 'utf8'));
+  const workerPid = Number(firstHeartbeat.workerPid);
+  assert.ok(workerPid > 0);
+  run('start');
+  const repeatedLock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+  const repeatedHeartbeat = JSON.parse(fs.readFileSync(path.join(dataRoot, 'supervisor-heartbeat.json'), 'utf8'));
+  assert.equal(Number(repeatedLock.pid), supervisorPid, 'repeated Start replaced the live Supervisor');
+  assert.equal(repeatedLock.token, firstLock.token, 'repeated Start replaced the Supervisor ownership token');
+  assert.equal(Number(repeatedHeartbeat.workerPid), workerPid, 'repeated Start replaced the healthy Worker');
+  assert.equal(fs.existsSync(path.join(dataRoot, 'stop.request')), false, 'repeated Start wrote an implicit stop request');
+
   run('check-update');
   await new Promise((resolve) => setTimeout(resolve, 2_000));
   assert.equal(fs.existsSync(lockPath), true);
+  const updateCheckLock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+  const updateCheckHeartbeat = JSON.parse(fs.readFileSync(path.join(dataRoot, 'supervisor-heartbeat.json'), 'utf8'));
+  assert.equal(Number(updateCheckLock.pid), supervisorPid, 'online update check replaced the live Supervisor');
+  assert.equal(updateCheckLock.token, firstLock.token, 'online update check replaced the Supervisor ownership token');
+  assert.equal(Number(updateCheckHeartbeat.workerPid), workerPid, 'online update check replaced the live Worker');
+  assert.equal(fs.existsSync(path.join(dataRoot, 'stop.request')), false, 'online update check wrote an implicit stop request');
 
   run('stop');
   await waitFor(() => !fs.existsSync(lockPath) && !isProcessAlive(supervisorPid), 15_000);
@@ -52,6 +70,10 @@ try {
     product: status.product,
     version: status.version,
     bridgeState: status.bridgeState,
+    repeatedStartPreservedSupervisorPid: supervisorPid,
+    repeatedStartPreservedWorkerPid: workerPid,
+    onlineUpdateCheckPreservedSupervisorPid: supervisorPid,
+    onlineUpdateCheckPreservedWorkerPid: workerPid,
     isolatedInstallRoot: installRoot,
     isolatedDataRoot: dataRoot,
     v4InstallRootUnchanged: true

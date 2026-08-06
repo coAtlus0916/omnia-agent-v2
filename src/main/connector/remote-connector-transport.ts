@@ -345,14 +345,15 @@ const DIAGNOSTIC_BRIDGE_STATES = new Set<RemoteConnectorBridgeState>([
   'unpaired', 'repair_required', 'connector_incompatible', 'connecting', 'connected', 'disconnected'
 ]);
 const DIAGNOSTIC_EVENT_NAMES = new Set<RemoteConnectorSupervisorEventName>([
-  'worker_exited', 'worker_start_failed', 'candidate_promoted', 'candidate_rolled_back',
+  'worker_exited', 'worker_start_failed', 'worker_heartbeat_recovery',
+  'candidate_promoted', 'candidate_rolled_back',
   'update_check_failed', 'supervisor_failed'
 ]);
 const diagnosticString = (value: unknown, maximum = 160): string =>
   typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/gu, ' ').trim().slice(0, maximum) : '';
 const diagnosticText = (value: unknown): string => diagnosticString(value, 2_000)
-  .replace(/\b(authorization|cookie|token|secret|password|credential)\b\s*[:=]\s*[^\s,;]+/giu, '$1=[redacted]')
   .replace(/\bBearer\s+[^\s,;]+/giu, 'Bearer [redacted]')
+  .replace(/\b(authorization|cookie|token|secret|password|credential)\b\s*[:=]\s*[^\s,;]+/giu, '$1=[redacted]')
   .replace(/(?:https?|wss?):\/\/[^\s]+/giu, '[url]')
   .replace(/(?:[A-Za-z]:\\|\\\\)[^\s"']+/gu, '[path]')
   .replace(/\b[A-Za-z0-9+/=_-]{48,}\b/gu, '[redacted]')

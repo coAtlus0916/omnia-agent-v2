@@ -33,7 +33,7 @@ test('Remote Connector validates payloads, preserves request identity, and allow
   let release!: () => void;
   const pending = new Promise<void>((resolve) => { release = resolve; });
   let dispatches = 0;
-  const first = gate.handle(request('req-3', 'health'), async () => {
+  const first = gate.handle(request('req-3', 'connect'), async () => {
     dispatches += 1;
     await pending;
     return { ready: true };
@@ -45,27 +45,21 @@ test('Remote Connector validates payloads, preserves request identity, and allow
   assert.equal(duplicate.ok, false);
   assert.equal(duplicate.error?.code, 'CONNECTOR.DUPLICATE_IN_FLIGHT');
   assert.equal(dispatches, 1);
+  const exclusive = await gate.handle(request('req-5', 'refresh'), async () => ({ status: 'connected' }));
+  assert.equal(exclusive.ok, false);
+  assert.equal(exclusive.error?.code, 'CONNECTOR.BUSY');
+  release();
+  assert.equal((await first).ok, true);
   const second = await gate.handle(request('req-4', 'status'), async () => {
     dispatches += 1;
     return { status: 'waiting' };
   });
   assert.equal(second.ok, true);
   assert.equal(dispatches, 2);
-  const exclusive = await gate.handle(request('req-5', 'recording_command', {
-    schemaVersion: 'omnia.v5.recording-command/v1',
-    featureId: 'omnia.recording',
-    featureVersion: '0.1.0',
-    kind: 'status',
-    connectorBinding: { connectorId: 'connector-1', sessionGeneration: 1, engagementId: 'engagement-1' }
-  }), async () => ({ state: 'idle' }));
-  assert.equal(exclusive.ok, false);
-  assert.equal(exclusive.error?.code, 'CONNECTOR.BUSY');
-  release();
-  assert.equal((await first).ok, true);
 });
 
-test('Remote wire gate admits only the official recording and Operation host schemas', () => {
-  assert.equal(validateConnectorWireRequest(request('recording-1', 'recording_command', {
+test('Remote wire gate admits only the generic Operation host schemas and rejects retired feature commands', () => {
+  assert.throws(() => validateConnectorWireRequest(request('recording-1', 'recording_command', {
     schemaVersion: 'omnia.v5.recording-command/v1',
     featureId: 'omnia.recording',
     featureVersion: '0.1.0',
@@ -75,7 +69,7 @@ test('Remote wire gate admits only the official recording and Operation host sch
       sessionGeneration: 1,
       engagementId: 'engagement-1'
     }
-  })).operation, 'recording_command');
+  })), (error: any) => error.code === 'CONNECTOR.UNKNOWN_OPERATION');
   assert.equal(validateConnectorWireRequest(request('operation-1', 'operation_register', {
     schemaVersion: 'omnia.operation-registration/v1',
     featureId: 'official.feature',

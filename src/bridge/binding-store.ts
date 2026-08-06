@@ -60,7 +60,8 @@ const BRIDGE_STATES = new Set<RemoteConnectorBridgeState>([
   'unpaired', 'repair_required', 'connector_incompatible', 'connecting', 'connected', 'disconnected'
 ]);
 const SUPERVISOR_EVENTS = new Set<RemoteConnectorSupervisorEventName>([
-  'worker_exited', 'worker_start_failed', 'candidate_promoted', 'candidate_rolled_back',
+  'worker_exited', 'worker_start_failed', 'worker_heartbeat_recovery',
+  'candidate_promoted', 'candidate_rolled_back',
   'update_check_failed', 'supervisor_failed'
 ]);
 const timestamp = (value: unknown): string => {
@@ -79,8 +80,8 @@ const nonnegative = (value: unknown, maximum = 1_000_000): number | null =>
   Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= maximum ? Number(value) : null;
 const safeText = (value: unknown, maximum = 300): string => (typeof value === 'string' ? value : '')
   .replace(/[\u0000-\u001f\u007f]/gu, ' ')
-  .replace(/\b(authorization|cookie|token|secret|password|credential)\b\s*[:=]\s*[^\s,;]+/giu, '$1=[redacted]')
   .replace(/\bBearer\s+[^\s,;]+/giu, 'Bearer [redacted]')
+  .replace(/\b(authorization|cookie|token|secret|password|credential)\b\s*[:=]\s*[^\s,;]+/giu, '$1=[redacted]')
   .replace(/(?:https?|wss?):\/\/[^\s]+/giu, '[url]')
   .replace(/(?:[A-Za-z]:\\|\\\\)[^\s"']+/gu, '[path]')
   .replace(/\b[A-Za-z0-9+/=_-]{48,}\b/gu, '[redacted]')

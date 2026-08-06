@@ -158,7 +158,7 @@ interface RuntimeHealth {
   supervisorVersion?: string;
 }
 
-const START_HEALTH_STALE_MS = 10_000;
+const START_HEALTH_STALE_MS = 30_000;
 const START_VERIFICATION_TIMEOUT_MS = 75_000;
 
 function runtimeHealth(expectedWorkerVersion: string, now = Date.now()): RuntimeHealth {
@@ -246,17 +246,10 @@ async function prepareUnhealthyRestart(): Promise<void> {
     return;
   }
   const supervisorPid = Number(initialLock.pid || 0);
-  assertOperationStateSafe();
-  fs.writeFileSync(paths.stopRequest, new Date().toISOString(), { encoding: 'utf8', mode: 0o600 });
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    if (!fs.existsSync(paths.supervisorLock) && !processIsAlive(supervisorPid)) return;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
   if (processIsAlive(supervisorPid) && !legacyPidWasReused(initialLock)) {
     throw new Error(
-      `Supervisor ${supervisorPid || 'unknown'} is still alive after its heartbeat became unhealthy; `
-      + 'refusing a duplicate start. Inspect supervisor.jsonl or stop the owned process explicitly.'
+      `Supervisor ${supervisorPid || 'unknown'} still owns the installation but is not healthy; `
+      + 'Start will not write a stop request or create a duplicate. Use Stop explicitly or inspect supervisor.jsonl.'
     );
   }
 }
@@ -296,23 +289,19 @@ async function start(): Promise<void> {
   const command = supervisorCommand();
   const deadline = Date.now() + START_VERIFICATION_TIMEOUT_MS;
   let observed = runtimeHealth(state.current);
-  let nextSpawnAt = 0;
+  const child = spawn(command.node, [command.script], {
+    detached: true,
+    windowsHide: true,
+    stdio: 'ignore',
+    cwd: paths.bootstrap,
+    env: workerEnvironment()
+  });
+  await new Promise<void>((resolve, reject) => {
+    child.once('spawn', resolve);
+    child.once('error', reject);
+  });
+  child.unref();
   while (Date.now() < deadline) {
-    if (Date.now() >= nextSpawnAt) {
-      const child = spawn(command.node, [command.script], {
-        detached: true,
-        windowsHide: true,
-        stdio: 'ignore',
-        cwd: paths.bootstrap,
-        env: workerEnvironment()
-      });
-      await new Promise<void>((resolve, reject) => {
-        child.once('spawn', resolve);
-        child.once('error', reject);
-      });
-      child.unref();
-      nextSpawnAt = Date.now() + 2_000;
-    }
     observed = runtimeHealth(state.current);
     if (observed.healthy) {
       process.stdout.write(

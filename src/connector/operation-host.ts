@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
 import vm from 'node:vm';
 import { packageDigest, packageFile, verifyOfficialPackage } from '../main/features/official-package.js';
 import type {
@@ -8,6 +10,8 @@ import type {
   OperationRegistrationResult
 } from '../shared/operation-contracts.js';
 import { isGuid } from './omnia-origin.js';
+import { ManagedStreamHost } from './managed-stream-host.js';
+import { PageObservationHost, type PageObservationContext } from './page-observation-host.js';
 
 type Route = {
   stepId: string;
@@ -112,6 +116,13 @@ function loadHandler(source: string): Registered['run'] {
 export class OperationHost {
   private readonly registered = new Map<string, Registered>();
   private readonly permits = new Map<string, { expiresAt: number; consumed: boolean }>();
+  private readonly managedStreams: ManagedStreamHost;
+  private readonly pageObservations: PageObservationHost;
+
+  constructor(managedStreamRoot = path.join(os.tmpdir(), `omnia-v5-operation-streams-${process.pid}-${crypto.randomUUID()}`)) {
+    this.managedStreams = new ManagedStreamHost(managedStreamRoot);
+    this.pageObservations = new PageObservationHost(this.managedStreams);
+  }
 
   register(input: OperationRegistrationRequest): OperationRegistrationResult {
     exactKeys(input, ['schemaVersion', 'featureId', 'featureVersion', 'operationPackage'], 'Operation registration');
@@ -161,6 +172,13 @@ export class OperationHost {
       }
     }
     const digest = packageDigest(envelope);
+    const previousOwners = [...this.registered.values()].filter((registered) => (
+      registered.featureId === input.featureId && registered.digest !== digest
+    ));
+    for (const previous of previousOwners) {
+      this.pageObservations.retireOwner(previous.digest);
+      this.registered.delete(previous.digest);
+    }
     this.registered.set(digest, {
       featureId: input.featureId,
       featureVersion: input.featureVersion,
@@ -187,7 +205,8 @@ export class OperationHost {
       routePath: string,
       body: unknown,
       execution: { effect: Descriptor['effect']; commitStep: boolean }
-    ) => Promise<unknown>
+    ) => Promise<unknown>,
+    observationContext?: PageObservationContext
   ): Promise<unknown> {
     exactKeys(input, [
       'schemaVersion', 'featureId', 'featureVersion', 'operationId', 'request',
@@ -231,8 +250,40 @@ export class OperationHost {
       permit.consumed = true;
     }
     const routes = new Map(operation.routes.map((route) => [route.stepId, route]));
+    const requireReadOnlyObservation = () => {
+      if (operation.effect !== 'read_only') throw new Error('Page observation is available only to read-only signed Operations.');
+    };
+    const observationSdk = Object.freeze({
+      open: async (request: Parameters<PageObservationHost['open']>[1]) => {
+        requireReadOnlyObservation();
+        if (!observationContext) throw new Error('Current Pack page observation context is unavailable.');
+        return this.pageObservations.open(registered.digest, request, observationContext);
+      },
+      status: (request: Parameters<PageObservationHost['status']>[1]) => {
+        requireReadOnlyObservation();
+        return this.pageObservations.status(registered.digest, request);
+      },
+      pause: (request: Parameters<PageObservationHost['pause']>[1]) => {
+        requireReadOnlyObservation();
+        return this.pageObservations.pause(registered.digest, request);
+      },
+      resume: async (request: Parameters<PageObservationHost['resume']>[1]) => {
+        requireReadOnlyObservation();
+        if (!observationContext) throw new Error('Current Pack page observation context is unavailable.');
+        return this.pageObservations.resume(registered.digest, request, observationContext);
+      },
+      stop: (request: Parameters<PageObservationHost['stop']>[1]) => {
+        requireReadOnlyObservation();
+        return this.pageObservations.stop(registered.digest, request);
+      },
+      readChunk: (request: Parameters<PageObservationHost['readChunk']>[1]) => {
+        requireReadOnlyObservation();
+        return this.pageObservations.readChunk(registered.digest, request);
+      }
+    });
     const sdk = Object.freeze({
       binding: Object.freeze({ ...currentBinding }),
+      pageObservation: observationSdk,
       invokeStep: async (stepId: string, parameters: Record<string, unknown> = {}, signedBody?: unknown) => {
         const route = routes.get(stepId);
         if (!route) throw new Error(`Signed Operation handler requested undeclared step: ${stepId}`);
@@ -283,6 +334,11 @@ export class OperationHost {
       this.permits.set(key, { expiresAt: Date.now() + 120_000, consumed: false });
     }
     return result;
+  }
+
+  async close(): Promise<void> {
+    await this.pageObservations.close();
+    this.managedStreams.close();
   }
 
   private targetIdentity(target: Record<string, unknown>): string {

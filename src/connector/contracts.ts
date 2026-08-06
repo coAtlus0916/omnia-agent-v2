@@ -6,35 +6,8 @@ export type ConnectorOperation =
   | 'refresh'
   | 'status'
   | 'workspace_authority_read'
-  | 'recording_command'
   | 'operation_register'
   | 'operation_invoke';
-
-export type RecordingCommandKind =
-  | 'status'
-  | 'start'
-  | 'pause'
-  | 'resume'
-  | 'stop'
-  | 'export'
-  | 'export_chunk'
-  | 'stop_export'
-  | 'cancel'
-  | 'capture_current_gra_catalog';
-
-export interface RecordingCommandRequest {
-  schemaVersion: 'omnia.v5.recording-command/v1';
-  featureId: 'omnia.recording';
-  featureVersion: string;
-  kind: RecordingCommandKind;
-  connectorBinding: {
-    connectorId: string;
-    sessionGeneration: number;
-    engagementId: string;
-  };
-  recordingId?: string;
-  chunkIndex?: number;
-}
 
 export interface ConnectorRequest {
   schemaVersion: 'omnia.connector-ipc/v1';

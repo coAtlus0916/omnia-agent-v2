@@ -7,8 +7,6 @@ import { WorkstationOmniaSession, _test } from '../src/connector/workstation-omn
 import { isAllowedOmniaUrl, isGuid, parseEngagementId } from '../src/connector/omnia-origin.ts';
 
 const engagementId = '11111111-1111-4111-8111-111111111111';
-const sectionId = '22222222-2222-4222-8222-222222222222';
-const workspaceId = '33333333-3333-4333-8333-333333333333';
 
 test('Omnia origin allowlist rejects arbitrary hosts and extracts only canonical engagement routes', () => {
   assert.equal(isAllowedOmniaUrl('https://deloitteomnia.deloitte.com.cn/engagement/x'), true);
@@ -19,31 +17,6 @@ test('Omnia origin allowlist rejects arbitrary hosts and extracts only canonical
   );
   assert.equal(isGuid('aaaaaaaa-aaaa-0000-0000-aaaaaaaaaaaa'), true);
   assert.equal(isGuid('00000000-0000-0000-0000-000000000000'), false);
-});
-
-test('workspace light read requires explicit Section to Workspace identities', () => {
-  const result = _test.normalizeLightRead(
-    engagementId,
-    [{
-      id: sectionId,
-      label: '真实 Section',
-      workspaces: [{ workspaceFacetId: workspaceId, sectionId }]
-    }],
-    [{ id: workspaceId, name: '任意显示名称', isDeleted: false }]
-  );
-  assert.equal(result.sections[0]?.id, sectionId);
-  assert.equal(result.workspaces[0]?.parentSectionId, sectionId);
-  assert.equal(result.profile, 'workspace_light_read');
-});
-
-test('workspace light read keeps exact Facet identity when Section display metadata is absent', () => {
-  const result = _test.normalizeLightRead(
-    engagementId,
-    [{ id: sectionId, label: '20000 IT Elements' }],
-    [{ id: workspaceId, name: 'TEST' }]
-  );
-  assert.equal(result.workspaces[0]?.id, workspaceId);
-  assert.equal(result.workspaces[0]?.parentSectionId, '');
 });
 
 test('target binding rejects multiple Pack pages instead of selecting the first', () => {
@@ -85,9 +58,9 @@ test('live hierarchy snapshot exposes only explicit canonical authority identiti
   }finally{await connector.close();rmSync(root,{recursive:true,force:true});}
 });
 
-test('authority extraction never substitutes display names or Engagement ID for missing canonical tenant/Pack IDs',()=>{
+test('authority extraction uses the explicit hierarchy Engagement ID as the Pack identity and never display names',()=>{
   assert.deepEqual(_test.canonicalAuthorityIdentity('https://api.deloitteomnia.deloitte.com.cn',{engagementId,name:'Display Pack',clientName:'Display Client'}),{
-    authorityInstanceId:'https://api.deloitteomnia.deloitte.com.cn',tenantOrOrgId:'',packId:''
+    authorityInstanceId:'https://api.deloitteomnia.deloitte.com.cn',tenantOrOrgId:'',packId:engagementId
   });
 });
 
@@ -171,7 +144,7 @@ test('Workstation Session Core health is self-contained and does not start a bro
   const root = mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-connector-'));
   const connector = new WorkstationOmniaSession(root, fetch);
   try {
-    assert.deepEqual(connector.health(), { ready: true, connectorVersion: '0.3.8' });
+    assert.deepEqual(connector.health(), { ready: true, connectorVersion: '0.3.31' });
   } finally {
     void connector.close();
     rmSync(root, { recursive: true, force: true });

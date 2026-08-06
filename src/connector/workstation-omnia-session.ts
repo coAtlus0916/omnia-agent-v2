@@ -4,18 +4,15 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { chromium, type Browser, type Page, type Request } from 'playwright-core';
-import type { ConnectorConnection, ConnectorWorkspaceAuthorityRead, RecordingCommandRequest } from './contracts.js';
+import type { ConnectorConnection, ConnectorWorkspaceAuthorityRead } from './contracts.js';
 import type { OperationInvocationRequest, OperationRegistrationRequest } from '../shared/operation-contracts.js';
 import { isAllowedOmniaUrl, isGuid, normalizeOmniaUrl, parseEngagementId } from './omnia-origin.js';
 import { OperationHost } from './operation-host.js';
-import {
-  RecordingService,
-  captureCurrentGraCatalog,
-  observedRiskAssessmentId
-} from './recording/recording-service.js';
 
 const DEFAULT_HOME = 'https://deloitteomnia.deloitte.com.cn/';
-const CONNECTOR_VERSION = '0.3.15';
+const CONNECTOR_VERSION = '0.3.31';
+const AUTHORIZATION_WAIT_MS = 1_500;
+const AUTHORIZATION_REFRESH_WAIT_MS = 10_000;
 const WORKSPACE_AUTHORITY_DIRECTORY_ROUTE = '/engagements/v1/facets/byEngagementIds';
 const WORKSPACE_AUTHORITY_MAX_ENGAGEMENT_ENTRIES = 1;
 const WORKSPACE_AUTHORITY_MAX_FACET_ENTRIES = 2_000;
@@ -196,17 +193,25 @@ function browserIdentityMatches(argumentsList: string[], profileDir: string, por
   return actualProfile === expectedProfile && actualPort === port;
 }
 
+type PageAuthorization = {
+  headers: Record<string, string>;
+  apiOrigin: string;
+  engagementId: string;
+  identityMismatch: boolean;
+  capturedAt: number;
+  captureEpoch: number;
+};
+
 export class WorkstationOmniaSession {
   private browser: Browser | null = null;
-  private authByPage = new WeakMap<Page, {
-    headers: Record<string, string>;
-    apiOrigin: string;
+  private authByPage = new WeakMap<Page, PageAuthorization>();
+  private authorizationCaptureEpoch = 0;
+  private authorizationWaitByPage = new WeakMap<Page, {
     engagementId: string;
-    identityMismatch: boolean;
+    afterEpoch: number;
+    promise: Promise<boolean>;
   }>();
-  private riskAssessmentIdsByPage = new WeakMap<Page, Set<string>>();
-  private automaticCatalogCaptures = new Map<string, Promise<void>>();
-  private automaticCatalogCompleted = new Set<string>();
+  private authorizationRefreshByPage = new WeakMap<Page, Promise<ConnectorConnection>>();
   private port = 0;
   private readonly profileDir: string;
   private readonly statePath: string;
@@ -214,8 +219,7 @@ export class WorkstationOmniaSession {
   private boundPage: Page | null = null;
   private ownsLock = false;
   private readonly sessionGeneration = randomInt(1, 281_474_976_710_655);
-  private readonly operationHost = new OperationHost();
-  private readonly recording: RecordingService;
+  private readonly operationHost: OperationHost;
   private readonly dataRootPath: string;
   private readonly connectorIdentity: { id: string; name: string; version: string };
 
@@ -233,15 +237,16 @@ export class WorkstationOmniaSession {
     this.profileDir = path.join(dataRoot, 'connector', 'edge-profile');
     this.statePath = path.join(dataRoot, 'connector', 'browser-instance.json');
     this.lockPath = path.join(dataRoot, 'connector', 'connector.lock');
-    this.recording = new RecordingService(dataRoot);
     fs.mkdirSync(this.profileDir, { recursive: true });
     this.acquireInstanceLock();
+    this.operationHost = new OperationHost(path.join(this.dataRootPath, 'connector', 'operation-streams'));
   }
 
   async close(): Promise<void> {
     // Never close or terminate the user's controlled Edge session here.
     // Connector process exit releases its own CDP websocket.
     this.browser = null;
+    await this.operationHost.close();
     if (this.ownsLock) {
       try { fs.rmSync(this.lockPath, { force: true }); } catch { /* best-effort lock cleanup */ }
       this.ownsLock = false;
@@ -382,22 +387,59 @@ export class WorkstationOmniaSession {
     if ((page as any).__omniaV5Observed) return;
     (page as any).__omniaV5Observed = true;
     page.on('request', (request) => { void this.captureHeaders(page, request); });
-    page.on('framenavigated', (frame) => {
-      if (frame === page.mainFrame()) {
-        this.riskAssessmentIdsByPage.set(page, new Set());
-        this.authByPage.delete(page);
+  }
+
+  private async waitForAuthorization(
+    page: Page,
+    engagementId: string,
+    afterEpoch = -1,
+    waitMs = AUTHORIZATION_WAIT_MS
+  ): Promise<boolean> {
+    const current = this.authByPage.get(page);
+    if (current?.headers.authorization && current.captureEpoch > afterEpoch
+      && !current.identityMismatch && current.engagementId === engagementId) return true;
+    const existing = this.authorizationWaitByPage.get(page);
+    if (existing?.engagementId === engagementId && existing.afterEpoch >= afterEpoch) return existing.promise;
+    const promise = (async () => {
+      const deadline = Date.now() + waitMs;
+      while (!page.isClosed() && Date.now() < deadline) {
+        const observed = this.authByPage.get(page);
+        if (observed?.headers.authorization && observed.captureEpoch > afterEpoch
+          && !observed.identityMismatch && observed.engagementId === engagementId) return true;
+        await new Promise((resolve) => setTimeout(resolve, 100));
       }
-    });
+      return false;
+    })();
+    this.authorizationWaitByPage.set(page, { engagementId, afterEpoch, promise });
+    try {
+      return await promise;
+    } finally {
+      if (this.authorizationWaitByPage.get(page)?.promise === promise) {
+        this.authorizationWaitByPage.delete(page);
+      }
+    }
+  }
+
+  private authorizationForPage(page: Page, apiOrigin: string): PageAuthorization {
+    return this.authByPage.get(page) || {
+      headers: {},
+      apiOrigin,
+      engagementId: '',
+      identityMismatch: false,
+      capturedAt: 0,
+      captureEpoch: 0
+    };
+  }
+
+  private revokeAuthorization(page: Page, authorization = ''): void {
+    const current = this.authByPage.get(page);
+    if (!current) return;
+    if (authorization && current.headers.authorization !== authorization) return;
+    this.authByPage.delete(page);
   }
 
   private async captureHeaders(page: Page, request: Request): Promise<void> {
     if (!isAllowedOmniaUrl(request.url())) return;
-    const observedRiskAssessment = observedRiskAssessmentId(request.url());
-    if (observedRiskAssessment) {
-      const values = this.riskAssessmentIdsByPage.get(page) || new Set<string>();
-      values.add(observedRiskAssessment);
-      this.riskAssessmentIdsByPage.set(page, values);
-    }
     const headers: Record<string, string> = await request.allHeaders().catch(() => ({}));
     const authorization = clean(headers.authorization, 8192);
     if (!authorization) return;
@@ -413,61 +455,10 @@ export class WorkstationOmniaSession {
       headers: allowlisted,
       apiOrigin: authoritativeApiRequest ? requestUrl.origin : (previous?.apiOrigin || requestUrl.origin),
       engagementId: authIdentity.engagementId,
-      identityMismatch: authIdentity.identityMismatch
+      identityMismatch: authIdentity.identityMismatch,
+      capturedAt: Date.now(),
+      captureEpoch: ++this.authorizationCaptureEpoch
     });
-    if (observedRiskAssessment) void this.captureCatalogAutomatically(page, observedRiskAssessment).catch(() => undefined);
-  }
-
-  private async captureCatalogAutomatically(page: Page, riskAssessmentId: string): Promise<void> {
-    const recordingStatus = this.recording.status() as Record<string, any>;
-    const recordingId = String(recordingStatus.recordingId || '');
-    if (!recordingId || !['recording', 'paused'].includes(String(recordingStatus.state || ''))) return;
-    const key = `${recordingId}:${riskAssessmentId}`;
-    if (this.automaticCatalogCompleted.has(key)) return;
-    const existing = this.automaticCatalogCaptures.get(key);
-    if (existing) return existing;
-    const task = (async () => {
-      const auth = this.authByPage.get(page);
-      const pageEngagementId = parseEngagementId(page.url());
-      if (!auth?.headers.authorization || auth.identityMismatch || auth.engagementId !== pageEngagementId) {
-        throw new ConnectorOperationError('RECORDING.AUTO_CAPTURE_AUTH_PENDING', '当前页尚未提供与 Pack 一致的 Omnia API 授权。', true);
-      }
-      const session: Session = {
-        page,
-        targetUrl: normalizeOmniaUrl(page.url()),
-        apiOrigin: auth.apiOrigin,
-        engagementId: pageEngagementId,
-        headers: auth.headers
-      };
-      const pack = await this.identify(session);
-      const result = await captureCurrentGraCatalog({
-        fetchImpl: this.fetchImpl,
-        apiOrigin: session.apiOrigin,
-        headers: session.headers,
-        engagementId: session.engagementId,
-        riskAssessmentId,
-        pack,
-        outputRoot: this.dataRootPath
-      });
-      this.recording.attachCatalog(recordingId, result);
-      if (result.status === 'complete') this.automaticCatalogCompleted.add(key);
-    })().catch((error) => {
-      this.recording.noteAutomaticCatalogFailure(recordingId, clean(error instanceof Error ? error.message : error));
-      throw error;
-    }).finally(() => this.automaticCatalogCaptures.delete(key));
-    this.automaticCatalogCaptures.set(key, task);
-    return task;
-  }
-
-  private async captureKnownCurrentPageCatalog(session: Session, recordingId: string): Promise<void> {
-    const candidates = [...(this.riskAssessmentIdsByPage.get(session.page) || new Set<string>())];
-    if (candidates.length !== 1) {
-      this.recording.noteAutomaticCatalogFailure(recordingId, candidates.length
-        ? '当前页面观察到多个 GRA 身份，无法把 Risk/Control 归入唯一录制上下文。'
-        : '当前页面尚未观察到唯一 GRA；录制会继续监听页面 Risk/Control 请求。');
-      return;
-    }
-    await this.captureCatalogAutomatically(session.page, candidates[0]!).catch(() => undefined);
   }
 
   private async omniaPages(): Promise<Page[]> {
@@ -512,14 +503,12 @@ export class WorkstationOmniaSession {
     if (!isGuid(engagementId)) {
       throw new ConnectorOperationError('CONNECTOR.PACK_NOT_OPEN', '请在 Edge 中登录 Omnia 并打开目标 Pack。');
     }
-    let auth = this.authByPage.get(page) || { headers: {}, apiOrigin: targetUrl.origin, engagementId: '', identityMismatch: false };
-    let headers = auth.headers;
-    if (requireAuth && !headers.authorization) {
-      await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => undefined);
-      await page.waitForTimeout(1_500);
-      auth = this.authByPage.get(page) || { headers: {}, apiOrigin: targetUrl.origin, engagementId: '', identityMismatch: false };
-      headers = auth.headers;
+    let auth = this.authorizationForPage(page, targetUrl.origin);
+    if (requireAuth && !auth.headers.authorization) {
+      await this.waitForAuthorization(page, engagementId);
+      auth = this.authorizationForPage(page, targetUrl.origin);
     }
+    const headers = auth.headers;
     if (requireAuth && !headers.authorization) {
       throw new ConnectorOperationError(
         'CONNECTOR.AUTH_REQUIRED',
@@ -549,6 +538,9 @@ export class WorkstationOmniaSession {
     }
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        this.revokeAuthorization(session.page, session.headers.authorization);
+      }
       throw new ConnectorOperationError(
         response.status === 401 || response.status === 403 ? 'CONNECTOR.AUTH_REQUIRED' : 'WORKSPACE.READ_FAILED',
         `Omnia 只读 API 返回 HTTP ${response.status}。`,
@@ -586,6 +578,9 @@ export class WorkstationOmniaSession {
     }
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        this.revokeAuthorization(session.page, session.headers.authorization);
+      }
       throw new ConnectorOperationError(
         response.status === 401 || response.status === 403 ? 'CONNECTOR.AUTH_REQUIRED' : 'WORKSPACE.READ_FAILED',
         `Omnia facet directory API returned HTTP ${response.status}.`,
@@ -625,7 +620,7 @@ export class WorkstationOmniaSession {
       }
       const targetUrl = normalizeOmniaUrl(page.url());
       const engagementId = parseEngagementId(targetUrl.href);
-      const auth = this.authByPage.get(page) || { headers: {}, apiOrigin: targetUrl.origin, engagementId: '', identityMismatch: false };
+      const auth = this.authorizationForPage(page, targetUrl.origin);
       if (!engagementId) {
         return this.snapshot(
           auth.headers.authorization ? 'waiting_pack' : 'waiting_login',
@@ -674,9 +669,116 @@ export class WorkstationOmniaSession {
     await this.ensureBrowser();
     const page = await this.currentPage(true);
     if (!page) return this.connect();
-    await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => undefined);
-    await page.waitForTimeout(1_500);
-    return this.status();
+    const existing = this.authorizationRefreshByPage.get(page);
+    if (existing) return existing;
+    const refresh = (async () => {
+      const targetUrl = normalizeOmniaUrl(page.url());
+      const engagementId = parseEngagementId(targetUrl.href);
+      if (!isGuid(engagementId)) return this.status();
+      const previousAuth = this.authByPage.get(page);
+      const reusableAuth = previousAuth?.headers.authorization
+        && !previousAuth.identityMismatch
+        && previousAuth.engagementId === engagementId
+        && isAllowedOmniaUrl(previousAuth.apiOrigin)
+        ? { ...previousAuth, headers: { ...previousAuth.headers } }
+        : null;
+      const beforeEpoch = Number(previousAuth?.captureEpoch || 0);
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => undefined);
+      await this.waitForAuthorization(
+        page,
+        engagementId,
+        beforeEpoch,
+        AUTHORIZATION_REFRESH_WAIT_MS
+      );
+      const observedAfterWait = this.authByPage.get(page);
+      const refreshed = Boolean(
+        observedAfterWait?.headers.authorization
+        && observedAfterWait.captureEpoch > beforeEpoch
+        && !observedAfterWait.identityMismatch
+        && observedAfterWait.engagementId === engagementId
+      );
+      if (!refreshed) {
+        const current = this.authByPage.get(page);
+        if (current && current.captureEpoch > beforeEpoch) return this.status();
+        let currentTargetUrl: URL;
+        try {
+          if (!isAllowedOmniaUrl(page.url())) throw new Error('target origin changed');
+          currentTargetUrl = normalizeOmniaUrl(page.url());
+        } catch {
+          return this.snapshot('identity_changed', '刷新后 Omnia target origin 已变化，已拒绝复用旧 Authorization。');
+        }
+        const currentEngagementId = parseEngagementId(currentTargetUrl.href);
+        if (currentEngagementId !== engagementId) {
+          return this.snapshot(
+            'identity_changed',
+            '刷新后 Omnia target 的 Pack 身份已变化，已拒绝复用旧 Authorization。',
+            { page, targetUrl: currentTargetUrl, apiOrigin: currentTargetUrl.origin, engagementId: currentEngagementId, headers: {} }
+          );
+        }
+        if (!reusableAuth) {
+          return this.snapshot(
+            'waiting_authorization',
+            '目标 Pack 已刷新，但未在限定时间内捕获刷新后的 Omnia API Authorization。',
+            { page, targetUrl: currentTargetUrl, apiOrigin: currentTargetUrl.origin, engagementId, headers: {} }
+          );
+        }
+        const probeSession: Session = {
+          page,
+          targetUrl: currentTargetUrl,
+          apiOrigin: reusableAuth.apiOrigin,
+          engagementId,
+          headers: reusableAuth.headers
+        };
+        let pack: { name: string; clientName: string; authorityInstanceId: string; tenantOrOrgId: string; packId: string };
+        try {
+          pack = await this.identify(probeSession);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '刷新后的旧授权只读校验失败。';
+          if (error instanceof ConnectorOperationError && error.code === 'CONNECTOR.AUTH_REQUIRED') {
+            return this.snapshot(
+              'waiting_authorization',
+              '刷新前 Authorization 已被 Omnia 拒绝，正在等待同一 target 的新 Authorization。',
+              { ...probeSession, headers: {} }
+            );
+          }
+          if (error instanceof ConnectorOperationError && error.code === 'CONNECTOR.PACK_IDENTITY_CHANGED') {
+            return this.snapshot('identity_changed', message, probeSession);
+          }
+          return this.snapshot('identifying_pack', `刷新后的旧 Authorization 只读校验未成功：${message}`, probeSession);
+        }
+        const expectedAuthority = new URL(reusableAuth.apiOrigin).origin.toLowerCase();
+        if (pack.packId !== engagementId || pack.authorityInstanceId !== expectedAuthority) {
+          return this.snapshot(
+            'identity_changed',
+            '刷新后的 hierarchy authority 与原 target/Pack 不一致，已拒绝复用旧 Authorization。',
+            probeSession
+          );
+        }
+        if (!isAllowedOmniaUrl(page.url()) || parseEngagementId(page.url()) !== engagementId) {
+          return this.snapshot('identity_changed', '只读校验期间 Omnia target 的 Pack 身份已变化，已拒绝复用旧 Authorization。');
+        }
+        const capturedDuringProbe = this.authByPage.get(page);
+        if (capturedDuringProbe && capturedDuringProbe.captureEpoch > beforeEpoch) {
+          return this.status();
+        }
+        this.authByPage.set(page, {
+          ...reusableAuth,
+          identityMismatch: false,
+          capturedAt: Date.now(),
+          captureEpoch: ++this.authorizationCaptureEpoch
+        });
+        return this.snapshot('connected', `当前 Pack 已连接：${pack.name}`, probeSession, pack);
+      }
+      return this.status();
+    })();
+    this.authorizationRefreshByPage.set(page, refresh);
+    try {
+      return await refresh;
+    } finally {
+      if (this.authorizationRefreshByPage.get(page) === refresh) {
+        this.authorizationRefreshByPage.delete(page);
+      }
+    }
   }
 
   async workspaceAuthorityRead(expectedEngagementId: string): Promise<ConnectorWorkspaceAuthorityRead> {
@@ -750,6 +852,9 @@ export class WorkstationOmniaSession {
       }
       const payload = response.status === 204 ? null : await response.json().catch(() => null);
       if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          this.revokeAuthorization(session.page, session.headers.authorization);
+        }
         if (execution.commitStep && response.status >= 500) {
           throw new ConnectorOperationError('CONNECTOR.RESPONSE_LOST', `Omnia mutation returned HTTP ${response.status}; the result is uncertain.`, false);
         }
@@ -760,81 +865,12 @@ export class WorkstationOmniaSession {
         );
       }
       return payload;
+    }, {
+      page: session.page,
+      binding,
+      targetUrl: session.targetUrl,
+      apiOrigin: session.apiOrigin
     });
-  }
-
-  async recordingCommand(input: RecordingCommandRequest): Promise<unknown> {
-    if (
-      input?.schemaVersion !== 'omnia.v5.recording-command/v1'
-      || input.featureId !== 'omnia.recording'
-      || !/^\d+\.\d+\.\d+$/u.test(String(input.featureVersion || ''))
-      || !input.connectorBinding
-    ) throw new ConnectorOperationError('RECORDING.INVALID_COMMAND', '录制命令合同无效。');
-    const session = await this.session(!['status', 'export', 'export_chunk'].includes(input.kind));
-    const expectedConnectorId = this.connectorIdentity.id;
-    if (
-      input.connectorBinding.connectorId !== expectedConnectorId
-      || Number(input.connectorBinding.sessionGeneration) !== this.sessionGeneration
-      || input.connectorBinding.engagementId !== session.engagementId
-    ) throw new ConnectorOperationError('RECORDING.BINDING_CHANGED', 'Connector、会话世代或 Pack 身份已变化，已拒绝录制操作。');
-    if (input.kind === 'status') return this.recording.status(input.recordingId || '');
-    if (input.kind === 'start') {
-      const result = await this.recording.start({
-        page: session.page,
-        engagementId: session.engagementId,
-        sessionGeneration: this.sessionGeneration
-      });
-      void this.captureKnownCurrentPageCatalog(session, result.recordingId);
-      return this.recording.status(result.recordingId);
-    }
-    if (input.kind === 'pause') {
-      if (input.recordingId) void this.captureKnownCurrentPageCatalog(session, input.recordingId);
-      return this.recording.pause(input.recordingId || '');
-    }
-    if (input.kind === 'resume') {
-      const result = await this.recording.resume({
-        page: session.page,
-        engagementId: session.engagementId,
-        sessionGeneration: this.sessionGeneration
-      }, input.recordingId || '');
-      void this.captureKnownCurrentPageCatalog(session, result.recordingId);
-      return this.recording.status(result.recordingId);
-    }
-    if (input.kind === 'stop') {
-      if (input.recordingId) await this.captureKnownCurrentPageCatalog(session, input.recordingId);
-      const pendingPrefix = `${input.recordingId || ''}:`;
-      await Promise.allSettled([...this.automaticCatalogCaptures.entries()].filter(([key]) => key.startsWith(pendingPrefix)).map(([, task]) => task));
-      return this.recording.stop(input.recordingId || '');
-    }
-    if (input.kind === 'export') return this.recording.exportRecording(input.recordingId || '');
-    if (input.kind === 'export_chunk') return this.recording.exportChunk(input.recordingId || '', Number(input.chunkIndex));
-    if (input.kind === 'stop_export') {
-      if (input.recordingId) await this.captureKnownCurrentPageCatalog(session, input.recordingId);
-      return this.recording.stopExport(input.recordingId || '');
-    }
-    if (input.kind === 'cancel') return this.recording.cancel(input.recordingId || '');
-    if (input.kind === 'capture_current_gra_catalog') {
-      const candidates = [...(this.riskAssessmentIdsByPage.get(session.page) || new Set<string>())];
-      if (candidates.length !== 1) {
-        throw new ConnectorOperationError(
-          'CATALOG.GRA_CONTEXT_BLOCKED',
-          candidates.length
-            ? '当前页面观察到多个 GRA 身份。请重新打开唯一目标 GRA，等待 Risk/Control 目录加载后重试。'
-            : '尚未从当前页面观察到唯一 GRA 身份。请先打开目标 GRA，等待 Risk/Control 目录加载后重试。'
-        );
-      }
-      const pack = await this.identify(session);
-      return captureCurrentGraCatalog({
-        fetchImpl: this.fetchImpl,
-        apiOrigin: session.apiOrigin,
-        headers: session.headers,
-        engagementId: session.engagementId,
-        riskAssessmentId: candidates[0],
-        pack,
-        outputRoot: this.dataRootPath
-      });
-    }
-    throw new ConnectorOperationError('RECORDING.UNKNOWN_COMMAND', 'Connector 拒绝了未知录制命令。');
   }
 
   private snapshot(

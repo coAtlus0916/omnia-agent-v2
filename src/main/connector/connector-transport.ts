@@ -4,7 +4,6 @@ import type {
   OperationRegistrationRequest,
   OperationRegistrationResult
 } from '../../shared/operation-contracts.js';
-import type { RecordingCommandRequest } from '../../connector/contracts.js';
 
 export interface WorkspaceAuthorityExpectation {
   connectorId: string;
@@ -25,7 +24,6 @@ export interface ConnectorTransport {
   cancelConnect(): Promise<void>;
   refresh(): Promise<ConnectionSnapshot>;
   lightRead(expected: WorkspaceAuthorityExpectation): Promise<WorkspaceObservation>;
-  recordingCommand(input: RecordingCommandRequest): Promise<unknown>;
   registerOperation(input: OperationRegistrationRequest): Promise<OperationRegistrationResult>;
   invokeOperation(input: OperationInvocationRequest): Promise<unknown>;
 }

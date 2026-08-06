@@ -231,7 +231,14 @@ export function verifyPortableRoot(root: string): PortableManifest {
   const actualFiles = listTree(resolved).filter((entry) => entry !== 'portable-manifest.json');
   const expectedFiles = manifest.files.map((entry) => entry.path);
   if (actualFiles.join('|') !== expectedFiles.join('|')) {
-    throw new Error('Portable package file inventory does not match its signed manifest.');
+    const actual = new Set(actualFiles);
+    const expected = new Set(expectedFiles);
+    const missing = expectedFiles.filter((entry) => !actual.has(entry)).slice(0, 12);
+    const extra = actualFiles.filter((entry) => !expected.has(entry)).slice(0, 12);
+    throw new Error(
+      `Portable package file inventory does not match its signed manifest. `
+      + `Missing: ${missing.join(', ') || 'none'}. Extra: ${extra.join(', ') || 'none'}.`
+    );
   }
   for (const file of manifest.files) {
     const target = path.join(resolved, ...file.path.split('/'));

@@ -8,8 +8,9 @@ if (process.platform !== 'win32') throw new Error('v5 Remote Connector portable 
 
 const root = path.resolve(import.meta.dirname, '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-const version = '0.3.17';
-const sequence = Number(process.env.OMNIA_V5_REMOTE_CONNECTOR_RELEASE_SEQUENCE || 20);
+const version = '0.3.23';
+const sequence = Number(process.env.OMNIA_V5_REMOTE_CONNECTOR_RELEASE_SEQUENCE || 26);
+const supervisorVersion = '0.1.1';
 const product = 'omnia-agent-v5-remote-connector';
 const platform = 'win32-x64';
 const keyId = 'v5-remote-connector-release-2026-01';
@@ -153,6 +154,7 @@ writeText('package-identity.json', `${JSON.stringify({
   product,
   version,
   sequence,
+  supervisorVersion,
   platform,
   installDirectory: 'OmniaAgentV5RemoteConnector',
   dataDirectory: 'OmniaAgentV5RemoteConnector',
@@ -199,6 +201,8 @@ const updateManifest = {
   url: `https://download.labcaspian.com/files/v5-remote-connector/releases/${version}/${path.basename(zipPath)}`,
   sha256: archiveSha256,
   size: archiveSize,
+  // 0.3.23 is the transition release: deployed 0.1.0 must admit and verify the
+  // worker package, whose startup then migrates the persistent bootstrap to 0.1.1.
   minimumSupervisorVersion: '0.1.0',
   rolloutPolicy: 'automatic_safe_window',
   securitySeverity: 'normal',
@@ -307,6 +311,7 @@ function smokeTest() {
   try {
     const installRoot = path.join(smokeRoot, 'install');
     const dataRoot = path.join(smokeRoot, 'data');
+    const startupEntry = path.join(smokeRoot, 'startup', 'Omnia Agent v5 Remote Connector.cmd');
     const install = spawnSync(
       path.join(portableRoot, 'runtime', 'node.exe'),
       [path.join(portableRoot, 'app', 'cli.cjs'), 'install'],
@@ -317,7 +322,8 @@ function smokeTest() {
         env: {
           ...process.env,
           OMNIA_V5_REMOTE_CONNECTOR_INSTALL_ROOT: installRoot,
-          OMNIA_V5_REMOTE_CONNECTOR_DATA_ROOT: dataRoot
+          OMNIA_V5_REMOTE_CONNECTOR_DATA_ROOT: dataRoot,
+          OMNIA_V5_REMOTE_CONNECTOR_STARTUP_ENTRY: startupEntry
         }
       }
     );

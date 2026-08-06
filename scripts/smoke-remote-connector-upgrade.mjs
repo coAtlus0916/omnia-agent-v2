@@ -18,7 +18,8 @@ const credentialProbe = path.join(dataRoot, 'binding-preservation.probe');
 const environment = {
   ...process.env,
   OMNIA_V5_REMOTE_CONNECTOR_INSTALL_ROOT: installRoot,
-  OMNIA_V5_REMOTE_CONNECTOR_DATA_ROOT: dataRoot
+  OMNIA_V5_REMOTE_CONNECTOR_DATA_ROOT: dataRoot,
+  OMNIA_V5_REMOTE_CONNECTOR_STARTUP_ENTRY: path.join(smokeRoot, 'startup', 'Omnia Agent v5 Remote Connector.cmd')
 };
 
 function cli(portable, command) {

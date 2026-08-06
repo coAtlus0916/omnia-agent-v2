@@ -1,4 +1,7 @@
+import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import path from 'node:path';
 import { WebSocket } from 'ws';
 import { WorkstationOmniaSession, ConnectorOperationError } from '../connector/workstation-omnia-session.js';
 import type { ConnectorRequest } from '../connector/contracts.js';
@@ -11,12 +14,15 @@ import {
 } from '../shared/bridge-contracts.js';
 import {
   REMOTE_CONNECTOR_PRODUCT,
+  REMOTE_CONNECTOR_SUPERVISOR_VERSION,
   REMOTE_CONNECTOR_UPDATE_MANIFEST_URL,
   REMOTE_CONNECTOR_VERSION
 } from './constants.js';
 import {
   ensureRemoteConnectorDirectories,
   ensureManagedLaunchers,
+  appendBootstrapMigrationDiagnostic,
+  migrateSupervisorBootstrap,
   readManagedState,
   resolveRemoteConnectorPaths,
   writeJsonAtomic
@@ -70,6 +76,20 @@ let credentialRepairRequired = false;
 let socketCredentialPairId = '';
 let heartbeatAt = new Date().toISOString();
 let lastDiagnosticsSentAt = 0;
+let bootstrapMigration: Record<string, unknown> = {
+  state: 'pending',
+  supervisorVersion: REMOTE_CONNECTOR_SUPERVISOR_VERSION,
+  at: new Date().toISOString()
+};
+const expectedSupervisorPid = Number(process.env.OMNIA_V5_REMOTE_CONNECTOR_SUPERVISOR_PID || 0);
+const expectedSupervisorToken = String(process.env.OMNIA_V5_REMOTE_CONNECTOR_SUPERVISOR_TOKEN || '');
+let supervisorLeaseMissingSince = 0;
+let supervisorOwnerExitRequested = false;
+let supervisorLeaseWaitLogged = false;
+let supervisorRecoveryFailures = 0;
+let supervisorRecoveryRetryAt = 0;
+const SUPERVISOR_OWNER_LEASE_MS = 35_000;
+const WORKER_RECOVERY_HANDOFF_MS = 60_000;
 
 async function reconnectDelay(): Promise<void> {
   const base = Math.min(30_000, 1_000 * (2 ** Math.min(reconnectAttempt, 5)));
@@ -89,9 +109,239 @@ function status(): void {
     bridgeReason,
     activeOperations,
     uncertainOperations: 0,
+    bootstrapMigration,
     updateManifestUrl: REMOTE_CONNECTOR_UPDATE_MANIFEST_URL,
     heartbeatAt
   });
+}
+
+function scheduleBootstrapMigration(attempt = 1): void {
+  setTimeout(() => {
+    try {
+      const result = migrateSupervisorBootstrap(
+        paths,
+        path.resolve(path.dirname(process.argv[1] || ''), '..'),
+        { gateWaitMs: 500 }
+      );
+      bootstrapMigration = { ...result };
+      appendBootstrapMigrationDiagnostic(paths, {
+        event: 'bootstrap_migration_completed',
+        ...result,
+        workerVersion: REMOTE_CONNECTOR_VERSION,
+        pid: process.pid
+      });
+      status();
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (['EBUSY', 'EEXIST'].includes(String(code || '')) && attempt < 16 && !stopping) {
+        scheduleBootstrapMigration(attempt + 1);
+        return;
+      }
+      const at = new Date().toISOString();
+      const message = redactDiagnosticText(error instanceof Error ? error.message : 'unknown bootstrap migration error');
+      bootstrapMigration = {
+        state: 'failed',
+        supervisorVersion: REMOTE_CONNECTOR_SUPERVISOR_VERSION,
+        at,
+        error: message
+      };
+      appendBootstrapMigrationDiagnostic(paths, {
+        event: 'bootstrap_migration_failed',
+        ...bootstrapMigration,
+        workerVersion: REMOTE_CONNECTOR_VERSION,
+        pid: process.pid
+      });
+      status();
+    }
+  }, attempt === 1 ? 0 : 2_000).unref();
+}
+
+function processIsAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+function supervisorOwnerLeaseIsHealthy(now = Date.now()): boolean {
+  if (!Number.isSafeInteger(expectedSupervisorPid) || expectedSupervisorPid <= 0 || !expectedSupervisorToken) {
+    return true;
+  }
+  let lock: Record<string, unknown> | null = null;
+  let heartbeat: Record<string, unknown> | null = null;
+  try { lock = JSON.parse(fs.readFileSync(paths.supervisorLock, 'utf8')) as Record<string, unknown>; } catch { /* lease check below */ }
+  try { heartbeat = JSON.parse(fs.readFileSync(paths.supervisorHeartbeat, 'utf8')) as Record<string, unknown>; } catch { /* lease check below */ }
+  const heartbeatAt = Date.parse(String(heartbeat?.heartbeatAt || ''));
+  return Boolean(
+    processIsAlive(expectedSupervisorPid)
+    && lock?.schemaVersion === 'omnia.v5.remote-connector-supervisor-lock/v1'
+    && lock.product === REMOTE_CONNECTOR_PRODUCT
+    && Number(lock.pid) === expectedSupervisorPid
+    && lock.token === expectedSupervisorToken
+    && heartbeat?.schemaVersion === 'omnia.v5.remote-connector-supervisor-heartbeat/v1'
+    && heartbeat.product === REMOTE_CONNECTOR_PRODUCT
+    && Number(heartbeat.pid) === expectedSupervisorPid
+    && heartbeat.token === expectedSupervisorToken
+    && Number.isFinite(heartbeatAt)
+    && now - heartbeatAt >= -5_000
+    && now - heartbeatAt <= SUPERVISOR_OWNER_LEASE_MS
+  );
+}
+
+function monitorSupervisorOwner(now = Date.now()): void {
+  if (supervisorOwnerExitRequested || stopping || supervisorOwnerLeaseIsHealthy(now)) {
+    if (!supervisorOwnerExitRequested) {
+      supervisorLeaseMissingSince = 0;
+      supervisorLeaseWaitLogged = false;
+    }
+    return;
+  }
+  if (!supervisorLeaseMissingSince) supervisorLeaseMissingSince = now;
+  const missingFor = now - supervisorLeaseMissingSince;
+  if (missingFor < SUPERVISOR_OWNER_LEASE_MS) return;
+  if (activeOperations > 0) {
+    if (!supervisorLeaseWaitLogged) {
+      supervisorLeaseWaitLogged = true;
+      appendBootstrapMigrationDiagnostic(paths, {
+        event: 'supervisor_owner_lease_waiting_for_active_operations',
+        at: new Date(now).toISOString(),
+        workerVersion: REMOTE_CONNECTOR_VERSION,
+        pid: process.pid,
+        supervisorPid: expectedSupervisorPid,
+        activeOperations
+      });
+    }
+    return;
+  }
+  if (now < supervisorRecoveryRetryAt) return;
+  supervisorOwnerExitRequested = true;
+  appendBootstrapMigrationDiagnostic(paths, {
+    event: 'supervisor_owner_lease_lost',
+    at: new Date(now).toISOString(),
+    workerVersion: REMOTE_CONNECTOR_VERSION,
+    pid: process.pid,
+    supervisorPid: expectedSupervisorPid,
+    activeOperations
+  });
+  void recoverSupervisorAfterOwnerLoss();
+}
+
+async function startRecoverySupervisor(): Promise<void> {
+  const runtime = path.join(paths.bootstrap, 'node.exe');
+  const supervisor = path.join(paths.bootstrap, 'supervisor.cjs');
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const child = spawn(runtime, [supervisor], {
+        cwd: paths.bootstrap,
+        detached: true,
+        windowsHide: true,
+        stdio: 'ignore',
+        env: {
+          ...process.env,
+          OMNIA_V5_REMOTE_CONNECTOR_INSTALL_ROOT: paths.installRoot,
+          OMNIA_V5_REMOTE_CONNECTOR_DATA_ROOT: paths.dataRoot
+        }
+      });
+      await new Promise<void>((resolve, reject) => {
+        child.once('spawn', resolve);
+        child.once('error', reject);
+      });
+      child.unref();
+      appendBootstrapMigrationDiagnostic(paths, {
+        event: 'worker_recovery_supervisor_spawned',
+        at: new Date().toISOString(),
+        workerVersion: REMOTE_CONNECTOR_VERSION,
+        pid: process.pid,
+        supervisorPid: child.pid || 0,
+        attempt
+      });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 1_000 * attempt));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Failed to start the recovery Supervisor.');
+}
+
+async function recoverSupervisorAfterOwnerLoss(): Promise<void> {
+  const recoveryId = crypto.randomBytes(24).toString('base64url');
+  const publishHandoff = () => {
+    const createdAt = new Date();
+    writeJsonAtomic(paths.workerRecoveryHandoff, {
+      schemaVersion: 'omnia.v5.remote-connector-worker-recovery/v1',
+      product: REMOTE_CONNECTOR_PRODUCT,
+      recoveryId,
+      ownerPid: expectedSupervisorPid,
+      ownerToken: expectedSupervisorToken,
+      workerPid: process.pid,
+      createdAt: createdAt.toISOString(),
+      expiresAt: new Date(createdAt.getTime() + WORKER_RECOVERY_HANDOFF_MS).toISOString()
+    });
+    return createdAt;
+  };
+
+  let createdAt: Date;
+  try {
+    createdAt = publishHandoff();
+  } catch (error) {
+    supervisorRecoveryFailures = Math.min(supervisorRecoveryFailures + 1, 5);
+    supervisorRecoveryRetryAt = Date.now() + Math.min(30_000, 1_000 * (2 ** (supervisorRecoveryFailures - 1)));
+    supervisorOwnerExitRequested = false;
+    appendBootstrapMigrationDiagnostic(paths, {
+      event: 'worker_recovery_handoff_failed',
+      at: new Date().toISOString(),
+      workerVersion: REMOTE_CONNECTOR_VERSION,
+      pid: process.pid,
+      supervisorPid: expectedSupervisorPid,
+      retryAt: new Date(supervisorRecoveryRetryAt).toISOString(),
+      error: redactDiagnosticText(error instanceof Error ? error.message : 'unknown handoff error')
+    });
+    return;
+  }
+
+  supervisorRecoveryFailures = 0;
+  supervisorRecoveryRetryAt = 0;
+  let shutdownError = '';
+  try {
+    await shutdown();
+  } catch (error) {
+    shutdownError = redactDiagnosticText(error instanceof Error ? error.message : 'worker shutdown failed');
+  }
+
+  try {
+    createdAt = publishHandoff();
+  } catch (error) {
+    appendBootstrapMigrationDiagnostic(paths, {
+      event: 'worker_recovery_handoff_refresh_failed',
+      at: new Date().toISOString(),
+      workerVersion: REMOTE_CONNECTOR_VERSION,
+      pid: process.pid,
+      supervisorPid: expectedSupervisorPid,
+      error: redactDiagnosticText(error instanceof Error ? error.message : 'unknown handoff refresh error')
+    });
+  }
+  appendBootstrapMigrationDiagnostic(paths, {
+    event: 'worker_recovery_handoff_published',
+    at: createdAt.toISOString(),
+    workerVersion: REMOTE_CONNECTOR_VERSION,
+    pid: process.pid,
+    supervisorPid: expectedSupervisorPid,
+    shutdownError
+  });
+  try {
+    await startRecoverySupervisor();
+  } catch (error) {
+    appendBootstrapMigrationDiagnostic(paths, {
+      event: 'worker_recovery_supervisor_failed',
+      at: new Date().toISOString(),
+      workerVersion: REMOTE_CONNECTOR_VERSION,
+      pid: process.pid,
+      supervisorPid: expectedSupervisorPid,
+      error: redactDiagnosticText(error instanceof Error ? error.message : 'unknown recovery error'),
+      shutdownError
+    });
+  } finally {
+    process.exit(1);
+  }
 }
 
 function sendDiagnostics(pairId: string, ws: WebSocket): void {
@@ -323,6 +573,7 @@ async function runSocket(): Promise<void> {
 
 const timer = setInterval(() => {
   status();
+  monitorSupervisorOwner();
   if (socket?.readyState === WebSocket.OPEN && socketCredentialPairId && Date.now() - lastDiagnosticsSentAt >= 10_000) {
     sendDiagnostics(socketCredentialPairId, socket);
   }
@@ -333,6 +584,7 @@ const timer = setInterval(() => {
 }, 2_000);
 timer.unref();
 status();
+scheduleBootstrapMigration();
 void (async () => {
   while (!stopping) await runSocket();
 })().catch(() => undefined);

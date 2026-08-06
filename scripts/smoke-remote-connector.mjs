@@ -17,7 +17,8 @@ const dataRoot = path.join(smokeRoot, 'data');
 const environment = {
   ...process.env,
   OMNIA_V5_REMOTE_CONNECTOR_INSTALL_ROOT: installRoot,
-  OMNIA_V5_REMOTE_CONNECTOR_DATA_ROOT: dataRoot
+  OMNIA_V5_REMOTE_CONNECTOR_DATA_ROOT: dataRoot,
+  OMNIA_V5_REMOTE_CONNECTOR_STARTUP_ENTRY: path.join(smokeRoot, 'startup', 'Omnia Agent v5 Remote Connector.cmd')
 };
 const legacyRoot = path.join(String(process.env.LOCALAPPDATA || ''), 'OmniaAgentConnector');
 const legacyBefore = inventory(legacyRoot);

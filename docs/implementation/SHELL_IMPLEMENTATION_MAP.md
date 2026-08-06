@@ -5,6 +5,8 @@
 
 SurfaceWindowManager 在 Feature action 成功或失败后向所有同 Feature/版本/Surface 实例广播 Core 最新投影。每个已授权实例保存自己的最后一份 `DeclarativeFeatureSurface`；聚焦、dock、minimize、restore 和已有实例再次 open 只能使用身份匹配的实例缓存，不得从全局 selected Surface 借用另一 Feature 的投影。Artifact 输入授权在打开文件选择器前复核当前 workflow，仅上传步骤接受 `open_file`；旧 WebContents 不能在后台已进入校验后继续导入。
 
+Remote Connector/Pack 在线与安全锁有效性是两个独立状态。同一 Connector 和同一权威 Pack 在重连后产生新 `sessionGeneration` 时，Shell 仍投影真实在线，但旧安全锁继续失败关闭。安全锁工作台只在 Connector、authority、tenant、Pack 和 Engagement 全部精确一致、仅 generation 变化时，提供“重新验证并重绑”；该操作必须再次执行真实 Workspace authority read，由用户显式点击后才保存新 generation。不同 Pack/权威身份不显示快速重绑，删除权限不会自动恢复。
+
 Shell 顶部标签与左侧 FeatureNavigation 共用同一激活实现。已打开实例先调用 Main `surface:focus` 原子切换 native attachment，再用同一 selection epoch 同步 Core `selectFeature`；新实例只在 Core 返回真实且身份匹配的 Surface 后调用一次 `surface:open`。旧异步 completion 必须重新聚焦最新实例并把 Core selection 收敛到最新用户意图，不能覆盖当前标签。`shell:changed` 只 `ensure/update` 实例投影，不得隐式 open 或抢焦点；Comments/overlay 仅通过 visibility 合同隐藏，overlay 关闭后通过 focus 恢复。
 
 ## 范围
@@ -15,8 +17,8 @@ Shell 原装平台包含 Core Store、Feature/Documentation Registry、通用 Wo
 |---|---|---|---|---|
 | 首次配对 | 顶部 Connect 引导显示短期链接码/expiry | Core pairing session、safeStorage credential、Remote binding/generation/audit | Bridge 0.4.4 → Remote Connector 0.3.10 消费链接码 | 候选实现；真实公司电脑配对待 canary |
 | 连接 | 顶部 Connect/Cancel 与分阶段状态 | `ShellService` 后台持久 Remote-only connect state；启动命令 30 秒有界、启动状态 90 秒有界，只有真实进入登录/Pack/授权/识别阶段后才保留最长 10 分钟只读 polling；Cancel 先收敛 Core 状态再通知远端 | Remote transport → Bridge → Remote Worker → `WorkstationOmniaSession` | 源码已实现有界启动与可靠取消；公司电脑离线，真实 Omnia canary 待执行 |
-| 刷新 | 顶部刷新按钮与错误提示 | `ShellService.refresh` 更新 Core 状态 | Remote Worker 的 Session Core 重新加载页面、识别 Pack，并触发轻抓取 | 失败不覆盖成功 observation；真实 Pack 待 canary |
-| 保活 | 启停、运行/下次/错误状态 | Core DB `keepalive_state` + 后台 5 秒调度扫描 | 到期调用真实只读 refresh | 已实现；重启恢复 |
+| 刷新 | 顶部刷新按钮与错误提示 | `ShellService.refresh` 只读调和 Core 状态并刷新 Workspace 权威目录 | `RemoteConnectorTransport.refresh` 强制降为 `status` 读取；不得向公司电脑发送浏览器 reload/navigation 命令 | 失败不覆盖成功 observation；Shell 与 Connector 双层被动刷新门禁 |
+| 保活 | 启停、运行/下次/错误状态 | Core DB `keepalive_state` + 后台 5 秒调度扫描 | 到期只调用 `status`；不启动、聚焦、刷新或关闭受控浏览器 | 已实现；重启恢复 |
 | 安全锁 | 大弹窗、搜索、Omnia 真实所在部分折叠、组内全选、右侧完整已选列表、全局所在部分关联锁 | Core 解析 v2 原始 Facet 目录；`workspace_safety` 单事务 CAS 保存显式 Workspace IDs、Group GUID 与冻结成员；成员漂移失败关闭 | Connector 0.3.15 固定 POST `facets/byEngagementIds`；打开/保存重叠读取按完整 authority identity 单飞合并 | 真实端点与 17 Group/193 Workspace 层级已现场只读采样；缺真实 parentId 时明确未归属且不冒充全局授权 |
 | 对话 | 第三列消息列表与输入区 | `chat_sessions/chat_messages` 持久化状态 | Provider 只由 Main 受控调用；未配置则不调用 | 已实现；无假回复 |
 | 缩放 | 右上角/设置 `− 百分比 +`、快捷键 | `user_preferences` CAS；Main 对所有当前/新建 WebContents `setZoomFactor` | Feature view/window 继承同一值 | 0.4.1 已按实际 DPR/viewport/bounds 验证；重启恢复、无 CSS 双缩放 |
@@ -42,7 +44,7 @@ v5 Bridge 0.4.5（binding/generation/relay/heartbeat/update_check）
 关键约束：
 
 - Renderer 不访问数据库、文件、Provider Key、CDP 或 Omnia。
-- Connector 不接收任意 URL/method/body；基础 Shell 使用 `health/connect/status/refresh/workspace_authority_read`。Workspace 原始响应只在 Core 解析和判定；已装载的官方签名 Operation 通过固定 step gate 执行。
+- Connector 不接收任意 URL/method/body；基础协议保留 `health/connect/status/refresh/workspace_authority_read`，但 Shell 的刷新和保活都只发送 `status`，`refresh` 不再作为浏览器生命周期命令使用。Workspace 原始响应只在 Core 解析和判定；已装载的官方签名 Operation 通过固定 step gate 执行。
 - Omnia host 仅允许 Deloitte Omnia HTTPS suffix；回环 CDP 必须同时匹配动态端口与精确 profile。
 - Connector 退出不关闭 Edge。
 - Shell package、Main 和 data root 不包含/启动 Local Connector，不创建 Edge profile/port/instance lock；Remote 故障不存在 fallback。

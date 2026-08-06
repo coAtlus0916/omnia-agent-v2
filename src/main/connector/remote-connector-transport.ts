@@ -753,7 +753,14 @@ export class RemoteConnectorTransport implements ConnectorTransport {
       pending.reject(new AppError('CONNECTOR.CONNECT_CANCELLED', 'Remote Connect 已取消。', true));
     }
   }
-  async refresh(): Promise<ConnectionSnapshot> { return this.map(await this.call('refresh', {}, 90_000)); }
+  async refresh(): Promise<ConnectionSnapshot> {
+    // Shell refresh is a status reconciliation boundary, not authority to
+    // navigate or reload the workstation browser. Keep this passive in the
+    // Shell as well as in current Connector implementations so an older or
+    // regressed Connector cannot turn a UI refresh/keepalive into a Pack-page
+    // lifecycle action.
+    return this.load();
+  }
   async lightRead(expected: WorkspaceAuthorityExpectation): Promise<WorkspaceObservation> {
     const raw = await this.call('workspace_authority_read', { expectedEngagementId: expected.engagementId }, 90_000);
     return normalizeWorkspaceAuthorityRead(raw, expected);

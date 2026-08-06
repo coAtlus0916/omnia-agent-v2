@@ -474,7 +474,7 @@ test('state envelope distinguishes Bridge from Connector and in-flight disconnec
   assert.equal(offline.connectorOnline, false);
 });
 
-test('Remote transport load preserves authorization failure status without issuing refresh', async (t) => {
+test('Remote transport load and refresh preserve authorization failure status without issuing browser refresh', async (t) => {
   const { root, baseUrl } = await fixture(t);
   const { session, credential } = await pairCandidate(baseUrl, path.join(root, 'status-only-connector'));
   const device = JSON.parse(fs.readFileSync(path.join(root, 'status-only-connector', 'device-identity.json'), 'utf8'));
@@ -513,7 +513,11 @@ test('Remote transport load preserves authorization failure status without issui
   assert.equal(observed.status, 'waiting_authorization');
   assert.equal(observed.connected, false);
   assert.match(observed.message, /HTTP 401/u);
-  assert.deepEqual(operations, ['status']);
+  const refreshed = await transport.refresh();
+  assert.equal(refreshed.status, 'waiting_authorization');
+  assert.equal(refreshed.connected, false);
+  assert.match(refreshed.message, /HTTP 401/u);
+  assert.deepEqual(operations, ['status', 'status']);
 });
 
 test('failed replacement preserves old binding; verified candidate atomically revokes old generation', async (t) => {

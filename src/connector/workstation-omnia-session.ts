@@ -10,7 +10,7 @@ import { isAllowedOmniaUrl, isGuid, normalizeOmniaUrl, parseEngagementId } from 
 import { OperationHost } from './operation-host.js';
 
 const DEFAULT_HOME = 'https://deloitteomnia.deloitte.com.cn/';
-const CONNECTOR_VERSION = '0.3.32';
+const CONNECTOR_VERSION = '0.3.33';
 const AUTHORIZATION_WAIT_MS = 1_500;
 const WORKSPACE_AUTHORITY_DIRECTORY_ROUTE = '/engagements/v1/facets/byEngagementIds';
 const WORKSPACE_AUTHORITY_MAX_ENGAGEMENT_ENTRIES = 1;
@@ -201,9 +201,22 @@ type PageAuthorization = {
   captureEpoch: number;
 };
 
+type VerifiedPackIdentity = {
+  engagementId: string;
+  apiOrigin: string;
+  pack: {
+    name: string;
+    clientName: string;
+    authorityInstanceId: string;
+    tenantOrOrgId: string;
+    packId: string;
+  };
+};
+
 export class WorkstationOmniaSession {
   private browser: Browser | null = null;
   private authByPage = new WeakMap<Page, PageAuthorization>();
+  private verifiedPackByPage = new WeakMap<Page, VerifiedPackIdentity>();
   private authorizationCaptureEpoch = 0;
   private authorizationWaitByPage = new WeakMap<Page, {
     engagementId: string;
@@ -630,10 +643,27 @@ export class WorkstationOmniaSession {
         return this.snapshot('waiting_authorization', '已打开目标 Pack，正在等待同一 target 的 Authorization。', session);
       }
       if (auth.identityMismatch || auth.engagementId !== engagementId) {
+        this.verifiedPackByPage.delete(page);
         return this.snapshot('identity_changed', 'Authorization 与当前 target 的 Pack 身份不一致，已拒绝连接。', session);
+      }
+      const verified = this.verifiedPackByPage.get(page);
+      if (verified) {
+        const sameVerifiedIdentity = verified.engagementId === engagementId
+          && verified.apiOrigin === auth.apiOrigin
+          && verified.pack.packId === engagementId
+          && verified.pack.authorityInstanceId === new URL(auth.apiOrigin).origin.toLowerCase();
+        if (sameVerifiedIdentity) {
+          return this.snapshot('connected', `当前 Pack 已连接：${verified.pack.name}`, session, verified.pack);
+        }
+        this.verifiedPackByPage.delete(page);
       }
       try {
         const pack = await this.identify(session);
+        this.verifiedPackByPage.set(page, {
+          engagementId,
+          apiOrigin: auth.apiOrigin,
+          pack
+        });
         return this.snapshot('connected', `当前 Pack 已连接：${pack.name}`, session, pack);
       } catch (error) {
         if (error instanceof ConnectorOperationError && error.code === 'CONNECTOR.PACK_IDENTITY_CHANGED') {

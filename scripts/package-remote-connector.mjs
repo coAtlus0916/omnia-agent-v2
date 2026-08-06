@@ -8,8 +8,8 @@ if (process.platform !== 'win32') throw new Error('v5 Remote Connector portable 
 
 const root = path.resolve(import.meta.dirname, '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-const version = '0.3.32';
-const sequence = Number(process.env.OMNIA_V5_REMOTE_CONNECTOR_RELEASE_SEQUENCE || 35);
+const version = '0.3.33';
+const sequence = Number(process.env.OMNIA_V5_REMOTE_CONNECTOR_RELEASE_SEQUENCE || 36);
 const supervisorVersion = '0.1.5';
 const product = 'omnia-agent-v5-remote-connector';
 const platform = 'win32-x64';

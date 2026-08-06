@@ -144,7 +144,7 @@ test('Workstation Session Core health is self-contained and does not start a bro
   const root = mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-connector-'));
   const connector = new WorkstationOmniaSession(root, fetch);
   try {
-    assert.deepEqual(connector.health(), { ready: true, connectorVersion: '0.3.32' });
+    assert.deepEqual(connector.health(), { ready: true, connectorVersion: '0.3.33' });
   } finally {
     void connector.close();
     rmSync(root, { recursive: true, force: true });
@@ -157,6 +157,7 @@ test('refresh is a passive status probe that preserves process, session, target,
   const packId = engagementId;
   const targetUrl = `https://deloitteomnia.deloitte.com.cn/engagement/${engagementId}/home`;
   let currentUrl = targetUrl;
+  let hierarchyReads = 0;
   const browserActions = { reload: 0, goto: 0, bringToFront: 0, newPage: 0, connect: 0 };
   const page = {
     url: () => currentUrl,
@@ -178,12 +179,16 @@ test('refresh is a passive status probe that preserves process, session, target,
       engagementId,
       identityMismatch: false
     });
-    (connector as any).api = async () => [{
-      engagementId,
-      name: 'Live Pack',
-      clientName: 'Live Client',
-      packId
-    }];
+    (connector as any).api = async () => {
+      hierarchyReads += 1;
+      if (hierarchyReads > 1) throw new Error('status/refresh must reuse the verified Pack identity');
+      return [{
+        engagementId,
+        name: 'Live Pack',
+        clientName: 'Live Client',
+        packId
+      }];
+    };
     const processId = process.pid;
     const before = await connector.status();
     const after = await connector.refresh();
@@ -193,6 +198,7 @@ test('refresh is a passive status probe that preserves process, session, target,
     assert.equal(after.engagementId, before.engagementId);
     assert.equal(after.packId, before.packId);
     assert.equal(currentUrl, targetUrl);
+    assert.equal(hierarchyReads, 1);
     assert.deepEqual(browserActions, { reload: 0, goto: 0, bringToFront: 0, newPage: 0, connect: 0 });
   } finally {
     await connector.close();

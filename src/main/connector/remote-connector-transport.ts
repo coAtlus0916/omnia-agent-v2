@@ -446,7 +446,6 @@ export class RemoteConnectorTransport implements ConnectorTransport {
   private remoteDiagnostics: RemoteConnectorDiagnostics | null = null;
   private repairRequired = false;
   private configIdentity = '';
-  private lastAuthorizationRefreshAt = 0;
   private connectSequence = 0;
   private readonly pending = new Map<string, Pending>();
   private readonly events = new EventEmitter();
@@ -469,7 +468,6 @@ export class RemoteConnectorTransport implements ConnectorTransport {
       this.reconnectAttempt = 0;
       this.stateMessage = '';
       this.remoteDiagnostics = null;
-      this.lastAuthorizationRefreshAt = 0;
     }
     if (!config.bridgeUrl || !config.pairId || !config.token) return;
     try { await this.ensureSocket(); } catch { this.scheduleReconnect(); }
@@ -730,17 +728,6 @@ export class RemoteConnectorTransport implements ConnectorTransport {
     try {
       await this.ensureSocket();
       const status = await this.call('status', {}, 15_000) as ConnectorConnection;
-      const authorizationExpired = !status.connected
-        && /Omnia 只读 API 返回 HTTP (?:401|403)/u.test(String(status.message || ''));
-      if (authorizationExpired && Date.now() - this.lastAuthorizationRefreshAt >= 60_000) {
-        this.lastAuthorizationRefreshAt = Date.now();
-        try {
-          return this.map(await this.call('refresh', {}, 90_000) as ConnectorConnection);
-        } catch {
-          // Preserve the exact status response. The next bounded retry is
-          // allowed after the cooldown; no read or mutation is replayed.
-        }
-      }
       return this.map(status);
     } catch (error) {
       return this.unavailableSnapshot(error instanceof Error ? error.message : 'Remote Connector 不可用。');

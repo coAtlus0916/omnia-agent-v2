@@ -33,6 +33,9 @@ const lifecycleWithBridge = <T extends Record<string, unknown>>(overrides = {} a
 class FakeAdapter {
   connectCalls = 0;
   cancelCalls = 0;
+  loadCalls = 0;
+  refreshCalls = 0;
+  pageNavigationCalls = 0;
   lightReadCalls = 0;
   loadSequence: ConnectionSnapshot[] = [];
   connectResult: ConnectionSnapshot | null = null;
@@ -54,6 +57,10 @@ class FakeAdapter {
     connectorId: 'fixture-connector',
     connectorName: '合同测试 Connector',
     connectorVersion: '0.1.0-test',
+    sessionGeneration: 1,
+    authorityInstanceId: 'fixture-authority',
+    tenantOrOrgId: 'fixture-tenant',
+    packId: 'fixture-pack',
     engagementId,
     engagementName: '合同测试 Pack',
     clientName: '测试客户',
@@ -67,6 +74,11 @@ class FakeAdapter {
     observationId: 'fixture-observation',
     profile: 'workspace_light_read',
     authorityId: 'fixture-authority',
+    connectorId: 'fixture-connector',
+    sessionGeneration: 1,
+    authorityInstanceId: 'fixture-authority',
+    tenantOrOrgId: 'fixture-tenant',
+    packId: 'fixture-pack',
     engagementId,
     capturedAt: new Date().toISOString(),
     source: 'contract_fixture',
@@ -79,9 +91,13 @@ class FakeAdapter {
   }
   onStateChanged(listener: () => void) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   emitState() { for (const listener of this.listeners) listener(); }
-  async load() { return this.loadSequence.shift() || this.connection; }
+  async load() { this.loadCalls += 1; return this.loadSequence.shift() || this.connection; }
   async connect() { this.connectCalls += 1; return this.connectResult || this.connection; }
-  async refresh() { return this.connection; }
+  async refresh() {
+    this.refreshCalls += 1;
+    this.pageNavigationCalls += 1;
+    return this.connection;
+  }
   async lightRead() {
     this.lightReadCalls += 1;
     return { ...this.observation, observationId: `${this.observation.observationId}-${this.lightReadCalls}` };
@@ -154,7 +170,7 @@ test('safety lock saves, restores, and validates only authoritative workspace ID
   await fixture(async (shell) => {
     await shell.refreshWorkspaceDirectory();
     const before = shell.snapshot();
-    const saved = shell.saveSafety({
+    const saved = await shell.saveSafety({
       enabled: true,
       workspaceIds: [workspaceId],
       expectedStateVersion: before.safety.stateVersion
@@ -178,14 +194,42 @@ test('chat persists the user message and reports unconfigured Provider without a
   });
 });
 
-test('keepalive has durable scheduler state and a real connector refresh result', async () => {
-  await fixture(async (shell, database) => {
+test('keepalive persists a read-only status result without refresh or page navigation', async () => {
+  await fixture(async (shell, database, adapter) => {
+    const loadCallsBeforeKeepalive = adapter.loadCalls;
     const snapshot = await shell.setKeepalive(true);
     assert.equal(snapshot.keepalive.enabled, true);
     assert.ok(database.getKeepalive().lastAttemptAt);
     assert.ok(database.getKeepalive().lastSuccessAt);
+    assert.equal(adapter.loadCalls, loadCallsBeforeKeepalive + 1);
+    assert.equal(adapter.refreshCalls, 0);
+    assert.equal(adapter.pageNavigationCalls, 0);
+    assert.equal(database.getConnectionPayload<ConnectionSnapshot>()?.packId, 'fixture-pack');
     const disabled = await shell.setKeepalive(false);
     assert.equal(disabled.keepalive.enabled, false);
+  });
+});
+
+test('keepalive persists a failed read-only status and keeps safety fail-closed', async () => {
+  await fixture(async (shell, _database, adapter) => {
+    await shell.refreshWorkspaceDirectory();
+    const beforeSafety = shell.snapshot().safety;
+    await shell.saveSafety({ enabled:true, workspaceIds:[workspaceId], expectedStateVersion:beforeSafety.stateVersion });
+    adapter.loadSequence = [{
+      ...adapter.connection,
+      connected: false,
+      connecting: false,
+      status: 'connector_offline',
+      message: 'fixture status read reports Connector offline'
+    }];
+    const snapshot = await shell.setKeepalive(true);
+    assert.equal(snapshot.connection.connected, false);
+    assert.equal(snapshot.keepalive.lastSuccessAt, '');
+    assert.match(snapshot.keepalive.lastError, /fixture status read reports Connector offline/u);
+    assert.equal(snapshot.safety.enabled, true);
+    assert.equal(snapshot.safety.validForCurrentConnection, false);
+    assert.equal(adapter.refreshCalls, 0);
+    assert.equal(adapter.pageNavigationCalls, 0);
   });
 });
 

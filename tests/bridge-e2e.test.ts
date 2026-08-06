@@ -27,6 +27,7 @@ import {
   pairRemoteConnector,
   readCandidateBridgeCredential
 } from '../src/remote-connector/bridge-credential.ts';
+import { REMOTE_CONNECTOR_VERSION } from '../src/remote-connector/constants.ts';
 
 const secret = 'remote-only-bridge-test-secret-at-least-32-bytes';
 
@@ -434,7 +435,7 @@ test('state envelope distinguishes Bridge from Connector and in-flight disconnec
   const device = JSON.parse(fs.readFileSync(path.join(root, 'connector', 'device-identity.json'), 'utf8'));
   const connector = new WebSocket(new URL('v1/connect', baseUrl).href.replace(/^http/, 'ws'), { headers: {
     Authorization: `Bearer ${credential.token}`, 'X-Omnia-Protocol': BRIDGE_PROTOCOL,
-    'X-Omnia-Connector-Id': device.connectorId, 'X-Omnia-Connector-Version': '0.3.7'
+    'X-Omnia-Connector-Id': device.connectorId, 'X-Omnia-Connector-Version': REMOTE_CONNECTOR_VERSION
   }});
   await once(connector, 'open');
   const matched = await commitReadyCandidate(baseUrl, session);
@@ -471,6 +472,48 @@ test('state envelope distinguishes Bridge from Connector and in-flight disconnec
   const offline = await transport.load();
   assert.equal(offline.bridgeOnline, true);
   assert.equal(offline.connectorOnline, false);
+});
+
+test('Remote transport load preserves authorization failure status without issuing refresh', async (t) => {
+  const { root, baseUrl } = await fixture(t);
+  const { session, credential } = await pairCandidate(baseUrl, path.join(root, 'status-only-connector'));
+  const device = JSON.parse(fs.readFileSync(path.join(root, 'status-only-connector', 'device-identity.json'), 'utf8'));
+  const connector = new WebSocket(new URL('v1/connect', baseUrl).href.replace(/^http/, 'ws'), { headers: {
+    Authorization: `Bearer ${credential.token}`, 'X-Omnia-Protocol': BRIDGE_PROTOCOL,
+    'X-Omnia-Connector-Id': device.connectorId, 'X-Omnia-Connector-Version': REMOTE_CONNECTOR_VERSION
+  }});
+  t.after(() => connector.close());
+  await once(connector, 'open');
+  const matched = await commitReadyCandidate(baseUrl, session);
+  const transport = new RemoteConnectorTransport(() => ({
+    bridgeUrl: baseUrl, pairId: matched.pairId!, token: matched.token!, generation: matched.generation!
+  }));
+  t.after(() => transport.stop());
+  const operations:string[] = [];
+  connector.on('message', (data) => {
+    const envelope = JSON.parse(data.toString()) as BridgeEnvelope;
+    if (envelope.kind !== 'command') return;
+    operations.push(envelope.request.operation);
+    const value = envelope.request.operation === 'status' ? {
+      status: 'waiting_authorization', connected: false, connecting: true,
+      connectorId: device.connectorId, connectorName: 'Company workstation', connectorVersion: REMOTE_CONNECTOR_VERSION,
+      sessionGeneration: 9, engagementId: '', engagementName: '', clientName: '',
+      checkedAt: new Date().toISOString(), message: 'Omnia 只读 API 返回 HTTP 401；等待用户重新授权。'
+    } : {
+      status: 'connected', connected: true, connecting: false,
+      connectorId: device.connectorId, connectorName: 'Company workstation', connectorVersion: REMOTE_CONNECTOR_VERSION,
+      sessionGeneration: 9, engagementId: '11111111-1111-4111-8111-111111111111',
+      engagementName: 'must-not-refresh', clientName: '', checkedAt: new Date().toISOString(), message: 'unexpected refresh'
+    };
+    connector.send(JSON.stringify({ schemaVersion: BRIDGE_SCHEMA, kind: 'result', response: {
+      schemaVersion: 'omnia.connector-ipc/v1', id: envelope.request.id, ok: true, value
+    }}));
+  });
+  const observed = await transport.load();
+  assert.equal(observed.status, 'waiting_authorization');
+  assert.equal(observed.connected, false);
+  assert.match(observed.message, /HTTP 401/u);
+  assert.deepEqual(operations, ['status']);
 });
 
 test('failed replacement preserves old binding; verified candidate atomically revokes old generation', async (t) => {

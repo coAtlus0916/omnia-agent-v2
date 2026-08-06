@@ -253,22 +253,36 @@ export class ShellService {
     if (!safety.enabled) {
       return { ...projected, validForCurrentConnection: true, invalidReason: '' };
     }
-    if (!this.connection.connected || safety.engagementId !== this.connection.engagementId) {
+    if (!this.connection.connected) {
       return {
         ...projected,
         validForCurrentConnection: false,
-        invalidReason: '安全锁绑定的 Pack 与当前连接不一致。'
+        invalidReason: `Remote Connector 或 Pack 当前未连接${this.connection.message ? `：${this.connection.message}` : ''}。安全锁已保留，恢复连接前将继续失败关闭。`
       };
     }
-    if (safety.connectorId !== this.connection.connectorId
-      || safety.sessionGeneration !== this.connection.sessionGeneration
-      || safety.authorityInstanceId !== String(this.connection.authorityInstanceId || '')
-      || safety.tenantOrOrgId !== String(this.connection.tenantOrOrgId || '')
-      || safety.packId !== String(this.connection.packId || '')) {
+    if (safety.engagementId !== this.connection.engagementId) {
       return {
         ...projected,
         validForCurrentConnection: false,
-        invalidReason: '安全锁绑定的 Connector 或权威 Pack 身份与当前连接不一致。'
+        invalidReason: '安全锁绑定的 Pack 与当前已连接 Pack 不一致，请切回原 Pack 或重新配置安全锁。'
+      };
+    }
+    const sameAuthority = safety.connectorId === this.connection.connectorId
+      && safety.authorityInstanceId === String(this.connection.authorityInstanceId || '')
+      && safety.tenantOrOrgId === String(this.connection.tenantOrOrgId || '')
+      && safety.packId === String(this.connection.packId || '');
+    if (sameAuthority && safety.sessionGeneration !== Number(this.connection.sessionGeneration || 0)) {
+      return {
+        ...projected,
+        validForCurrentConnection: false,
+        invalidReason: 'Remote Connector 已在线且仍为同一 Pack，但连接 generation 已变化。安全锁已保留；请用当前实时 Workspace 目录重新验证并重绑，完成前删除继续失败关闭。'
+      };
+    }
+    if (!sameAuthority) {
+      return {
+        ...projected,
+        validForCurrentConnection: false,
+        invalidReason: '安全锁绑定的 Connector 或权威 Pack 身份与当前已连接会话不一致；不能直接重绑，请核对当前 Pack 后重新配置。'
       };
     }
     if (!current) {
@@ -431,6 +445,9 @@ export class ShellService {
     return [
       this.connection.connectorId,
       this.connection.sessionGeneration || 0,
+      this.connection.authorityInstanceId || '',
+      this.connection.tenantOrOrgId || '',
+      this.connection.packId || '',
       this.connection.engagementId
     ].join(':');
   }
@@ -702,15 +719,21 @@ export class ShellService {
     this.emitChanged();
     try {
       if (!this.connection.connected) throw new AppError('KEEPALIVE.NOT_CONNECTED', '当前 Pack 连接已失效。');
-      const refresh = () => this.adapter.refresh();
+      const readStatus = async () => {
+        const observed = await this.adapter.load();
+        this.connection = observed;
+        this.database.saveConnectionPayload(observed);
+        if (!observed.connected) {
+          throw new AppError('KEEPALIVE.REFRESH_FAILED', observed.message || 'Remote Connector status no longer reports the current Pack connection.');
+        }
+        return observed;
+      };
       this.connection = this.interactionLogs
         ? await this.interactionLogs.run({
-          plane: 'connector', component: 'remote-transport', surface: 'shell.session', action: 'keepalive-refresh',
-          failurePoint: 'connector.keepalive.refresh'
-        }, refresh)
-        : await refresh();
-      this.database.saveConnectionPayload(this.connection);
-      if (!this.connection.connected) throw new AppError('KEEPALIVE.REFRESH_FAILED', this.connection.message);
+          plane: 'connector', component: 'remote-transport', surface: 'shell.session', action: 'keepalive-status',
+          failurePoint: 'connector.keepalive.status'
+        }, readStatus)
+        : await readStatus();
       this.database.updateKeepalive({ lastSuccessAt: utcNow(), lastError: '' });
     } catch (error) {
       this.database.updateKeepalive({

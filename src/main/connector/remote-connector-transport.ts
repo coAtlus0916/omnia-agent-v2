@@ -3,8 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
 import type {
   ConnectorConnection,
-  ConnectorRequest,
-  RecordingCommandRequest
+  ConnectorRequest
 } from '../../connector/contracts.js';
 import {
   BRIDGE_HEALTH_PRODUCT,
@@ -771,9 +770,6 @@ export class RemoteConnectorTransport implements ConnectorTransport {
   async lightRead(expected: WorkspaceAuthorityExpectation): Promise<WorkspaceObservation> {
     const raw = await this.call('workspace_authority_read', { expectedEngagementId: expected.engagementId }, 90_000);
     return normalizeWorkspaceAuthorityRead(raw, expected);
-  }
-  async recordingCommand(input: RecordingCommandRequest): Promise<unknown> {
-    return this.call('recording_command', input as unknown as Record<string, unknown>, 180_000);
   }
   async registerOperation(input: OperationRegistrationRequest): Promise<OperationRegistrationResult> {
     return this.call('operation_register', input as unknown as Record<string, unknown>, 30_000);

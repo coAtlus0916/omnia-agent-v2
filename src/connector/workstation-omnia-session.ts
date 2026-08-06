@@ -10,9 +10,8 @@ import { isAllowedOmniaUrl, isGuid, normalizeOmniaUrl, parseEngagementId } from 
 import { OperationHost } from './operation-host.js';
 
 const DEFAULT_HOME = 'https://deloitteomnia.deloitte.com.cn/';
-const CONNECTOR_VERSION = '0.3.31';
+const CONNECTOR_VERSION = '0.3.32';
 const AUTHORIZATION_WAIT_MS = 1_500;
-const AUTHORIZATION_REFRESH_WAIT_MS = 10_000;
 const WORKSPACE_AUTHORITY_DIRECTORY_ROUTE = '/engagements/v1/facets/byEngagementIds';
 const WORKSPACE_AUTHORITY_MAX_ENGAGEMENT_ENTRIES = 1;
 const WORKSPACE_AUTHORITY_MAX_FACET_ENTRIES = 2_000;
@@ -211,7 +210,6 @@ export class WorkstationOmniaSession {
     afterEpoch: number;
     promise: Promise<boolean>;
   }>();
-  private authorizationRefreshByPage = new WeakMap<Page, Promise<ConnectorConnection>>();
   private port = 0;
   private readonly profileDir: string;
   private readonly statePath: string;
@@ -666,119 +664,11 @@ export class WorkstationOmniaSession {
   }
 
   async refresh(): Promise<ConnectorConnection> {
-    await this.ensureBrowser();
-    const page = await this.currentPage(true);
-    if (!page) return this.connect();
-    const existing = this.authorizationRefreshByPage.get(page);
-    if (existing) return existing;
-    const refresh = (async () => {
-      const targetUrl = normalizeOmniaUrl(page.url());
-      const engagementId = parseEngagementId(targetUrl.href);
-      if (!isGuid(engagementId)) return this.status();
-      const previousAuth = this.authByPage.get(page);
-      const reusableAuth = previousAuth?.headers.authorization
-        && !previousAuth.identityMismatch
-        && previousAuth.engagementId === engagementId
-        && isAllowedOmniaUrl(previousAuth.apiOrigin)
-        ? { ...previousAuth, headers: { ...previousAuth.headers } }
-        : null;
-      const beforeEpoch = Number(previousAuth?.captureEpoch || 0);
-      await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => undefined);
-      await this.waitForAuthorization(
-        page,
-        engagementId,
-        beforeEpoch,
-        AUTHORIZATION_REFRESH_WAIT_MS
-      );
-      const observedAfterWait = this.authByPage.get(page);
-      const refreshed = Boolean(
-        observedAfterWait?.headers.authorization
-        && observedAfterWait.captureEpoch > beforeEpoch
-        && !observedAfterWait.identityMismatch
-        && observedAfterWait.engagementId === engagementId
-      );
-      if (!refreshed) {
-        const current = this.authByPage.get(page);
-        if (current && current.captureEpoch > beforeEpoch) return this.status();
-        let currentTargetUrl: URL;
-        try {
-          if (!isAllowedOmniaUrl(page.url())) throw new Error('target origin changed');
-          currentTargetUrl = normalizeOmniaUrl(page.url());
-        } catch {
-          return this.snapshot('identity_changed', '刷新后 Omnia target origin 已变化，已拒绝复用旧 Authorization。');
-        }
-        const currentEngagementId = parseEngagementId(currentTargetUrl.href);
-        if (currentEngagementId !== engagementId) {
-          return this.snapshot(
-            'identity_changed',
-            '刷新后 Omnia target 的 Pack 身份已变化，已拒绝复用旧 Authorization。',
-            { page, targetUrl: currentTargetUrl, apiOrigin: currentTargetUrl.origin, engagementId: currentEngagementId, headers: {} }
-          );
-        }
-        if (!reusableAuth) {
-          return this.snapshot(
-            'waiting_authorization',
-            '目标 Pack 已刷新，但未在限定时间内捕获刷新后的 Omnia API Authorization。',
-            { page, targetUrl: currentTargetUrl, apiOrigin: currentTargetUrl.origin, engagementId, headers: {} }
-          );
-        }
-        const probeSession: Session = {
-          page,
-          targetUrl: currentTargetUrl,
-          apiOrigin: reusableAuth.apiOrigin,
-          engagementId,
-          headers: reusableAuth.headers
-        };
-        let pack: { name: string; clientName: string; authorityInstanceId: string; tenantOrOrgId: string; packId: string };
-        try {
-          pack = await this.identify(probeSession);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : '刷新后的旧授权只读校验失败。';
-          if (error instanceof ConnectorOperationError && error.code === 'CONNECTOR.AUTH_REQUIRED') {
-            return this.snapshot(
-              'waiting_authorization',
-              '刷新前 Authorization 已被 Omnia 拒绝，正在等待同一 target 的新 Authorization。',
-              { ...probeSession, headers: {} }
-            );
-          }
-          if (error instanceof ConnectorOperationError && error.code === 'CONNECTOR.PACK_IDENTITY_CHANGED') {
-            return this.snapshot('identity_changed', message, probeSession);
-          }
-          return this.snapshot('identifying_pack', `刷新后的旧 Authorization 只读校验未成功：${message}`, probeSession);
-        }
-        const expectedAuthority = new URL(reusableAuth.apiOrigin).origin.toLowerCase();
-        if (pack.packId !== engagementId || pack.authorityInstanceId !== expectedAuthority) {
-          return this.snapshot(
-            'identity_changed',
-            '刷新后的 hierarchy authority 与原 target/Pack 不一致，已拒绝复用旧 Authorization。',
-            probeSession
-          );
-        }
-        if (!isAllowedOmniaUrl(page.url()) || parseEngagementId(page.url()) !== engagementId) {
-          return this.snapshot('identity_changed', '只读校验期间 Omnia target 的 Pack 身份已变化，已拒绝复用旧 Authorization。');
-        }
-        const capturedDuringProbe = this.authByPage.get(page);
-        if (capturedDuringProbe && capturedDuringProbe.captureEpoch > beforeEpoch) {
-          return this.status();
-        }
-        this.authByPage.set(page, {
-          ...reusableAuth,
-          identityMismatch: false,
-          capturedAt: Date.now(),
-          captureEpoch: ++this.authorizationCaptureEpoch
-        });
-        return this.snapshot('connected', `当前 Pack 已连接：${pack.name}`, probeSession, pack);
-      }
-      return this.status();
-    })();
-    this.authorizationRefreshByPage.set(page, refresh);
-    try {
-      return await refresh;
-    } finally {
-      if (this.authorizationRefreshByPage.get(page) === refresh) {
-        this.authorizationRefreshByPage.delete(page);
-      }
-    }
+    // Keepalive is an observation, never a browser action. `status()` may
+    // attach to an already-running controlled CDP endpoint, but it does not
+    // start, navigate, reload, focus, or create a page. If the existing target
+    // is gone, it reports the real target_closed state.
+    return this.status();
   }
 
   async workspaceAuthorityRead(expectedEngagementId: string): Promise<ConnectorWorkspaceAuthorityRead> {

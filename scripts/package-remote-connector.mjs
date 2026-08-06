@@ -8,8 +8,8 @@ if (process.platform !== 'win32') throw new Error('v5 Remote Connector portable 
 
 const root = path.resolve(import.meta.dirname, '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-const version = '0.3.31';
-const sequence = Number(process.env.OMNIA_V5_REMOTE_CONNECTOR_RELEASE_SEQUENCE || 34);
+const version = '0.3.32';
+const sequence = Number(process.env.OMNIA_V5_REMOTE_CONNECTOR_RELEASE_SEQUENCE || 35);
 const supervisorVersion = '0.1.5';
 const product = 'omnia-agent-v5-remote-connector';
 const platform = 'win32-x64';
@@ -98,6 +98,7 @@ for (const name of ['cli.cjs', 'supervisor.cjs', 'worker.cjs']) {
     path.join(portableRoot, 'app', name)
   );
 }
+assertPassiveRefreshRuntime(path.join(portableRoot, 'app', 'worker.cjs'));
 fs.cpSync(
   path.join(root, 'node_modules', 'playwright-core'),
   path.join(portableRoot, 'app', 'node_modules', 'playwright-core'),
@@ -382,6 +383,32 @@ function createZip() {
   );
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`Remote Connector ZIP creation failed with exit code ${result.status}.`);
+}
+
+function assertPassiveRefreshRuntime(workerPath) {
+  const packagedWorkerSource = fs.readFileSync(workerPath, 'utf8');
+  const refreshStart = packagedWorkerSource.indexOf('async refresh()');
+  const refreshEnd = packagedWorkerSource.indexOf('async workspaceAuthorityRead(', refreshStart);
+  if (refreshStart < 0 || refreshEnd <= refreshStart) {
+    throw new Error('Packaged Remote Connector does not expose the expected refresh lifecycle method.');
+  }
+  const packagedRefresh = packagedWorkerSource.slice(refreshStart, refreshEnd);
+  if (!/return\s+this\.status\(\)/.test(packagedRefresh)) {
+    throw new Error('Packaged Remote Connector refresh is not a passive status probe.');
+  }
+  for (const forbidden of [
+    /\.reload\s*\(/,
+    /\.goto\s*\(/,
+    /\.bringToFront\s*\(/,
+    /\.newPage\s*\(/,
+    /this\.connect\s*\(/,
+    /this\.ensureBrowser\s*\(/,
+    /this\.currentPage\s*\(/
+  ]) {
+    if (forbidden.test(packagedRefresh)) {
+      throw new Error(`Packaged Remote Connector refresh contains a forbidden browser action: ${forbidden}`);
+    }
+  }
 }
 
 function verifyArchiveRoundTrip() {

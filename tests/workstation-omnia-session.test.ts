@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -144,11 +144,94 @@ test('Workstation Session Core health is self-contained and does not start a bro
   const root = mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-connector-'));
   const connector = new WorkstationOmniaSession(root, fetch);
   try {
-    assert.deepEqual(connector.health(), { ready: true, connectorVersion: '0.3.31' });
+    assert.deepEqual(connector.health(), { ready: true, connectorVersion: '0.3.32' });
   } finally {
     void connector.close();
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('refresh is a passive status probe that preserves process, session, target, and Pack identity', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-passive-refresh-'));
+  const connector = new WorkstationOmniaSession(root, fetch);
+  const packId = engagementId;
+  const targetUrl = `https://deloitteomnia.deloitte.com.cn/engagement/${engagementId}/home`;
+  let currentUrl = targetUrl;
+  const browserActions = { reload: 0, goto: 0, bringToFront: 0, newPage: 0, connect: 0 };
+  const page = {
+    url: () => currentUrl,
+    reload: async () => { browserActions.reload += 1; },
+    goto: async () => { browserActions.goto += 1; },
+    bringToFront: async () => { browserActions.bringToFront += 1; }
+  };
+  try {
+    (connector as any).port = 32123;
+    (connector as any).cdpReady = async () => true;
+    (connector as any).currentPage = async () => page;
+    (connector as any).connect = async () => {
+      browserActions.connect += 1;
+      throw new Error('refresh must not call connect');
+    };
+    (connector as any).authByPage.set(page, {
+      headers: { authorization: 'Bearer live' },
+      apiOrigin: 'https://api.deloitteomnia.deloitte.com.cn',
+      engagementId,
+      identityMismatch: false
+    });
+    (connector as any).api = async () => [{
+      engagementId,
+      name: 'Live Pack',
+      clientName: 'Live Client',
+      packId
+    }];
+    const processId = process.pid;
+    const before = await connector.status();
+    const after = await connector.refresh();
+    assert.equal(process.pid, processId);
+    assert.equal(after.status, 'connected');
+    assert.equal(after.sessionGeneration, before.sessionGeneration);
+    assert.equal(after.engagementId, before.engagementId);
+    assert.equal(after.packId, before.packId);
+    assert.equal(currentUrl, targetUrl);
+    assert.deepEqual(browserActions, { reload: 0, goto: 0, bringToFront: 0, newPage: 0, connect: 0 });
+  } finally {
+    await connector.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('refresh reports target_closed without creating or connecting a page', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-passive-target-closed-'));
+  const connector = new WorkstationOmniaSession(root, fetch);
+  try {
+    (connector as any).port = 32123;
+    (connector as any).cdpReady = async () => true;
+    (connector as any).currentPage = async () => null;
+    (connector as any).connect = async () => { throw new Error('refresh must not call connect'); };
+    (connector as any).ensureBrowser = async () => { throw new Error('refresh must not start or attach a browser'); };
+    const status = await connector.refresh();
+    assert.equal(status.status, 'target_closed');
+    assert.equal(status.connected, false);
+  } finally {
+    await connector.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('refresh source contains only the passive status path and no browser lifecycle action', () => {
+  const source = readFileSync(
+    path.resolve(import.meta.dirname, '../src/connector/workstation-omnia-session.ts'),
+    'utf8'
+  );
+  const start = source.indexOf('async refresh(): Promise<ConnectorConnection>');
+  const end = source.indexOf('async workspaceAuthorityRead(', start);
+  assert.ok(start >= 0 && end > start);
+  const refreshSource = source.slice(start, end);
+  assert.match(refreshSource, /return this\.status\(\)/);
+  assert.doesNotMatch(
+    refreshSource,
+    /\.reload\s*\(|\.goto\s*\(|\.bringToFront\s*\(|\.newPage\s*\(|this\.connect\s*\(|this\.ensureBrowser\s*\(|this\.currentPage\s*\(/
+  );
 });
 
 test('closing Connector never closes or terminates the controlled Edge session', async () => {

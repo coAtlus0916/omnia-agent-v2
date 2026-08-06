@@ -120,6 +120,16 @@ fs.rmSync(
   path.join(portableRoot, 'app', 'node_modules', 'playwright-core', 'bin'),
   { recursive: true, force: true }
 );
+// The Connector uses Playwright only as a CDP client. Trace Viewer, Recorder,
+// Dashboard and Inspector are development UIs and are never loaded by the
+// worker. Their Vite assets include generated filenames that corporate Windows
+// endpoint controls may remove during extraction, which would correctly fail
+// the signed inventory gate. Exclude the unused UI tree before manifesting so
+// the portable runtime stays both minimal and round-trip stable.
+fs.rmSync(
+  path.join(portableRoot, 'app', 'node_modules', 'playwright-core', 'lib', 'vite'),
+  { recursive: true, force: true }
+);
 fs.copyFileSync(process.execPath, path.join(portableRoot, 'runtime', 'node.exe'));
 
 writeText('StartRemoteConnector.cmd', [

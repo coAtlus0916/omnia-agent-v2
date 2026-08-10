@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "omnia.governance-import/v1",
+  "sourceVersion": "V8",
+  "sourceSha256": "CB44EE079D045564454F9A11015E6D2F91CF1C663608C9291CD00F0B1CF76F70",
+  "importedAt": "2026-08-10T00:00:00.000Z",
+  "sourceReadOnlyPath": "acceptance-evidence/s4-hana-recording-34ea8734/frozen.ndjson",
+  "baseSourceSha256": "410374FF21D03E30A2533C9CFC686EB436BF3446EAE1CEB0AAFD92DB95D893A8",
+  "transformScript": "scripts/augment-s4-hana-v8-governance.mjs + scripts/normalize-v8-risk-control-governance.py + scripts/augment-oracle-ebs-v8-governance.py",
+  "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+  "oracleEbs": {
+    "contentEvidenceRef": "recording:1df21175-b43f-4f25-99a5-3385e3c77097/observation_ad284531b087a64302be45a901df6eaa/stream_0115c29335935b6d7ae2e374a16b1bb8#sha256=e7f92684575bd411f091cad4cf7af5e9084364b9d5c68a918c66c8e02915243e; artifact:1c864692-7b02-498c-be5f-bf38adcab14f#sha256=b143e180ed8a59fdbf78e7d6170503739f0f3e320cc9632eb9af1383018d9801",
+    "scopeEvidenceRef": "source_files/it risk模板.xlsx#sha256=F2D494F187A0BCB774F3BAAD0FFA64A1DE681F1FC6A37AC8DF92BB97A7CC3BB0",
+    "liveRelationReadback": "blocked_pending_live_relation_readback_non_execution_metadata"
+  }
+}

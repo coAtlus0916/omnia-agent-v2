@@ -1,22 +1,52 @@
+# Local environment and secrets
 .env
 .env.*
 !.env.example
+
+# Dependencies and build artifacts
 node_modules/
 dist/
 build/
 coverage/
-releases/
-data/
+
+# Runtime data
+/data/
 storage/
 output/
 outputs/
 tmp/
 logs/
-acceptance/
-acceptance-evidence/
-source_files/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+# Runtime and build outputs
+node_modules/
+dist/
+/data/
+/releases/
+/current
+/bridge/releases/
+remote-connector/releases/
+remote-connector/public/releases/
+/artifacts/
+/.codex-tmp/
+/acceptance/fresh-*/
+/acceptance/final-*/
+/acceptance/installer-*/
+/acceptance/
+/acceptance-evidence/
+/source_files/
+/feature-packages/*/candidates/
+/remote-connector/
 **/__pycache__/
-*.log
+*.pyc
 *.db
 *.sqlite
 *.sqlite3
+*.log
+.env
+.env.*
+!.env.example

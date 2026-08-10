@@ -1,0 +1,62 @@
+{
+  "name": "omnia-agent-v5-shell",
+  "version": "0.4.15",
+  "description": "Omnia Agent v5 Remote-only shell",
+  "private": true,
+  "type": "module",
+  "main": "dist/main/main.cjs",
+  "scripts": {
+    "clean": "node scripts/clean.mjs",
+    "build": "node scripts/build.mjs",
+    "package:windows": "node scripts/provision-python-runtime.mjs && node scripts/package-windows.mjs",
+    "package:portable-release": "npm run package:windows && node scripts/package-portable-artifact.mjs",
+    "package:remote-connector": "npm run package:remote-connector-candidate",
+    "package:remote-connector-candidate": "node scripts/package-remote-connector.mjs",
+    "promote:remote-connector-candidate": "node scripts/promote-remote-connector-candidate.mjs",
+    "package:bridge": "npm run build && node scripts/package-bridge.mjs",
+    "package:delete-feature": "npm run build && node scripts/package-delete-feature.mjs",
+    "package:recording-feature": "npm run build && node scripts/package-recording-feature.mjs",
+    "package:create-associate-feature": "npm run build && node scripts/package-create-associate-feature.mjs",
+    "feature:install": "node dist/tools/feature-installer.cjs install",
+    "feature:list": "node dist/tools/feature-installer.cjs list",
+    "feature:rollback": "node dist/tools/feature-installer.cjs rollback",
+    "verify:remote-connector": "tsx scripts/verify-remote-connector-release.ts",
+    "verify:bridge-pairing-target": "tsx scripts/verify-remote-release-target.ts --bridge-url https://agent.example.invalid/v5-bridge/",
+    "verify:remote-connector-target": "tsx scripts/verify-remote-release-target.ts --connector-manifest remote-connector/public/stable.json",
+    "smoke:remote-connector": "node scripts/smoke-remote-connector.mjs",
+    "smoke:remote-connector-upgrade": "node scripts/smoke-remote-connector-upgrade.mjs",
+    "test:remote-connector-release-pipeline": "tsx --test tests/remote-connector-release-pipeline.test.ts",
+    "deploy:remote-connector": "npm run verify:remote-connector && node scripts/deploy-remote-connector-release.mjs",
+    "dev": "node scripts/dev.mjs",
+    "start": "electron .",
+    "typecheck": "tsc --noEmit",
+    "lint": "node scripts/lint.mjs && tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "test:independence": "tsx --test tests/independence.test.ts",
+    "acceptance:ui-regression": "node scripts/ui-regression-acceptance-v5.mjs",
+    "acceptance:upgrade-0.4.2": "node scripts/portable-upgrade-0.4.1-to-0.4.2.mjs",
+    "acceptance:portable-0.4.2": "node scripts/portable-0.4.2-smoke.mjs",
+    "acceptance:upgrade-0.4.3": "node scripts/portable-upgrade-0.4.2-to-0.4.3.mjs",
+    "acceptance:portable-0.4.3": "node scripts/portable-0.4.3-smoke.mjs",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build && npm run test:independence"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "playwright-core": "^1.54.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.1.0",
+    "@types/react": "^19.1.9",
+    "@types/react-dom": "^19.1.7",
+    "@types/ws": "^8.18.1",
+    "electron": "^43.1.0",
+    "esbuild": "^0.25.8",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.2"
+  }
+}

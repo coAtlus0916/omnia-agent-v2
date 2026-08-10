@@ -1,0 +1,39 @@
+Omnia Agent v5「删除元素」Feature __FEATURE_VERSION__ 安装说明
+=========================================================
+
+你会收到两个 ZIP：
+1. omnia-agent-v5-portable-<版本>.zip（不含业务 Feature 的干净便携包）
+2. delete-elements-feature-__FEATURE_VERSION__-installer.zip（本安装包）
+
+最简单的安装方式
+----------------
+1. 把两个 ZIP 分别解压到同一个父目录，不要直接在压缩包里运行文件。
+2. 完全关闭 Omnia Agent v5。
+3. 双击本安装包里的 InstallFeature.cmd。
+4. 看到“安装成功”后，重新打开 Omnia Agent v5。
+5. 从 Shell 顶部 Connect 使用 Remote Connector 连接真实 Omnia Pack，再打开「其他 > 删除元素」；v5 不提供 Local fallback。
+
+如果同一目录有多个便携包
+--------------------------
+打开命令提示符，显式指定要安装到的便携包根目录：
+
+  InstallFeature.cmd "D:\你的目录\omnia-agent-v5-portable-<版本>"
+
+什么是“便携包根目录”
+--------------------
+就是直接包含 portable-root.json、current、releases 和 data 的目录。
+
+安装边界
+--------
+- 不需要管理员权限，不需要安装 Node.js 或 npm，也不需要手工计算 SHA。
+- 内置安装器会自动校验官方签名、完整文件清单、版本序号和数据迁移；校验失败不会安装。
+- 安装前必须关闭 Omnia Agent v5；脚本不会强行结束程序。
+- 当前首个安全切片仅删除安全锁范围内、没有阻挡关系的一个 Information 元素。
+- 真正删除前仍会二次预检；响应丢失时不会盲目重试，而会进入只读核验。
+
+排错
+----
+- “没有在安装包旁找到便携包”：把两个解压后的文件夹放到同一父目录，或用上面的显式目录命令。
+- “找到多个便携包”：用显式目录命令选择目标。
+- “Omnia Agent v5 仍在运行”：完全关闭程序后重试。
+- 其他失败：保留窗口里的完整错误信息；出现“安装失败”代表没有安装成功。

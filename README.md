@@ -4,7 +4,7 @@ Omnia Agent v5 是 Windows Shell、独立 Feature 包和 Connector Next 的工�
 
 ## 下载便携版
 
-只想使用应用、不需要源码的用户，请前往 [Latest Release](https://github.com/coAtlus0916/omnia-agent-v2/releases/latest) 下载名称包含 `Portable` 的 ZIP：
+只想使用应用、不需要源码的用户，请前往 [`v0.4.15` 便携候选版](https://github.com/coAtlus0916/omnia-agent-v2/releases/tag/v0.4.15) 下载名称包含 `Portable` 的 ZIP；其他版本见 [全部 Releases](https://github.com/coAtlus0916/omnia-agent-v2/releases)。当前源码文档仍将 live acceptance 标记为 `pending`，因此该包以预发布候选版提供，不标记为稳定版。
 
 1. 下载并完整解压 ZIP，不要直接在压缩包内运行。
 2. 将目录放在当前用户可写的位置。
@@ -15,7 +15,7 @@ Omnia Agent v5 是 Windows Shell、独立 Feature 包和 Connector Next 的工�
 使用 GitHub CLI 下载最新版：
 
 ```powershell
-gh release download --repo coAtlus0916/omnia-agent-v2 --pattern "*Portable*.zip"
+gh release download v0.4.15 --repo coAtlus0916/omnia-agent-v2 --pattern "*Portable*.zip"
 ```
 
 需要阅读、修改或自行构建时，再克隆源码：

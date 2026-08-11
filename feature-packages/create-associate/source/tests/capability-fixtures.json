@@ -1,0 +1,354 @@
+{
+  "schemaVersion": "omnia.create-associate.capability-fixtures/v1",
+  "pythonCases": [
+    {
+      "testId": "registry-five-kind-support-matrix",
+      "kind": "registry",
+      "expectedKinds": ["APP", "DB", "DCNO", "OS", "TOOL"]
+    },
+    {
+      "testId": "parse-plan-app-generic",
+      "kind": "workbook",
+      "cells": {"B23": "CoreFinanceGeneric", "C23": "Generic", "D23": "Higher", "E23": "Processes explicitly identified financial reporting data.", "F23": "WS-A"},
+      "expectedRows": [{"elementId": "CoreFinanceGeneric", "kind": "APP", "status": "ready_for_remote_preflight", "rait": "Higher", "appScoring": true, "isRelevant": true, "scoringItems": 14, "riskControlCatalog": 10, "riskControlRequired": 9}]
+    },
+    {
+      "testId": "parse-plan-app-sap-ecc",
+      "kind": "workbook",
+      "cells": {"B23": "CoreFinanceEcc", "C23": "SAP ECC", "D23": "Lower", "E23": "Contains no key data according to the supplied assessment text.", "F23": "WS-A"},
+      "expectedRows": [{"elementId": "CoreFinanceEcc", "kind": "APP", "status": "ready_for_remote_preflight", "rait": "Lower", "appScoring": true, "isRelevant": true, "scoringItems": 15, "riskControlCatalog": 18, "riskControlRequired": 17}]
+    },
+    {
+      "testId": "parse-plan-app-sap-s4-hana",
+      "kind": "workbook",
+      "cells": {"B23": "CoreFinanceS4", "C23": "SAP S/4 HANA", "D23": "Higher", "E23": "Processes explicitly identified key financial data.", "F23": "WS-A"},
+      "expectedRows": [{"elementId": "CoreFinanceS4", "kind": "APP", "status": "ready_for_remote_preflight", "rait": "Higher", "appScoring": true, "isRelevant": true, "scoringItems": 14, "riskControlCatalog": 30, "riskControlRequired": 18, "riskClassifications": {"RAITCOR001": "Higher", "RAITCOR003": "Higher", "RAITCOR004": "Higher", "RAITCOR007": "ClassificationNA", "RAITCOR011": "Higher"}}]
+    },
+    {
+      "testId": "parse-plan-app-oracle-ebs-authority-preflight",
+      "kind": "workbook",
+      "cells": {"B23": "CoreFinanceEbs", "C23": "Oracle EBS", "D23": "Higher", "E23": "Processes explicitly identified key financial data.", "F23": "WS-A"},
+      "forbiddenIssueCodes": ["LOCAL.CONTENT_PENDING_RECORDING"],
+      "expectedRows": [{"elementId": "CoreFinanceEbs", "kind": "APP", "status": "ready_for_remote_preflight", "rait": "Higher", "appScoring": true, "isRelevant": true, "scoringItems": 14, "riskControlCatalog": 12, "riskControlRequired": 11, "riskClassifications": {"RAITCOR001": "Higher", "RAITCOR002": "Higher", "RAITCOR003": "Higher", "RAITCOR004": "Higher", "RAITCOR007": "Higher", "RAITCOR011": "Higher"}, "blockerCodes": [], "blockedPendingRecording": false}]
+    },
+    {
+      "testId": "parse-plan-app-oracle-ebs-lower-catalog-parity",
+      "kind": "workbook",
+      "cells": {"B23": "CoreFinanceEbsLower", "C23": "Oracle EBS", "D23": "Lower", "E23": "Contains no key data according to the supplied assessment text.", "F23": "WS-A"},
+      "forbiddenIssueCodes": ["LOCAL.CONTENT_PENDING_RECORDING", "LOCAL.RETURN_SUPPORT_UNAVAILABLE"],
+      "expectedRows": [{"elementId": "CoreFinanceEbsLower", "kind": "APP", "status": "ready_for_remote_preflight", "rait": "Lower", "appScoring": true, "isRelevant": true, "scoringItems": 15, "riskControlCatalog": 12, "riskControlRequired": 7, "riskClassifications": {"RAITCOR001": "Lower", "RAITCOR002": "ClassificationNA", "RAITCOR003": "Lower", "RAITCOR004": "Lower", "RAITCOR007": "Lower", "RAITCOR011": "ClassificationNA"}, "blockerCodes": [], "blockedPendingRecording": false}]
+    },
+    {
+      "testId": "parse-plan-os-ad-authority-preflight",
+      "kind": "workbook",
+      "cells": {
+        "B23": "DirectorySourceApp", "C23": "Generic", "D23": "Lower", "E23": "Directory source application.", "F23": "WS-A",
+        "B35": "DirectoryAd", "C35": "AD", "D35": "WS-A", "E35": "DirectorySourceApp"
+      },
+      "forbiddenIssueCodes": ["LOCAL.CONTENT_PENDING_RECORDING"],
+      "expectedRows": [{"elementId": "DirectoryAd", "kind": "OS", "status": "ready_for_remote_preflight", "rait": "Lower", "dependencies": ["DirectorySourceApp"], "riskControlCatalog": 4, "riskControlRequired": 4, "riskClassifications": {"RAITCOR001": "Lower", "RAITCOR002": "Lower", "RAITCOR003": "Lower", "RAITCOR004": "Lower", "RAITCOR006": "Lower", "RAITCOR011": "Lower"}, "blockerCodes": [], "blockedPendingRecording": false}]
+    },
+    {
+      "testId": "parse-plan-tool-code-migration-authority-preflight",
+      "kind": "workbook",
+      "cells": {
+        "B23": "MigrationSourceApp", "C23": "Generic", "D23": "Higher", "E23": "Migration source application.", "F23": "WS-A",
+        "B46": "MigrationTool", "C46": "代码迁移工具", "D46": "Higher", "E46": "WS-A", "F46": "MigrationSourceApp"
+      },
+      "forbiddenIssueCodes": ["LOCAL.CONTENT_PENDING_RECORDING"],
+      "expectedRows": [{"elementId": "MigrationTool", "kind": "TOOL", "status": "ready_for_remote_preflight", "rait": "Higher", "dependencies": ["MigrationSourceApp"], "riskControlCatalog": 3, "riskControlRequired": 3, "riskClassifications": {"RAITTOOL002": "Higher", "RAITTOOL003": "Higher", "RAITTOOL004": "Higher"}, "blockerCodes": [], "blockedPendingRecording": false}]
+    },
+    {
+      "testId": "parse-plan-five-kind-and-any-higher",
+      "kind": "workbook",
+      "cells": {
+        "B23": "FinanceHigh", "C23": "SAP S/4 HANA", "D23": "Higher", "E23": "Processes explicitly identified key financial data.", "F23": "WS-A",
+        "B24": "FinanceLow", "C24": "SAP ECC", "D24": "Lower", "E24": "Contains no key data according to the supplied assessment text.", "F24": "WS-A",
+        "B30": "FinanceDb", "C30": "SQL", "D30": "WS-A", "E30": "FinanceHigh、FinanceLow",
+        "B35": "FinanceOs", "C35": "WIN", "D35": "WS-A", "E35": "FinanceLow",
+        "B40": "FinanceNetwork", "C40": "网络", "D40": "WS-A", "E40": "FinanceHigh",
+        "B46": "FinanceTool", "C46": "工单工具", "D46": "Lower", "E46": "WS-A", "F46": "FinanceHigh"
+      },
+      "expectedRows": [
+        {"elementId": "FinanceHigh", "kind": "APP", "status": "ready_for_remote_preflight", "rait": "Higher", "appScoring": true, "isRelevant": true},
+        {"elementId": "FinanceLow", "kind": "APP", "status": "ready_for_remote_preflight", "rait": "Lower", "appScoring": true, "isRelevant": true},
+        {"elementId": "FinanceDb", "kind": "DB", "status": "ready_for_remote_preflight", "rait": "Higher", "dependencies": ["FinanceHigh", "FinanceLow"]},
+        {"elementId": "FinanceOs", "kind": "OS", "status": "ready_for_remote_preflight", "rait": "Lower", "dependencies": ["FinanceLow"]},
+        {"elementId": "FinanceTool", "kind": "TOOL", "status": "ready_for_remote_preflight", "rait": "Lower", "dependencies": ["FinanceHigh"]},
+        {"elementId": "FinanceNetwork", "kind": "DCNO", "status": "ready_for_remote_preflight", "rait": "Higher", "dependencies": ["FinanceHigh"], "returnSupport": "supported"}
+      ]
+    },
+    {
+      "testId": "validate-cross-domain-name-conflict",
+      "kind": "workbook",
+      "cells": {
+        "B23": "Payroll", "C23": "Generic", "D23": "Higher", "E23": "Processes explicitly identified key financial data.", "F23": "WS-A",
+        "B24": "GRA-Payroll", "C24": "Generic", "D24": "Lower", "E24": "Contains no key data according to the supplied assessment text.", "F24": "WS-A"
+      },
+      "expectedIssueCodes": ["LOCAL.DUPLICATE_IDENTITY"]
+    },
+    {
+      "testId": "plan-global-blocker-propagation",
+      "kind": "workbook",
+      "cells": {"B23": "GlobalBlockerApp", "C23": "Generic", "D23": "Higher", "E23": "Processes explicitly identified key financial data.", "F23": "WS-A"},
+      "addIssues": [{"code": "CONTRACT.GLOBAL_BLOCK", "fieldKey": "global.contract", "state": "blocking"}],
+      "expectedGlobalBlockerCodes": ["CONTRACT.GLOBAL_BLOCK"],
+      "expectedRows": [{"elementId": "GlobalBlockerApp", "kind": "APP", "status": "blocked", "blockerCodes": ["CONTRACT.GLOBAL_BLOCK"]}]
+    },
+    {
+      "testId": "plan-excluded-row-blocker-isolation",
+      "kind": "workbook",
+      "cells": {
+        "B23": "IncludedApp", "C23": "Generic", "D23": "Higher", "E23": "Processes explicitly identified key financial data.", "F23": "WS-A",
+        "B24": "ExcludedApp", "C24": "Generic", "D24": "Lower", "E24": "Contains no key data according to the supplied assessment text.", "F24": "WS-A"
+      },
+      "excludeElementIds": ["ExcludedApp"],
+      "addIssues": [{"code": "LOCAL.EXCLUDED_ONLY", "elementId": "ExcludedApp", "fieldSuffix": "identity", "state": "blocking"}],
+      "expectedGlobalBlockerCodes": [],
+      "expectedRows": [{"elementId": "IncludedApp", "kind": "APP", "status": "ready_for_remote_preflight", "blockerCodes": []}]
+    },
+    {
+      "testId": "validate-dcno-requires-an-app",
+      "kind": "workbook",
+      "cells": {"B40": "NetworkWithoutApp", "C40": "网络", "D40": "WS-A", "E40": ""},
+      "expectedIssueCodes": ["LOCAL.REQUIRED_FIELD", "LOCAL.APP_REFERENCE_CARDINALITY"],
+      "expectedRows": [{"elementId": "NetworkWithoutApp", "kind": "DCNO", "status": "blocked", "returnSupport": "supported"}]
+    },
+    {
+      "testId": "plan-dcno-lower-risk-control-is-supported",
+      "kind": "workbook",
+      "cells": {
+        "B23": "FinanceLowForNetwork", "C23": "Generic", "D23": "Lower", "E23": "Contains no key data according to the supplied assessment text.", "F23": "WS-A",
+        "B40": "FinanceNetworkLower", "C40": "网络", "D40": "WS-A", "E40": "FinanceLowForNetwork"
+      },
+      "expectedRows": [
+        {"elementId": "FinanceNetworkLower", "kind": "DCNO", "status": "ready_for_remote_preflight", "rait": "Lower", "returnSupport": "supported", "blockerCodes": [], "riskControlCatalog": 8, "riskControlRequired": 2, "riskClassifications": {"RAITCOR001": "ClassificationNA", "RAITCOR006": "Lower", "RAITCOR008": "Lower"}}
+      ]
+    },
+    {
+      "testId": "parser-row-policy-is-not-fixed-to-template-entry-count",
+      "kind": "parser-unbounded-row-policy"
+    }
+  ],
+  "workerCases": [
+    {
+      "testId": "worker-return-policy-has-no-recording-permission-gate",
+      "kind": "return-policy-source"
+    },
+    {
+      "testId": "worker-explicit-fresh-start-navigation-contract",
+      "kind": "fresh-start-navigation",
+      "expectedLabel": "结束旧流程并全新开始",
+      "expectedEnabledStates": ["draft", "acquiring", "processing", "needs_input", "converting", "validating_output", "ready_for_review", "waiting_confirmation", "returning", "verifying", "succeeded", "failed", "cancelled", "not_evaluable"]
+    },
+    {
+      "testId": "worker-explicit-fresh-start-cas-and-uncertain-guard",
+      "kind": "fresh-start-cas"
+    },
+    {
+      "testId": "worker-authority-content-name-is-exact-and-parameterized",
+      "kind": "authority-content-name"
+    },
+    {
+      "testId": "worker-frozen-plan-dag",
+      "kind": "dag",
+      "rows": [
+        {"rowKey": "app-high", "dependencyRowKeys": [], "stageNodes": ["object", "gra", "gra_state", "app_category", "app_scoring", "documentation", "risk_classification", "risk_control", "evaluation"], "capabilities": {"object": true, "gra": true, "directRait": true, "appScoring": true, "riskControl": true, "evaluation": true}},
+        {"rowKey": "app-low", "dependencyRowKeys": [], "stageNodes": ["object", "gra", "gra_state", "app_category", "app_scoring", "documentation", "risk_classification", "risk_control", "evaluation"], "capabilities": {"object": true, "gra": true, "directRait": true, "appScoring": true, "riskControl": true, "evaluation": true}},
+        {"rowKey": "database", "dependencyRowKeys": ["app-high", "app-low"], "stageNodes": ["object", "relation", "gra", "inherited_rait", "risk_classification", "risk_control", "evaluation"], "capabilities": {"object": true, "gra": true, "relation": true, "inheritedRait": true, "riskControl": true, "evaluation": true}}
+      ],
+      "expectedDependencies": {"database": ["app-high", "app-low"]}
+    },
+    {
+      "testId": "worker-isolated-failure-skip-policy",
+      "kind": "failure-skip",
+      "rows": [
+        {"rowKey": "app-a", "dependencyRowKeys": [], "stageNodes": ["object", "gra", "evaluation"], "capabilities": {"object": true, "gra": true, "evaluation": true}},
+        {"rowKey": "db-a", "dependencyRowKeys": ["app-a"], "stageNodes": ["object", "relation", "gra", "inherited_rait", "risk_classification", "risk_control", "evaluation"], "capabilities": {"object": true, "gra": true, "relation": true, "inheritedRait": true, "riskControl": true, "evaluation": true}},
+        {"rowKey": "app-b", "dependencyRowKeys": [], "stageNodes": ["object", "gra", "evaluation"], "capabilities": {"object": true, "gra": true, "evaluation": true}}
+      ],
+      "failedRowKeys": ["app-a"],
+      "expectedBlocked": ["db-a"],
+      "expectedUnaffected": ["app-b"]
+    },
+    {
+      "testId": "worker-ai-review-registry-selection",
+      "kind": "ai-selection",
+      "registry": {"APP": {"capabilities": {"aiReview": true}}, "DB": {"capabilities": {"aiReview": false}}},
+      "rows": [{"rowKey": "app", "kind": "APP"}, {"rowKey": "db", "kind": "DB"}, {"rowKey": "excluded-app", "kind": "APP"}],
+      "excludedRowKeys": ["excluded-app"],
+      "expectedRowKeys": ["app"]
+    },
+    {
+      "testId": "worker-ai-review-simplified-chinese-output-contract",
+      "kind": "ai-language",
+      "expectedLanguage": "zh-CN",
+      "expectedLanguageVersion": "zh-CN-simplified/v1",
+      "acceptedItem": {
+        "rowKey": "app",
+        "assessment": "needs_attention",
+        "summary": "填写内容与风险结论存在需要确认的地方。",
+        "concerns": [{"code": "rait_basis", "message": "当前文字没有明确说明关键数据。", "suggestion": "请补充形成该结论的具体依据。"}]
+      },
+      "rejectedItems": [
+        {"rowKey": "app", "assessment": "clear", "summary": "The supplied text supports the conclusion.", "concerns": []},
+        {"rowKey": "app", "assessment": "needs_attention", "summary": "需要确认风险结论。", "concerns": [{"code": "rait_basis", "message": "The text does not identify key data.", "suggestion": "请补充具体依据。"}]},
+        {"rowKey": "app", "assessment": "needs_attention", "summary": "需要确认风险结论。", "concerns": [{"code": "rait_basis", "message": "当前文字没有明确说明关键数据。", "suggestion": "Add concrete supporting facts."}]}
+      ]
+    },
+    {
+      "testId": "worker-execution-policy-explicit-control",
+      "kind": "execution-policy",
+      "expectedDefault": true,
+      "expectedDisabled": false
+    },
+    {
+      "testId": "worker-build-return-preparation-confirm-capabilities",
+      "kind": "return-plan-capabilities",
+      "rows": [
+        {"rowKey": "app", "dependencyRowKeys": [], "stageNodes": ["object", "settings", "gra", "gra_state", "app_category", "app_scoring", "documentation", "risk_classification", "risk_control", "evaluation"], "capabilities": {"object": true, "gra": true, "settings": true, "relation": false, "directRait": true, "inheritedRait": false, "appScoring": true, "riskControl": true, "evaluation": true, "aiReview": true}},
+        {"rowKey": "db", "dependencyRowKeys": ["app"], "stageNodes": ["object", "relation", "gra", "inherited_rait", "risk_classification", "risk_control", "evaluation"], "capabilities": {"object": true, "gra": true, "settings": false, "relation": true, "directRait": false, "inheritedRait": true, "appScoring": false, "riskControl": true, "evaluation": true, "aiReview": false}}
+      ]
+    },
+    {
+      "testId": "operation-app-relevance-true-write-and-readback",
+      "kind": "operation-app-relevance"
+    },
+    {
+      "testId": "operation-control-number-structural-normalization",
+      "kind": "operation-control-number",
+      "observedNumbers": [
+        {"value": "FAMILYA.01", "expected": "FAMILYA.01"},
+        {"value": "Family B.001", "expected": "FAMILYB.01"},
+        {"value": "FAMILY_C-01", "expected": "FAMILYC.01"},
+        {"value": "SAPS4HANA.01", "expected": "SAPS4HANA.01"}
+      ],
+      "unchangedControl": "TOOL.05"
+    },
+    {
+      "testId": "operation-dcno-network-authority-resolution",
+      "kind": "operation-dcno-authority"
+    },
+    {
+      "testId": "operation-oracle-ebs-exact-authority-resolution",
+      "kind": "operation-oracle-ebs-authority"
+    },
+    {
+      "testId": "worker-dcno-recorded-higher-exact-catalog",
+      "kind": "dcno-risk-control-recording",
+      "liveCatalog": {
+        "risks": [
+          {"riskId": "risk-1", "riskNumber": "RAITCOR001", "classification": "Higher"},
+          {"riskId": "risk-8", "riskNumber": "RAITCOR008", "classification": "Higher"},
+          {"riskId": "risk-6", "riskNumber": "RAITCOR006", "classification": "Higher"}
+        ],
+        "controls": [
+          {"controlId": "app-03", "controlNumber": "APP.03", "name": "用户访问权限复核"},
+          {"controlId": "app-06", "controlNumber": "APP.06", "name": "特权 / 管理员访问"},
+          {"controlId": "dcno-05", "controlNumber": "DCNO.05", "name": "身份验证 / 密码控制"},
+          {"controlId": "dcno-10", "controlNumber": "DCNO.10", "name": "变更审批和测试"},
+          {"controlId": "dcno-21", "controlNumber": "DCNO.21", "name": "网络分段"},
+          {"controlId": "dcno-22", "controlNumber": "DCNO.22", "name": "漏洞扫描"},
+          {"controlId": "dcno-23", "controlNumber": "DCNO.23", "name": "入侵检测"},
+          {"controlId": "dcno-24", "controlNumber": "DCNO.24", "name": "VPN 访问配置"}
+        ]
+      }
+    },
+    {
+      "testId": "worker-risk-control-explicit-live-catalog-identity",
+      "kind": "risk-control-catalog-identity",
+      "relation": {
+        "relationId": "REL.APP.SAP_S4_HANA.RAITCOR001.SAPCUA_06",
+        "riskName": "RAITCOR001｜SAP S/4 HANA access risk",
+        "controlName": "SAP.06｜Access to security administrative functions is authorized and appropriately restricted.",
+        "classificationHigher": "Higher",
+        "catalogIdentityRequired": true,
+        "catalogControlNumber": "SAPCUA.06",
+        "catalogIdentityStatus": "signed_live_exact",
+        "catalogIdentityEvidence": {
+          "evidenceRef": "read-only-s4-catalog-fixture",
+          "sourceTraceId": "fixture:S4:SAPCUA.06"
+        }
+      },
+      "liveCatalog": {
+        "risks": [{"riskId": "risk-1", "riskRiskScopeId": "risk-scope-1", "riskScopeId": "scope-1", "riskNumber": "RAITCOR001", "name": "RAITCOR001 - generated", "classification": "Higher", "assertion": "AS", "assertionType": "10005"}],
+        "controls": [
+          {"controlId": "control-1", "controlNumber": "SAPCUA.06", "name": "{\"blocks\":[{\"text\":\"安全管理功能的访问权限已获得授权并受到适当限制 (CUA)\"}],\"entityMap\":{}}"},
+          {"controlId": "control-2", "controlNumber": "IMP.06", "name": "unrelated same ordinal"}
+        ]
+      }
+    },
+    {
+      "testId": "operation-app-category-same-id-non-identity-snapshots",
+      "kind": "operation-app-risk-factor-category",
+      "expected": "accepted",
+      "directory": {
+        "$id": "1",
+        "riskFactors": [
+          {
+            "$id": "2",
+            "id": "90000000-0000-4000-8000-000000000001",
+            "riskAssessmentId": "66666666-6666-4666-8666-666666666666",
+            "workspaceId": "22222222-2222-4222-8222-222222222222",
+            "displayOrder": 1,
+            "riskFactorGrouping": {
+              "$id": "3",
+              "id": "77777777-7777-4777-8777-777777777777",
+              "name": "IT风险评估（如果测试运行有效性）",
+              "riskAssessmentId": "66666666-6666-4666-8666-666666666666",
+              "workspaceId": "22222222-2222-4222-8222-222222222222",
+              "applicable": true,
+              "isDeleted": false,
+              "updatedOn": "2026-08-06T12:00:00.000Z",
+              "description": "first nested projection",
+              "riskFactors": [{"$ref": "2"}]
+            }
+          },
+          {
+            "$id": "18",
+            "id": "90000000-0000-4000-8000-000000000002",
+            "riskFactorEvaluationId": "66666666-6666-4666-8666-666666666666",
+            "workspaceFacetId": "22222222-2222-4222-8222-222222222222",
+            "displayOrder": 2,
+            "riskFactorGrouping": {
+              "$id": "19",
+              "id": "77777777-7777-4777-8777-777777777777",
+              "name": " IT风险评估（如果测试运行有效性） ",
+              "riskFactorEvaluationId": "66666666-6666-4666-8666-666666666666",
+              "workspaceFacetId": "22222222-2222-4222-8222-222222222222",
+              "applicable": true,
+              "deleted": false,
+              "updatedOn": "2026-08-06T12:00:09.000Z",
+              "description": "second nested projection",
+              "riskFactors": [{"$ref": "18"}, {"$ref": "2"}]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "testId": "operation-app-category-same-id-explicit-identity-conflict",
+      "kind": "operation-app-risk-factor-category",
+      "expected": "rejected",
+      "errorContains": "another Workspace",
+      "directory": {
+        "riskFactors": [
+          {"id": "90000000-0000-4000-8000-000000000003", "riskFactorGrouping": {"id": "77777777-7777-4777-8777-777777777777", "name": "IT风险评估（如果测试运行有效性）", "workspaceId": "22222222-2222-4222-8222-222222222222", "applicable": true, "isDeleted": false}},
+          {"id": "90000000-0000-4000-8000-000000000004", "riskFactorGrouping": {"id": "77777777-7777-4777-8777-777777777777", "name": "IT风险评估（如果测试运行有效性）", "workspaceId": "99999999-9999-4999-8999-999999999999", "applicable": true, "isDeleted": false}}
+        ]
+      }
+    },
+    {
+      "testId": "operation-app-category-multiple-authoritative-ids",
+      "kind": "operation-app-risk-factor-category",
+      "expected": "rejected",
+      "errorContains": "absent or ambiguous",
+      "directory": {
+        "riskFactors": [
+          {"id": "90000000-0000-4000-8000-000000000005", "riskFactorGrouping": {"id": "77777777-7777-4777-8777-777777777777", "name": "IT风险评估（如果测试运行有效性）", "applicable": true, "isDeleted": false}},
+          {"id": "90000000-0000-4000-8000-000000000006", "riskFactorGrouping": {"id": "88888888-8888-4888-8888-888888888888", "name": "IT风险评估（如果测试运行有效性）", "applicable": true, "isDeleted": false}}
+        ]
+      }
+    }
+  ]
+}

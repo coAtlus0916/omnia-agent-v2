@@ -1,0 +1,60 @@
+{
+  "name": "omnia-agent-v5-shell",
+  "version": "0.4.15",
+  "description": "Omnia Agent v5 Shell with Connector Next",
+  "private": true,
+  "type": "module",
+  "main": "dist/main/main.cjs",
+  "scripts": {
+    "clean": "node scripts/clean.mjs",
+    "build": "node scripts/build.mjs",
+    "package:windows": "node scripts/provision-python-runtime.mjs && node scripts/package-windows.mjs",
+    "package:portable-release": "npm run package:windows && node scripts/package-portable-artifact.mjs",
+    "connector-next:server": "node dist/connector-next/server.cjs",
+    "connector-next:control": "node dist/connector-next/shell-control.cjs",
+    "connector-next:agent": "node dist/connector-next/agent.cjs",
+    "connector-next:updater": "node dist/connector-next/updater.cjs",
+    "connector-next:bootstrap": "node dist/connector-next/bootstrap.cjs",
+    "connector-next:install": "node dist/connector-next/installer.cjs",
+    "package:connector-next-candidate": "npm run build && node scripts/package-connector-next.mjs",
+    "package:connector-next-server": "npm run build && node scripts/package-connector-next-server.mjs",
+    "package:create-associate-next-portable": "node scripts/package-create-associate-next-portable.mjs",
+    "package:delete-feature": "npm run build && node scripts/package-delete-feature.mjs",
+    "package:recording-feature": "npm run build && node scripts/package-recording-feature.mjs",
+    "package:create-associate-feature": "npm run build && node scripts/package-create-associate-feature.mjs",
+    "feature:install": "node dist/tools/feature-installer.cjs install",
+    "feature:list": "node dist/tools/feature-installer.cjs list",
+    "feature:rollback": "node dist/tools/feature-installer.cjs rollback",
+    "dev": "node scripts/dev.mjs",
+    "start": "electron .",
+    "typecheck": "tsc --noEmit",
+    "lint": "node scripts/lint.mjs && tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "test:independence": "tsx --test tests/independence.test.ts",
+    "acceptance:ui-regression": "node scripts/ui-regression-acceptance-v5.mjs",
+    "acceptance:upgrade-0.4.2": "node scripts/portable-upgrade-0.4.1-to-0.4.2.mjs",
+    "acceptance:portable-0.4.2": "node scripts/portable-0.4.2-smoke.mjs",
+    "acceptance:upgrade-0.4.3": "node scripts/portable-upgrade-0.4.2-to-0.4.3.mjs",
+    "acceptance:portable-0.4.3": "node scripts/portable-0.4.3-smoke.mjs",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build && npm run test:independence"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "playwright-core": "^1.54.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.1.0",
+    "@types/react": "^19.1.9",
+    "@types/react-dom": "^19.1.7",
+    "@types/ws": "^8.18.1",
+    "electron": "^43.1.0",
+    "esbuild": "^0.25.8",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.2"
+  }
+}

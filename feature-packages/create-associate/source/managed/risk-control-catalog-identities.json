@@ -1,0 +1,426 @@
+{
+  "schemaVersion": "omnia.create-associate.risk-control-catalog-identities/v1",
+  "compatibleFrozenGovernanceDigests": [
+    {
+      "semanticDigest": "195dc524605b03e5653a27cfd50a3a66921393d55d9fd01579dd14fff44dd6f2",
+      "scope": "execution_catalog_alias_only",
+      "relationIdPrefix": "REL.APP.SAP_ECC.",
+      "evidenceRef": "connector-next-job:ocn3.job.b7d514e1-24aa-45be-816f-d3aadbf6f469#sha256=1efb6e30336b468fab59dfe93b51263425980fa5ec63e577544c6a908d8e9188"
+    }
+  ],
+  "families": [
+    {
+      "relationIdPrefix": "REL.APP.SAP_S4_HANA.",
+      "requiresExplicitCatalogControlNumber": true,
+      "status": "signed_live_exact",
+      "identities": [
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR001.SAPS4_01",
+          "catalogControlNumber": "SAPS4.01",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.ff217109"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR001.SAPS4_02",
+          "catalogControlNumber": "SAPS4.02",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.05b01b45"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR001.SAPS4_03",
+          "catalogControlNumber": "SAPS4.03",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.13db40ce"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR001.SAPS4_04",
+          "catalogControlNumber": "SAPS4.04",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.3f35a8b8"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR001.SAPS4_06",
+          "catalogControlNumber": "SAPS4.06",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.3b3afdec"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR001.SAPS4_07",
+          "catalogControlNumber": "SAPS4.07",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.1f58adb3"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR001.SAPS4_11",
+          "catalogControlNumber": "SAPS4.11",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.2f1420ef"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR001.SAPS4_17",
+          "catalogControlNumber": "SAPS4.17",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.92aac287"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR001.SAPS4_18",
+          "catalogControlNumber": "SAPS4.18",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.d7ede4b7"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR001.SAPS4_19",
+          "catalogControlNumber": "SAPS4.19",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.8d8a4b52"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR001.SAPS4_20",
+          "catalogControlNumber": "SAPS4.20",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.52f72907"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR001.SAPS4_28",
+          "catalogControlNumber": "SAPS4.28",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.e0b4b03b"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR001.SAPCUA_06",
+          "catalogControlNumber": "SAPCUA.06",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.30ff63da"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR003.SAPS4_05",
+          "catalogControlNumber": "SAPS4.05",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.73c7e139"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR003.SAPS4_09",
+          "catalogControlNumber": "SAPS4.09",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.76101ffd"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR003.SAPCHARM_01",
+          "catalogControlNumber": "SAPCHARM.01",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.5b154535"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR003.SAPCHARM_02",
+          "catalogControlNumber": "SAPCHARM.02",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.5b1b44c8"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR004.SAPS4_10",
+          "catalogControlNumber": "SAPS4.10",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.e8cd9788"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR004.SAPS4_13",
+          "catalogControlNumber": "SAPS4.13",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.3e2634e6"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR004.SAPS4_23",
+          "catalogControlNumber": "SAPS4.23",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.5d544b85"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR004.SAPS4_24",
+          "catalogControlNumber": "SAPS4.24",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.7899ecd5"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR004.SAPS4_25",
+          "catalogControlNumber": "SAPS4.25",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.ccccc280"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR004.SAPS4_26",
+          "catalogControlNumber": "SAPS4.26",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.f38cd23a"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR004.IMP_01",
+          "catalogControlNumber": "IMP.01",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.13ba0e3e"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR004.IMP_02",
+          "catalogControlNumber": "IMP.02",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.680d00b8"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR004.IMP_03",
+          "catalogControlNumber": "IMP.03",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.d8b6fbc1"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR007.SAPS4_14",
+          "catalogControlNumber": "SAPS4.14",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.adb7352b"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR011.SAPS4_15",
+          "catalogControlNumber": "SAPS4.15",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.97f3f0a3"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR011.SAPS4_16",
+          "catalogControlNumber": "SAPS4.16",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.50b97075"
+        },
+        {
+          "relationId": "REL.APP.SAP_S4_HANA.RAITCOR011.SAPS4_27",
+          "catalogControlNumber": "SAPS4.27",
+          "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+          "sourceTraceId": "S4HANA.RECORDING.34ea8734.CONTROL.700cfb08"
+        }
+      ]
+    },
+    {
+      "relationIdPrefix": "REL.APP.SAP_ECC.",
+      "requiresExplicitCatalogControlNumber": true,
+      "status": "signed_live_exact",
+      "identities": [
+        {
+          "relationId": "REL.APP.SAP_ECC.RAITCOR001.SAP_01",
+          "catalogControlNumber": "SAPECC.01",
+          "evidenceRef": "connector-next-job:ocn3.job.b7d514e1-24aa-45be-816f-d3aadbf6f469#sha256=1efb6e30336b468fab59dfe93b51263425980fa5ec63e577544c6a908d8e9188",
+          "sourceTraceId": "ECC.LIVE.CATALOG.20260811.SAPECC01"
+        },
+        {
+          "relationId": "REL.APP.SAP_ECC.RAITCOR001.SAP_02",
+          "catalogControlNumber": "SAPECC.02",
+          "evidenceRef": "connector-next-job:ocn3.job.b7d514e1-24aa-45be-816f-d3aadbf6f469#sha256=1efb6e30336b468fab59dfe93b51263425980fa5ec63e577544c6a908d8e9188",
+          "sourceTraceId": "ECC.LIVE.CATALOG.20260811.SAPECC02"
+        },
+        {
+          "relationId": "REL.APP.SAP_ECC.RAITCOR001.SAP_03",
+          "catalogControlNumber": "SAPECC.03",
+          "evidenceRef": "connector-next-job:ocn3.job.b7d514e1-24aa-45be-816f-d3aadbf6f469#sha256=1efb6e30336b468fab59dfe93b51263425980fa5ec63e577544c6a908d8e9188",
+          "sourceTraceId": "ECC.LIVE.CATALOG.20260811.SAPECC03"
+        },
+        {
+          "relationId": "REL.APP.SAP_ECC.RAITCOR001.SAP_06",
+          "catalogControlNumber": "SAPECC.06",
+          "evidenceRef": "connector-next-job:ocn3.job.b7d514e1-24aa-45be-816f-d3aadbf6f469#sha256=1efb6e30336b468fab59dfe93b51263425980fa5ec63e577544c6a908d8e9188",
+          "sourceTraceId": "ECC.LIVE.CATALOG.20260811.SAPECC06"
+        },
+        {
+          "relationId": "REL.APP.SAP_ECC.RAITCOR001.SAP_07",
+          "catalogControlNumber": "SAPECC.07",
+          "evidenceRef": "connector-next-job:ocn3.job.b7d514e1-24aa-45be-816f-d3aadbf6f469#sha256=1efb6e30336b468fab59dfe93b51263425980fa5ec63e577544c6a908d8e9188",
+          "sourceTraceId": "ECC.LIVE.CATALOG.20260811.SAPECC07"
+        },
+        {
+          "relationId": "REL.APP.SAP_ECC.RAITCOR001.SAP_11",
+          "catalogControlNumber": "SAPECC.11",
+          "evidenceRef": "connector-next-job:ocn3.job.b7d514e1-24aa-45be-816f-d3aadbf6f469#sha256=1efb6e30336b468fab59dfe93b51263425980fa5ec63e577544c6a908d8e9188",
+          "sourceTraceId": "ECC.LIVE.CATALOG.20260811.SAPECC11"
+        },
+        {
+          "relationId": "REL.APP.SAP_ECC.RAITCOR001.SAP_17",
+          "catalogControlNumber": "SAPECC.17",
+          "evidenceRef": "connector-next-job:ocn3.job.b7d514e1-24aa-45be-816f-d3aadbf6f469#sha256=1efb6e30336b468fab59dfe93b51263425980fa5ec63e577544c6a908d8e9188",
+          "sourceTraceId": "ECC.LIVE.CATALOG.20260811.SAPECC17"
+        },
+        {
+          "relationId": "REL.APP.SAP_ECC.RAITCOR001.SAP_18",
+          "catalogControlNumber": "SAPECC.18",
+          "evidenceRef": "connector-next-job:ocn3.job.b7d514e1-24aa-45be-816f-d3aadbf6f469#sha256=1efb6e30336b468fab59dfe93b51263425980fa5ec63e577544c6a908d8e9188",
+          "sourceTraceId": "ECC.LIVE.CATALOG.20260811.SAPECC18"
+        },
+        {
+          "relationId": "REL.APP.SAP_ECC.RAITCOR001.SAP_19",
+          "catalogControlNumber": "SAPECC.19",
+          "evidenceRef": "connector-next-job:ocn3.job.b7d514e1-24aa-45be-816f-d3aadbf6f469#sha256=1efb6e30336b468fab59dfe93b51263425980fa5ec63e577544c6a908d8e9188",
+          "sourceTraceId": "ECC.LIVE.CATALOG.20260811.SAPECC19"
+        },
+        {
+          "relationId": "REL.APP.SAP_ECC.RAITCOR003.SAP_05",
+          "catalogControlNumber": "SAPECC.05",
+          "evidenceRef": "connector-next-job:ocn3.job.b7d514e1-24aa-45be-816f-d3aadbf6f469#sha256=1efb6e30336b468fab59dfe93b51263425980fa5ec63e577544c6a908d8e9188",
+          "sourceTraceId": "ECC.LIVE.CATALOG.20260811.SAPECC05"
+        },
+        {
+          "relationId": "REL.APP.SAP_ECC.RAITCOR003.SAP_09",
+          "catalogControlNumber": "SAPECC.09",
+          "evidenceRef": "connector-next-job:ocn3.job.b7d514e1-24aa-45be-816f-d3aadbf6f469#sha256=1efb6e30336b468fab59dfe93b51263425980fa5ec63e577544c6a908d8e9188",
+          "sourceTraceId": "ECC.LIVE.CATALOG.20260811.SAPECC09"
+        },
+        {
+          "relationId": "REL.APP.SAP_ECC.RAITCOR004.SAP_10",
+          "catalogControlNumber": "SAPECC.10",
+          "evidenceRef": "connector-next-job:ocn3.job.b7d514e1-24aa-45be-816f-d3aadbf6f469#sha256=1efb6e30336b468fab59dfe93b51263425980fa5ec63e577544c6a908d8e9188",
+          "sourceTraceId": "ECC.LIVE.CATALOG.20260811.SAPECC10"
+        },
+        {
+          "relationId": "REL.APP.SAP_ECC.RAITCOR004.SAP_13",
+          "catalogControlNumber": "SAPECC.13",
+          "evidenceRef": "connector-next-job:ocn3.job.b7d514e1-24aa-45be-816f-d3aadbf6f469#sha256=1efb6e30336b468fab59dfe93b51263425980fa5ec63e577544c6a908d8e9188",
+          "sourceTraceId": "ECC.LIVE.CATALOG.20260811.SAPECC13"
+        },
+        {
+          "relationId": "REL.APP.SAP_ECC.RAITCOR004.SAP_23",
+          "catalogControlNumber": "SAPECC.23",
+          "evidenceRef": "connector-next-job:ocn3.job.b7d514e1-24aa-45be-816f-d3aadbf6f469#sha256=1efb6e30336b468fab59dfe93b51263425980fa5ec63e577544c6a908d8e9188",
+          "sourceTraceId": "ECC.LIVE.CATALOG.20260811.SAPECC23"
+        },
+        {
+          "relationId": "REL.APP.SAP_ECC.RAITCOR004.SAP_26",
+          "catalogControlNumber": "SAPECC.26",
+          "evidenceRef": "connector-next-job:ocn3.job.b7d514e1-24aa-45be-816f-d3aadbf6f469#sha256=1efb6e30336b468fab59dfe93b51263425980fa5ec63e577544c6a908d8e9188",
+          "sourceTraceId": "ECC.LIVE.CATALOG.20260811.SAPECC26"
+        },
+        {
+          "relationId": "REL.APP.SAP_ECC.RAITCOR011.SAP_15",
+          "catalogControlNumber": "SAPECC.15",
+          "evidenceRef": "connector-next-job:ocn3.job.b7d514e1-24aa-45be-816f-d3aadbf6f469#sha256=1efb6e30336b468fab59dfe93b51263425980fa5ec63e577544c6a908d8e9188",
+          "sourceTraceId": "ECC.LIVE.CATALOG.20260811.SAPECC15"
+        },
+        {
+          "relationId": "REL.APP.SAP_ECC.RAITCOR011.SAP_16",
+          "catalogControlNumber": "SAPECC.16",
+          "evidenceRef": "connector-next-job:ocn3.job.b7d514e1-24aa-45be-816f-d3aadbf6f469#sha256=1efb6e30336b468fab59dfe93b51263425980fa5ec63e577544c6a908d8e9188",
+          "sourceTraceId": "ECC.LIVE.CATALOG.20260811.SAPECC16"
+        },
+        {
+          "relationId": "REL.APP.SAP_ECC.RAITCOR011.SAP_27",
+          "catalogControlNumber": "SAPECC.27",
+          "evidenceRef": "connector-next-job:ocn3.job.b7d514e1-24aa-45be-816f-d3aadbf6f469#sha256=1efb6e30336b468fab59dfe93b51263425980fa5ec63e577544c6a908d8e9188",
+          "sourceTraceId": "ECC.LIVE.CATALOG.20260811.SAPECC27"
+        }
+      ]
+    },
+    {
+      "relationIdPrefix": "REL.DCNO.NETWORK.",
+      "requiresExplicitCatalogControlNumber": true,
+      "status": "signed_live_exact",
+      "identities": [
+        {
+          "relationId": "REL.DCNO.NETWORK.RAITCOR008.DCNO_05",
+          "catalogControlNumber": "DCNO.05",
+          "evidenceRef": "artifact:110eba6d-dd39-4b20-bfd5-83caefd20260#sha256=d44d21b3c41f900eedf93819bfe88a5b82c4d1bd9f3ff74f92a66f9e3cdee490",
+          "sourceTraceId": "DCNO.RECORDING.8aa3673e.CONTROL.28ffdb1e"
+        },
+        {
+          "relationId": "REL.DCNO.NETWORK.RAITCOR006.DCNO_10",
+          "catalogControlNumber": "DCNO.10",
+          "evidenceRef": "artifact:110eba6d-dd39-4b20-bfd5-83caefd20260#sha256=d44d21b3c41f900eedf93819bfe88a5b82c4d1bd9f3ff74f92a66f9e3cdee490",
+          "sourceTraceId": "DCNO.RECORDING.8aa3673e.CONTROL.3c01f852"
+        },
+        {
+          "relationId": "REL.DCNO.NETWORK.RAITCOR008.DCNO_21",
+          "catalogControlNumber": "DCNO.21",
+          "evidenceRef": "artifact:110eba6d-dd39-4b20-bfd5-83caefd20260#sha256=d44d21b3c41f900eedf93819bfe88a5b82c4d1bd9f3ff74f92a66f9e3cdee490",
+          "sourceTraceId": "DCNO.RECORDING.8aa3673e.CONTROL.4fd6f7eb"
+        },
+        {
+          "relationId": "REL.DCNO.NETWORK.RAITCOR008.DCNO_22",
+          "catalogControlNumber": "DCNO.22",
+          "evidenceRef": "artifact:110eba6d-dd39-4b20-bfd5-83caefd20260#sha256=d44d21b3c41f900eedf93819bfe88a5b82c4d1bd9f3ff74f92a66f9e3cdee490",
+          "sourceTraceId": "DCNO.RECORDING.8aa3673e.CONTROL.693bbcbe"
+        },
+        {
+          "relationId": "REL.DCNO.NETWORK.RAITCOR008.DCNO_23",
+          "catalogControlNumber": "DCNO.23",
+          "evidenceRef": "artifact:110eba6d-dd39-4b20-bfd5-83caefd20260#sha256=d44d21b3c41f900eedf93819bfe88a5b82c4d1bd9f3ff74f92a66f9e3cdee490",
+          "sourceTraceId": "DCNO.RECORDING.8aa3673e.CONTROL.59c30262"
+        },
+        {
+          "relationId": "REL.DCNO.NETWORK.RAITCOR008.DCNO_24",
+          "catalogControlNumber": "DCNO.24",
+          "evidenceRef": "artifact:110eba6d-dd39-4b20-bfd5-83caefd20260#sha256=d44d21b3c41f900eedf93819bfe88a5b82c4d1bd9f3ff74f92a66f9e3cdee490",
+          "sourceTraceId": "DCNO.RECORDING.8aa3673e.CONTROL.9f3dd69f"
+        }
+      ]
+    },
+    {
+      "relationIdPrefix": "REL.APP.ORACLE_EBS.",
+      "requiresExplicitCatalogControlNumber": true,
+      "status": "blocked_pending_live_relation_readback",
+      "identities": [],
+      "evidenceMetadata": {
+        "executionGate": false,
+        "contentAuthorityEvidence": "artifact:1c864692-7b02-498c-be5f-bf38adcab14f#sha256=b143e180ed8a59fdbf78e7d6170503739f0f3e320cc9632eb9af1383018d9801",
+        "scopeEvidence": "source_files/it risk模板.xlsx#sha256=F2D494F187A0BCB774F3BAAD0FFA64A1DE681F1FC6A37AC8DF92BB97A7CC3BB0",
+        "reason": "Live Oracle EBS Risk/Control UUID and final relation readback were not recovered; runtime must resolve the exact governed control number from the current directory and fail closed on zero or multiple matches."
+      }
+    },
+    {
+      "relationIdPrefix": "REL.OS.AD.",
+      "requiresExplicitCatalogControlNumber": true,
+      "status": "signed_live_exact",
+      "identities": [
+        {
+          "relationId": "REL.OS.AD.RAITCOR001.OS_02",
+          "catalogControlNumber": "OS.02",
+          "evidenceRef": "artifact:7695dde4-5e93-4a10-acae-fc8a67087a35#sha256=e307939bf33a066e1218cded0e22955ce9cb47322d8f57a334011e84fb56045c",
+          "sourceTraceId": "AD.RECORDING.be62fb35.CONTROL.e284087b"
+        },
+        {
+          "relationId": "REL.OS.AD.RAITCOR001.OS_06",
+          "catalogControlNumber": "OS.06",
+          "evidenceRef": "artifact:7695dde4-5e93-4a10-acae-fc8a67087a35#sha256=e307939bf33a066e1218cded0e22955ce9cb47322d8f57a334011e84fb56045c",
+          "sourceTraceId": "AD.RECORDING.be62fb35.CONTROL.8d7a34a3"
+        },
+        {
+          "relationId": "REL.OS.AD.RAITCOR003.OS_05",
+          "catalogControlNumber": "OS.05",
+          "evidenceRef": "artifact:7695dde4-5e93-4a10-acae-fc8a67087a35#sha256=e307939bf33a066e1218cded0e22955ce9cb47322d8f57a334011e84fb56045c",
+          "sourceTraceId": "AD.RECORDING.be62fb35.CONTROL.17be4fb0"
+        },
+        {
+          "relationId": "REL.OS.AD.RAITCOR006.OS_10",
+          "catalogControlNumber": "OS.10",
+          "evidenceRef": "artifact:7695dde4-5e93-4a10-acae-fc8a67087a35#sha256=e307939bf33a066e1218cded0e22955ce9cb47322d8f57a334011e84fb56045c",
+          "sourceTraceId": "AD.RECORDING.be62fb35.CONTROL.e036e56c"
+        }
+      ]
+    },
+    {
+      "relationIdPrefix": "REL.TOOL.MIGRATION.",
+      "requiresExplicitCatalogControlNumber": true,
+      "status": "signed_live_exact",
+      "identities": [
+        {
+          "relationId": "REL.TOOL.MIGRATION.RAITTOOL002.TOOL_05",
+          "catalogControlNumber": "TOOL.05",
+          "evidenceRef": "artifact:04a5e0aa-bdcd-4b0c-8e6d-469425300633#sha256=6b65ff2db328bc72b7970a43dcfea40d90fa27a6af162fd9adaf8ef53e8f2597",
+          "sourceTraceId": "MIGRATION.RECORDING.8f74355b.CONTROL.5b322ca7"
+        },
+        {
+          "relationId": "REL.TOOL.MIGRATION.RAITTOOL002.TOOL_06",
+          "catalogControlNumber": "TOOL.06",
+          "evidenceRef": "artifact:04a5e0aa-bdcd-4b0c-8e6d-469425300633#sha256=6b65ff2db328bc72b7970a43dcfea40d90fa27a6af162fd9adaf8ef53e8f2597",
+          "sourceTraceId": "MIGRATION.RECORDING.8f74355b.CONTROL.ce5bfc4d"
+        },
+        {
+          "relationId": "REL.TOOL.MIGRATION.RAITTOOL003.TOOL_10",
+          "catalogControlNumber": "TOOL.10",
+          "evidenceRef": "artifact:04a5e0aa-bdcd-4b0c-8e6d-469425300633#sha256=6b65ff2db328bc72b7970a43dcfea40d90fa27a6af162fd9adaf8ef53e8f2597",
+          "sourceTraceId": "MIGRATION.RECORDING.8f74355b.CONTROL.a0aef386"
+        }
+      ]
+    }
+  ]
+}

@@ -102,10 +102,16 @@ if (args.includes('--connector-next-candidate-health') || args.includes('--conne
   }));
   const uncertainJobIds = [...new Set([...gateDiagnostics.flatMap((entry) => entry.uncertainJobIds), ...forwardedUncertainJobIds])];
   const confirmed = await candidateClient.candidateHeartbeat(offerId, phase, uncertainJobIds, gateDiagnostics);
-  const resolvedJobIds = confirmed.resolvedUncertainJobIds || confirmed.notStartedJobIds;
+  const serverResolvedJobIds = confirmed.resolvedUncertainJobIds || confirmed.notStartedJobIds;
+  // The control plane can retain authoritative closures for earlier runtime
+  // generations.  A candidate may consume only closures for the exact
+  // uncertain leases it reported in this heartbeat; otherwise an old closure
+  // would make every future candidate repeatedly terminate its updater.
+  const uncertainJobIdSet = new Set(uncertainJobIds);
+  const resolvedJobIds = serverResolvedJobIds.filter((jobId) => uncertainJobIdSet.has(jobId));
   const reconciledUncertain = resolvedJobIds.reduce((count, jobId) => count
     + candidateGates.reduce((gateCount, entry) => gateCount + entry.gate.resolveMutationAuthoritatively(jobId), 0), 0);
-  const updaterParentPid = phase === 'candidate' && resolvedJobIds.length > 0 ? exactUpdaterParentPid(paths) : null;
+  const updaterParentPid = phase === 'candidate' && reconciledUncertain > 0 ? exactUpdaterParentPid(paths) : null;
   for (const entry of candidateGates) entry.gate.close();
   stateStore.close();
   fs.writeSync(process.stdout.fd, `${JSON.stringify({ healthy: confirmed.accepted, admission: 'health_only', productId: CONNECTOR_NEXT_PRODUCT_ID, protocolId: CONNECTOR_NEXT_PROTOCOL_ID, version, sequence, generation, offerId, phase, expiredReadOnlyLeases, reconciledUncertain, resolvedUncertainJobIds: resolvedJobIds, updaterRefreshRequested: updaterParentPid !== null })}\n`);

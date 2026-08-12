@@ -77,9 +77,35 @@ try {
     } finally {
       Pop-Location
     }
+    $hotDist = [System.IO.Path]::GetFullPath((Join-Path $sourceRoot 'dist'))
+    $embeddedDist = [System.IO.Path]::GetFullPath((Join-Path $releaseRoot 'resources\app\dist'))
+    $releasePrefix = $releaseRoot + [System.IO.Path]::DirectorySeparatorChar
+    if (
+      -not $embeddedDist.StartsWith($releasePrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+      -not (Test-Path -LiteralPath $hotDist -PathType Container) -or
+      -not (Test-Path -LiteralPath $embeddedDist -PathType Container)
+    ) {
+      throw 'The validated hot Shell dist cannot be synchronized into the active release.'
+    }
+    Copy-Item -Path (Join-Path $hotDist '*') -Destination $embeddedDist -Recurse -Force
     $env:OMNIA_AGENT_PRODUCT_ROOT = $root
     $env:OMNIA_AGENT_HOT_ROOT = $sourceRoot
-    Start-Process -FilePath $executable -WorkingDirectory $root | Out-Null
+    $launchArguments = @()
+    $acceptanceDebugPort = 0
+    if (
+      -not [string]::IsNullOrWhiteSpace($env:OMNIA_AGENT_ACCEPTANCE_DEBUG_PORT) -and
+      [int]::TryParse($env:OMNIA_AGENT_ACCEPTANCE_DEBUG_PORT, [ref]$acceptanceDebugPort) -and
+      $acceptanceDebugPort -ge 1024 -and
+      $acceptanceDebugPort -le 65535
+    ) {
+      $launchArguments += '--remote-debugging-address=127.0.0.1'
+      $launchArguments += "--remote-debugging-port=$acceptanceDebugPort"
+    }
+    if ($launchArguments.Count -gt 0) {
+      Start-Process -FilePath $executable -ArgumentList $launchArguments -WorkingDirectory $root | Out-Null
+    } else {
+      Start-Process -FilePath $executable -WorkingDirectory $root | Out-Null
+    }
     exit 0
   }
 
@@ -89,7 +115,22 @@ try {
   }
 
   $env:OMNIA_AGENT_PRODUCT_ROOT = $root
-  Start-Process -FilePath $executable -WorkingDirectory $root | Out-Null
+  $launchArguments = @()
+  $acceptanceDebugPort = 0
+  if (
+    -not [string]::IsNullOrWhiteSpace($env:OMNIA_AGENT_ACCEPTANCE_DEBUG_PORT) -and
+    [int]::TryParse($env:OMNIA_AGENT_ACCEPTANCE_DEBUG_PORT, [ref]$acceptanceDebugPort) -and
+    $acceptanceDebugPort -ge 1024 -and
+    $acceptanceDebugPort -le 65535
+  ) {
+    $launchArguments += '--remote-debugging-address=127.0.0.1'
+    $launchArguments += "--remote-debugging-port=$acceptanceDebugPort"
+  }
+  if ($launchArguments.Count -gt 0) {
+    Start-Process -FilePath $executable -ArgumentList $launchArguments -WorkingDirectory $root | Out-Null
+  } else {
+    Start-Process -FilePath $executable -WorkingDirectory $root | Out-Null
+  }
   exit 0
 } catch {
   Write-Error $_.Exception.Message

@@ -1,6 +1,14 @@
 # Feature 详细设计：新建与关联
 
-> 2026-08-05 current implementation: `omnia.create-associate@0.2.10` / sequence 12 is the Shell 0.4.12 hot-update builtin source version; it has not been packaged. Worker and Operation GUID validation now matches Connector origin semantics: canonical non-zero 8-4-4-4-12 hexadecimal values are accepted without RFC UUID version/variant constraints, while string normalization remains. Authority resolution shares the verified `POST /engagements/v1/facets/byEngagementIds` source with safety/delete, validates the current Engagement, ignores unrelated Facets, and strictly accepts real `CustomWorkspaceGroup -> CustomWorkspace.parentId` membership. Picker/drop creates a real recoverable `acquiring` Run and source Artifact but stays on step 1, displaying the real file. Only 确认上传 atomically enters `processing`; step 2 renders immediately at 0/11 before a generic declared non-mutation background action starts validation. The SAP ECC Omnia mutation/readback canary remains pending.
+> 2026-08-07 `omnia.create-associate@0.2.94` / sequence 96 source candidate：下载、上传解析、处理结果和后台自检统一使用 V5 用户模板。Oracle EBS（未来精确匹配 Omnia“EBS电子商务套件”）、OS AD、代码迁移工具当前均为 `blocked_pending_recording`，不会生成远端预检或回传。既有 S/4/DCNO 证据边界不变，Connector 未写入 Feature 业务。
+
+> 2026-08-07 `omnia.create-associate@0.2.92` / sequence 94 candidate：DCNO 使用 immutable Artifact `110eba6d-dd39-4b20-bfd5-83caefd20260`、recordingId `8aa3673e-53b7-4902-bca6-7b86d5cc62be`（992 events）的 Infrastructure/Network 只读证据，GRA contentId `60241274`（通用网络设备），同 Workspace APP 的 `InfrastructureApplication`/ConcurrencyTabId 602 和 any-Higher-else-Lower RAIT。Higher 3 Risk/8 Control 目录启用六条精确关系：`RAITCOR008→DCNO.05/.21/.22/.23/.24`、`RAITCOR006→DCNO.10`；`RAITCOR001` 下现场 `APP.03`/`APP.06` disabled，不自动关联。DCNO 不使用 APP 专属 IT风险评估/Factors、settings、scoring 或 AI review，但保留 GRA/Risk-Control/Evaluation。Lower 无本次录制证据，保持 `PLAN.RISK_CONTROL_RAIT_UNSUPPORTED` fail-close，不推断 Lower 目录/关系。Feature 签名 Operation 只增加 Network 参数并复用 DB/OS 参数化 Infrastructure 引擎，Connector/Bridge/Shell transport 未写入 Feature 业务。当前仅声明录制/只读目录证据与定向离线验证，不是 live Return canary。
+
+> 2026-08-06 `omnia.create-associate@0.2.78` / sequence 80 candidate：修复 Python `planIr.rows[].capabilities` 在 `buildReturnPreparation` 生成 prepared/Return-plan row 时丢失的问题。完整布尔 capability map 现在逐行复制并冻结；prepare、持久化 Return plan 与 `confirm-return` 都在任何依赖图执行或远程 mutation 前，按 rowKey 与 Python plan 做精确一致性校验。缺失、增加或改变 capability 均 fail-close。该 patch 不修改 Connector、Bridge 或 Shell transport；真实 Omnia canary 仍需在当前 Pack 验证。
+
+> 历史快照（2026-08-06 source-candidate update）：`omnia.create-associate@0.2.73` / sequence 75 uses one signed kind/capability registry and a pure Python capability-plan IR for APP/DB/OS/TOOL/DCNO. It retains the Shell 0.4.14 runtime-contract schema and leaves RPC capability discovery to the bridge/engine hello handshake, so no Core upgrade is required. APP Generic、SAP ECC 与 SAP S/4 HANA 共用同一评分能力，产品类型只选择受管 GRA 内容和 Risk-Control family。DB/OS 支持一个或多个同 Workspace、同批 APP 并按 any-Higher/all-Lower 继承；Tool 必须关联一个精确 APP。DCNO 只有解析、本地校验和计划 IR，缺少官方 Network mutation/read-back 合同，因此 Return 在任何 Operation query/intent 前 fail-close。本状态不代表真实 Omnia canary 已通过。
+
+> 历史快照（2026-08-05 implementation）：`omnia.create-associate@0.2.10` / sequence 12 was the Shell 0.4.12 hot-update builtin source version; it had not been packaged. Worker and Operation GUID validation matched Connector origin semantics; authority resolution used the verified `POST /engagements/v1/facets/byEngagementIds` source; picker/drop created a real recoverable `acquiring` Run and source Artifact. The SAP ECC Omnia mutation/readback canary was pending.
 
 > 2026-08-03 implementation update: `omnia.create-associate@0.1.0` sequence 1 now implements the four-stage Remote control loop and is bundled as an auto-installed signed Feature in Shell 0.4.3. Production mutation remains disabled because a real target Omnia/Pack canary has not been executed; automated Connector-harness evidence is not a canary. The product is Remote-only and never falls back to Local transport.
 
@@ -9,7 +17,7 @@
 状态：Accepted Product Scope / Detailed Design Draft  
 用户可见名称：新建与关联  
 首批定位：第四开发切片；首批四 Plane 综合验收  
-DoR 状态：0.2.10 / sequence 12 源码与 Operation handler 已完成，builtin 与打包脚本已指向该版本；本次未生成 `.ofp/.ofop`，也未执行构建、安装或 canary；真实 SAP ECC Pack mutation/readback canary 待完成；0.2.1 历史证据见[0.2.1 验收记录](../reviews/CREATE_ASSOCIATE_0_2_1_ACCEPTANCE.md)
+DoR 状态：0.2.92 / sequence 94 candidate 已完成对应文档与 Feature/Operation 源变更；当前证据覆盖 immutable recording、只读目录、定向离线验证和包内自检，不宣称 live Return canary。0.2.1 历史证据见[0.2.1 验收记录](../reviews/CREATE_ASSOCIATE_0_2_1_ACCEPTANCE.md)
 v4 对应能力：ITGC Toolbox 的 Phase 1
 
 ## 1. 用户目标

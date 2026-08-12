@@ -11,6 +11,7 @@ import type {
   FeatureMessageCard,
   FeatureNavigationLeaf
 } from '../shared/feature-contracts.js';
+import { buildFeatureNavigationTree, type FeatureNavigationGroupNode } from '../shared/feature-navigation.js';
 import { SurfaceHost, type SurfaceInstance } from './surface-host.js';
 import type { InteractionLogEntry, InteractionLogPage, InteractionLogTrace, InteractionPlane, InteractionSeverity } from '../shared/interaction-log-contracts.js';
 
@@ -21,6 +22,7 @@ const formatSize = (value: number) => value < 1024 * 1024
   : `${(value / 1024 / 1024).toFixed(1)} MB`;
 type RunAction = () => Promise<any>;
 type Run = (name: string, action: RunAction, onSuccess?: (value: any) => void) => void;
+type PendingFeatureLoad = { epoch: number; featureId: string };
 
 function ScaleControl({ snapshot, fail }: { snapshot: ShellSnapshot; fail(message: string): void }) {
   const save = (percent: number) => window.omnia.saveScale({
@@ -51,6 +53,7 @@ function GlobalSessionBar({ snapshot, run, fail, openSafety, openConnection, bus
   const status = connection.connecting ? 'connecting'
     : connection.connected ? 'connected' : 'disconnected';
   const connectionReason = connection.message || connection.adapterReason || 'Connector state is unavailable.';
+  const safetyNeedsAttention = snapshot.safety.enabled && !snapshot.safety.validForCurrentConnection;
   return <header className="global-session-bar" data-testid="global-session-bar">
     <button type="button" className="transport-state" title={connectionReason} aria-label="Remote Connector 连接详情" onClick={openConnection}>
       <span className={`transport-dot ${status}`} />
@@ -79,8 +82,9 @@ function GlobalSessionBar({ snapshot, run, fail, openSafety, openConnection, bus
       <strong>{connection.engagementName || '未读取'}</strong>
     </div>
     <button type="button" className={`safety-indicator ${snapshot.safety.enabled && snapshot.safety.validForCurrentConnection ? 'locked' : ''}`}
-      aria-label="安全锁设置" title={snapshot.safety.enabled ? (snapshot.safety.invalidReason || '安全锁已启用') : '安全锁未启用'}
-      onClick={openSafety}>▣</button>
+      aria-label={safetyNeedsAttention ? '安全锁需要重新验证' : '安全锁设置'}
+      title={snapshot.safety.enabled ? (snapshot.safety.invalidReason || '安全锁已启用') : '安全锁未启用'}
+      onClick={openSafety}>{safetyNeedsAttention ? '⚠' : '▣'}</button>
     {keepalive.lastError ? <span className="session-error" role="status" title={keepalive.lastError}>保活失败</span> : null}
     <span className="session-spacer" />
     <ScaleControl snapshot={snapshot} fail={fail} />
@@ -94,14 +98,32 @@ function FeatureNavigation({ snapshot, collapsed, run, openFeature, selectedFeat
   openFeature?: (featureId: string) => void;
   selectedFeatureId?: string | undefined;
 }) {
+  const tree = buildFeatureNavigationTree(snapshot.features.groups, snapshot.features.navigation);
   return <aside id="feature-navigation" className={`feature-navigation ${collapsed ? 'collapsed' : ''}`} aria-label="FeatureNavigation">
     <div className="navigation-scroll">
-      {!snapshot.features.navigation.length
+      {!tree.length
         ? <div className="navigation-empty"><strong>没有可用 Feature</strong><p>Registry 尚未返回已安装且兼容的功能。</p></div>
-        : [...snapshot.features.navigation].sort((left, right) => left.order - right.order || left.label.localeCompare(right.label, 'zh-CN')).map((leaf) =>
-          <NavigationLeaf key={`${leaf.featureId}:${leaf.id}`} leaf={leaf} selected={(selectedFeatureId || snapshot.features.selectedFeatureId) === leaf.featureId} run={run} {...(openFeature ? { openFeature } : {})} />)}
+        : tree.map((entry) => entry.kind === 'leaf'
+          ? <NavigationLeaf key={`${entry.leaf.featureId}:${entry.leaf.id}`} leaf={entry.leaf} selected={(selectedFeatureId || snapshot.features.selectedFeatureId) === entry.leaf.featureId} run={run} {...(openFeature ? { openFeature } : {})} />
+          : <NavigationGroup key={entry.node.group.id} node={entry.node} selectedFeatureId={selectedFeatureId || snapshot.features.selectedFeatureId} run={run} {...(openFeature ? { openFeature } : {})} />)}
     </div>
   </aside>;
+}
+
+function NavigationGroup({ node, selectedFeatureId, run, openFeature }: {
+  node: FeatureNavigationGroupNode;
+  selectedFeatureId: string;
+  run: Run;
+  openFeature?: (featureId: string) => void;
+}) {
+  return <section className="navigation-group" aria-labelledby={`navigation-group-${node.group.id}`}>
+    <h2 id={`navigation-group-${node.group.id}`}>{node.group.label}</h2>
+    {node.leaves.map((leaf) => <NavigationLeaf key={`${leaf.featureId}:${leaf.id}`} leaf={leaf} selected={selectedFeatureId === leaf.featureId} run={run} {...(openFeature ? { openFeature } : {})} />)}
+    {node.subgroups.map((subgroup) => <div className="navigation-subgroup" key={subgroup.group.id} aria-labelledby={`navigation-group-${subgroup.group.id}`}>
+      <h3 id={`navigation-group-${subgroup.group.id}`}>{subgroup.group.label}</h3>
+      {subgroup.leaves.map((leaf) => <NavigationLeaf key={`${leaf.featureId}:${leaf.id}`} leaf={leaf} selected={selectedFeatureId === leaf.featureId} run={run} {...(openFeature ? { openFeature } : {})} />)}
+    </div>)}
+  </section>;
 }
 
 function NavigationLeaf({ leaf, selected, run, openFeature }: { leaf: FeatureNavigationLeaf; selected: boolean; run: Run; openFeature?: (featureId: string) => void }) {
@@ -237,6 +259,12 @@ function FeatureHost({ instance, onDetach, onMinimize, onClose }: {
     <FeatureSurfaceFrame instance={instance} surface={instance.value} /></div>;
 }
 
+function FeatureLoadingScreen() {
+  return <div className="boot-screen" role="status" aria-live="polite" aria-busy="true">
+    <div><strong>正在读取功能状态</strong><div><progress aria-label="正在读取功能状态" /></div></div>
+  </div>;
+}
+
 function TabStrip({ snapshot, host, activeTab, activateFeature, activateComments, run }: {
   snapshot: ShellSnapshot; host: SurfaceHost<DeclarativeFeatureSurface>; activeTab: string;
   activateFeature(featureId: string, instanceId?: string): void; activateComments(): void; run: Run;
@@ -274,6 +302,14 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
     setGlobalSections(new Set(snapshot.safety.globalSectionIds));
   }, [snapshot.safety.stateVersion]);
   const directory = snapshot.workspaceDirectory.observation;
+  const rebindableGenerationChange = snapshot.safety.enabled
+    && snapshot.connection.connected
+    && snapshot.safety.connectorId === snapshot.connection.connectorId
+    && snapshot.safety.engagementId === snapshot.connection.engagementId
+    && snapshot.safety.authorityInstanceId === String(snapshot.connection.authorityInstanceId || '')
+    && snapshot.safety.tenantOrOrgId === String(snapshot.connection.tenantOrOrgId || '')
+    && snapshot.safety.packId === String(snapshot.connection.packId || '')
+    && snapshot.safety.sessionGeneration !== Number(snapshot.connection.sessionGeneration || 0);
   const replaceDraftFromSnapshot = (latest: ShellSnapshot) => {
     setSelected(new Set(latest.safety.workspaceIds));
     setGlobalEnabled(latest.safety.globalEnabled);
@@ -282,19 +318,42 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
   const save = (enabled: boolean) => run('safety', async () => {
     setReloadNotice('');
     try {
-      return await window.omnia.saveSafety({
+      const latest = await window.omnia.saveSafety({
         enabled,
         globalEnabled,
         globalSectionIds: [...globalSections],
         workspaceIds: [...selected],
         expectedStateVersion: snapshot.safety.stateVersion
       });
+      return latest;
     } catch (error) {
       const code = String((error as Error & { code?: string })?.code || '');
       if (code !== 'SAFETY.CONFLICT') throw error;
       const latest = await window.omnia.getSnapshot();
       replaceDraftFromSnapshot(latest);
       setReloadNotice('安全锁已由另一窗口更新。本次修改没有保存，已重新读取最新安全锁；请核对后再提交。');
+      return latest;
+    }
+  });
+  const rebindExistingSafety = () => run('safety-rebind', async () => {
+    setReloadNotice('');
+    try {
+      const latest = await window.omnia.saveSafety({
+        enabled: true,
+        globalEnabled: snapshot.safety.globalEnabled,
+        globalSectionIds: snapshot.safety.globalSectionIds,
+        workspaceIds: snapshot.safety.workspaceIds,
+        expectedStateVersion: snapshot.safety.stateVersion
+      });
+      replaceDraftFromSnapshot(latest);
+      setReloadNotice('已使用当前实时 Workspace 目录重新验证并重绑原有安全范围；未保存的界面草稿未写入。');
+      return latest;
+    } catch (error) {
+      const code = String((error as Error & { code?: string })?.code || '');
+      if (code !== 'SAFETY.CONFLICT') throw error;
+      const latest = await window.omnia.getSnapshot();
+      replaceDraftFromSnapshot(latest);
+      setReloadNotice('安全锁已由另一窗口更新，本次重绑没有保存；已重新读取最新安全锁。');
       return latest;
     }
   });
@@ -335,6 +394,13 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
   const globalMembershipCount = directory?.workspaces.filter((workspace) => globalSections.has(workspace.parentSectionId)).length || 0;
   const authoritativeMembershipAvailable = Boolean(directory?.workspaces.some((workspace) => workspace.parentSectionId && knownSectionIds.has(workspace.parentSectionId)));
   return <section className="safety-workbench" aria-label="安全锁设置">
+    {snapshot.safety.enabled && !snapshot.safety.validForCurrentConnection ? <div className="reason error" role="status">
+      <strong>{snapshot.connection.connected ? '安全锁需要重新验证' : 'Remote Connector / Pack 未连接'}</strong>
+      <p>{snapshot.safety.invalidReason}</p>
+      {rebindableGenerationChange ? <button type="button" className="primary" onClick={rebindExistingSafety}>
+        重新验证并重绑安全锁
+      </button> : null}
+    </div> : null}
     <div className={`global-safety-card ${globalEnabled ? 'enabled' : ''}`}>
       <div className="global-safety-heading"><div><h3>全局安全锁</h3><p>仅约束删除目标的关联 Workspace；显式选择的 Workspace 始终优先。所在部分必须来自 Omnia 权威关系。</p></div>
         <label className="safety-switch" title={!authoritativeMembershipAvailable ? 'Omnia 未返回可核验的 Section 成员关系，不能启用全局安全锁' : ''}><input type="checkbox" checked={globalEnabled} disabled={!authoritativeMembershipAvailable && !globalEnabled} onChange={(event) => {
@@ -462,7 +528,16 @@ function InteractionLogPanel() {
 function SafetyDialog({ snapshot, close, run }: { snapshot: ShellSnapshot; close(): void; run: Run }) {
   useEffect(() => {
     if (snapshot.connection.connected) run('workspaces', () => window.omnia.refreshWorkspaceDirectory());
-  }, [snapshot.connection.connected, snapshot.connection.engagementId, run]);
+  }, [
+    snapshot.connection.connected,
+    snapshot.connection.connectorId,
+    snapshot.connection.sessionGeneration,
+    snapshot.connection.authorityInstanceId,
+    snapshot.connection.tenantOrOrgId,
+    snapshot.connection.packId,
+    snapshot.connection.engagementId,
+    run
+  ]);
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
     <section className="safety-dialog" role="dialog" aria-modal="true" aria-label="安全锁工作台" data-testid="safety-dialog">
       <header><div><h2>安全锁</h2><p>以当前 Pack 的精确 Workspace Facet ID 锁定目标，并用权威所在部分限制删除关联。</p></div><button type="button" onClick={close}>关闭</button></header>
@@ -579,9 +654,9 @@ function RemoteConnectionDialog({ snapshot, close, run }: { snapshot: ShellSnaps
               <dt>心跳</dt><dd>{formatTime(diagnostics.heartbeatAt)}</dd>
               <dt>最近上报</dt><dd>{formatTime(diagnostics.lastSeenAt || diagnostics.reportedAt)}</dd>
               <dt>进行中 / 不确定</dt><dd>{diagnostics.activeOperations} / {diagnostics.uncertainOperations}</dd>
-              <dt>断开时间</dt><dd>{formatTime(diagnostics.disconnectedAt)}</dd>
-              <dt>关闭代码</dt><dd>{diagnostics.closeCode ?? '—'}</dd>
-              <dt>关闭原因</dt><dd>{diagnostics.closeReason || '—'}</dd>
+              <dt>最近断开</dt><dd>{diagnostics.connectorOnline ? '—（当前在线）' : formatTime(diagnostics.disconnectedAt)}</dd>
+              <dt>关闭代码</dt><dd>{diagnostics.connectorOnline ? '—' : (diagnostics.closeCode ?? '—')}</dd>
+              <dt>关闭原因</dt><dd>{diagnostics.connectorOnline ? '—' : (diagnostics.closeReason || '—')}</dd>
             </dl>
             <div className="managed-diagnostics">
               <h4>托管更新</h4>
@@ -631,6 +706,7 @@ function ShellApp() {
   const [safety, setSafety] = useState(false);
   const [connectionDetails, setConnectionDetails] = useState(false);
   const [activeTab, setActiveTab] = useState('comments');
+  const [pendingFeatureLoad, setPendingFeatureLoad] = useState<PendingFeatureLoad | null>(null);
   const [hostVersion, setHostVersion] = useState(0);
   const hostRef = useRef(new SurfaceHost<DeclarativeFeatureSurface>());
   const host = hostRef.current;
@@ -639,6 +715,7 @@ function ShellApp() {
   const latestFeatureIntentRef = useRef<string | null>(null);
   const selectionReconcileTokenRef = useRef(0);
   const pendingActivationRef = useRef(false);
+  const activationVisibilityQueueRef = useRef<Promise<void>>(Promise.resolve());
   const openedInstanceIdsRef = useRef(new Set<string>());
   const overlayWasActiveRef = useRef(false);
   const activateComments = useCallback(() => {
@@ -646,6 +723,7 @@ function ShellApp() {
     latestTargetRef.current = null;
     latestFeatureIntentRef.current = null;
     pendingActivationRef.current = false;
+    setPendingFeatureLoad(null);
     setActiveTab('comments');
   }, []);
   const run = useCallback<Run>((name, action, onSuccess) => {
@@ -750,7 +828,18 @@ function ShellApp() {
     const epoch = ++selectionEpochRef.current;
     latestFeatureIntentRef.current = featureId;
     pendingActivationRef.current = true;
+    setPendingFeatureLoad({ epoch, featureId });
     setError('');
+    const prepareLoadingViewport = async () => {
+      const queued = activationVisibilityQueueRef.current.catch(() => undefined).then(async () => {
+        if (epoch !== selectionEpochRef.current) return;
+        await window.omnia.setDockedSurfaceVisibility?.({ activeInstanceId: null, overlayActive: false });
+      });
+      activationVisibilityQueueRef.current = queued.catch(() => undefined);
+      await queued;
+      return epoch === selectionEpochRef.current;
+    };
+    const finishLoading = () => setPendingFeatureLoad((current) => current?.epoch === epoch ? null : current);
     const refocusLatest = () => {
       const latest = latestTargetRef.current;
       if (!latest) return;
@@ -780,19 +869,70 @@ function ShellApp() {
         if (token === selectionReconcileTokenRef.current) setError(reason instanceof Error ? reason.message : '恢复最新 Feature 选择失败');
       });
     };
-    const preferred = preferredInstanceId ? host.get(preferredInstanceId) : undefined;
-    const existing = preferred && preferred.featureId === featureId && preferred.placement !== 'closed'
-      ? preferred
-      : host.getByFeature(featureId).find((candidate) => candidate.placement !== 'closed');
     const previousActiveId = activeTab !== 'comments' ? activeTab : null;
-    if (existing && openedInstanceIdsRef.current.has(existing.instanceId)) {
-      latestTargetRef.current = existing.instanceId;
-      let switchedInMain = false;
-      void (async () => {
+    const retiredInstanceIds = new Set<string>();
+    let switchedInMain = false;
+    void (async () => {
+      if (!await prepareLoadingViewport()) return;
+      const next = await window.omnia.selectFeature({ featureId });
+      if (epoch !== selectionEpochRef.current) {
+        reconcileLatestCoreSelection();
+        return;
+      }
+      const surface = next.features.surface;
+      if (next.features.selectedFeatureId !== featureId || !surface || surface.featureId !== featureId) {
+        throw new Error('Core 未返回所选 Feature 的真实 Surface。');
+      }
+      const key = `${surface.featureVersion}:${surface.surfaceId}`;
+      const identity = host.resolveIdentity(surface.featureId, key);
+      const instanceId = identity.instanceId;
+
+      // A Surface identity includes its signed Feature version. Once Core has
+      // selected a newer identity, old native views must be closed before the
+      // new projection is created. Closing a view never ends or mutates a Run.
+      for (const candidate of identity.superseded) {
+        if (openedInstanceIdsRef.current.has(candidate.instanceId)) {
+          if (!window.omnia.closeFeatureSurface) throw new Error('Shell 未提供 Feature Surface 关闭合同。');
+          await window.omnia.closeFeatureSurface(candidate.instanceId);
+        }
+        host.close(candidate.instanceId);
+        openedInstanceIdsRef.current.delete(candidate.instanceId);
+        retiredInstanceIds.add(candidate.instanceId);
+      }
+      if (epoch !== selectionEpochRef.current) {
+        reconcileLatestCoreSelection();
+        return;
+      }
+
+      const preferred = preferredInstanceId ? host.get(preferredInstanceId) : undefined;
+      let existing = preferred?.instanceId === instanceId ? preferred : identity.current;
+      if (existing && existing.placement !== 'closed' && openedInstanceIdsRef.current.has(existing.instanceId)) {
+        // Renderer and Main own separate lifecycle projections. If Main has
+        // already closed this exact instance, converge the Renderer host first
+        // and use openFeatureSurface so the same-version on-reopen CAS remains
+        // authoritative instead of repeatedly focusing a closed instance.
+        const manager = await window.omnia.getSurfaceManagerSnapshot?.();
+        if (epoch !== selectionEpochRef.current) {
+          reconcileLatestCoreSelection();
+          return;
+        }
+        const managerHasLiveInstance = !manager
+          || manager.dockedInstanceIds.includes(existing.instanceId)
+          || manager.detachedInstanceIds.includes(existing.instanceId);
+        if (!managerHasLiveInstance) {
+          host.close(existing.instanceId);
+          openedInstanceIdsRef.current.delete(existing.instanceId);
+          existing = host.get(existing.instanceId);
+        }
+      }
+
+      if (existing && existing.placement !== 'closed' && openedInstanceIdsRef.current.has(existing.instanceId)) {
+        latestTargetRef.current = existing.instanceId;
         if (!window.omnia.focusFeatureSurface) throw new Error('Shell 未提供 Feature Surface 聚焦合同。');
         const result = await window.omnia.focusFeatureSurface(existing.instanceId);
         if (epoch !== selectionEpochRef.current) {
           refocusLatest();
+          reconcileLatestCoreSelection();
           return;
         }
         if (result.instanceId !== existing.instanceId) throw new Error('Feature Surface 聚焦返回了错误的实例。');
@@ -809,73 +949,14 @@ function ShellApp() {
           host.detach(existing.instanceId);
           setActiveTab('comments');
         }
+        host.update(surface.featureId, key, surface);
         pendingActivationRef.current = false;
-        setHostVersion((value) => value + 1);
-        const next = await window.omnia.selectFeature({ featureId });
-        if (epoch !== selectionEpochRef.current) {
-          refocusLatest();
-          reconcileLatestCoreSelection();
-          return;
-        }
-        const surface = next.features.surface;
-        if (next.features.selectedFeatureId !== featureId || !surface
-          || surface.featureId !== existing.featureId
-          || surface.featureVersion !== existing.value?.featureVersion
-          || surface.surfaceId !== existing.value?.surfaceId) {
-          throw new Error('Core 返回的 Feature Surface 身份与已打开实例不一致。');
-        }
-        host.update(surface.featureId, `${surface.featureVersion}:${surface.surfaceId}`, surface);
         setSnapshot(next);
+        finishLoading();
         setHostVersion((value) => value + 1);
-      })().catch(async (reason) => {
-        if (epoch === selectionEpochRef.current) {
-          pendingActivationRef.current = false;
-          let rollbackError = '';
-          if (switchedInMain && previousActiveId !== existing.instanceId) {
-            try {
-              const previous = previousActiveId ? host.get(previousActiveId) : undefined;
-              if (previous && previous.placement !== 'closed') {
-                const restored = await window.omnia.focusFeatureSurface?.(previous.instanceId);
-                if (!restored) throw new Error('Shell 未提供 Feature Surface 聚焦合同。');
-                latestTargetRef.current = previous.instanceId;
-                latestFeatureIntentRef.current = previous.featureId;
-                if (restored.placement === 'docked') {
-                  host.dock(previous.instanceId);
-                  setActiveTab(previous.instanceId);
-                } else {
-                  host.detach(previous.instanceId);
-                  setActiveTab('comments');
-                }
-                const rolledBack = await window.omnia.selectFeature({ featureId: previous.featureId });
-                if (rolledBack.features.selectedFeatureId !== previous.featureId) throw new Error('Core 拒绝恢复前一个 Feature。');
-                setSnapshot(rolledBack);
-              } else {
-                latestTargetRef.current = null;
-                latestFeatureIntentRef.current = null;
-                setActiveTab('comments');
-                await window.omnia.setDockedSurfaceVisibility?.({ activeInstanceId: null, overlayActive: false });
-              }
-            } catch (rollbackReason) {
-              rollbackError = rollbackReason instanceof Error ? rollbackReason.message : '回退失败';
-            }
-          }
-          const message = reason instanceof Error ? reason.message : '切换 Feature 失败';
-          setError(rollbackError ? `${message}；安全回退失败：${rollbackError}` : message);
-          setHostVersion((value) => value + 1);
-        }
-      });
-      return;
-    }
-    latestTargetRef.current = null;
-    void (async () => {
-      const next = await window.omnia.selectFeature({ featureId });
-      if (epoch !== selectionEpochRef.current) {
-        reconcileLatestCoreSelection();
         return;
       }
-      const surface = next.features.surface;
-      if (!surface || surface.featureId !== featureId) throw new Error('Core 未返回所选 Feature 的真实 Surface。');
-      const key = `${surface.featureVersion}:${surface.surfaceId}`;
+
       const instance = host.open(surface.featureId, key, surface);
       latestTargetRef.current = instance.instanceId;
       setHostVersion((value) => value + 1);
@@ -895,17 +976,38 @@ function ShellApp() {
       if (opened.instanceId !== instance.instanceId || opened.placement !== 'docked' || !opened.attached) {
         throw new Error(opened.reason || 'Feature Surface 未能附着到 Shell。');
       }
+      let openedSnapshot = next;
+      if (opened.surfaceStateVersion !== surface.stateVersion) {
+        const refreshed = await window.omnia.getSnapshot();
+        if (epoch !== selectionEpochRef.current) {
+          refocusLatest();
+          reconcileLatestCoreSelection();
+          return;
+        }
+        const refreshedSurface = refreshed.features.surface;
+        if (
+          refreshed.features.selectedFeatureId !== featureId
+          || !refreshedSurface
+          || refreshedSurface.featureId !== surface.featureId
+          || refreshedSurface.featureVersion !== surface.featureVersion
+          || refreshedSurface.surfaceId !== surface.surfaceId
+          || refreshedSurface.stateVersion < opened.surfaceStateVersion
+        ) throw new Error('Feature Surface 重新打开后的 Core 投影身份或修订不一致。');
+        host.update(refreshedSurface.featureId, `${refreshedSurface.featureVersion}:${refreshedSurface.surfaceId}`, refreshedSurface);
+        openedSnapshot = refreshed;
+      }
       openedInstanceIdsRef.current.add(instance.instanceId);
       host.dock(instance.instanceId);
       pendingActivationRef.current = false;
-      setSnapshot(next);
+      setSnapshot(openedSnapshot);
       setActiveTab(instance.instanceId);
+      finishLoading();
       setHostVersion((value) => value + 1);
     })().catch(async (reason) => {
       if (epoch !== selectionEpochRef.current) return;
       pendingActivationRef.current = false;
       let rollbackError = '';
-      if (previousActiveId) {
+      if (previousActiveId && !retiredInstanceIds.has(previousActiveId)) {
         try {
           const previous = host.get(previousActiveId);
           if (!previous || previous.placement === 'closed') throw new Error('前一个 Feature Surface 已不可恢复。');
@@ -928,7 +1030,8 @@ function ShellApp() {
           rollbackError = rollbackReason instanceof Error ? rollbackReason.message : '回退失败';
         }
       }
-      const message = reason instanceof Error ? reason.message : '打开 Feature 失败';
+      const message = reason instanceof Error ? reason.message : (switchedInMain ? '切换 Feature 失败' : '打开 Feature 失败');
+      finishLoading();
       setError(rollbackError ? `${message}；安全回退失败：${rollbackError}` : message);
       setHostVersion((value) => value + 1);
     });
@@ -968,7 +1071,9 @@ function ShellApp() {
         }} /> : null}
         <main className="tabbed-host"><TabStrip snapshot={snapshot} host={host} activeTab={activeTab}
           activateFeature={activateFeature} activateComments={activateComments} run={run} />
-          <div className="host-content">{activeTab === 'comments' || !activeFeatureInstance || activeFeatureInstance.placement !== 'docked'
+          <div className="host-content">{pendingFeatureLoad
+            ? <FeatureLoadingScreen />
+            : activeTab === 'comments' || !activeFeatureInstance || activeFeatureInstance.placement !== 'docked'
             ? <CommentsPanel snapshot={snapshot} run={run} />
             : <FeatureHost instance={activeFeatureInstance} onDetach={() => detach(activeFeatureInstance)} onMinimize={() => minimize(activeFeatureInstance)} onClose={() => closeFeature(activeFeatureInstance)} />}</div>
         </main>

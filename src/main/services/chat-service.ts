@@ -61,10 +61,17 @@ function validateProviderUrl(value: string): URL {
   return url;
 }
 
-async function assertPublicProviderHost(url: URL): Promise<void> {
+async function assertPublicProviderHost(url: URL, provider: AiProviderKind): Promise<void> {
   if (process.env.NODE_ENV === 'test' && ['127.0.0.1', 'localhost'].includes(url.hostname)) return;
   const records = await lookup(url.hostname, { all: true, verbatim: true });
-  if (!records.length || records.some((record) => privateAddress(record.address))) {
+  // Mihomo/TUN fake-IP mode maps public names into 198.18/15 before routing
+  // them through its HTTPS tunnel. Permit that reserved range only for the
+  // exact built-in Provider hostname. Custom Providers keep the strict
+  // DNS-rebinding/SSRF guard.
+  const officialDeepSeek = provider === 'deepseek' && url.hostname.toLowerCase() === 'api.deepseek.com';
+  const disallowed = (address: string) => privateAddress(address)
+    && !(officialDeepSeek && /^198\.(?:18|19)\./u.test(address));
+  if (!records.length || records.some((record) => disallowed(record.address))) {
     throw new AppError('AI.PRIVATE_NETWORK_BLOCKED', 'AI Provider DNS 解析到了本机、私网或链路本地地址。');
   }
 }
@@ -151,7 +158,7 @@ export class ChatService {
     }
     const base = validateProviderUrl(settings.baseUrl);
     return this.providerInteraction('feature-review', 'chat.completions', async () => {
-      await assertPublicProviderHost(base);
+      await assertPublicProviderHost(base, settings.provider);
       const response = await this.fetchImpl(endpoint(base, 'chat/completions'), {
         method: 'POST',
         headers: {
@@ -262,7 +269,7 @@ export class ChatService {
     this.database.updateAiTest('testing', '正在连接 Provider。');
     try {
       await this.providerInteraction('test', 'models', async () => {
-      await assertPublicProviderHost(base);
+      await assertPublicProviderHost(base, settings.provider);
       const response = await this.fetchImpl(endpoint(base, 'models'), {
         headers: { Authorization: `Bearer ${settings.apiKey}`, Accept: 'application/json' },
         signal: AbortSignal.timeout(20_000)
@@ -365,7 +372,7 @@ export class ChatService {
         }
       }
       const base = validateProviderUrl(settings.baseUrl);
-      await assertPublicProviderHost(base);
+      await assertPublicProviderHost(base, settings.provider);
       const response = await this.fetchImpl(endpoint(base, 'chat/completions'), {
         method: 'POST',
         headers: {

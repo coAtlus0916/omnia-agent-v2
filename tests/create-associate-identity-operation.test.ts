@@ -218,8 +218,8 @@ function signedSourceOperationPackage():any {
 
 test('OperationHost grants object-create permit only after the create-only signed preflight', async () => {
   const host=new OperationHost(); const operationPackage=signedSourceOperationPackage();
-  const registration=host.register({schemaVersion:'omnia.operation-registration/v1',featureId:'omnia.create-associate',featureVersion:'0.2.0',operationPackage});
-  const binding={connectorId:'connector-app-identity',sessionGeneration:1,engagementId};
+  const binding={connectorId:'connector-app-identity',sessionGeneration:1,engagementId,authorityInstanceId:'authority-test',tenantOrOrgId:'tenant-test',packId:'pack-test'};
+  const registration=host.register({schemaVersion:'omnia.operation-registration/v1',featureId:'omnia.create-associate',featureVersion:'0.2.0',operationPackage},binding);
   let created=0; let recycled=false;
   const invokeHttp=async(routeDescriptor:any,_routePath:string,_body:any)=>{
     if(routeDescriptor.stepId==='workitem-directory')return recycled?[{externalId:recycledGraId,itElementName:'APP-RECYCLED',name:'GRA-APP-RECYCLED',riskAssessmentType:'Application',isDeleted:true}]:[];

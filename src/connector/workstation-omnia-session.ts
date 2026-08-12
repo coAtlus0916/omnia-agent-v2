@@ -5,17 +5,21 @@ import net from 'node:net';
 import path from 'node:path';
 import { chromium, type Browser, type Page, type Request } from 'playwright-core';
 import type { ConnectorConnection, ConnectorWorkspaceAuthorityRead } from './contracts.js';
-import type { OperationInvocationRequest, OperationRegistrationRequest } from '../shared/operation-contracts.js';
+import type { OperationInvocationRequest, OperationRegistrationCommand } from '../shared/operation-contracts.js';
 import { isAllowedOmniaUrl, isGuid, normalizeOmniaUrl, parseEngagementId } from './omnia-origin.js';
 import { OperationHost } from './operation-host.js';
 
 const DEFAULT_HOME = 'https://deloitteomnia.deloitte.com.cn/';
-const CONNECTOR_VERSION = '0.3.33';
+const CONNECTOR_VERSION = '0.3.36';
 const AUTHORIZATION_WAIT_MS = 1_500;
+const EXPLICIT_CONNECT_AUTHORIZATION_WAIT_MS = 10_000;
+const STATUS_IDENTITY_TIMEOUT_MS = 10_000;
 const WORKSPACE_AUTHORITY_DIRECTORY_ROUTE = '/engagements/v1/facets/byEngagementIds';
 const WORKSPACE_AUTHORITY_MAX_ENGAGEMENT_ENTRIES = 1;
 const WORKSPACE_AUTHORITY_MAX_FACET_ENTRIES = 2_000;
 const WORKSPACE_AUTHORITY_MAX_ENVELOPE_BYTES = 1024 * 1024;
+const ENTERPRISE_LOGIN_LABEL = /(?:企业|enterprise|deloitte|single\s+sign|sso|sign\s*in|log\s*in|登录)/iu;
+const ENTERPRISE_ONLY_LOGIN_LABEL = /(?:企业|enterprise|deloitte|single\s+sign|sso)/iu;
 
 type FetchLike = typeof fetch;
 
@@ -50,11 +54,14 @@ function list(value: unknown): any[] {
 }
 
 function findEdgeExecutable(): string {
+  const systemDrive = path.parse(process.env.SystemRoot || 'C:\\Windows').root;
   const candidates = [
     process.env.OMNIA_EDGE_PATH,
     path.join(process.env['PROGRAMFILES(X86)'] || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
     path.join(process.env.PROGRAMFILES || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-    path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe')
+    path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+    path.join(systemDrive, 'Program Files (x86)', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+    path.join(systemDrive, 'Program Files', 'Microsoft', 'Edge', 'Application', 'msedge.exe')
   ].filter(Boolean) as string[];
   const found = candidates.find((candidate) => fs.existsSync(candidate));
   if (!found) throw new Error('未找到 Microsoft Edge。请安装 Edge，或通过 OMNIA_EDGE_PATH 指定官方程序路径。');
@@ -204,6 +211,7 @@ type PageAuthorization = {
 type VerifiedPackIdentity = {
   engagementId: string;
   apiOrigin: string;
+  authorization: string;
   pack: {
     name: string;
     clientName: string;
@@ -226,6 +234,7 @@ export class WorkstationOmniaSession {
   private port = 0;
   private readonly profileDir: string;
   private readonly statePath: string;
+  private readonly targetStatePath: string;
   private readonly lockPath: string;
   private boundPage: Page | null = null;
   private ownsLock = false;
@@ -241,12 +250,14 @@ export class WorkstationOmniaSession {
       id: 'v5-workstation-omnia-session',
       name: 'Omnia Agent v5 Workstation Omnia Session',
       version: CONNECTOR_VERSION
-    }
+    },
+    private readonly lifecycleAudit: (event: string, details: Record<string, unknown>) => void = () => undefined
   ) {
     this.connectorIdentity = connectorIdentity;
     this.dataRootPath = path.resolve(dataRoot);
     this.profileDir = path.join(dataRoot, 'connector', 'edge-profile');
     this.statePath = path.join(dataRoot, 'connector', 'browser-instance.json');
+    this.targetStatePath = path.join(dataRoot, 'connector', 'last-pack-target.json');
     this.lockPath = path.join(dataRoot, 'connector', 'connector.lock');
     fs.mkdirSync(this.profileDir, { recursive: true });
     this.acquireInstanceLock();
@@ -318,6 +329,33 @@ export class WorkstationOmniaSession {
     fs.renameSync(temporary, this.statePath);
   }
 
+  private savedPackTarget(): string {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.targetStatePath, 'utf8'));
+      if (parsed?.schemaVersion !== 'omnia.connector-pack-target/v1') return '';
+      const engagementId = explicitId(parsed.engagementId);
+      return isGuid(engagementId) ? engagementId : '';
+    } catch {
+      return '';
+    }
+  }
+
+  private rememberPackTarget(engagementId: string): void {
+    const exact = explicitId(engagementId);
+    if (!isGuid(exact) || this.savedPackTarget() === exact) return;
+    const temporary = `${this.targetStatePath}.${process.pid}.tmp`;
+    try {
+      fs.writeFileSync(temporary, JSON.stringify({
+        schemaVersion: 'omnia.connector-pack-target/v1',
+        engagementId: exact,
+        updatedAt: new Date().toISOString()
+      }));
+      fs.renameSync(temporary, this.targetStatePath);
+    } finally {
+      try { fs.rmSync(temporary, { force: true }); } catch { /* best-effort temp cleanup */ }
+    }
+  }
+
   private async chooseFreePort(): Promise<number> {
     return new Promise((resolve, reject) => {
       const server = net.createServer();
@@ -350,6 +388,8 @@ export class WorkstationOmniaSession {
       this.port = savedPort;
       this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${this.port}`);
       await this.verifyBrowserIdentity(this.browser);
+      this.observeBrowserDisconnect(this.browser);
+      this.lifecycleAudit('pack.browser.reattached', { port: this.port });
     } else {
       this.port = await this.chooseFreePort();
       this.savePort(this.port);
@@ -361,8 +401,13 @@ export class WorkstationOmniaSession {
         '--no-first-run',
         '--no-default-browser-check',
         DEFAULT_HOME
-      ], { windowsHide: false, detached: false, stdio: 'ignore' });
+      ], { windowsHide: false, detached: true, stdio: 'ignore' });
       edgeProcess.once('error', () => { /* readiness check returns the user-visible failure */ });
+      edgeProcess.once('exit', (code, signal) => {
+        this.lifecycleAudit('pack.browser.process_exited', { pid: edgeProcess.pid || 0, code: code ?? -1, signal: signal || '' });
+      });
+      edgeProcess.unref();
+      this.lifecycleAudit('pack.browser.process_started', { pid: edgeProcess.pid || 0, port: this.port });
       const deadline = Date.now() + 15_000;
       while (Date.now() < deadline && !await this.cdpReady()) {
         await new Promise((resolve) => setTimeout(resolve, 250));
@@ -370,12 +415,23 @@ export class WorkstationOmniaSession {
       if (!await this.cdpReady()) throw new Error('Edge 已启动，但 Connector 无法建立受控 CDP 会话。');
       this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${this.port}`);
       await this.verifyBrowserIdentity(this.browser);
+      this.observeBrowserDisconnect(this.browser);
     }
     for (const context of this.browser.contexts()) {
       context.on('page', (page) => this.observePage(page));
       for (const page of context.pages()) this.observePage(page);
     }
     return this.browser;
+  }
+
+  private observeBrowserDisconnect(browser: Browser): void {
+    browser.once('disconnected', () => {
+      if (this.browser === browser) {
+        this.browser = null;
+        this.boundPage = null;
+      }
+      this.lifecycleAudit('pack.browser.cdp_disconnected', { port: this.port });
+    });
   }
 
   private async verifyBrowserIdentity(browser: Browser): Promise<void> {
@@ -398,6 +454,100 @@ export class WorkstationOmniaSession {
     if ((page as any).__omniaV5Observed) return;
     (page as any).__omniaV5Observed = true;
     page.on('request', (request) => { void this.captureHeaders(page, request); });
+  }
+
+  private async continueEnterpriseLogin(page: Page): Promise<boolean> {
+    if (page.isClosed() || isAllowedOmniaUrl(page.url())) return false;
+    let target: URL;
+    try { target = new URL(page.url()); } catch { return false; }
+    if (target.protocol !== 'https:') return false;
+
+    // This recovery path never supplies credentials or chooses an account. It
+    // only presses one unambiguous enterprise-SSO entry button. If the identity
+    // provider asks for a password, MFA, email, or any other user input, leave
+    // the page untouched and report waiting_login.
+    const frames = page.frames();
+    for (const frame of frames) {
+      for (const selector of ['input[type="password"]']) {
+        const inputs = frame.locator(selector);
+        for (let index = 0; index < await inputs.count(); index += 1) {
+          if (await inputs.nth(index).isVisible().catch(() => false)) return false;
+        }
+      }
+    }
+
+    let identityInputVisible = false;
+    for (const frame of frames) {
+      const identityInputs = frame.locator('input[type="email"], input[name="loginfmt"]');
+      for (let index = 0; index < await identityInputs.count(); index += 1) {
+        if (await identityInputs.nth(index).isVisible().catch(() => false)) identityInputVisible = true;
+      }
+    }
+    const allowedLabel = identityInputVisible ? ENTERPRISE_ONLY_LOGIN_LABEL : ENTERPRISE_LOGIN_LABEL;
+
+    const visible = [];
+    for (const frame of frames) {
+      for (const role of ['button', 'link'] as const) {
+        const matches = frame.getByRole(role, { name: allowedLabel });
+        for (let index = 0; index < await matches.count(); index += 1) {
+          const match = matches.nth(index);
+          if (await match.isVisible().catch(() => false) && await match.isEnabled().catch(() => false)) visible.push(match);
+        }
+      }
+    }
+    if (visible.length === 0) {
+      for (const frame of frames) {
+        const actionable = frame.locator('button, a, [role="button"], input[type="submit"], [tabindex="0"]');
+        for (let index = 0; index < await actionable.count(); index += 1) {
+          const match = actionable.nth(index);
+          if (!await match.isVisible().catch(() => false) || !await match.isEnabled().catch(() => false)) continue;
+          const label = clean([
+            await match.getAttribute('aria-label').catch(() => ''),
+            await match.getAttribute('value').catch(() => ''),
+            await match.textContent().catch(() => '')
+          ].filter(Boolean).join(' '), 200);
+          if (allowedLabel.test(label)) visible.push(match);
+        }
+      }
+    }
+    if (visible.length !== 1) return false;
+    await visible[0]!.click({ timeout: 5_000 });
+    await page.waitForTimeout(2_000);
+    return true;
+  }
+
+  private async enterpriseLoginDiagnostic(page: Page): Promise<string> {
+    let host = '';
+    let pathname = '';
+    try {
+      const target = new URL(page.url());
+      host = target.host;
+      pathname = target.pathname;
+    } catch { host = 'invalid-url'; }
+    const title = clean(await page.title().catch(() => ''), 120);
+    const body = clean(await page.locator('body').innerText().catch(() => ''), 500);
+    const controls: string[] = [];
+    const inputs: string[] = [];
+    for (const frame of page.frames()) {
+      const actionable = frame.locator('button, a, [role="button"], input[type="submit"], [tabindex="0"]');
+      for (let index = 0; index < await actionable.count() && controls.length < 12; index += 1) {
+        const match = actionable.nth(index);
+        if (!await match.isVisible().catch(() => false)) continue;
+        const label = clean([
+          await match.getAttribute('aria-label').catch(() => ''),
+          await match.getAttribute('value').catch(() => ''),
+          await match.textContent().catch(() => '')
+        ].filter(Boolean).join(' '), 100);
+        if (label) controls.push(label);
+      }
+      const fields = frame.locator('input');
+      for (let index = 0; index < await fields.count() && inputs.length < 8; index += 1) {
+        const field = fields.nth(index);
+        if (!await field.isVisible().catch(() => false)) continue;
+        inputs.push(clean(`${await field.getAttribute('type').catch(() => '') || 'text'}:${await field.getAttribute('name').catch(() => '') || ''}`, 80));
+      }
+    }
+    return `login_host=${host}; path=${pathname || '-'}; title=${title || '-'}; controls=${controls.join('|') || '-'}; inputs=${inputs.join('|') || '-'}; body=${body || '-'}`;
   }
 
   private async waitForAuthorization(
@@ -514,6 +664,7 @@ export class WorkstationOmniaSession {
     if (!isGuid(engagementId)) {
       throw new ConnectorOperationError('CONNECTOR.PACK_NOT_OPEN', '请在 Edge 中登录 Omnia 并打开目标 Pack。');
     }
+    this.rememberPackTarget(engagementId);
     let auth = this.authorizationForPage(page, targetUrl.origin);
     if (requireAuth && !auth.headers.authorization) {
       await this.waitForAuthorization(page, engagementId);
@@ -532,7 +683,7 @@ export class WorkstationOmniaSession {
     return { page, targetUrl, apiOrigin: auth.apiOrigin, engagementId, headers };
   }
 
-  private async api(session: Session, route: string): Promise<unknown> {
+  private async api(session: Session, route: string, timeoutMs = 60_000): Promise<unknown> {
     const url = new URL(route, session.apiOrigin);
     if (url.origin !== session.apiOrigin || !isAllowedOmniaUrl(url.href)) {
       throw new Error('Connector 拒绝了不在当前 Omnia origin 内的读取请求。');
@@ -542,7 +693,7 @@ export class WorkstationOmniaSession {
       response = await this.fetchImpl(url, {
         method: 'GET',
         headers: { ...session.headers, Accept: 'application/json' },
-        signal: AbortSignal.timeout(60_000)
+        signal: AbortSignal.timeout(timeoutMs)
       });
     } catch {
       throw new ConnectorOperationError('WORKSPACE.READ_TIMEOUT', 'Omnia 只读 API 超时或网络不可用。', true);
@@ -602,8 +753,15 @@ export class WorkstationOmniaSession {
     return payload;
   }
 
-  private async identify(session: Session): Promise<{ name: string; clientName: string; authorityInstanceId: string; tenantOrOrgId: string; packId: string }> {
-    const hierarchy = list(await this.api(session, `/engagements/v1/${session.engagementId}/headers/hierarchy`));
+  private async identify(
+    session: Session,
+    timeoutMs = 60_000
+  ): Promise<{ name: string; clientName: string; authorityInstanceId: string; tenantOrOrgId: string; packId: string }> {
+    const hierarchy = list(await this.api(
+      session,
+      `/engagements/v1/${session.engagementId}/headers/hierarchy`,
+      timeoutMs
+    ));
     const exact = hierarchy.find((item) =>
       explicitId(item?.engagementId || item?.id) === session.engagementId
     );
@@ -617,6 +775,32 @@ export class WorkstationOmniaSession {
       clientName: clean(exact?.clientName),
       ...canonicalAuthorityIdentity(session.apiOrigin, exact)
     };
+  }
+
+  /**
+   * Core already freezes every signed Operation to the exact Connector
+   * binding returned by a live hierarchy read. Re-reading that hierarchy for
+   * every individual preflight, mutation and read-back adds a full Omnia API
+   * request without strengthening an unchanged binding. This process-local
+   * proof is reusable only while the exact Page, API origin, engagement and
+   * bearer remain unchanged. A navigation, Pack switch, token refresh,
+   * revocation, or Connector restart necessarily misses the cache.
+   */
+  private async operationPackIdentity(session: Session): Promise<VerifiedPackIdentity['pack']> {
+    const authorization = session.headers.authorization || '';
+    const verified = this.verifiedPackByPage.get(session.page);
+    if (verified
+      && verified.engagementId === session.engagementId
+      && verified.apiOrigin === session.apiOrigin
+      && verified.authorization === authorization) return verified.pack;
+    const pack = await this.identify(session);
+    this.verifiedPackByPage.set(session.page, {
+      engagementId: session.engagementId,
+      apiOrigin: session.apiOrigin,
+      authorization,
+      pack
+    });
+    return pack;
   }
 
   async status(): Promise<ConnectorConnection> {
@@ -638,6 +822,7 @@ export class WorkstationOmniaSession {
           auth.headers.authorization ? '已登录 Omnia，请继续打开目标 Pack。' : '请在受控 Edge 中登录 Omnia。'
         );
       }
+      this.rememberPackTarget(engagementId);
       const session: Session = { page, targetUrl, apiOrigin: auth.apiOrigin, engagementId, headers: auth.headers };
       if (!auth.headers.authorization) {
         return this.snapshot('waiting_authorization', '已打开目标 Pack，正在等待同一 target 的 Authorization。', session);
@@ -646,26 +831,28 @@ export class WorkstationOmniaSession {
         this.verifiedPackByPage.delete(page);
         return this.snapshot('identity_changed', 'Authorization 与当前 target 的 Pack 身份不一致，已拒绝连接。', session);
       }
-      const verified = this.verifiedPackByPage.get(page);
-      if (verified) {
-        const sameVerifiedIdentity = verified.engagementId === engagementId
-          && verified.apiOrigin === auth.apiOrigin
-          && verified.pack.packId === engagementId
-          && verified.pack.authorityInstanceId === new URL(auth.apiOrigin).origin.toLowerCase();
-        if (sameVerifiedIdentity) {
-          return this.snapshot('connected', `当前 Pack 已连接：${verified.pack.name}`, session, verified.pack);
-        }
-        this.verifiedPackByPage.delete(page);
-      }
       try {
-        const pack = await this.identify(session);
+        // `connected` is a live assertion, not a cache hit. In particular a
+        // long-running Connector can outlive multiple Shell processes and its
+        // previously captured bearer may expire between those restarts.
+        const pack = await this.identify(session, STATUS_IDENTITY_TIMEOUT_MS);
         this.verifiedPackByPage.set(page, {
           engagementId,
           apiOrigin: auth.apiOrigin,
+          authorization: auth.headers.authorization || '',
           pack
         });
         return this.snapshot('connected', `当前 Pack 已连接：${pack.name}`, session, pack);
       } catch (error) {
+        if (error instanceof ConnectorOperationError && error.code === 'CONNECTOR.AUTH_REQUIRED') {
+          this.revokeAuthorization(page, session.headers.authorization);
+          this.verifiedPackByPage.delete(page);
+          return this.snapshot(
+            'waiting_authorization',
+            '当前 Page Authorization 已失效；正在等待同一 Pack target 重新签发。',
+            { ...session, headers: {} }
+          );
+        }
         if (error instanceof ConnectorOperationError && error.code === 'CONNECTOR.PACK_IDENTITY_CHANGED') {
           return this.snapshot('identity_changed', error.message, session);
         }
@@ -679,7 +866,7 @@ export class WorkstationOmniaSession {
     }
   }
 
-  async connect(): Promise<ConnectorConnection> {
+  async connect(expectedEngagementId = ''): Promise<ConnectorConnection> {
     const browser = await this.ensureBrowser();
     let page = await this.currentPage(true);
     if (!page) {
@@ -690,7 +877,55 @@ export class WorkstationOmniaSession {
       await page.goto(DEFAULT_HOME, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => undefined);
     }
     await page.bringToFront();
-    return this.status();
+    let observed = await this.status();
+    if (observed.status === 'waiting_login') {
+      let continued = await this.continueEnterpriseLogin(page);
+      let host = '';
+      try { host = new URL(page.url()).hostname.toLowerCase(); } catch { /* diagnostic below */ }
+      if (!continued && host === new URL(DEFAULT_HOME).hostname.toLowerCase()) {
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => undefined);
+        await page.waitForTimeout(2_000);
+        continued = await this.continueEnterpriseLogin(page);
+      }
+      if (continued) observed = await this.status();
+      else observed = { ...observed, message: `${observed.message} ${await this.enterpriseLoginDiagnostic(page)}` };
+    }
+    if (observed.status === 'waiting_pack') {
+      const engagementId = explicitId(expectedEngagementId) || this.savedPackTarget();
+      if (isGuid(engagementId)) {
+        const targetUrl = new URL(`/engagement/${engagementId}/home`, DEFAULT_HOME);
+        const beforeNavigationEpoch = this.authorizationCaptureEpoch;
+        await page.goto(targetUrl.href, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+        await this.waitForAuthorization(page, engagementId, beforeNavigationEpoch, EXPLICIT_CONNECT_AUTHORIZATION_WAIT_MS);
+        observed = await this.status();
+      }
+    }
+    if (observed.status === 'waiting_authorization' && isAllowedOmniaUrl(page.url())) {
+      const targetUrl = normalizeOmniaUrl(page.url());
+      const engagementId = parseEngagementId(targetUrl.href);
+      if (isGuid(engagementId)) {
+        // Focusing an existing SPA target normally resumes its own authorized
+        // traffic. Give that passive path a short chance first. If the Pack was
+        // already idle before this Connector attached, an explicit user connect
+        // has no request from which to capture Authorization. In that one case,
+        // reload the same verified Pack URL and capture its normal API traffic;
+        // never navigate to another target or read browser storage.
+        const captured = await this.waitForAuthorization(
+          page,
+          engagementId,
+          this.authorizationCaptureEpoch,
+          Math.min(2_000, EXPLICIT_CONNECT_AUTHORIZATION_WAIT_MS)
+        );
+        if (!captured && !page.isClosed() && isAllowedOmniaUrl(page.url())
+          && parseEngagementId(normalizeOmniaUrl(page.url()).href) === engagementId) {
+          const beforeReloadEpoch = this.authorizationCaptureEpoch;
+          await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 });
+          await this.waitForAuthorization(page, engagementId, beforeReloadEpoch, EXPLICIT_CONNECT_AUTHORIZATION_WAIT_MS);
+        }
+        observed = await this.status();
+      }
+    }
+    return observed;
   }
 
   async refresh(): Promise<ConnectorConnection> {
@@ -710,6 +945,12 @@ export class WorkstationOmniaSession {
       this.identify(session),
       this.workspaceAuthorityDirectory(session)
     ]);
+    this.verifiedPackByPage.set(session.page, {
+      engagementId: session.engagementId,
+      apiOrigin: session.apiOrigin,
+      authorization: session.headers.authorization || '',
+      pack
+    });
     const result: ConnectorWorkspaceAuthorityRead = {
       schemaVersion: 'omnia.workspace-authority-read/v2',
       profile: 'workspace_authority_read',
@@ -729,13 +970,22 @@ export class WorkstationOmniaSession {
     return result;
   }
 
-  registerOperation(input: OperationRegistrationRequest): unknown {
-    return this.operationHost.register(input);
+  async registerOperation(input: OperationRegistrationCommand): Promise<unknown> {
+    const session = await this.session(true);
+    const pack = await this.operationPackIdentity(session);
+    return this.operationHost.register(input, {
+      connectorId: this.connectorIdentity.id,
+      sessionGeneration: this.sessionGeneration,
+      engagementId: session.engagementId,
+      authorityInstanceId: pack.authorityInstanceId,
+      tenantOrOrgId: pack.tenantOrOrgId,
+      packId: pack.packId
+    });
   }
 
   async invokeOperation(input: OperationInvocationRequest): Promise<unknown> {
     const session = await this.session(true);
-    const pack = await this.identify(session);
+    const pack = await this.operationPackIdentity(session);
     const binding = {
       connectorId: this.connectorIdentity.id,
       sessionGeneration: this.sessionGeneration,
@@ -791,6 +1041,10 @@ export class WorkstationOmniaSession {
       targetUrl: session.targetUrl,
       apiOrigin: session.apiOrigin
     });
+  }
+
+  maintenanceSnapshot(): ReturnType<OperationHost['maintenanceSnapshot']> {
+    return this.operationHost.maintenanceSnapshot();
   }
 
   private snapshot(

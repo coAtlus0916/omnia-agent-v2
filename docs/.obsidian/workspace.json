@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "product/PRODUCT_REQUIREMENTS.md",
+                "file": "development/AGENT_START_HERE.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "PRODUCT_REQUIREMENTS"
+              "title": "AGENT_START_HERE"
             }
           }
         ]
@@ -185,6 +185,9 @@
   },
   "active": "0e6bcb4a158a791d",
   "lastOpenFiles": [
-    "README.md"
+    "architecture/SYSTEM_ARCHITECTURE.md",
+    "README.md",
+    "product/INITIAL_FEATURE_SCOPE.md",
+    "product/PRODUCT_REQUIREMENTS.md"
   ]
 }

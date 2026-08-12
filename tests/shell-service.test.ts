@@ -233,6 +233,93 @@ test('keepalive persists a failed read-only status and keeps safety fail-closed'
   });
 });
 
+test('keepalive preserves the last failure until a live connected read succeeds', async () => {
+  await fixture(async (shell, database, adapter) => {
+    database.updateKeepalive({ lastError: 'previous authoritative failure' });
+    const projectedErrors: string[] = [];
+    const unsubscribe = shell.onChanged((snapshot) => projectedErrors.push(snapshot.keepalive.lastError));
+    adapter.loadSequence = [connectionState(adapter.connection, 'waiting_authorization')];
+
+    await shell.setKeepalive(true);
+    unsubscribe();
+
+    assert.equal(projectedErrors[0], 'previous authoritative failure');
+    assert.equal(shell.snapshot().connection.connecting, false);
+    assert.match(shell.snapshot().keepalive.lastError, /waiting_authorization/u);
+
+    adapter.loadSequence = [connectionState(adapter.connection, 'connected', true)];
+    await (shell as any).runKeepalive();
+    assert.equal(shell.snapshot().connection.connected, true);
+    assert.equal(shell.snapshot().keepalive.lastError, '');
+  });
+});
+
+test('keepalive probes past a cached disconnected state and automatically records recovery', async () => {
+  await fixture(async (shell, database, adapter) => {
+    adapter.loadSequence = [{
+      ...adapter.connection,
+      connected: false,
+      connecting: false,
+      status: 'waiting_authorization',
+      message: 'fixture Authorization is unavailable'
+    }];
+    const failed = await shell.setKeepalive(true);
+    assert.equal(failed.connection.connected, false);
+    assert.match(failed.keepalive.lastError, /fixture Authorization is unavailable/u);
+    assert.equal(failed.keepalive.lastSuccessAt, '');
+
+    const callsBeforeRecovery = adapter.loadCalls;
+    adapter.loadSequence = [{
+      ...adapter.connection,
+      checkedAt: new Date().toISOString(),
+      message: 'fixture Pack connection recovered'
+    }];
+    database.updateKeepalive({ nextAttemptAt: '' });
+    await (shell as any).backgroundTick();
+
+    const recovered = shell.snapshot();
+    assert.equal(adapter.loadCalls, callsBeforeRecovery + 1);
+    assert.equal(recovered.connection.connected, true);
+    assert.equal(recovered.keepalive.lastError, '');
+    assert.ok(recovered.keepalive.lastSuccessAt);
+    assert.equal(adapter.refreshCalls, 0);
+    assert.equal(adapter.pageNavigationCalls, 0);
+  });
+});
+
+test('keepalive keeps probing a cached disconnected state without claiming false recovery', async () => {
+  await fixture(async (shell, database, adapter) => {
+    adapter.loadSequence = [{
+      ...adapter.connection,
+      connected: false,
+      connecting: false,
+      status: 'connector_offline',
+      message: 'fixture Connector remains offline'
+    }];
+    await shell.setKeepalive(true);
+
+    const callsBeforeRetry = adapter.loadCalls;
+    adapter.loadSequence = [{
+      ...adapter.connection,
+      connected: false,
+      connecting: false,
+      status: 'waiting_authorization',
+      message: 'fixture Authorization is still unavailable'
+    }];
+    database.updateKeepalive({ nextAttemptAt: '' });
+    await (shell as any).backgroundTick();
+
+    const stillFailed = shell.snapshot();
+    assert.equal(adapter.loadCalls, callsBeforeRetry + 1);
+    assert.equal(stillFailed.connection.connected, false);
+    assert.equal(stillFailed.connection.status, 'waiting_authorization');
+    assert.equal(stillFailed.keepalive.lastSuccessAt, '');
+    assert.match(stillFailed.keepalive.lastError, /fixture Authorization is still unavailable/u);
+    assert.equal(adapter.refreshCalls, 0);
+    assert.equal(adapter.pageNavigationCalls, 0);
+  });
+});
+
 test('repair and unbind require an explicit confirmation and no Local snapshot is projected', async () => {
   await fixture(async (shell, database) => {
     database.saveConnectionPayload({ ...shell.snapshot().connection, transport: 'remote' });
@@ -327,7 +414,9 @@ test('one Connect action automatically advances delayed login, Pack, authorizati
       connectionState(adapter.connection, 'identifying_pack'),
       connectionState(adapter.connection, 'connected', true)
     ];
-    const result = await shell.connect();
+    await shell.connect();
+    await (shell as any).connectRunning;
+    const result = shell.snapshot();
     unsubscribe();
     assert.equal(adapter.connectCalls, 1);
     assert.equal(result.connection.connected, true);
@@ -337,13 +426,87 @@ test('one Connect action automatically advances delayed login, Pack, authorizati
   }, { sleep: async () => undefined });
 });
 
+test('explicit Connect dispatches a real Connector rebind from waiting_authorization', async () => {
+  await fixture(async (shell, database, adapter) => {
+    bindRemoteFixture(database);
+    adapter.loadSequence = [connectionState(adapter.connection, 'waiting_authorization')];
+    adapter.connectResult = connectionState(adapter.connection, 'connected', true);
+
+    await shell.connect();
+    await (shell as any).connectRunning;
+    const result = shell.snapshot();
+
+    assert.equal(adapter.connectCalls, 1);
+    assert.equal(result.connection.connected, true);
+    assert.equal(result.connection.status, 'connected');
+  }, { sleep: async () => undefined });
+});
+
+test('manual Connect is idempotent when live status already proves Connected', async () => {
+  await fixture(async (shell, database, adapter) => {
+    bindRemoteFixture(database);
+    const loadCalls = adapter.loadCalls;
+
+    await shell.connect();
+    await (shell as any).connectRunning;
+    await shell.connect();
+    await (shell as any).connectRunning;
+
+    assert.equal(adapter.loadCalls, loadCalls + 2);
+    assert.equal(adapter.connectCalls, 0);
+    assert.equal(shell.snapshot().connection.status, 'connected');
+    assert.equal(shell.snapshot().connection.connected, true);
+  });
+});
+
+test('background restart recovery passively advances an existing waiting target', async () => {
+  await fixture(async (shell, database, adapter) => {
+    bindRemoteFixture(database);
+    (shell as any).connection = connectionState(adapter.connection, 'waiting_authorization');
+    adapter.loadSequence = [connectionState(adapter.connection, 'connected', true)];
+    const loadCalls = adapter.loadCalls;
+
+    await (shell as any).backgroundTick();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(adapter.loadCalls, loadCalls + 1);
+    assert.equal(shell.snapshot().connection.status, 'connected');
+    assert.equal(adapter.connectCalls, 0);
+    assert.equal(adapter.refreshCalls, 0);
+    assert.equal(adapter.pageNavigationCalls, 0);
+  });
+});
+
+test('passive waiting_authorization never projects an active Connect attempt', async () => {
+  await fixture(async (shell, database, adapter) => {
+    bindRemoteFixture(database);
+    const loadCalls = adapter.loadCalls;
+    adapter.loadSequence = [connectionState(adapter.connection, 'waiting_authorization')];
+
+    adapter.emitState();
+    for (let index = 0; index < 20 && adapter.loadCalls === loadCalls; index += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const waiting = shell.snapshot().connection;
+    assert.equal(waiting.status, 'waiting_authorization');
+    assert.equal(waiting.connected, false);
+    assert.equal(waiting.connecting, false);
+    assert.equal(adapter.connectCalls, 0);
+  });
+});
+
 test('Connect timeout is deterministic and does not claim Pack connected', async () => {
   let now = 0;
   await fixture(async (shell, database, adapter) => {
     bindRemoteFixture(database);
     adapter.connectResult = connectionState(adapter.connection, 'waiting_pack');
     adapter.connection = connectionState(adapter.connection, 'waiting_pack');
-    const result = await shell.connect();
+    await shell.connect();
+    await (shell as any).connectRunning;
+    const result = shell.snapshot();
     assert.equal(result.connection.status, 'timed_out');
     assert.equal(result.connection.connected, false);
     assert.equal(adapter.connectCalls, 1);
@@ -364,12 +527,44 @@ test('concurrent cancel preserves explicit cancelled state and cancels the in-fl
     adapter.connection = connectionState(adapter.connection, 'waiting_login');
     const connecting = shell.connect();
     await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(shell.snapshot().connection.connecting, true);
     const cancelled = await shell.cancelConnect();
     assert.equal(cancelled.connection.status, 'cancelled');
     releaseSleep();
-    const result = await connecting;
+    await connecting;
+    await (shell as any).connectRunning;
+    const result = shell.snapshot();
     assert.equal(result.connection.status, 'cancelled');
     assert.equal(adapter.cancelCalls, 1);
+  }, { sleep: async () => sleeping });
+});
+
+test('passive reconciliation after cancel keeps Connect available', async () => {
+  let releaseSleep!: () => void;
+  const sleeping = new Promise<void>((resolve) => { releaseSleep = resolve; });
+  await fixture(async (shell, database, adapter) => {
+    bindRemoteFixture(database);
+    adapter.connectResult = connectionState(adapter.connection, 'waiting_login');
+    adapter.connection = connectionState(adapter.connection, 'waiting_login');
+
+    await shell.connect();
+    await new Promise((resolve) => setImmediate(resolve));
+    await shell.cancelConnect();
+    releaseSleep();
+    await (shell as any).connectRunning;
+
+    const loadCalls = adapter.loadCalls;
+    adapter.loadSequence = [connectionState(adapter.connection, 'waiting_authorization')];
+    adapter.emitState();
+    for (let index = 0; index < 20 && adapter.loadCalls === loadCalls; index += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const waiting = shell.snapshot().connection;
+    assert.equal(waiting.status, 'waiting_authorization');
+    assert.equal(waiting.connecting, false);
+    assert.equal(waiting.connected, false);
   }, { sleep: async () => sleeping });
 });
 

@@ -24,6 +24,12 @@ export interface SurfaceHostSnapshot<T = unknown> {
   activeInstanceId: string;
 }
 
+export interface SurfaceIdentityResolution<T = unknown> {
+  instanceId: string;
+  current: SurfaceInstance<T> | undefined;
+  superseded: SurfaceInstance<T>[];
+}
+
 const now = () => Date.now();
 
 export class SurfaceHost<T = unknown> {
@@ -40,7 +46,12 @@ export class SurfaceHost<T = unknown> {
     const timestamp = now();
     const existing = this.instances.get(instanceId);
     if (existing) {
-      existing.placement = 'docked';
+      // An explicit open reopens a closed instance. Otherwise opening an
+      // existing instance has focus semantics: minimized returns to the dock,
+      // while a detached native window stays detached.
+      if (existing.placement === 'closed' || existing.placement === 'minimized') {
+        existing.placement = 'docked';
+      }
       existing.lastFocusedAt = timestamp;
       if (value !== undefined) existing.value = value;
       this.activeInstanceId = instanceId;
@@ -94,6 +105,7 @@ export class SurfaceHost<T = unknown> {
     const instance = this.instances.get(instanceId);
     if (!instance) return undefined;
     if (instance.placement === 'closed') return undefined;
+    if (instance.placement === 'minimized') instance.placement = 'docked';
     instance.lastFocusedAt = now();
     this.activeInstanceId = instanceId;
     return instance;
@@ -150,6 +162,24 @@ export class SurfaceHost<T = unknown> {
 
   getByFeature(featureId: string): SurfaceInstance<T>[] {
     return [...this.instances.values()].filter((instance) => instance.featureId === featureId);
+  }
+
+  /**
+   * Resolve an exact signed Surface context without mutating either identity.
+   * Callers can close `superseded` native hosts before opening `current`; a
+   * projection from a newer Feature version is never written into an old
+   * instance just because both instances share a Feature ID.
+   */
+  resolveIdentity(featureId: string, contextKey: string): SurfaceIdentityResolution<T> {
+    const instanceId = this.key(featureId, contextKey);
+    return {
+      instanceId,
+      current: this.instances.get(instanceId),
+      superseded: [...this.instances.values()].filter((instance) =>
+        instance.featureId === featureId
+        && instance.instanceId !== instanceId
+        && instance.placement !== 'closed')
+    };
   }
 
   get active(): SurfaceInstance<T> | undefined {

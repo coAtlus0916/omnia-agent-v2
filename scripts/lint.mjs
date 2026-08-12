@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 const root = path.resolve(import.meta.dirname, '..');
 const sourceRoot = path.join(root, 'src');
@@ -33,3 +34,14 @@ if (violations.length) {
   process.exit(1);
 }
 console.log(`Static security lint passed for ${files(sourceRoot).length} source files.`);
+
+const isolationTest = path.join(root, 'tests', 'feature-business-isolation.test.ts');
+const isolation = spawnSync(process.execPath, ['--import', 'tsx', '--test', isolationTest], {
+  cwd: root,
+  encoding: 'utf8',
+  windowsHide: true
+});
+if (isolation.stdout) process.stdout.write(isolation.stdout);
+if (isolation.stderr) process.stderr.write(isolation.stderr);
+if (isolation.error) throw isolation.error;
+if (isolation.status !== 0) process.exit(isolation.status ?? 1);

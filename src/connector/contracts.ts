@@ -1,4 +1,5 @@
-import type { OperationInvocationRequest, OperationRegistrationRequest } from '../shared/operation-contracts.js';
+import type { OperationInvocationRequest, OperationRegistrationCommand } from '../shared/operation-contracts.js';
+import type { ConnectorDeliveryAck, ConnectorDeliveryStatusRequest } from '../shared/connector-delivery.js';
 
 export type ConnectorOperation =
   | 'health'
@@ -7,7 +8,10 @@ export type ConnectorOperation =
   | 'status'
   | 'workspace_authority_read'
   | 'operation_register'
-  | 'operation_invoke';
+  | 'operation_invoke'
+  | 'operation_delivery_ack'
+  | 'operation_delivery_status'
+  | 'protocol_admission';
 
 export interface ConnectorRequest {
   schemaVersion: 'omnia.connector-ipc/v1';
@@ -22,6 +26,12 @@ export interface ConnectorResponse {
   ok: boolean;
   value?: unknown;
   error?: { code: string; message: string; retryable: boolean };
+  delivery?: {
+    schemaVersion: 'omnia.connector-wire-delivery/v1';
+    resultDigest: string;
+    sessionGeneration: number;
+    executionGeneration: string;
+  };
 }
 
 export interface ConnectorConnection {
@@ -53,7 +63,7 @@ export interface ConnectorConnection {
   message: string;
 }
 
-export type ConnectorOperationPayload = OperationRegistrationRequest | OperationInvocationRequest;
+export type ConnectorOperationPayload = OperationRegistrationCommand | OperationInvocationRequest | ConnectorDeliveryAck | ConnectorDeliveryStatusRequest;
 
 interface ConnectorWorkspaceAuthorityReadBase {
   profile: 'workspace_authority_read';

@@ -10,16 +10,10 @@ import { AppError } from '../../shared/errors.js';
 import type { FeatureActionRequest, FeatureRuntimeSnapshot } from '../../shared/feature-contracts.js';
 import type { ConnectorTransport } from '../connector/connector-transport.js';
 import {
-  beginPairingSession,
-  cancelPairingSession,
-  commitPairingSession,
-  inspectBridgePairingCapability,
-  pollPairingSession,
-  revokeBinding
-} from '../connector/remote-connector-transport.js';
-import {
   BRIDGE_PROTOCOL,
-  type BridgePairingCapabilityInspection
+  type BridgePairingCapabilityInspection,
+  type BridgePairingPollResponse,
+  type BridgePairingSessionResponse
 } from '../../shared/bridge-contracts.js';
 import type { CoreDatabase } from '../database.js';
 import type { AttachmentService } from './attachment-service.js';
@@ -57,13 +51,17 @@ const CONNECT_TERMINAL_STATES = new Set<ConnectionSnapshot['status']>([
 ]);
 
 interface RemoteLifecycleApi {
-  inspectBridge: typeof inspectBridgePairingCapability;
-  beginPairing: typeof beginPairingSession;
-  pollPairing: typeof pollPairingSession;
-  cancelPairing: typeof cancelPairingSession;
-  commitPairing: typeof commitPairingSession;
-  revoke: typeof revokeBinding;
+  inspectBridge(input: { bridgeUrl: string }): Promise<BridgePairingCapabilityInspection>;
+  beginPairing(input: { bridgeUrl: string; requestNonce: string; replacementPairId?: string; currentToken?: string }): Promise<BridgePairingSessionResponse>;
+  pollPairing(input: { bridgeUrl: string; sessionId: string; pollSecret: string }): Promise<BridgePairingPollResponse>;
+  cancelPairing(input: { bridgeUrl: string; sessionId: string; pollSecret: string }): Promise<'waiting' | 'candidate' | 'matched' | 'expired'>;
+  commitPairing(input: { bridgeUrl: string; sessionId: string; pollSecret: string }): Promise<void>;
+  revoke(input: { bridgeUrl: string; pairId: string; token: string }): Promise<void>;
 }
+
+const retiredRemoteLifecycle = (): never => {
+  throw new AppError('CONNECTOR_NEXT.ENROLLMENT_MANAGED_EXTERNALLY', 'Legacy Remote Connector lifecycle has been retired.');
+};
 
 export class ShellService {
   private connection: ConnectionSnapshot;
@@ -128,15 +126,16 @@ export class ShellService {
       connectStartupTimeoutMs: timing.connectStartupTimeoutMs ?? 90_000
     };
     this.remoteLifecycle = {
-      inspectBridge: remoteLifecycle.inspectBridge || inspectBridgePairingCapability,
-      beginPairing: remoteLifecycle.beginPairing || beginPairingSession,
-      pollPairing: remoteLifecycle.pollPairing || pollPairingSession,
-      cancelPairing: remoteLifecycle.cancelPairing || cancelPairingSession,
-      commitPairing: remoteLifecycle.commitPairing || commitPairingSession,
-      revoke: remoteLifecycle.revoke || revokeBinding
+      inspectBridge: remoteLifecycle.inspectBridge || (async () => retiredRemoteLifecycle()),
+      beginPairing: remoteLifecycle.beginPairing || (async () => retiredRemoteLifecycle()),
+      pollPairing: remoteLifecycle.pollPairing || (async () => retiredRemoteLifecycle()),
+      cancelPairing: remoteLifecycle.cancelPairing || (async () => retiredRemoteLifecycle()),
+      commitPairing: remoteLifecycle.commitPairing || (async () => retiredRemoteLifecycle()),
+      revoke: remoteLifecycle.revoke || (async () => retiredRemoteLifecycle())
     };
     const cached = database.getConnectionPayload<ConnectionSnapshot>();
-    this.connection = cached?.transport === 'remote'
+    const expectedAdapter = adapter.bindingMode === 'connector_next_enrollment' ? 'connector_next_v3' : 'v5_remote_connector';
+    this.connection = cached?.transport === 'remote' && cached.adapter === expectedAdapter
       ? cached
       : adapter.unavailableSnapshot('正在检查 Remote Connector 服务。');
     this.unsubscribeTransport = adapter.onStateChanged?.(() => {
@@ -169,7 +168,37 @@ export class ShellService {
     });
   }
 
+  private passiveConnectionSnapshot(observed: ConnectionSnapshot): ConnectionSnapshot {
+    // Connector `connecting` describes the remote workstation session, while
+    // Shell `connecting` owns the lifetime of an explicit user Connect action.
+    // A passive load must never turn a login/Pack/Authorization wait into a
+    // cancellable local action or hide the Connect button.
+    return observed.connecting ? { ...observed, connecting: false } : observed;
+  }
+
+  private usesLegacyRemoteLifecycle(): boolean {
+    return false;
+  }
+
   async initialize(): Promise<void> {
+    if (!this.usesLegacyRemoteLifecycle()) {
+      this.bridgePairing = {
+        status: 'supported', canCreateSession: false,
+        reasonCode: 'CONNECTOR_NEXT.ENROLLMENT_MANAGED_EXTERNALLY',
+        reason: 'Connector Next enrollment is managed by the independent v3 control plane; legacy Bridge pairing is not applicable.',
+        bridgeVersion: '', bridgeProtocol: '', buildIdentity: 'connector-next-v3', checkedAt: utcNow()
+      };
+      this.remotePairing = {
+        state: 'matched', pairingCode: '', expiresAt: '',
+        message: 'Connector Next uses exact Agent/device/instance enrollment; legacy Remote pairing is not used.'
+      };
+      await this.syncConnection();
+      await this.reconcileConnectedSession();
+      this.timer = setInterval(() => { void this.backgroundTick(); }, 5_000);
+      this.timer.unref();
+      await this.backgroundTick();
+      return;
+    }
     await this.refreshBridgePairingCapability();
     const pendingPairing = this.database.getPendingRemotePairing();
     if (pendingPairing) {
@@ -343,7 +372,7 @@ export class ShellService {
     return {
       schemaVersion: 'omnia.shell-home/v1',
       generatedAt: utcNow(),
-      productVersion: '0.4.14',
+      productVersion: '0.4.15',
       featureCount: this.database.activeFeatureCount(),
       features: featureRuntime,
       connection: this.connection,
@@ -365,6 +394,7 @@ export class ShellService {
   }
 
   private async refreshBridgePairingCapability(): Promise<void> {
+    if (!this.usesLegacyRemoteLifecycle()) return;
     const binding = this.database.getRemoteBinding();
     this.bridgePairing = await this.remoteLifecycle.inspectBridge({ bridgeUrl: binding.bridgeUrl });
   }
@@ -412,21 +442,27 @@ export class ShellService {
   }
 
   private async syncConnection(): Promise<void> {
-    this.connection = await this.adapter.load();
-    const binding = this.database.getRemoteBinding();
-    if (
-      binding.bindingState === 'bound'
-      && this.connection.status === 'repair_required'
-      && this.connection.bindingState === 'repair_required'
-    ) {
-      this.database.markRemoteBindingRepairRequired(binding.stateVersion);
-    }
-    if (binding.bindingState === 'repair_required' && this.connection.status !== 'repair_required') {
-      this.connection = {
-        ...this.connection,
-        bindingState: 'repair_required', status: 'repair_required', connected: false, connecting: false,
-        message: 'Remote binding 需要人工修复或完成待处理的解除绑定；已失败关闭。'
-      };
+    const observed = await this.adapter.load();
+    // A reconcile already in flight when the user clicks Connect must not
+    // overwrite that explicit attempt with a passive snapshot.
+    if (this.connectRunning) return;
+    this.connection = this.passiveConnectionSnapshot(observed);
+    if (this.usesLegacyRemoteLifecycle()) {
+      const binding = this.database.getRemoteBinding();
+      if (
+        binding.bindingState === 'bound'
+        && this.connection.status === 'repair_required'
+        && this.connection.bindingState === 'repair_required'
+      ) {
+        this.database.markRemoteBindingRepairRequired(binding.stateVersion);
+      }
+      if (binding.bindingState === 'repair_required' && this.connection.status !== 'repair_required') {
+        this.connection = {
+          ...this.connection,
+          bindingState: 'repair_required', status: 'repair_required', connected: false, connecting: false,
+          message: 'Remote binding 需要人工修复或完成待处理的解除绑定；已失败关闭。'
+        };
+      }
     }
     this.database.saveConnectionPayload(this.connection);
     if (!this.connection.connected) {
@@ -482,13 +518,15 @@ export class ShellService {
   }
 
   async connect(): Promise<ShellSnapshot> {
-    const binding = this.database.getRemoteBinding();
-    if (!binding.remotePaired || binding.bindingState !== 'bound') {
-      return this.beginRemotePairing({
-        repair: binding.bindingState === 'repair_required',
-        confirmed: binding.bindingState !== 'repair_required',
-        expectedStateVersion: binding.stateVersion
-      });
+    if (this.usesLegacyRemoteLifecycle()) {
+      const binding = this.database.getRemoteBinding();
+      if (!binding.remotePaired || binding.bindingState !== 'bound') {
+        return this.beginRemotePairing({
+          repair: binding.bindingState === 'repair_required',
+          confirmed: binding.bindingState !== 'repair_required',
+          expectedStateVersion: binding.stateVersion
+        });
+      }
     }
     if (this.connection.connecting && this.connectRunning) return this.snapshot();
     const attempt = ++this.connectAttempt;
@@ -535,13 +573,15 @@ export class ShellService {
     try {
       const observed = await this.adapter.load();
       if (this.connectAttemptCancelled(attempt)) return;
-      // A live Session that is already waiting for login/Pack/Authorization
-      // does not need another browser-start command. An offline Connector is
-      // also known before any long-running command is dispatched.
-      next = observed.connected
-        || (CONNECT_WAITING_STATES.has(observed.status)
-          && !['browser_starting', 'target_closed'].includes(observed.status))
-        || CONNECT_TERMINAL_STATES.has(observed.status)
+      // An explicit Connect click is also the user's request to rebind an
+      // already-open workstation target. Waiting states must therefore reach
+      // Connector.connect() once: that path may focus the existing target and
+      // recapture a newly issued Page Authorization without reloading it.
+      // Passive startup/background probes continue to use load() only.
+      if (!observed.connected && CONNECT_WAITING_STATES.has(observed.status)) {
+        if (!this.projectConnectState(attempt, { ...observed, connecting: true, connected: false })) return;
+      }
+      next = observed.connected || CONNECT_TERMINAL_STATES.has(observed.status)
         ? observed
         : await this.adapter.connect();
     } catch (error) {
@@ -669,7 +709,6 @@ export class ShellService {
     this.database.updateKeepalive({
       enabled,
       enabledAt: enabled ? (this.database.getKeepalive().enabledAt || now) : '',
-      lastError: '',
       nextAttemptAt: enabled ? now : ''
     });
     this.emitChanged();
@@ -678,21 +717,44 @@ export class ShellService {
   }
 
   private async backgroundTick(): Promise<void> {
-    const pendingPairing = this.database.getPendingRemotePairing();
-    if (pendingPairing?.status === 'creating' && Date.parse(pendingPairing.expiresAt) <= this.timing.now()) {
-      this.database.clearRemotePairingIntent(pendingPairing.sessionId);
-      this.remotePairing = { state: 'expired', pairingCode: '', expiresAt: pendingPairing?.expiresAt || '', message: '损坏或未完成的配对 reservation 已超过原始有效期并安全清理。' };
-      this.emitChanged();
-    } else if (pendingPairing?.status === 'active' && pendingPairing.cleanupRequired) {
-      try { await this.retryPendingPairingCleanup(); } catch { /* durable cleanup remains pending */ }
-    } else if (pendingPairing?.status === 'active' && pendingPairing.commitRequired) {
-      try { await this.completePendingPairingCommit(); } catch { /* durable staged commit remains pending */ }
+    if (this.usesLegacyRemoteLifecycle()) {
+      const pendingPairing = this.database.getPendingRemotePairing();
+      if (pendingPairing?.status === 'creating' && Date.parse(pendingPairing.expiresAt) <= this.timing.now()) {
+        this.database.clearRemotePairingIntent(pendingPairing.sessionId);
+        this.remotePairing = { state: 'expired', pairingCode: '', expiresAt: pendingPairing?.expiresAt || '', message: '损坏或未完成的配对 reservation 已超过原始有效期并安全清理。' };
+        this.emitChanged();
+      } else if (pendingPairing?.status === 'active' && pendingPairing.cleanupRequired) {
+        try { await this.retryPendingPairingCleanup(); } catch { /* durable cleanup remains pending */ }
+      } else if (pendingPairing?.status === 'active' && pendingPairing.commitRequired) {
+        try { await this.completePendingPairingCommit(); } catch { /* durable staged commit remains pending */ }
+      }
+      if (this.database.getPendingRemoteRevocation() && !this.revocationRetryRunning) {
+        try { await this.retryPendingRemoteRevocation(); } catch { /* durable pending state is the retry source */ }
+      }
+      if (this.pairingSecret) {
+        try { await this.pollRemotePairing(); } catch { /* retry without consuming session */ }
+      }
     }
-    if (this.database.getPendingRemoteRevocation() && !this.revocationRetryRunning) {
-      try { await this.retryPendingRemoteRevocation(); } catch { /* durable pending state is the retry source */ }
-    }
-    if (this.pairingSecret) {
-      try { await this.pollRemotePairing(); } catch { /* retry without consuming session */ }
+    const keepalive = this.database.getKeepalive();
+    const keepaliveNext = Date.parse(keepalive.nextAttemptAt);
+    const keepaliveDue = keepalive.enabled
+      && !this.keepaliveRunning
+      && !this.connectRunning
+      && (!Number.isFinite(keepaliveNext) || keepaliveNext <= Date.now());
+    if (
+      CONNECT_WAITING_STATES.has(this.connection.status)
+      && !this.connectRunning
+      && !this.pairingPollRunning
+      && !this.pairingSecret
+      && (!this.usesLegacyRemoteLifecycle() || !this.database.hasPendingRemoteLifecycleWork())
+      && !keepaliveDue
+    ) {
+      // A normal Shell restart must keep observing the existing Connector,
+      // browser, Pack and Page Authorization layers. This is deliberately a
+      // passive status reconciliation: it never starts, focuses, navigates or
+      // reloads the workstation browser. The transport single-flight guard
+      // prevents overlapping five-second ticks.
+      this.scheduleTransportReconcile();
     }
     if (this.connection.connected
       && !this.workspaceDirectory.available
@@ -702,25 +764,24 @@ export class ShellService {
       this.lastWorkspaceRecoveryAt = this.timing.now();
       try { await this.refreshWorkspaceDirectory(); } catch { /* retain cached display and retry after the bounded cooldown */ }
     }
-    const keepalive = this.database.getKeepalive();
-    if (!keepalive.enabled || this.keepaliveRunning) return;
-    const next = Date.parse(keepalive.nextAttemptAt);
-    if (Number.isFinite(next) && next > Date.now()) return;
+    if (!keepaliveDue) return;
     await this.runKeepalive();
   }
 
   private async runKeepalive(): Promise<void> {
-    if (this.keepaliveRunning) return;
+    if (this.keepaliveRunning || this.connectRunning) return;
     this.keepaliveRunning = true;
     const attemptedAt = utcNow();
     const current = this.database.getKeepalive();
     const nextAttemptAt = new Date(Date.now() + current.intervalSeconds * 1_000).toISOString();
-    this.database.updateKeepalive({ lastAttemptAt: attemptedAt, nextAttemptAt, lastError: '' });
+    // Preserve the last authoritative failure while the probe is in flight.
+    // It is cleared only after a live status proves the Pack is connected.
+    this.database.updateKeepalive({ lastAttemptAt: attemptedAt, nextAttemptAt });
     this.emitChanged();
     try {
-      if (!this.connection.connected) throw new AppError('KEEPALIVE.NOT_CONNECTED', '当前 Pack 连接已失效。');
       const readStatus = async () => {
-        const observed = await this.adapter.load();
+        const observed = this.passiveConnectionSnapshot(await this.adapter.load());
+        if (this.connectRunning) return observed;
         this.connection = observed;
         this.database.saveConnectionPayload(observed);
         if (!observed.connected) {
@@ -728,12 +789,16 @@ export class ShellService {
         }
         return observed;
       };
-      this.connection = this.interactionLogs
+      const observed = this.interactionLogs
         ? await this.interactionLogs.run({
           plane: 'connector', component: 'remote-transport', surface: 'shell.session', action: 'keepalive-status',
           failurePoint: 'connector.keepalive.status'
         }, readStatus)
         : await readStatus();
+      // An explicit Connect that started during the bounded passive read owns
+      // the projection and will perform its own reconciliation.
+      if (this.connectRunning) return;
+      this.connection = observed;
       this.database.updateKeepalive({ lastSuccessAt: utcNow(), lastError: '' });
     } catch (error) {
       this.database.updateKeepalive({
@@ -984,6 +1049,7 @@ export class ShellService {
   }
 
   async beginRemotePairing(input: { repair: boolean; confirmed?: boolean; expectedStateVersion: number }): Promise<ShellSnapshot> {
+    if (!this.usesLegacyRemoteLifecycle()) throw new AppError('CONNECTOR_NEXT.ENROLLMENT_MANAGED_EXTERNALLY', 'Connector Next enrollment is managed by its independent v3 control plane.');
     if (this.lifecycleMutationRunning || this.pairingPollRunning) throw new AppError('REMOTE.LIFECYCLE_PENDING', '已有 Remote 生命周期变更正在进行。', true);
     this.lifecycleMutationRunning = true;
     let intentId = '';
@@ -1099,6 +1165,7 @@ export class ShellService {
   }
 
   async cancelRemotePairing(): Promise<ShellSnapshot> {
+    if (!this.usesLegacyRemoteLifecycle()) throw new AppError('CONNECTOR_NEXT.ENROLLMENT_MANAGED_EXTERNALLY', 'Connector Next does not use legacy Remote pairing.');
     if (this.lifecycleMutationRunning || this.pairingPollRunning) {
       throw new AppError('REMOTE.LIFECYCLE_PENDING', '配对状态正在变更或核验，不能并发取消。', true);
     }
@@ -1139,6 +1206,7 @@ export class ShellService {
   }
 
   async revokeRemoteBinding(input: { confirmed: boolean; expectedStateVersion: number }): Promise<ShellSnapshot> {
+    if (!this.usesLegacyRemoteLifecycle()) throw new AppError('CONNECTOR_NEXT.ENROLLMENT_MANAGED_EXTERNALLY', 'Connector Next revocation belongs to its independent v3 control plane.');
     if (this.lifecycleMutationRunning || this.pairingPollRunning) throw new AppError('REMOTE.LIFECYCLE_PENDING', '已有 Remote 生命周期变更正在进行。', true);
     this.lifecycleMutationRunning = true;
     try {

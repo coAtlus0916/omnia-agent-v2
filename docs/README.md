@@ -2,18 +2,18 @@
 
 本页是 v5 文档的当前状态索引。新 Agent 必须先读 [Agent 开发入口](development/AGENT_START_HERE.md)，再按任务路由阅读；不要把历史验收或 v4 研究报告当作当前实现状态。
 
-## 当前状态（2026-08-05）
+## 当前状态（2026-08-10）
 
-| 项目 | 当前状态 | 仍待完成 |
+| 项目 | 源码事实 | 未完成边界 |
 |---|---|---|
-| Shell | `0.4.12` Remote-only：安全锁支持搜索、Omnia 真实所在部分折叠、右侧已选与全局关联锁；Core 单飞读取、CAS 持久化并冻结精确成员；固定宿主由启动器加载工作区热构建；内置 recording 0.3.0、create-associate 0.2.10 与 delete-elements 0.2.1 | create-associate 0.2.10 仅发布源码、尚未打包；真实所在部分目录已现场只读采样；保存/冻结读回待发布后确认 |
-| 录制 | 官方签名独立 Feature `omnia.recording 0.3.0 / sequence 4`，播放器式真实 start/pause/resume/stop/export 并自动采集当前页 Risk/Control | 真实 Pack/Remote 现场 canary |
-| 删除元素 | 独立签名 Feature `0.2.1 / sequence 8`，随 Shell 内置自动安装/升级；声明式真实目录、多选，Comments 消息卡唯一持有删除图计划 | Information/TOOL 零 blocker；APP/DB/OS 展开派生 GRA 与 DB/OS–APP 解关联，每步独立 Core command/receipt/readback；目标 Pack 真实 canary 待执行 |
-| 删除聊天记录 | 未交付 | 仍处于产品设计阶段 |
-| 新建与关联 | `omnia.create-associate@0.2.10 / sequence 12` 源码；Omnia/Core GUID 接受非全零 8-4-4-4-12 十六进制且不限制 UUID version/variant；authority 与安全锁/delete 共用真实 Facet 目录，无关 Facet 在 Engagement 校验后忽略；只接受精确 Engagement 下的 `CustomWorkspaceGroup → CustomWorkspace.parentId`，Workspace 名称必须唯一命中且处于安全锁范围 | 尚未打包、安装或 canary；真实 SAP ECC mutation/readback canary 待完成；AI review port 待接通 |
-| Phase 1 母版 | 已冻结 V8 治理输入：9 sheets、187 字段、68 条关系、21 条 v4 证据、180/180 源字段追溯；运行时使用独立签名 base/TemplateInstance，不把 V8 当用户模板 | 真实 Omnia/目标 Pack canary 未通过；待发布首个获批 TemplateVersion |
-| Remote | Remote-only：Bridge `0.4.5` 下发在线更新；Connector `0.3.15 / sequence 18` 读取 Omnia 真实 Facet 权威目录，并保留跨 Realm 的具体 Operation 错误；无 Local fallback | stable 自动升级已现场确认；企业 SSO 恢复后继续 Pack mutation/readback canary |
-| Nova | 仅保留 OpenAI-compatible 配置路径 | Nova 专有协议尚未校验 |
+| Shell | `0.4.15`，Remote-only | Windows Builtin catalog 与复制清单版本不一致，当前发行阻断 |
+| Create & Associate | `0.2.103 / sequence 105` 源码候选 | 当前 digest 的 live acceptance pending；Core 仍有业务/版本特判 |
+| Delete Elements | `0.3.20 / sequence 29` 源码候选 | 当前 digest 的 live acceptance pending；无 resource-owner 升级闭环 |
+| Recording | `0.4.19 / sequence 32` 源码候选 | 当前 digest 的 live acceptance pending；Operation 回滚受 sequence/fingerprint 阻断 |
+| Workpaper Preparation | `0.1.3 / sequence 4` 源码候选 | npm 发布入口与当前 digest live acceptance pending |
+| Remote | 唯一 Connector 产品链；无 Local fallback | 当前 Remote 发布基线和真实 Pack canary 以各自发布记录为准，不从 Feature 候选测试继承 |
+
+四个 Feature 目前不能表述为“已独立升级/回滚”。[四 Feature 独立性审计](architecture/FEATURE_INDEPENDENCE.md) 是边界、P0–P2 证据和关闭条件的单一事实源；源码候选、fixture、mock 与历史验收都不等于当前版本现场通过。
 
 Feature 的原装/内置/后装/Operation/额外部署边界以 [Feature 包总览](implementation/FEATURE_PACKAGE_CATALOG.md) 为准；Shell 的实际代码映射以 [Shell 实现映射](implementation/SHELL_IMPLEMENTATION_MAP.md) 为准。
 
@@ -22,17 +22,19 @@ Feature 的原装/内置/后装/Operation/额外部署边界以 [Feature 包总�
 1. [Agent 开发入口](development/AGENT_START_HERE.md)
 2. [开发手册](development/DEVELOPMENT_PLAYBOOK.md)
 3. [系统架构](architecture/SYSTEM_ARCHITECTURE.md)
-4. [统一合同](contracts/CONTRACTS.md)
-5. [Feature Package 标准](architecture/FEATURE_PACKAGE_STANDARD.md)
-6. [Connector Gate](architecture/CONNECTOR_GATE.md)
-7. [数据与存储](data/DATA_AND_STORAGE.md) 与 [Managed Content 登记簿](data/AGENT_MANAGED_CONTENT_REGISTRY.md)
-8. [Feature 快速开发与测试](development/FEATURE_FAST_ITERATION_GUIDE.md)
-9. [Feature 包总览](implementation/FEATURE_PACKAGE_CATALOG.md)
-10. 对应任务的产品设计、实现文档、研究报告、源码和测试。
+4. [四 Feature 独立性审计](architecture/FEATURE_INDEPENDENCE.md)
+5. [统一合同](contracts/CONTRACTS.md)
+6. [Feature Package 标准](architecture/FEATURE_PACKAGE_STANDARD.md)
+7. [Connector Gate](architecture/CONNECTOR_GATE.md)
+8. [数据与存储](data/DATA_AND_STORAGE.md) 与 [Managed Content 登记簿](data/AGENT_MANAGED_CONTENT_REGISTRY.md)
+9. [Feature 快速开发与测试](development/FEATURE_FAST_ITERATION_GUIDE.md)
+10. [Feature 包总览](implementation/FEATURE_PACKAGE_CATALOG.md)
+11. 对应任务的产品设计、实现文档、研究报告、源码和测试。
 
 ## 架构与合同
 
 - [系统架构](architecture/SYSTEM_ARCHITECTURE.md)：前台、中台、后台、Connector 四 Plane、进程与信任边界。
+- [四 Feature 独立性审计](architecture/FEATURE_INDEPENDENCE.md)：Feature 独立性不变量、P0–P2 实现证据、测试和发布关闭条件。
 - [统一合同](contracts/CONTRACTS.md)：公共对象、状态、错误、幂等、`uncertain`、`reconcile`。
 - [Feature Package 标准](architecture/FEATURE_PACKAGE_STANDARD.md)：独立包、manifest、四 Plane 实现、安装升级回滚。
 - [Connector Gate](architecture/CONNECTOR_GATE.md)：Remote-only Transport/Session/Gate/Operation host、链接码/binding/Pack 状态。
@@ -50,12 +52,8 @@ Feature 的原装/内置/后装/Operation/额外部署边界以 [Feature 包总�
 - [Feature 随包文档模板](development/FEATURE_DOCUMENTATION_TEMPLATE.md)
 - [新建与关联 0.2.6 热更新](implementation/CREATE_ASSOCIATE_0_2_6_HOT_UPDATE.md)
 - [录制 Feature 实现](implementation/RECORDING_FEATURE.md)
-- [Remote Connector 0.3.4 发布记录](implementation/REMOTE_CONNECTOR_0_3_4_RELEASE.md)
-- [Remote Connector 0.3.5 Remote-only 发布记录](implementation/REMOTE_CONNECTOR_0_3_5_RELEASE.md)
-- [Remote Connector 0.3.6 新建与关联 Gate 发布记录](implementation/REMOTE_CONNECTOR_0_3_6_RELEASE.md)
-- [Remote Connector 0.3.7 可升级便携包发布记录](implementation/REMOTE_CONNECTOR_0_3_7_RELEASE.md)
-- [v5 Bridge 部署合同](implementation/V5_BRIDGE_DEPLOYMENT.md)
-- [Bridge 0.4.4 配对收紧发布记录](implementation/BRIDGE_0_4_4_RELEASE.md)
+- [Connector Next 架构与运行边界](architecture/CONNECTOR_NEXT.md)
+- [公司本地 Connector Next 便携包发布指南](development/COMPANY_LOOPBACK_PORTABLE_RELEASE.md)
 - [Remote-only 迁移说明](implementation/REMOTE_ONLY_MIGRATION.md)
 - [Shell 0.4.2 Remote-only UI/Connector 验收](reviews/SHELL_0_4_2_REMOTE_ONLY_ACCEPTANCE.md)
 - [Shell 0.4.3 新建与关联便携验收](reviews/SHELL_0_4_3_CREATE_ASSOCIATE_PORTABLE_ACCEPTANCE.md)
@@ -98,7 +96,6 @@ v4 仅用于证据、接口路径和行为复核。开发 Agent 先读 [v4 复�
 
 - [Shell 0.1.0 历史验收](reviews/SHELL_0_1_0_ACCEPTANCE.md)
 - [Shell 0.4.1 UI 回归验收](reviews/SHELL_0_4_1_UI_REGRESSION_ACCEPTANCE.md)
-- [Remote Connector 0.1.0 历史发布记录](implementation/REMOTE_CONNECTOR_0_1_0_RELEASE.md)
 - [Shell/Remote 0.2.0 历史验收](reviews/SHELL_REMOTE_0_2_0_ACCEPTANCE.md)
 - [早期独立技术审查](reviews/INDEPENDENT_FEASIBILITY_ARCHITECTURE_REVIEW.md)
 - 各 ADR 的 Proposed/Accepted 时间点和 v4 研究快照

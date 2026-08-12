@@ -22,7 +22,7 @@ export type ConnectionStatus =
 
 export interface ConnectionSnapshot {
   transport: 'remote';
-  adapter: 'v5_remote_connector';
+  adapter: 'v5_remote_connector' | 'connector_next_v3';
   adapterAvailable: boolean;
   adapterReason: string;
   remoteAvailable: boolean;
@@ -323,7 +323,7 @@ export interface ShellApi {
     surfaceId: string;
     placement: 'docked' | 'detached' | 'minimized';
     bounds?: { x: number; y: number; width: number; height: number };
-  }): Promise<{ instanceId: string; placement: 'docked' | 'detached' | 'minimized' | 'closed'; attached: boolean; reason: string }>;
+  }): Promise<{ instanceId: string; placement: 'docked' | 'detached' | 'minimized' | 'closed'; attached: boolean; reason: string; surfaceStateVersion: number }>;
   focusFeatureSurface?(instanceId: string): Promise<FeatureSurfaceFocusResult>;
   resizeFeatureSurface?(input: { instanceId: string; bounds: { x: number; y: number; width: number; height: number } }): Promise<void>;
   closeFeatureSurface?(instanceId: string): Promise<void>;

@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { WorkstationOmniaSession, _test } from '../src/connector/workstation-omnia-session.ts';
+import { ConnectorOperationError, WorkstationOmniaSession, _test } from '../src/connector/workstation-omnia-session.ts';
 import { isAllowedOmniaUrl, isGuid, parseEngagementId } from '../src/connector/omnia-origin.ts';
 
 const engagementId = '11111111-1111-4111-8111-111111111111';
@@ -55,6 +55,21 @@ test('live hierarchy snapshot exposes only explicit canonical authority identiti
     (connector as any).authByPage.set(page,{headers:{authorization:'Bearer live'},apiOrigin:'https://api.deloitteomnia.deloitte.com.cn',engagementId,identityMismatch:false});
     (connector as any).api=async()=>[{engagementId,name:'Live Pack',clientName:'Client',tenantId,packId}];
     const status=await connector.status();assert.equal(status.status,'connected');assert.equal(status.authorityInstanceId,'https://api.deloitteomnia.deloitte.com.cn');assert.equal(status.tenantOrOrgId,tenantId);assert.equal(status.packId,packId);
+  }finally{await connector.close();rmSync(root,{recursive:true,force:true});}
+});
+
+test('signed Operation hierarchy proof is reused only for the exact Page, Pack, API origin and bearer', async()=>{
+  const root=mkdtempSync(path.join(os.tmpdir(),'omnia-v5-operation-identity-cache-'));const connector=new WorkstationOmniaSession(root,fetch);
+  const page={url:()=>`https://deloitteomnia.deloitte.com.cn/engagement/${engagementId}/home`};
+  let reads=0;
+  try{
+    (connector as any).api=async()=>{reads+=1;return[{engagementId,name:'Live Pack',clientName:'Client'}];};
+    const base={page,targetUrl:new URL(page.url()),apiOrigin:'https://api.deloitteomnia.deloitte.com.cn',engagementId,headers:{authorization:'Bearer one'}};
+    const first=await (connector as any).operationPackIdentity(base);
+    const second=await (connector as any).operationPackIdentity(base);
+    assert.deepEqual(second,first);assert.equal(reads,1,'unchanged exact binding must not re-read hierarchy per Operation');
+    await (connector as any).operationPackIdentity({...base,headers:{authorization:'Bearer two'}});
+    assert.equal(reads,2,'a bearer change must force a new authoritative hierarchy read');
   }finally{await connector.close();rmSync(root,{recursive:true,force:true});}
 });
 
@@ -144,14 +159,14 @@ test('Workstation Session Core health is self-contained and does not start a bro
   const root = mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-connector-'));
   const connector = new WorkstationOmniaSession(root, fetch);
   try {
-    assert.deepEqual(connector.health(), { ready: true, connectorVersion: '0.3.33' });
+    assert.deepEqual(connector.health(), { ready: true, connectorVersion: '0.3.36' });
   } finally {
     void connector.close();
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('refresh is a passive status probe that preserves process, session, target, and Pack identity', async () => {
+test('refresh is a passive live status probe that preserves process, session, target, and Pack identity', async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-passive-refresh-'));
   const connector = new WorkstationOmniaSession(root, fetch);
   const packId = engagementId;
@@ -181,7 +196,6 @@ test('refresh is a passive status probe that preserves process, session, target,
     });
     (connector as any).api = async () => {
       hierarchyReads += 1;
-      if (hierarchyReads > 1) throw new Error('status/refresh must reuse the verified Pack identity');
       return [{
         engagementId,
         name: 'Live Pack',
@@ -198,8 +212,89 @@ test('refresh is a passive status probe that preserves process, session, target,
     assert.equal(after.engagementId, before.engagementId);
     assert.equal(after.packId, before.packId);
     assert.equal(currentUrl, targetUrl);
-    assert.equal(hierarchyReads, 1);
+    assert.equal(hierarchyReads, 2);
     assert.deepEqual(browserActions, { reload: 0, goto: 0, bringToFront: 0, newPage: 0, connect: 0 });
+  } finally {
+    await connector.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('live status revokes stale Page Authorization instead of projecting cached Connected', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-live-status-auth-'));
+  const connector = new WorkstationOmniaSession(root, fetch);
+  const page = { url: () => `https://deloitteomnia.deloitte.com.cn/engagement/${engagementId}/home` };
+  let identityReads = 0;
+  try {
+    (connector as any).port = 32123;
+    (connector as any).cdpReady = async () => true;
+    (connector as any).currentPage = async () => page;
+    (connector as any).authByPage.set(page, {
+      headers: { authorization: 'Bearer expiring' },
+      apiOrigin: 'https://api.deloitteomnia.deloitte.com.cn',
+      engagementId,
+      identityMismatch: false,
+      captureEpoch: 1
+    });
+    (connector as any).identify = async () => {
+      identityReads += 1;
+      if (identityReads === 1) return {
+        name: 'Live Pack', clientName: 'Live Client',
+        authorityInstanceId: 'https://api.deloitteomnia.deloitte.com.cn',
+        tenantOrOrgId: '', packId: engagementId
+      };
+      throw new ConnectorOperationError(
+        'CONNECTOR.AUTH_REQUIRED',
+        'Omnia read returned HTTP 401.'
+      );
+    };
+
+    const first = await connector.status();
+    assert.equal(first.status, 'connected');
+    const second = await connector.status();
+    assert.equal(second.status, 'waiting_authorization');
+    assert.equal(second.connected, false);
+    assert.equal((connector as any).authByPage.get(page), undefined);
+    assert.equal(identityReads, 2);
+  } finally {
+    await connector.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('explicit connect recaptures Authorization on an existing target without reload or navigation', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-existing-target-rebind-'));
+  const connector = new WorkstationOmniaSession(root, fetch);
+  const actions = { bringToFront: 0, reload: 0, goto: 0, newPage: 0 };
+  const page = {
+    url: () => `https://deloitteomnia.deloitte.com.cn/engagement/${engagementId}/home`,
+    isClosed: () => false,
+    bringToFront: async () => { actions.bringToFront += 1; },
+    reload: async () => { actions.reload += 1; },
+    goto: async () => { actions.goto += 1; }
+  };
+  try {
+    (connector as any).ensureBrowser = async () => ({
+      contexts: () => [{ newPage: async () => { actions.newPage += 1; return page; } }]
+    });
+    (connector as any).currentPage = async () => page;
+    (connector as any).status = async () => (connector as any).authByPage.get(page)
+      ? { status: 'connected', connected: true }
+      : { status: 'waiting_authorization', connected: false };
+    (connector as any).waitForAuthorization = async () => {
+      (connector as any).authByPage.set(page, {
+        headers: { authorization: 'Bearer renewed' },
+        apiOrigin: 'https://api.deloitteomnia.deloitte.com.cn',
+        engagementId,
+        identityMismatch: false,
+        captureEpoch: 2
+      });
+      return true;
+    };
+
+    const result = await connector.connect();
+    assert.equal(result.status, 'connected');
+    assert.deepEqual(actions, { bringToFront: 1, reload: 0, goto: 0, newPage: 0 });
   } finally {
     await connector.close();
     rmSync(root, { recursive: true, force: true });

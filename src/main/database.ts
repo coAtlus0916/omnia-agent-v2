@@ -14,6 +14,7 @@ import type {
   WorkspaceSafetySnapshot
 } from '../shared/contracts.js';
 import { AppError } from '../shared/errors.js';
+import { assertTarget, type ConnectorNextTarget } from '../connector-next/protocol.js';
 import type { ContentCipher } from './content-cipher.js';
 
 const utcNow = () => new Date().toISOString();
@@ -857,6 +858,247 @@ export class CoreDatabase {
         ALTER TABLE workspace_safety ADD COLUMN global_enabled INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE workspace_safety ADD COLUMN global_section_ids_json TEXT NOT NULL DEFAULT '[]';
         ALTER TABLE workspace_safety ADD COLUMN global_workspace_ids_json TEXT NOT NULL DEFAULT '[]';
+      `],
+      [22, `
+        CREATE TABLE feature_return_recovery_authorizations (
+          authorization_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          feature_id TEXT NOT NULL,
+          source_feature_version TEXT NOT NULL,
+          successor_feature_version TEXT NOT NULL,
+          plan_digest TEXT NOT NULL CHECK(length(plan_digest)=64),
+          confirmation_id TEXT NOT NULL,
+          connector_id TEXT NOT NULL,
+          from_session_generation INTEGER NOT NULL,
+          to_session_generation INTEGER NOT NULL,
+          authority_instance_id TEXT NOT NULL,
+          tenant_or_org_id TEXT NOT NULL,
+          pack_id TEXT NOT NULL,
+          engagement_id TEXT NOT NULL,
+          workspace_ids_json TEXT NOT NULL,
+          safety_revision INTEGER NOT NULL CHECK(safety_revision >= 1),
+          expected_run_revision INTEGER NOT NULL CHECK(expected_run_revision >= 1),
+          source_artifact_id TEXT NOT NULL,
+          source_artifact_digest TEXT NOT NULL CHECK(length(source_artifact_digest)=64),
+          expires_at TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX feature_return_recovery_authorizations_run ON feature_return_recovery_authorizations(run_id,created_at);
+
+        CREATE TABLE feature_return_recovery_targets (
+          authorization_id TEXT NOT NULL,
+          run_id TEXT NOT NULL,
+          command_id TEXT NOT NULL,
+          target_kind TEXT NOT NULL,
+          target_key TEXT NOT NULL,
+          mutation_operation_id TEXT NOT NULL,
+          evidence_operation_ids_json TEXT NOT NULL,
+          target_identity_key TEXT NOT NULL,
+          reconcile_spec_json TEXT NOT NULL,
+          reconcile_spec_digest TEXT NOT NULL CHECK(length(reconcile_spec_digest)=64),
+          created_at TEXT NOT NULL,
+          PRIMARY KEY(authorization_id,command_id),
+          FOREIGN KEY(authorization_id) REFERENCES feature_return_recovery_authorizations(authorization_id)
+        );
+
+        CREATE TABLE feature_return_recovery_receipts (
+          receipt_id TEXT PRIMARY KEY,
+          authorization_id TEXT NOT NULL,
+          run_id TEXT NOT NULL,
+          command_id TEXT NOT NULL,
+          source_feature_version TEXT NOT NULL,
+          executor_feature_version TEXT NOT NULL,
+          operation_package_digest TEXT NOT NULL CHECK(operation_package_digest GLOB 'sha256:*' AND length(operation_package_digest)=71),
+          operation_id TEXT NOT NULL,
+          connector_id TEXT NOT NULL,
+          session_generation INTEGER NOT NULL,
+          authority_instance_id TEXT NOT NULL,
+          tenant_or_org_id TEXT NOT NULL,
+          pack_id TEXT NOT NULL,
+          engagement_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          target_identity_key TEXT NOT NULL,
+          request_digest TEXT NOT NULL CHECK(length(request_digest)=64),
+          response_digest TEXT NOT NULL CHECK(length(response_digest)=64),
+          response_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY(authorization_id) REFERENCES feature_return_recovery_authorizations(authorization_id)
+        );
+        CREATE UNIQUE INDEX feature_return_recovery_receipts_exact ON feature_return_recovery_receipts(authorization_id,command_id,operation_id,request_digest,response_digest);
+
+        CREATE TABLE feature_return_recovery_outcomes (
+          outcome_id TEXT PRIMARY KEY,
+          authorization_id TEXT NOT NULL,
+          run_id TEXT NOT NULL,
+          command_id TEXT NOT NULL,
+          outcome TEXT NOT NULL CHECK(outcome IN ('applied','not_applied')),
+          receipt_id TEXT NOT NULL UNIQUE,
+          payload_digest TEXT NOT NULL CHECK(length(payload_digest)=64),
+          payload_json TEXT NOT NULL,
+          recorded_at TEXT NOT NULL,
+          UNIQUE(authorization_id,command_id),
+          FOREIGN KEY(authorization_id) REFERENCES feature_return_recovery_authorizations(authorization_id),
+          FOREIGN KEY(receipt_id) REFERENCES feature_return_recovery_receipts(receipt_id)
+        );
+
+        CREATE TABLE feature_return_partial_closures (
+          closure_id TEXT PRIMARY KEY,
+          authorization_id TEXT NOT NULL UNIQUE,
+          run_id TEXT NOT NULL UNIQUE,
+          source_feature_version TEXT NOT NULL,
+          successor_feature_version TEXT NOT NULL,
+          from_run_revision INTEGER NOT NULL,
+          to_run_revision INTEGER NOT NULL,
+          verified_command_count INTEGER NOT NULL,
+          preflight_only_failure_count INTEGER NOT NULL,
+          reconciled_failure_count INTEGER NOT NULL,
+          cancelled_frozen_intent_count INTEGER NOT NULL,
+          closed_at TEXT NOT NULL,
+          FOREIGN KEY(authorization_id) REFERENCES feature_return_recovery_authorizations(authorization_id)
+        );
+      `],
+      [23, `
+        ALTER TABLE feature_commands ADD COLUMN connector_request_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE feature_commands ADD COLUMN connector_execution_generation TEXT NOT NULL DEFAULT '';
+        ALTER TABLE feature_commands ADD COLUMN connector_session_generation INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE feature_commands ADD COLUMN connector_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE feature_commands ADD COLUMN connector_operation_package_digest TEXT NOT NULL DEFAULT '';
+        ALTER TABLE feature_commands ADD COLUMN connector_feature_version TEXT NOT NULL DEFAULT '';
+        ALTER TABLE feature_operation_receipts ADD COLUMN connector_request_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE feature_operation_receipts ADD COLUMN connector_wire_result_digest TEXT NOT NULL DEFAULT '';
+        ALTER TABLE feature_operation_receipts ADD COLUMN connector_execution_generation TEXT NOT NULL DEFAULT '';
+        ALTER TABLE feature_return_recovery_receipts ADD COLUMN connector_request_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE feature_return_recovery_receipts ADD COLUMN connector_wire_result_digest TEXT NOT NULL DEFAULT '';
+        ALTER TABLE feature_return_recovery_receipts ADD COLUMN connector_execution_generation TEXT NOT NULL DEFAULT '';
+
+        CREATE TABLE connector_delivery_requests (
+          request_id TEXT PRIMARY KEY,
+          feature_id TEXT NOT NULL,
+          feature_version TEXT NOT NULL,
+          operation_id TEXT NOT NULL,
+          operation_package_digest TEXT NOT NULL,
+          run_id TEXT NOT NULL,
+          command_id TEXT NOT NULL,
+          connector_id TEXT NOT NULL,
+          session_generation INTEGER NOT NULL,
+          purpose TEXT NOT NULL CHECK(purpose IN ('mutation','readback','reconcile','recovery')),
+          state TEXT NOT NULL CHECK(state IN ('prepared','witnessed','receipt_committed','effect_resolved')),
+          wire_result_digest TEXT NOT NULL,
+          execution_generation TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX connector_delivery_command_purpose
+          ON connector_delivery_requests(run_id,command_id,purpose,operation_id,request_id);
+
+        CREATE TABLE connector_delivery_ack_outbox (
+          ack_id TEXT PRIMARY KEY,
+          request_id TEXT NOT NULL,
+          transaction_kind TEXT NOT NULL CHECK(transaction_kind IN ('receipt_committed','effect_resolved')),
+          payload_json TEXT NOT NULL,
+          state TEXT NOT NULL CHECK(state IN ('pending','sending','delivered')),
+          attempts INTEGER NOT NULL DEFAULT 0,
+          last_error TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          delivered_at TEXT NOT NULL DEFAULT '',
+          FOREIGN KEY(request_id) REFERENCES connector_delivery_requests(request_id)
+        );
+        CREATE INDEX connector_delivery_ack_pending ON connector_delivery_ack_outbox(state,created_at);
+        CREATE UNIQUE INDEX connector_delivery_ack_phase ON connector_delivery_ack_outbox(request_id,transaction_kind);
+      `],
+      [24, `
+        ALTER TABLE connector_delivery_requests ADD COLUMN abandoned_at TEXT NOT NULL DEFAULT '';
+      `],
+      [25, `
+        CREATE UNIQUE INDEX feature_runs_exact_owner
+          ON feature_runs(run_id,feature_id,feature_version);
+        CREATE UNIQUE INDEX feature_commands_exact_owner
+          ON feature_commands(command_id,run_id);
+
+        CREATE TABLE feature_command_spec_quarantine (
+          command_id TEXT NOT NULL,
+          run_id TEXT NOT NULL,
+          spec_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          quarantine_reason TEXT NOT NULL,
+          quarantined_at TEXT NOT NULL,
+          PRIMARY KEY(command_id,run_id)
+        );
+        INSERT INTO feature_command_spec_quarantine(
+          command_id,run_id,spec_json,created_at,quarantine_reason,quarantined_at
+        )
+        SELECT s.command_id,s.run_id,s.spec_json,s.created_at,
+          CASE
+            WHEN c.command_id IS NULL OR r.run_id IS NULL OR r.feature_id='' OR r.feature_version=''
+              THEN 'legacy_command_or_run_owner_unresolved'
+            ELSE 'legacy_command_spec_identity_unresolved'
+          END,
+          strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        FROM feature_command_specs s
+        LEFT JOIN feature_commands c ON c.command_id=s.command_id AND c.run_id=s.run_id
+        LEFT JOIN feature_runs r ON r.run_id=s.run_id
+        WHERE c.command_id IS NULL OR r.run_id IS NULL OR r.feature_id='' OR r.feature_version=''
+          OR CASE WHEN json_valid(s.spec_json)
+            THEN COALESCE(json_extract(s.spec_json,'$.commandId'),'')<>s.command_id
+            ELSE 1
+          END;
+
+        CREATE TABLE feature_command_specs_owned (
+          command_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          feature_id TEXT NOT NULL CHECK(feature_id<>''),
+          feature_version TEXT NOT NULL CHECK(feature_version<>''),
+          spec_json TEXT NOT NULL CHECK(
+            json_valid(spec_json)
+            AND COALESCE(json_extract(spec_json,'$.commandId'),'')=command_id
+          ),
+          created_at TEXT NOT NULL,
+          UNIQUE(command_id,run_id,feature_id,feature_version),
+          FOREIGN KEY(command_id,run_id) REFERENCES feature_commands(command_id,run_id),
+          FOREIGN KEY(run_id,feature_id,feature_version) REFERENCES feature_runs(run_id,feature_id,feature_version)
+        );
+        INSERT INTO feature_command_specs_owned(
+          command_id,run_id,feature_id,feature_version,spec_json,created_at
+        )
+        SELECT s.command_id,s.run_id,r.feature_id,r.feature_version,s.spec_json,s.created_at
+        FROM feature_command_specs s
+        JOIN feature_commands c ON c.command_id=s.command_id AND c.run_id=s.run_id
+        JOIN feature_runs r ON r.run_id=s.run_id
+        WHERE r.feature_id<>'' AND r.feature_version<>''
+          AND json_valid(s.spec_json)
+          AND COALESCE(json_extract(s.spec_json,'$.commandId'),'')=s.command_id;
+        DROP TABLE feature_command_specs;
+        ALTER TABLE feature_command_specs_owned RENAME TO feature_command_specs;
+        CREATE INDEX feature_command_specs_owner_lookup
+          ON feature_command_specs(feature_id,feature_version,run_id,created_at);
+
+        CREATE TRIGGER feature_commands_require_owned_run_insert
+        BEFORE INSERT ON feature_commands
+        WHEN NOT EXISTS(SELECT 1 FROM feature_runs r WHERE r.run_id=NEW.run_id)
+        BEGIN
+          SELECT RAISE(ABORT,'feature command requires an existing owned run');
+        END;
+        CREATE TRIGGER feature_commands_require_owned_run_update
+        BEFORE UPDATE OF run_id ON feature_commands
+        WHEN NOT EXISTS(SELECT 1 FROM feature_runs r WHERE r.run_id=NEW.run_id)
+        BEGIN
+          SELECT RAISE(ABORT,'feature command requires an existing owned run');
+        END;
+      `],
+      [26, `
+        CREATE TABLE connector_next_settings (
+          singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+          enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+          server_url TEXT NOT NULL,
+          agent_id TEXT NOT NULL,
+          device_id TEXT NOT NULL,
+          connector_instance_id TEXT NOT NULL,
+          control_token_ciphertext TEXT NOT NULL,
+          state_version INTEGER NOT NULL,
+          validated_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
       `]
     ];
     for (const [version, sql] of migrations) {
@@ -1092,6 +1334,73 @@ export class CoreDatabase {
       INSERT INTO connection_state(singleton, payload_json, updated_at) VALUES(1, ?, ?)
       ON CONFLICT(singleton) DO UPDATE SET payload_json=excluded.payload_json, updated_at=excluded.updated_at
     `).run(this.contentCipher.encrypt(JSON.stringify(payload)), now);
+  }
+
+  getConnectorNextSettings(): {
+    enabled: boolean;
+    serverUrl: string;
+    target: ConnectorNextTarget;
+    controlToken: string;
+    stateVersion: number;
+    validatedAt: string;
+    updatedAt: string;
+  } {
+    const row = this.db.prepare(`SELECT * FROM connector_next_settings WHERE singleton=1`).get() as Record<string, unknown> | undefined;
+    if (!row) return {
+      enabled: false, serverUrl: '', target: { agentId: '', deviceId: '', connectorInstanceId: '' },
+      controlToken: '', stateVersion: 0, validatedAt: '', updatedAt: ''
+    };
+    let controlToken = '';
+    try {
+      controlToken = row.control_token_ciphertext ? this.contentCipher.decrypt(String(row.control_token_ciphertext)) : '';
+    } catch {
+      throw new AppError('CONNECTOR_NEXT.CONFIGURATION_UNREADABLE', 'Connector Next protected control configuration cannot be decrypted.');
+    }
+    return {
+      enabled: Number(row.enabled) === 1,
+      serverUrl: String(row.server_url),
+      target: {
+        agentId: String(row.agent_id),
+        deviceId: String(row.device_id),
+        connectorInstanceId: String(row.connector_instance_id)
+      },
+      controlToken,
+      stateVersion: Number(row.state_version),
+      validatedAt: String(row.validated_at),
+      updatedAt: String(row.updated_at)
+    };
+  }
+
+  saveConnectorNextSettings(input: {
+    enabled: boolean;
+    serverUrl: string;
+    target: ConnectorNextTarget;
+    controlToken: string;
+    validatedAt: string;
+  }): ReturnType<CoreDatabase['getConnectorNextSettings']> {
+    assertTarget(input.target);
+    const server = new URL(input.serverUrl);
+    const loopback = ['127.0.0.1', '::1', 'localhost'].includes(server.hostname);
+    if (server.protocol !== 'https:' && !loopback) throw new AppError('CONNECTOR_NEXT.HTTPS_REQUIRED', 'Connector Next server must use HTTPS outside loopback.');
+    if (input.controlToken.length < 24) throw new AppError('CONNECTOR_NEXT.CONTROL_TOKEN_TOO_SHORT', 'Connector Next control token is invalid.');
+    if (!Number.isFinite(Date.parse(input.validatedAt))) throw new AppError('CONNECTOR_NEXT.VALIDATION_TIME_INVALID', 'Connector Next validation time is invalid.');
+    const now = utcNow();
+    this.db.prepare(`
+      INSERT INTO connector_next_settings(
+        singleton,enabled,server_url,agent_id,device_id,connector_instance_id,
+        control_token_ciphertext,state_version,validated_at,updated_at
+      ) VALUES(1,?,?,?,?,?,?,1,?,?)
+      ON CONFLICT(singleton) DO UPDATE SET
+        enabled=excluded.enabled,server_url=excluded.server_url,agent_id=excluded.agent_id,
+        device_id=excluded.device_id,connector_instance_id=excluded.connector_instance_id,
+        control_token_ciphertext=excluded.control_token_ciphertext,
+        state_version=connector_next_settings.state_version+1,
+        validated_at=excluded.validated_at,updated_at=excluded.updated_at
+    `).run(
+      input.enabled ? 1 : 0, server.href, input.target.agentId, input.target.deviceId,
+      input.target.connectorInstanceId, this.contentCipher.encrypt(input.controlToken), input.validatedAt, now
+    );
+    return this.getConnectorNextSettings();
   }
 
   getKeepalive(): Omit<import('../shared/contracts.js').KeepaliveSnapshot, 'running'> {

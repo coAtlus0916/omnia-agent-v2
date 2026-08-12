@@ -2,7 +2,16 @@ import { app, BrowserWindow, dialog, ipcMain, shell as electronShell } from 'ele
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { RemoteConnectorTransport } from './connector/remote-connector-transport.js';
+import { ConnectorNextTransport } from './connector/connector-next-transport.js';
+import { ConnectorNextControlClient } from './connector/connector-next-control-client.js';
+import type { ConnectorTransport } from './connector/connector-transport.js';
+import {
+  CONNECTOR_NEXT_PRODUCT_ID,
+  CONNECTOR_NEXT_PROTOCOL_ID,
+  assertTarget,
+  sameTarget,
+  type ConnectorNextTarget
+} from '../connector-next/protocol.js';
 import { CoreDatabase } from './database.js';
 import { createWindowsProtectedContentCipher } from './windows-content-cipher.js';
 import type { ContentCipher } from './content-cipher.js';
@@ -26,11 +35,33 @@ import type { InteractionLogQuery } from '../shared/interaction-log-contracts.js
 let mainWindow: BrowserWindow | null = null;
 let database: CoreDatabase | null = null;
 let shell: ShellService | null = null;
-let connector: RemoteConnectorTransport | null = null;
+let connector: ConnectorTransport | null = null;
 let surfaceWindows: SurfaceWindowManager | null = null;
 let featurePackages: FeaturePackageManager | null = null;
 let interactionLogs: InteractionLogService | null = null;
 let startupRecovery: ProtectedDataRecovery | null = null;
+
+const CONNECTOR_NEXT_CONFIGURE_ONCE_ENV = 'OMNIA_CONNECTOR_NEXT_CONFIGURE_ONCE';
+const CONNECTOR_NEXT_DEVELOPMENT_OVERRIDE_ENV = 'OMNIA_CONNECTOR_NEXT_DEVELOPMENT_OVERRIDE';
+
+function connectorNextEnvironmentConfig(): {
+  serverUrl: string;
+  controlToken: string;
+  target: ConnectorNextTarget;
+} {
+  const value = {
+    serverUrl: String(process.env.OMNIA_CONNECTOR_NEXT_SERVER_URL || '').trim(),
+    controlToken: String(process.env.OMNIA_CONNECTOR_NEXT_CONTROL_TOKEN || '').trim(),
+    target: {
+      agentId: String(process.env.OMNIA_CONNECTOR_NEXT_AGENT_ID || '').trim(),
+      deviceId: String(process.env.OMNIA_CONNECTOR_NEXT_DEVICE_ID || '').trim(),
+      connectorInstanceId: String(process.env.OMNIA_CONNECTOR_NEXT_INSTANCE_ID || '').trim()
+    }
+  };
+  assertTarget(value.target);
+  if (!value.serverUrl || !value.controlToken) throw new Error('CONNECTOR_NEXT.ONE_SHOT_CONFIGURATION_INCOMPLETE');
+  return value;
+}
 
 const ownsSingleInstance = app.requestSingleInstanceLock();
 if (!ownsSingleInstance) app.quit();
@@ -308,18 +339,45 @@ app.whenReady().then(async () => {
     contentCipher = createWindowsProtectedContentCipher(paths.stores);
   }
   database = new CoreDatabase(paths.database, contentCipher);
-  interactionLogs = new InteractionLogService(database.db);
-  connector = new RemoteConnectorTransport(() => {
-    const binding = database!.getRemoteBinding();
-    const lifecycleRecoveryPending = database!.hasPendingRemoteLifecycleWork();
-    const usable = binding.bindingState === 'bound' && binding.remotePaired && !lifecycleRecoveryPending;
-    return {
-      bridgeUrl: binding.bridgeUrl,
-      pairId: usable ? binding.pairId : '',
-      token: usable ? binding.remoteToken : '',
-      generation: binding.generation
+  if (String(process.env[CONNECTOR_NEXT_CONFIGURE_ONCE_ENV] || '').trim() === '1') {
+    const config = connectorNextEnvironmentConfig();
+    const control = new ConnectorNextControlClient({ serverUrl: config.serverUrl, controlToken: config.controlToken });
+    const observed = await control.getConnectorIdentity(config.target) as Record<string, unknown>;
+    const observedTarget: ConnectorNextTarget = {
+      agentId: String(observed.agentId || ''),
+      deviceId: String(observed.deviceId || ''),
+      connectorInstanceId: String(observed.connectorInstanceId || '')
     };
-  });
+    if (!sameTarget(observedTarget, config.target)
+      || observed.productId !== CONNECTOR_NEXT_PRODUCT_ID
+      || observed.protocolId !== CONNECTOR_NEXT_PROTOCOL_ID
+      || observed.lifecycle !== 'active') {
+      throw new Error('CONNECTOR_NEXT.ONE_SHOT_TARGET_VERIFICATION_FAILED');
+    }
+    const saved = database.saveConnectorNextSettings({
+      enabled: String(process.env.OMNIA_CONNECTOR_NEXT_ENABLED || '1').trim() !== '0',
+      ...config,
+      validatedAt: new Date().toISOString()
+    });
+    process.stdout.write(`${JSON.stringify({ configured: true, enabled: saved.enabled, target: saved.target, serverUrl: saved.serverUrl, validatedAt: saved.validatedAt })}\n`);
+    database.close();
+    database = null;
+    app.quit();
+    return;
+  }
+  interactionLogs = new InteractionLogService(database.db);
+  const persistedConnectorNext = database.getConnectorNextSettings();
+  const developmentOverride = String(process.env[CONNECTOR_NEXT_DEVELOPMENT_OVERRIDE_ENV] || '').trim() === '1'
+    && String(process.env.OMNIA_AGENT_CONNECTOR_TRANSPORT || '').trim().toLowerCase() === 'next';
+  const connectorNextConfig = developmentOverride ? connectorNextEnvironmentConfig() : persistedConnectorNext;
+  if (!persistedConnectorNext.enabled && !developmentOverride) {
+    throw new Error('CONNECTOR_NEXT.CONFIGURATION_REQUIRED');
+  }
+  connector = new ConnectorNextTransport(() => ({
+    serverUrl: connectorNextConfig.serverUrl,
+    controlToken: connectorNextConfig.controlToken,
+    target: connectorNextConfig.target
+  }));
   await connector.start();
   const chat = new ChatService(database, undefined, interactionLogs);
   const attachments = new AttachmentService(database, path.join(paths.data, 'artifacts'), interactionLogs);

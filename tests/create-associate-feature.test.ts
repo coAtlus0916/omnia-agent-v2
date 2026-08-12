@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { build } from 'esbuild';
 import { CoreDatabase } from '../src/main/database.js';
@@ -20,9 +21,34 @@ const worker = require(path.join(repository, 'feature-packages/create-associate/
 const featurePackagePath = path.join(repository, 'feature-packages/create-associate/candidates/create-associate-0.1.0.ofp');
 const managedV8 = path.join(repository, 'feature-packages/create-associate/source/managed/phase1-system-information-v8.xlsx');
 const operationPackagePath = path.join(repository, 'feature-packages/create-associate/candidates/create-associate-operation-0.1.0.ofop');
+const managedPython = path.join(repository, 'releases/runtime/python/cpython-3.13.14-embed-amd64/python.exe');
+const pythonSource = path.join(repository, 'feature-packages/create-associate/source/python');
 const cipher = { encrypt: (value: string) => value, decrypt: (value: string) => value };
 
 function sha256(bytes: Buffer): string { return crypto.createHash('sha256').update(bytes).digest('hex'); }
+const CRC_TABLE = Array.from({ length: 256 }, (_, value) => { let crc = value; for (let bit = 0; bit < 8; bit += 1) crc = (crc & 1) ? (0xedb88320 ^ (crc >>> 1)) : (crc >>> 1); return crc >>> 0; });
+function zip(files:Record<string,Buffer|string>):Buffer {
+  const local:Buffer[]=[];const central:Buffer[]=[];let offset=0;
+  for(const [pathname,content] of Object.entries(files)){
+    const name=Buffer.from(pathname,'utf8');const bytes=Buffer.from(content);let crc=0xffffffff;for(const byte of bytes)crc=CRC_TABLE[(crc^byte)&0xff]!^(crc>>>8);crc=(crc^0xffffffff)>>>0;
+    const header=Buffer.alloc(30);header.writeUInt32LE(0x04034b50,0);header.writeUInt16LE(20,4);header.writeUInt16LE(0x800,6);header.writeUInt32LE(crc,14);header.writeUInt32LE(bytes.length,18);header.writeUInt32LE(bytes.length,22);header.writeUInt16LE(name.length,26);local.push(header,name,bytes);
+    const directory=Buffer.alloc(46);directory.writeUInt32LE(0x02014b50,0);directory.writeUInt16LE(20,4);directory.writeUInt16LE(20,6);directory.writeUInt16LE(0x800,8);directory.writeUInt32LE(crc,16);directory.writeUInt32LE(bytes.length,20);directory.writeUInt32LE(bytes.length,24);directory.writeUInt16LE(name.length,28);directory.writeUInt32LE(offset,42);central.push(directory,name);offset+=header.length+name.length+bytes.length;
+  }
+  const directoryBytes=Buffer.concat(central);const end=Buffer.alloc(22);const count=Object.keys(files).length;end.writeUInt32LE(0x06054b50,0);end.writeUInt16LE(count,8);end.writeUInt16LE(count,10);end.writeUInt32LE(directoryBytes.length,12);end.writeUInt32LE(offset,16);return Buffer.concat([...local,directoryBytes,end]);
+}
+function invokeManagedPython(code:string,payload:any):any{
+  const result=spawnSync(managedPython,['-I','-S','-c',code,pythonSource],{cwd:repository,input:JSON.stringify(payload),encoding:'utf8',env:{...process.env,PYTHONUTF8:'1',PYTHONDONTWRITEBYTECODE:'1'}});
+  if(result.status!==0)throw new Error(result.stderr||result.stdout||'Managed CPython invocation failed.');
+  return JSON.parse(result.stdout);
+}
+function parseUserWorkbook(bytes:Buffer,sourceArtifactId:string,governance:any):any{
+  const code="import base64,json,sys\nassert sys.version_info[:3]==(3,13,14),sys.version\nsys.path.insert(0,sys.argv[1])\nfrom engine import parse_workbook\np=json.load(sys.stdin)\nr=parse_workbook(base64.b64decode(p['workbookBase64']),source_artifact_id=p['sourceArtifactId'],governance=p['governance'])\njson.dump(r,sys.stdout,separators=(',',':'),ensure_ascii=False)";
+  return invokeManagedPython(code,{workbookBase64:bytes.toString('base64'),sourceArtifactId,governance});
+}
+function compileRuntimeWorkbook(base:Buffer,parsed:any,metadata:any):{bytes:Buffer,descriptor:any}{
+  const code="import base64,json,sys\nassert sys.version_info[:3]==(3,13,14),sys.version\nsys.path.insert(0,sys.argv[1])\nfrom workbook_compile import compile_runtime_workbook\np=json.load(sys.stdin)\nb,d=compile_runtime_workbook(base64.b64decode(p['baseBase64']),parsed=p['parsed'],metadata=p['metadata'])\njson.dump({'workbookBase64':base64.b64encode(b).decode('ascii'),'descriptor':d},sys.stdout,separators=(',',':'))";
+  const value=invokeManagedPython(code,{baseBase64:base.toString('base64'),parsed,metadata});return{bytes:Buffer.from(value.workbookBase64,'base64'),descriptor:value.descriptor};
+}
 function resign(envelope:any,privateKey:string):any{const unsigned={...envelope};delete unsigned.signature;return{...unsigned,signature:crypto.sign(null,Buffer.from(canonicalJson(unsigned)),privateKey).toString('base64')}}
 function updatePackageMember(envelope:any,memberPath:string,bytes:Buffer):void{const member=envelope.files.find((item:any)=>item.path===memberPath);if(!member)throw new Error(`missing member ${memberPath}`);member.contentBase64=bytes.toString('base64');member.size=bytes.length;member.sha256=sha256(bytes);}
 function createUpgradePackage(output:string):void{
@@ -45,7 +71,7 @@ function populatedInput(elementId:string,factors=`Risk basis for ${elementId}`,w
     const column = String.fromCharCode('A'.charCodeAt(0) + index);
     return `<c r="${column}${rowNumber}" t="inlineStr"><is><t>${xml(value)}</t></is></c>`;
   }).join('')}</row>`;
-  return worker.zip({
+  return zip({
     '[Content_Types].xml': '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>',
     '_rels/.rels': '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
     'xl/workbook.xml': '<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="IT Risk Assessment" sheetId="1" r:id="rId1"/></sheets></workbook>',
@@ -56,7 +82,7 @@ function populatedInput(elementId:string,factors=`Risk basis for ${elementId}`,w
 function correctiveV3Input(elementId:string,factors=`Risk basis for ${elementId}`,workspace='20100 APP',mode='Higher'):Buffer {
   const entries=worker.zipEntries(populatedInput(elementId,factors,workspace,mode));const files:any={};for(const [name,value] of entries)files[name]=value;
   files['xl/worksheets/sheet1.xml']=Buffer.from(files['xl/worksheets/sheet1.xml'].toString('utf8').replace(/<c r="F1"[\s\S]*?<\/c>/u,'').replace(/<c r="F2"[\s\S]*?<\/c>/u,''));
-  return worker.zip(files);
+  return zip(files);
 }
 function correctiveGovernance(legacy:any):any {
   const governance=structuredClone(legacy);const declaration=governance.fields.find((field:any)=>field.fieldId==='P1.APP.IT.IS_DATA_AVAILABLE');Object.assign(declaration,{defaultRuleId:'v4.app-is-data-available-false.v1',defaultValue:false});
@@ -66,10 +92,96 @@ function correctiveGovernance(legacy:any):any {
   return governance;
 }
 
+test('returning Run exposes real force-cancel and restart controls, then closes by CAS without rolling back verified effects',async()=>{
+  const runId='af8a6e87-4968-4a48-a183-ffa2190e92f3';
+  const returnProgress=Array.from({length:88},(_item,index)=>({target_key:`target-${index}`,state:index<53?'verified':'frozen',command_state:index<53?'readback_verified':'pending'}));
+  const latest:any={run:{run_id:runId,state:'returning',state_revision:7},events:[],returnProgress};
+  const actions=worker.workflowNavigationActions(latest,'return');
+  const restart=actions.find((item:any)=>item.actionId==='restart-run');
+  const forceCancel=actions.find((item:any)=>item.actionId==='back-to-upload');
+  assert.equal(restart.enabled,true);assert.match(restart.reason,/先强制取消/u);
+  assert.equal(forceCancel.label,'强制取消回传');assert.equal(forceCancel.enabled,true);assert.match(forceCancel.reason,/53 项不会回滚或重放/u);
+
+  const calls:any[]=[];let savedPlan:any=null;
+  const store={call:async(method:string,input:any)=>{
+    calls.push({method,input});
+    if(method==='transitionRun'){
+      assert.deepEqual({runId:input.runId,expectedRevision:input.expectedRevision,toState:input.toState,eventType:input.eventType},{runId,expectedRevision:7,toState:'failed',eventType:'return.force_cancelled'});
+      assert.deepEqual(input.details,{verifiedTargets:53,totalTargets:88,remainingTargets:35,remoteRollback:false,mutationReplay:false});
+      return 8;
+    }
+    if(method==='loadPlan')return{planId:runId,runId,execution:{state:'running'}};
+    if(method==='savePlan'){savedPlan=input;return true;}
+    throw new Error(`unexpected Store call ${method}`);
+  }};
+  const cancelled=await worker.forceCancelReturnRun(store,latest);
+  assert.deepEqual({runId:cancelled.runId,stateRevision:cancelled.stateRevision,verified:cancelled.verified,total:cancelled.total},{runId,stateRevision:8,verified:53,total:88});
+  assert.equal(savedPlan.execution.state,'force_cancelled');assert.equal(savedPlan.execution.remainingTargets,35);assert.equal(savedPlan.execution.remoteRollback,false);assert.equal(savedPlan.execution.mutationReplay,false);
+  assert.equal(calls.filter((call)=>call.method==='transitionRun').length,1,'force cancel must commit one CAS Run transition');
+
+  const stoppedActions=worker.workflowNavigationActions({...latest,run:{...latest.run,state:'failed',state_revision:8}},'return');
+  assert.equal(stoppedActions.find((item:any)=>item.actionId==='restart-run').enabled,true,'restart must be enabled immediately after force cancel');
+});
+
+test('force-cancel fails closed when any Return result is uncertain',async()=>{
+  let transitioned=false;
+  const store={call:async(method:string)=>{if(method==='transitionRun')transitioned=true;throw new Error(`unexpected ${method}`);}};
+  await assert.rejects(worker.forceCancelReturnRun(store,{run:{run_id:'run-uncertain',state:'returning',state_revision:3},returnProgress:[{state:'uncertain',command_state:'uncertain'}]}),/必须先完成只读核验/u);
+  assert.equal(transitioned,false);
+});
+
+test('hidden surface-reopen fresh start mirrors safe eligibility and closes the old Run by exact CAS',async()=>{
+  const latest:any={run:{run_id:'run-reopen',state:'processing',state_revision:12},events:[],returnProgress:[]};
+  const actions=worker.workflowNavigationActions(latest,'validate');
+  const hidden=actions.find((item:any)=>item.actionId==='fresh-start-on-reopen');
+  const visible=actions.find((item:any)=>item.actionId==='restart-run');
+  assert.equal(hidden.enabled,true);assert.equal(hidden.reason,visible.reason);
+  const uncertainActions=worker.workflowNavigationActions({run:{run_id:'run-uncertain',state:'uncertain',state_revision:4},events:[],returnProgress:[{state:'uncertain',command_state:'uncertain'}]},'return');
+  assert.equal(uncertainActions.find((item:any)=>item.actionId==='fresh-start-on-reopen').enabled,false);
+
+  let current={...latest.run};const calls:any[]=[];
+  const store={call:async(method:string,input:any)=>{
+    calls.push({method,input:structuredClone(input)});
+    if(method==='loadReturnProgress')return[];
+    if(method==='transitionRun'){
+      assert.deepEqual({runId:input.runId,expectedRevision:input.expectedRevision,toState:input.toState},{runId:'run-reopen',expectedRevision:12,toState:'cancelled'});
+      current={...current,state:'cancelled',state_revision:13};return 13;
+    }
+    if(method==='loadLatestRun')return{run:{...current},events:[],returnProgress:[]};
+    if(method==='restartRun'){
+      assert.deepEqual(input,{runId:'run-reopen',expectedRevision:13});
+      current={...current,state_revision:14};return{state:'cancelled',stateRevision:14,terminalAuditPreserved:true};
+    }
+    throw new Error(`unexpected Store call ${method}`);
+  }};
+  const result=await worker.closeRunForFreshStart(store,latest,new Set(),'surface_reopen');
+  assert.equal(result.current.run.state_revision,14);
+  const transition=calls.find((item)=>item.method==='transitionRun').input;
+  assert.equal(transition.eventType,'run.fresh_start_force_closed');
+  assert.equal(transition.details.trigger,'surface_reopen');
+  assert.equal(transition.details.remoteRollback,false);assert.equal(transition.details.mutationReplay,false);
+  assert.equal(calls.filter((item)=>item.method==='restartRun').length,1);
+});
+
+test('force-cancel terminal CAS blocks every later Return command and keeps restart available',()=>{
+  const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'omnia-force-cancel-return-'));const paths=resolveProductPaths(temporary);const database=new CoreDatabase(paths.database,cipher);const store=new FeatureRuntimeStore(database.db,paths);
+  const runId='af8a6e87-4968-4a48-a183-ffa2190e92f3',now=new Date().toISOString();const context={featureId:'omnia.create-associate',featureVersion:'0.1.0',allowMutation:true};
+  try{
+    database.db.prepare(`INSERT INTO feature_runs(run_id,trace_id,feature_id,feature_version,engagement_id,state,state_revision,source_artifact_id,template_version_id,output_artifact_id,plan_digest,last_error,created_at,updated_at) VALUES(?,?,'omnia.create-associate','0.1.0','','returning',7,'','','',?,'',?,?)`).run(runId,crypto.randomUUID(),'a'.repeat(64),now,now);
+    const revision=store.call('transitionRun',{runId,expectedRevision:7,toState:'failed',eventType:'return.force_cancelled',error:'用户强制取消；已验证 53/88 项保持不变。',details:{verifiedTargets:53,totalTargets:88,remainingTargets:35,remoteRollback:false,mutationReplay:false}},context);
+    assert.equal(revision,8);
+    assert.throws(()=>store.call('prepareReturnCommand',{runId,planDigest:'a'.repeat(64)},context),/not owned by the active returning Feature version/u);
+    const restarted=store.call('restartRun',{runId,expectedRevision:8},context) as any;
+    assert.equal(restarted.state,'failed');assert.equal(restarted.stateRevision,9);assert.equal(restarted.terminalAuditPreserved,true);
+    const events=(database.db.prepare(`SELECT revision,event_type,from_state,to_state FROM feature_run_events WHERE run_id=? ORDER BY revision`).all(runId) as any[]).map((item)=>({...item}));
+    assert.deepEqual(events,[{revision:8,event_type:'return.force_cancelled',from_state:'returning',to_state:'failed'},{revision:9,event_type:'run.restart_requested',from_state:'failed',to_state:'failed'}]);
+  }finally{database.close();fs.rmSync(temporary,{recursive:true,force:true});}
+});
+
 function inheritedInput():Buffer{
   const row=(rowNumber:number,cells:string[])=>`<row r="${rowNumber}">${cells.map((value,index)=>`<c r="${String.fromCharCode(65+index)}${rowNumber}" t="inlineStr"><is><t>${xml(value)}</t></is></c>`).join('')}</row>`;
   const sheet=[row(1,['系统ID','APP类型','System Risk Classification','Factors Considered','Omnia工作区','isDataAvailable']),row(2,['APP-INHERIT','SAP ECC','Higher','Basis','20100 APP','false']),row(3,['数据库ID','DB 类型','Omnia工作区','关联系统ID']),row(4,['DB-INHERIT','Oracle','20100 APP','APP-INHERIT'])].join('');
-  return worker.zip({'[Content_Types].xml':'<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>','_rels/.rels':'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>','xl/workbook.xml':'<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="IT Risk Assessment" sheetId="1" r:id="rId1"/></sheets></workbook>','xl/_rels/workbook.xml.rels':'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>', 'xl/worksheets/sheet1.xml':`<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${sheet}</sheetData></worksheet>`});
+  return zip({'[Content_Types].xml':'<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>','_rels/.rels':'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>','xl/workbook.xml':'<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="IT Risk Assessment" sheetId="1" r:id="rId1"/></sheets></workbook>','xl/_rels/workbook.xml.rels':'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>', 'xl/worksheets/sheet1.xml':`<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${sheet}</sheetData></worksheet>`});
 }
 
 test('managed V8 governance and runtime-template base are exact, separate, and patched only at declared OOXML parts', () => {
@@ -80,7 +192,7 @@ test('managed V8 governance and runtime-template base are exact, separate, and p
   const parsedV8 = worker.parseV8(v8);
   assert.deepEqual(
     [parsedV8.fields.length, parsedV8.relations.length, parsedV8.traces.length, parsedV8.evidence.length],
-    [187, 68, 180, 21]
+    [239, 106, 180, 21]
   );
   const isRelevant=parsedV8.fields.find((row:any)=>row.values.field_id==='P1.APP.IT.IS_RELEVANT').values;
   assert.equal(isRelevant['对象子类型/区段'],''); assert.equal(isRelevant['字段用途'],''); assert.equal(isRelevant['允许值'],''); assert.equal(isRelevant['校验规则'],''); assert.equal(isRelevant.source_trace_id,'SRC.IT元素.011');
@@ -93,8 +205,8 @@ test('managed V8 governance and runtime-template base are exact, separate, and p
   const governance = JSON.parse(packageFile(outer, 'backend/governance.json').toString('utf8'));
   const base = packageFile(outer, 'backend/runtime-template-base.xlsx');
   assert.notEqual(sha256(base).toUpperCase(), worker.V8_SHA256);
-  assert.equal(governance.fields.length, 187);
-  assert.equal(governance.relations.length, 68);
+  assert.equal(governance.fields.length, 239);
+  assert.equal(governance.relations.length, 106);
   assert.equal(governance.scoringItems.length, 15);
   assert.equal(governance.scoringItems.filter((item: any) => String(item.higherApplicable).startsWith('Y')).length, 14);
   assert.equal(governance.scoringItems.filter((item: any) => String(item.higherApplicable).startsWith('N')).length, 1);
@@ -102,16 +214,16 @@ test('managed V8 governance and runtime-template base are exact, separate, and p
   assert.equal(governance.semanticDigest, sha256(Buffer.from(canonicalJson({
     fields: governance.fields, relations: governance.relations, scoringItems: governance.scoringItems, derivationRules: governance.derivationRules
   }))));
-  const corrective=correctiveGovernance(governance);const parsed = worker.parseUserWorkbook(correctiveV3Input('APP-REAL-A'), 'source-a', corrective);
+  const corrective=correctiveGovernance(governance);const parsed = parseUserWorkbook(correctiveV3Input('APP-REAL-A'), 'source-a', corrective);
   assert.equal(parsed.rows.length, 1);
   assert.equal(parsed.issues.length, 0,JSON.stringify(parsed.issues));
   const formulaEntries=worker.zipEntries(correctiveV3Input('APP-FORMULA')); const formulaFiles:any={}; for(const [name,value] of formulaEntries)formulaFiles[name]=value;
   formulaFiles['xl/worksheets/sheet1.xml']=Buffer.from(formulaFiles['xl/worksheets/sheet1.xml'].toString('utf8').replace(/<c r="A2"[^>]*>[\s\S]*?<\/c>/u,'<c r="A2"><f>1+1</f><v>2</v></c>'));
-  assert.throws(()=>worker.parseUserWorkbook(worker.zip(formulaFiles),'formula-source',corrective),/Formula cell A2 is unsupported in user input/);
-  const built = worker.buildRuntimeWorkbook(parsed, {
+  assert.throws(()=>parseUserWorkbook(zip(formulaFiles),'formula-source',corrective),/Formula cell A2 is unsupported in user input/);
+  const built = compileRuntimeWorkbook(base, parsed, {
     runId: '11111111-1111-4111-8111-111111111111', sourceArtifactId: 'source-a', governanceDigest: worker.V8_SHA256
-  }, base);
-  assert.equal(built.baseDigest, sha256(base));
+  });
+  assert.equal(built.descriptor.baseDigest, sha256(base));
   const original = worker.zipEntries(base) as Map<string, Buffer>;
   const output = worker.zipEntries(built.bytes) as Map<string, Buffer>;
   const outputXml=[...output.values()].map((value)=>value.toString('utf8')).join('\n');assert.match(outputXml,/GRA-APP-REAL-A/u);assert.match(outputXml,/APP-REAL-A/u);
@@ -137,15 +249,15 @@ test('processing persists source and planned inherited provenance while invalid 
   const envelope=verifyOfficialPackage(JSON.parse(fs.readFileSync(featurePackagePath,'utf8')),'omnia-feature');
   const governance=correctiveGovernance(JSON.parse(packageFile(envelope,'backend/governance.json').toString('utf8')));
   const inheritedBytes=inheritedInput();const inheritedEntries=worker.zipEntries(inheritedBytes);const inheritedFiles:any={};for(const [name,value] of inheritedEntries)inheritedFiles[name]=value;inheritedFiles['xl/worksheets/sheet1.xml']=Buffer.from(inheritedFiles['xl/worksheets/sheet1.xml'].toString('utf8').replace(/<c r="F1"[\s\S]*?<\/c>/u,'').replace(/<c r="F2"[\s\S]*?<\/c>/u,''));
-  const parsed=worker.parseUserWorkbook(worker.zip(inheritedFiles),'source-artifact-1',governance);
+  const parsed=parseUserWorkbook(zip(inheritedFiles),'source-artifact-1',governance);
   assert.ok(parsed.candidates.some((item:any)=>item.valueKind==='source'));
   const inherited=parsed.candidates.find((item:any)=>item.valueKind==='inherited'); assert.ok(inherited);
   assert.equal(inherited.value,'Higher'); assert.match(inherited.provenance.sourceTraceId,/^inheritance:/u); assert.match(inherited.provenance.derivationRule,/remote_verification_required_before_return/u);
   const relevantDefault=parsed.candidates.find((item:any)=>item.canonicalFieldId==='P1.APP.IT.IS_RELEVANT'&&item.valueKind==='rule_default');assert.ok(relevantDefault);assert.equal(relevantDefault.value,false);assert.equal(relevantDefault.provenance.derivationRule,'v8.app-is-relevant-false.v1');assert.equal(relevantDefault.provenance.sourceTraceId,'SRC.IT元素.011');
   const dataDefault=parsed.candidates.find((item:any)=>item.canonicalFieldId==='P1.APP.IT.IS_DATA_AVAILABLE'&&item.valueKind==='rule_default');assert.ok(dataDefault);assert.equal(dataDefault.value,false);assert.equal(dataDefault.provenance.derivationRule,'v4.app-is-data-available-false.v1');
-  const invalid=worker.parseUserWorkbook(correctiveV3Input('APP-BAD-ENUM','Basis','20100 APP','Maybe'),'source-artifact-2',governance);
+  const invalid=parseUserWorkbook(correctiveV3Input('APP-BAD-ENUM','Basis','20100 APP','Maybe'),'source-artifact-2',governance);
   assert.ok(invalid.issues.some((item:any)=>item.issueType==='invalid_enum'&&item.state==='needs_input'));
-  const noUserData=worker.parseUserWorkbook(correctiveV3Input('APP-NO-USER-DATA','Basis','20100 APP','Higher'),'source-artifact-3',governance);
+  const noUserData=parseUserWorkbook(correctiveV3Input('APP-NO-USER-DATA','Basis','20100 APP','Higher'),'source-artifact-3',governance);
   assert.equal(noUserData.issues.some((item:any)=>item.fieldKey.includes('P1.APP.IT.IS_DATA_AVAILABLE')),false);assert.ok(noUserData.candidates.some((item:any)=>item.canonicalFieldId==='P1.APP.IT.IS_DATA_AVAILABLE'&&item.valueKind==='rule_default'&&item.value===false));
 });
 
@@ -155,13 +267,13 @@ test('Core Review commit atomically persists element ID, GRA name and APP descri
     const packagePath=path.join(repository,'feature-packages/create-associate/candidates/create-associate-0.2.0.ofp');manager.install(packagePath);const envelope=verifyOfficialPackage(JSON.parse(fs.readFileSync(packagePath,'utf8')),'omnia-feature');const governance=correctiveGovernance(JSON.parse(packageFile(envelope,'backend/governance.json').toString('utf8')));
     const managed=database.db.prepare(`SELECT managed_path FROM feature_managed_assets WHERE feature_id=? AND feature_version=? AND member_path='backend/governance.json'`).get(context.featureId,context.featureVersion) as {managed_path:string};fs.writeFileSync(path.resolve(paths.data,...managed.managed_path.split('/')),JSON.stringify(governance));
     const runId=crypto.randomUUID(),sourceArtifactId=crypto.randomUUID(),templateVersionId=crypto.randomUUID(),templateInstanceId=crypto.randomUUID(),now=new Date().toISOString();database.db.prepare(`INSERT INTO feature_runs(run_id,trace_id,feature_id,feature_version,engagement_id,state,state_revision,source_artifact_id,template_version_id,output_artifact_id,plan_digest,last_error,created_at,updated_at) VALUES(?,?,'omnia.create-associate','0.2.0','','needs_input',7,?,?,'','','',?,?)`).run(runId,crypto.randomUUID(),sourceArtifactId,templateVersionId,now,now);database.db.prepare(`INSERT INTO template_versions(template_version_id,template_id,version,status,source_artifact_id,file_digest,semantic_digest,schema_version,owner,license,authorization_ref,requested_by,published_by,published_at,created_at) VALUES(?,'test-template','1.0.0','candidate',?, ?,?,'test/v1','test','internal','','','','',?)`).run(templateVersionId,sourceArtifactId,'a'.repeat(64),'b'.repeat(64),now);database.db.prepare(`INSERT INTO template_instances(template_instance_id,run_id,template_version_id,source_artifact_id,output_artifact_id,patch_digest,semantic_digest,output_file_digest,governance_digest,state,created_at,updated_at) VALUES(?,?,?,?,?,'',?,?,?,'candidate',?,?)`).run(templateInstanceId,runId,templateVersionId,sourceArtifactId,crypto.randomUUID(),'c'.repeat(64),'d'.repeat(64),'e'.repeat(64),now,now);
-    const parsed=worker.parseUserWorkbook(correctiveV3Input('APP-LINEAGE-OLD'),'placeholder',governance);for(const candidate of parsed.candidates)if(candidate.valueKind==='source')candidate.provenance.sourceArtifactId=sourceArtifactId;store.call('recordFieldRevisions',{runId,templateInstanceId,fields:parsed.candidates},context);
+    const parsed=parseUserWorkbook(correctiveV3Input('APP-LINEAGE-OLD'),'placeholder',governance);for(const candidate of parsed.candidates)if(candidate.valueKind==='source')candidate.provenance.sourceArtifactId=sourceArtifactId;store.call('recordFieldRevisions',{runId,templateInstanceId,fields:parsed.candidates},context);
     const id=parsed.candidates.find((candidate:any)=>candidate.canonicalFieldId==='P1.APP.IT.ELEMENT_ID'),gra=parsed.candidates.find((candidate:any)=>candidate.canonicalFieldId==='P1.RUNTIME.GRA.NAME'),description=parsed.candidates.find((candidate:any)=>candidate.canonicalFieldId==='P1.APP.IT.DESCRIPTION');assert.ok(id&&gra&&description);
     const base={runId,expectedRunRevision:7,revisions:[{rowKey:id.provenance.rowKey,fieldKey:id.fieldKey,expectedRevision:1,value:'APP-LINEAGE-NEW'}],issues:[],nextState:'needs_input',eventType:'review.saved_and_revalidated',excludedRowKey:'',templateInstanceId};
     assert.throws(()=>store.call('commitReviewValidation',{...base,derivedRevisions:[]},context),/atomically include every signed derived/);assert.equal((database.db.prepare(`SELECT MAX(revision) AS revision FROM feature_field_revisions WHERE run_id=? AND field_key=?`).get(runId,id.fieldKey) as any).revision,1);assert.equal((database.db.prepare(`SELECT state_revision FROM feature_runs WHERE run_id=?`).get(runId) as any).state_revision,7);
     const derivedRevisions=[{fieldKey:gra.fieldKey,expectedRevision:1,value:'GRA-APP-LINEAGE-NEW',dependencyFieldKey:id.fieldKey,dependencyRevision:2},{fieldKey:description.fieldKey,expectedRevision:1,value:'APP-LINEAGE-NEW',dependencyFieldKey:id.fieldKey,dependencyRevision:2}];const result=store.call('commitReviewValidation',{...base,derivedRevisions},context) as any;assert.equal(result.stateRevision,8);
     const latest=(fieldKey:string)=>database.db.prepare(`SELECT revision,value_json,value_kind,template_instance_id FROM feature_field_revisions WHERE run_id=? AND field_key=? ORDER BY revision DESC LIMIT 1`).get(runId,fieldKey) as any;assert.deepEqual([JSON.parse(latest(id.fieldKey).value_json),JSON.parse(latest(gra.fieldKey).value_json),JSON.parse(latest(description.fieldKey).value_json)],['APP-LINEAGE-NEW','GRA-APP-LINEAGE-NEW','APP-LINEAGE-NEW']);assert.deepEqual([latest(id.fieldKey).revision,latest(gra.fieldKey).revision,latest(description.fieldKey).revision],[2,2,2]);assert.ok([latest(id.fieldKey),latest(gra.fieldKey),latest(description.fieldKey)].every((row)=>row.template_instance_id===templateInstanceId));const event=database.db.prepare(`SELECT details_json FROM feature_run_events WHERE run_id=? AND revision=8`).get(runId) as any;assert.equal(JSON.parse(event.details_json).derivedRevisionCount,2);
-    const issueRuns=[crypto.randomUUID(),crypto.randomUUID()];for(const [index,issueRun] of issueRuns.entries()){database.db.prepare(`INSERT INTO feature_runs(run_id,trace_id,feature_id,feature_version,engagement_id,state,state_revision,source_artifact_id,template_version_id,output_artifact_id,plan_digest,last_error,created_at,updated_at) VALUES(?,?,'omnia.create-associate','0.2.0','','needs_input',1,?,'','','','',?,?)`).run(issueRun,crypto.randomUUID(),`issue-source-${index}`,now,now);const issueParsed=worker.parseUserWorkbook(correctiveV3Input('APP-SAME-ROW','basis','20100 APP','Invalid'),`issue-source-${index}`,governance);worker.recomputeLocalIssues(issueParsed);store.call('recordIssues',{runId:issueRun,issues:issueParsed.issues},context);}const durableIssues=database.db.prepare(`SELECT issue_id,run_id FROM feature_issues WHERE run_id IN (?,?) ORDER BY run_id,issue_id`).all(...issueRuns) as any[];assert.ok(durableIssues.length>=2);assert.equal(new Set(durableIssues.map((row)=>row.issue_id)).size,durableIssues.length,'same workbook coordinates in two Runs must not collide on the global issue PK');
+    const issueRuns=[crypto.randomUUID(),crypto.randomUUID()];for(const [index,issueRun] of issueRuns.entries()){database.db.prepare(`INSERT INTO feature_runs(run_id,trace_id,feature_id,feature_version,engagement_id,state,state_revision,source_artifact_id,template_version_id,output_artifact_id,plan_digest,last_error,created_at,updated_at) VALUES(?,?,'omnia.create-associate','0.2.0','','needs_input',1,?,'','','','',?,?)`).run(issueRun,crypto.randomUUID(),`issue-source-${index}`,now,now);const issueParsed=parseUserWorkbook(correctiveV3Input('APP-SAME-ROW','basis','20100 APP','Invalid'),`issue-source-${index}`,governance);worker.recomputeLocalIssues(issueParsed);store.call('recordIssues',{runId:issueRun,issues:issueParsed.issues},context);}const durableIssues=database.db.prepare(`SELECT issue_id,run_id FROM feature_issues WHERE run_id IN (?,?) ORDER BY run_id,issue_id`).all(...issueRuns) as any[];assert.ok(durableIssues.length>=2);assert.equal(new Set(durableIssues.map((row)=>row.issue_id)).size,durableIssues.length,'same workbook coordinates in two Runs must not collide on the global issue PK');
   }finally{database.close();fs.rmSync(temporary,{recursive:true,force:true});}
 });
 
@@ -177,7 +289,7 @@ test('two different offline inputs reuse one immutable TemplateVersion and persi
   const installer = new FeaturePackageManager(database.db, paths);
   installer.install(featurePackagePath);
   const returnHost = new OperationHost();
-  let returnBinding = { connectorId: 'connector-1', sessionGeneration: 5, engagementId: '11111111-1111-4111-8111-111111111111' };
+  let returnBinding = { connectorId: 'connector-1', sessionGeneration: 5, engagementId: '11111111-1111-4111-8111-111111111111', authorityInstanceId: 'authority-test', tenantOrOrgId: 'tenant-test', packId: 'pack-test' };
   const returnWorkspaceId = '22222222-2222-4222-8222-222222222222';
   const returnApplicationId = '33333333-3333-4333-8333-333333333333';
   const returnGraId = '44444444-4444-4444-8444-444444444444';
@@ -198,7 +310,7 @@ test('two different offline inputs reuse one immutable TemplateVersion and persi
   const controls = controlNames.map((name: string, index: number) => ({ controlId: guidFor(3000, index), name }));
   const associatedScopes = new Map<string, any>();
   const connector = {
-    registerOperation: async (input: any) => returnHost.register(input),
+    registerOperation: async (input: any) => returnHost.register(input, returnBinding),
     invokeOperation: async (input: any) => {
       operationAuthorization.push({operationId:input.operationId,mutationAuthorized:input.mutationAuthorized===true});
       returnBinding = input.request.connectorBinding;
@@ -420,11 +532,12 @@ test('two different offline inputs reuse one immutable TemplateVersion and persi
 test('signed core Operations enforce exact IT Element, GRA, and relationship preflight/write/read identities', async () => {
   const host = new OperationHost();
   const operationPackage = JSON.parse(fs.readFileSync(operationPackagePath, 'utf8'));
+  const engagementId = '11111111-1111-4111-8111-111111111111';
+  const binding = { connectorId: 'connector-1', sessionGeneration: 4, engagementId, authorityInstanceId: 'authority-test', tenantOrOrgId: 'tenant-test', packId: 'pack-test' };
   const registration = host.register({
     schemaVersion: 'omnia.operation-registration/v1', featureId: 'omnia.create-associate',
     featureVersion: '0.1.0', operationPackage
-  });
-  const engagementId = '11111111-1111-4111-8111-111111111111';
+  }, binding);
   const workspaceId = '22222222-2222-4222-8222-222222222222';
   const applicationId = '33333333-3333-4333-8333-333333333333';
   const infrastructureId = '44444444-4444-4444-8444-444444444444';
@@ -435,7 +548,6 @@ test('signed core Operations enforce exact IT Element, GRA, and relationship pre
   const riskId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
   const controlId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
   const riskScopeId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
-  const binding = { connectorId: 'connector-1', sessionGeneration: 4, engagementId };
   const calls: Array<{ stepId: string; method: string; path: string; body: any; commitStep: boolean }> = [];
   let factorValue = 1;
   let factorSpectrum = [{ value: 1, name: 'Lower' }, { value: 7, name: 'Higher' }];
@@ -724,8 +836,8 @@ test('Core Return store rejects forged verification, illegal transitions, author
     assert.throws(()=>store.call('recordReturnEvidence',{runId,commandId:command.commandId,evidenceType:'readback',commandState:'readback_verified',payload:{...response,__operationReceiptId:wrongOperationReceipt},receiptId:wrongOperationReceipt,verified:true},context),/trusted Operation receipt/);
     const validReceipt='62626262-6262-4262-8262-626262626262'; insertReceipt(validReceipt,evidenceOperationId,operationTargetIdentityKey);
     store.call('recordReturnEvidence', { runId, commandId: command.commandId, evidenceType: 'readback', commandState: 'readback_verified', payload: { ...response,__operationReceiptId:validReceipt }, receiptId:validReceipt,verified: true }, context);
-    assert.throws(() => store.call('projectVerifiedReturn', { runId, commandId: command.commandId, binding, workspaceId: '58585858-5858-4858-8858-585858585858', projectionKind: 'object', objectType: 'Application', objectId: '57575757-5757-4757-8757-575757575757', payload: {} }, context), /authority scope|intended target/);
-    store.call('projectVerifiedReturn', { runId, commandId: command.commandId, binding, workspaceId, projectionKind: 'object', objectType: 'Application', objectId, payload: {} }, context);
+    assert.throws(() => store.call('projectVerifiedReturn', { runId, commandId: command.commandId, binding, workspaceId: '58585858-5858-4858-8858-585858585858', projectionKind: 'object', objectType: 'Application', objectId: '57575757-5757-4757-8757-575757575757', payload: response }, context), /authority scope|intended target/);
+    store.call('projectVerifiedReturn', { runId, commandId: command.commandId, binding, workspaceId, projectionKind: 'object', objectType: 'Application', objectId, payload: response }, context);
     database.db.prepare(`INSERT INTO managed_content_intents(intent_id,run_id,plan_digest,target_kind,target_key,intended_revision_json,state,created_at,updated_at) VALUES(?,?,?,?,?,?,'frozen',?,?)`)
       .run('59595959-5959-4959-8959-595959595959', runId, planDigest, 'field', 'field|row-1', JSON.stringify({ kind: 'field', key: 'field|row-1', workspace: workspaceId, objectType: 'GRA' }), now, now);
     assert.throws(() => store.call('finishReturn', { runId, outcome: 'succeeded' }, context), /incomplete/);

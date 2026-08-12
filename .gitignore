@@ -3,6 +3,13 @@
 .env.*
 !.env.example
 
+# Local agent state, Python caches, uploaded source material and live evidence
+__pycache__/
+*.py[cod]
+.codex-status-*.txt
+/source_files/
+/feature-packages/*/acceptance-evidence/
+
 # Dependencies and build artifacts
 node_modules/
 dist/
@@ -31,6 +38,9 @@ dist/
 /bridge/releases/
 remote-connector/releases/
 remote-connector/public/releases/
+/connector-next/candidates/
+/connector-next/server-candidates/
+/connector-next/secrets/
 /artifacts/
 /.codex-tmp/
 /acceptance/fresh-*/

@@ -1,43 +1,46 @@
-# 官方内置录制 Feature
+# 官方录制 Feature 实现
 
-`omnia.recording` 0.3.0 / sequence 4 已生成官方签名候选，并内置到本地 Shell 0.4.8 不可变包。0.2.0 与更早候选保持不可变，可作为历史 rollback 目标。本轮没有完成公司电脑真实 Omnia canary，因此不宣称现场录制已经通过。
+当前冻结候选为 `omnia.recording@0.4.19 / sequence 32`，最低要求 Shell 0.4.15。源码已从录制专用 Connector 命令迁移到 [ADR-0037](../adr/0037-generic-page-observation-and-managed-stream.md) 定义的通用 PageObservation / ManagedStream 原语。0.4.19 保留 0.4.17 的有界分阶段固化与 0.4.18 的 failed predecessor → 唯一 successor 恢复，并增加签名 Operation 资源所有权声明，由 Core/Shell 通用持久化 handoff ledger 执行 prepare、commit、activation-head CAS、finalize/abort。旧 Shell、旧 Connector 或不匹配的 source digest 在切换前失败关闭；缺少创建者回执的历史 orphan 不自动认领。候选不安装到当前产品根；真实 Pack canary 仍未完成。
 
-0.3.0 保持同一 Feature ID 和 Remote-only recording command，新增播放器式 `recorder` 声明合同、真实 pause/resume/stop/export 状态、当前页 Risk/Control 自动采集和跨 Bridge 分块 Artifact 交付。旧 `stop_export` 与手工 catalog command 只为已安装旧包保留 Connector 兼容性；0.3.0 Surface 不再声明这些按钮。
+## 四层归属
 
-## 四层实现
+| 层 | 文件 | 责任 |
+|---|---|---|
+| Delivery | `feature-packages/recording/source/frontend/surface.json` | 播放器式 UI，只显示真实 Worker 状态和 Artifact |
+| Execution | `feature-packages/recording/source/middle/worker.cjs` | recordingId、Processing Run、观测控制、流 offset、摘要、最终化 |
+| Control/Data | Feature Store ports、`python/recording_store.py` | 受管 handle、Core Artifact、计划、SQLite 24h staging |
+| Integration | `src/connector/page-observation-host.ts`、`managed-stream-host.ts`、签名 Operation | 当前 Pack 通用只读观测、源头脱敏、有界 NDJSON 流 |
 
-- Frontend：通用声明式 `recorder` Surface 渲染播放器、真实计时投影、事件/Risk/Control 计数和五个控制动作；Renderer 不含录制 Feature ID 分支。
-- Middle：`feature-packages/recording/source/middle/worker.cjs` 调用 start/pause/resume/stop/export/export_chunk，写入 Feature evidence，并把真实文件提交到 Core Artifact Store。
-- Core/Data：`FeatureRuntimeStore.commitStandaloneArtifact` 为没有用户上传源文件的 Connector evidence 创建独立 succeeded Run 和受管 Artifact；下载使用既有 `surface:save-feature-artifact`。
-- Connector：`src/connector/recording/recording-service.ts` 与 `WorkstationOmniaSession` 负责 CDP、暂停恢复、graceful drain、当前页自动目录采集、持久 manifest 和 512 KiB 导出分块。
-- Package：`scripts/package-recording-feature.mjs` 已生成并验签 0.3.0 / sequence 4 `.ofp`；Shell 0.4.8 release manifest 固定引用该候选。
+Connector 不再拥有 `RecordingService`、录制业务状态机、GRA/Risk/Control endpoint 分类、目录拼装、gzip 或录制专用分块命令。Feature Python 的 `gra_catalog.py` 才是业务证据分类与目录重建边界。
 
-## v4 复用与重构
+## 真实链路
 
-v4 `omnia-recorder.js` 的同一 recordingId 多 segment、pause/continue、关键 response body 完整性和停止 drain 语义重构为 v5 Playwright CDP 会话。v4 `omnia-session-host.js` 的唯一 Pack/Engagement 绑定原则进入 Remote Connector 内部的 `WorkstationOmniaSession`。v4 UI 的播放/暂停/停止交互语义被保留，但界面通过 v5 通用声明式 Surface 重写。所有代码均在 v5 工作区，不存在 v4 运行时路径依赖。
+1. Worker 创建 Core Processing Run 与唯一 recordingId，并先把 `starting` 写入 Feature 私有 SQLite 和计划。
+2. 只有前置持久化成功后，签名 Operation 才调用 `sdk.pageObservation.open`，返回 observationId 和 streamId。
+3. pause/resume/status/stop 始终绑定同一 owner、Connector binding 和当前 Pack。
+4. stop 后仅完整且无 omission 的流可进入普通 Artifact 流程。
+5. Worker 每个后台 action 最多并发读取八个 128 KiB Managed Stream 块，并按 offset 向 Core 追加一个至多 1 MiB 的 Python input transfer；逐块 identity、EOF、总长度与 stream digest 均持久校验。
+6. 发布包内 CPython 3.13.14 校验事件序列和 response segments，在 SQLite 中暂存事件与重建目录，并流式写 Core output handle。
+7. 只有 Core commit Artifact 且 Processing Run succeeded 后 UI 才提供下载。
 
-## Phase1 Risk/Control 完整目录
+固化失败可对同一 stopped frozen stream 重试，且不得重放 stop。0.4.19 只接受平台 durable owner 与精确签名 handoff 证明；旧的无 owner receipt orphan 仍保持隔离，不把 Feature 私有计划当作所有权证明。
 
-Connector 监听当前页面实际出现的唯一 GRA 身份，并在开始、网络观察、暂停和停止时自动抓取；无身份、多身份、授权未就绪或读取缺失都进入录制 manifest 的真实 pending/incomplete 状态，不再要求用户点击单独按钮。抓取全程只使用固定 GET：
+若升级器曾把具备完整 observation identity 的 `finalization_failed` 错误收口为 failed，恢复动作先只读验证 status 与 offset 0，再由 Core 核对 predecessor 最后审计事件、无 Artifact、无 intent/command，并幂等取得唯一 successor。旧 plan 即使没有 storeRevision 或 digest，也先以 revision 0 CAS 写入探测结果，再切换 successor；同 recordingId、observationId、streamId、eventCount 和 stoppedAt 不变。
 
-- GRA detail 与 IT Element detail；
-- `plannedresponse/byRiskAssessmentId`；
-- `controls/byRiskAssessmentId`；
-- 每个 Risk 的 `GetPlanResponseDetailByRiskRiskScopeId`；
-- 每个 Control detail。
+pause/resume/stop 同样先持久化 `pausing`/`resuming`/`stopping`。若控制响应丢失，Worker 记录 uncertain 计划；后续只读 status 证明 observing/paused/stopped 后再收敛。status 已证明 stopped 时直接固化原冻结流，绝不再次调用 stop。
 
-输出包含稳定 engagement/pack/workspace/GRA/IT Element 身份、元素类型/子类型/GRA content、真实 Risk/Control、观察到的 scope/assertion/关系和逐 endpoint manifest。必需 read、response capture、Risk scope detail、Control detail、元素/GRA/RAIT 身份任一缺失即为 `incomplete`。
+## v4 复用决定
 
-Higher/Lower 只按 `capturedRait` 记录和合并。观察到的关系单列保存，`linkRequired` 固定保持未知 `null`，不得由目录存在推断母版应关联。
+| v4 精确证据 | 保留行为 | v5 落点 | 决定与验证 |
+|---|---|---|---|
+| `connector/src/omnia-recorder.js` `start`/`pause` | 同一 recordingId 暂停后继续 | Worker + PageObservation owner | 重写；定向测试覆盖前置持久化和同 identity |
+| `connector/src/omnia-recorder.js` `stop` | 排空已接收正文、完整性失败关闭、只释放录制资源 | 通用 PageObservationHost + Worker 终态校验 | 采用行为，不迁移 CDP 实现；Connector 现有测试 + Feature contract |
+| `connector/src/omnia-recorder.js` `export` | 停止与导出事实分离 | Python staging → Core output handle → committed Artifact | 重写；发布内置 CPython 进程测试 |
+| `tests/omnia-recorder.test.js` 完整性与恢复用例 | omission/digest/序列漂移失败关闭 | ManagedStream 校验 + Python NDJSON 校验 | 采用不变量；拒绝旧目录、锁和 gzip 格式 |
+| `tests/omnia-recording-server-contract.test.js` stop/download 状态 | 不完整不得冒充完成 | Worker/Run/Artifact 投影 | 重写；定向测试 + 真实 Pack canary |
 
-## 导出边界
+明确拒绝迁移 v4 的 Connector 录制器、CDP 业务状态、录制目录、专用 recording command 与 gzip 导出。Connector 只保留既有通用 Operation host、PageObservation 和 ManagedStream。
 
-Bridge WebSocket `maxPayload` 为 2 MiB，不能一次回传完整录制。Connector 先冻结 `recording.json`，再通过 `export_chunk` 返回最多 512 KiB 的真实文件分块；Worker 核对序号和冻结长度后提交 `commitStandaloneArtifact`。超过 Core 64 MiB 单 Artifact 上限时明确失败并保留 Connector 原始录制，不截断、不显示成功下载。
+## 验收
 
-## 验收边界
-
-本轮按用户要求停止单元测试，只执行一次 typecheck/build。未使用用户 Omnia 登录，因此真实 Pack 的 endpoint 返回形态、暂停恢复、当前页自动 Risk/Control 和 Remote 跨 Bridge Artifact 导出仍需用户授权环境 canary；不得把源码检查描述为生产数据验收。
-
-## Remote-only 平台边界（2026-08-03）
-
-录制命令只能经 RemoteConnectorTransport → Bridge → 公司电脑 Remote Worker → `WorkstationOmniaSession` 执行；缺 binding、Connector offline、不兼容或真实 Pack 未就绪时失败关闭，不存在 Local fallback。公司电脑真实录制 canary 未通过/待 canary。
+开发阶段执行 `npm run build`、Node 语法检查和 `npx tsx --test tests/recording-feature.test.ts`。定向测试真实启动发布目录内置 CPython 3.13.14，验证状态持久化、GRA/Risk/Control/评分设置/RAIT 重建、JSON 输出和精确 24 小时清理边界；handoff 向量验证旧 Connector 切换前失败关闭、三阶段 ledger 崩溃恢复、旧 activation head 保留和未知 orphan 不自动认领。真实公司 Pack 的 start → GRA 操作 → pause/resume → stop → Artifact 下载与内容目视核对仍是上线门槛。

@@ -1,6 +1,22 @@
-# Signed Operation 0.2.50
+# Signed Operation
 
-Sequence 52 changes only Feature navigation and Core Store contracts; the signed Operation inventory and Connector behavior are unchanged. Generated-Risk classification preflight, PATCH and reconcile Operations retain the Risk concurrency boundary. The mutation rereads the exact generated Risk and uses an `/updatedOn` test only when the Risk row itself supplies `updatedOn/updatedAt`; it never substitutes the parent Assessment token. It then replaces only `/classificationType` with exact `Higher|Lower` and requires an exact catalog readback before Risk-Control association can begin.
+## 0.2.104 / sequence 106
+
+The current source keeps one package-level handler for all 37 signed Operations. Oracle EBS authority resolution remains parameterized and exact: alias `Oracle eBusiness Suite`, recorded authority key `66176468`, APP category key `66175343`, and content type `3`; zero or multiple matches fail closed. No Connector route or Feature business branch is added.
+
+## 0.2.74 / sequence 81
+
+Sequence 81 corrects APP category identity resolution without changing any route or Worker orchestration. The Risk Factor directory may repeat the same category projection for many factors and may assign different .NET JSON graph `$id`/`$ref` markers or non-identity nested state to each projection. The resolver deduplicates on the unique category GUID and normalized exact name, while requiring any explicit Assessment/Workspace IDs to match the frozen target, consistent active deletion state and consistent explicit `applicable`. A same-ID identity conflict, multiple IDs, cross-scope evidence or state disagreement fails closed before detail read or mutation.
+
+Sequence 76 changes only Feature plan compilation, scheduling and offline contract fixtures; it adds no Connector Core route, Operation route or DCNO Operation. APP/DB/OS/Tool continue to use the existing signed object/GRA/relation/scoring/Risk-Control/read-back contracts. Relation type and concurrency are frozen from the signed Feature registry: DB/OS use `InfrastructureApplication`/602 for one or more exact APP targets; Tool uses `ItToolApplication`/802 for exactly one. DCNO fails before an Operation query or intent.
+
+Sequence 70 adds three APP-only Operations for the exact `IT风险评估（如果测试运行有效性）` Risk Factor category: permit-granting read-only preflight, disabled-by-default PATCH, and read-only reconcile. Their only new allowlisted mutation route is `PATCH /rapr/v0/engagements/{engagementId}/risk-factor-categories/{categoryId}`. Category identity comes only from a unique live `riskFactorGrouping` in the exact Assessment directory; PATCH uses that category's live `updatedOn` test and `/applicable=true`; reconcile must return the same category ID/name, Application GRA/Workspace binding and `applicable=true`. DB/OS/Tool requests fail the signed contract.
+
+Risk Factor Operations bind each request to canonical `APP.RF.DISPLAY_ORDER_nn`, the governed UI label, frozen `contentName`, and RAIT mode. The handler resolves exactly one live factor only when both display order and label match, then derives Higher/Lower from that factor's live spectrum. Product families share this scoring capability; `contentName` remains a frozen GRA identity and does not select a different scoring matrix. Category verification remains a separate prerequisite owned by Worker.
+
+## 0.2.55 history
+
+Sequence 56 keeps the same signed route inventory and mutation gates. Risk-Control read-back recognizes only the v4-recorded nested/root scope representations and still requires exact control, Risk, scope and assertion identity; it performs at most three pure reads and never replays mutation. Application Settings may take a complete first-PATCH response as the fresh-token fast path, otherwise it falls back to the prior authoritative GET. Final reconcile remains mandatory.
 
 小型 object/relation/Risk-Control preflight、单次 mutation 与 read-only reconcile。不接受 Excel，不提供任意 URL/method/body。
 # Signed Operation inventory

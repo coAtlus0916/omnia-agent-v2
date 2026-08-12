@@ -1,7 +1,28 @@
 {
   "schemaVersion": "omnia.governance-import/v1",
   "sourceVersion": "V8",
-  "sourceSha256": "1ED937A50253CEDF431CE02A0CC7A3B3E576597BBD6CAA6C967738D7B2DA4538",
-  "importedAt": "2026-08-03T11:07:22.345Z",
-  "sourceReadOnlyPath": "../outputs/sap_ecc_phase1_master_update/phase1_系统信息填写V8_SAP_ECC_v4录制证据补充.xlsx"
+  "sourceSha256": "6511D225827D805B2C7D8DBFE85D09C076E17C21F4A6B9EF13DDF3BCC4A9135D",
+  "importedAt": "2026-08-10T00:00:00.000Z",
+  "sourceReadOnlyPath": "acceptance-evidence/s4-hana-recording-34ea8734/frozen.ndjson",
+  "baseSourceSha256": "410374FF21D03E30A2533C9CFC686EB436BF3446EAE1CEB0AAFD92DB95D893A8",
+  "transformScript": "scripts/augment-s4-hana-v8-governance.mjs + scripts/normalize-v8-risk-control-governance.py + scripts/augment-oracle-ebs-v8-governance.py + scripts/augment-ad-code-migration-v8-governance.py",
+  "evidenceRef": "recording:34ea8734-0d21-4ef2-88a5-6455ae94b8bd/observation_3a5ae32dd9f425d95639407f559ac88a/stream_ae92c5640b6138ece0cb3a9419cde70f#sha256=65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8",
+  "oracleEbs": {
+    "contentEvidenceRef": "recording:1df21175-b43f-4f25-99a5-3385e3c77097/observation_ad284531b087a64302be45a901df6eaa/stream_0115c29335935b6d7ae2e374a16b1bb8#sha256=e7f92684575bd411f091cad4cf7af5e9084364b9d5c68a918c66c8e02915243e; artifact:1c864692-7b02-498c-be5f-bf38adcab14f#sha256=b143e180ed8a59fdbf78e7d6170503739f0f3e320cc9632eb9af1383018d9801",
+    "scopeEvidenceRef": "source_files/it risk模板.xlsx#sha256=F2D494F187A0BCB774F3BAAD0FFA64A1DE681F1FC6A37AC8DF92BB97A7CC3BB0",
+    "liveRelationReadback": "blocked_pending_live_relation_readback_non_execution_metadata"
+  },
+  "activeDirectory": {
+    "contentName": "通用操作系统",
+    "artifactRef": "artifact:7695dde4-5e93-4a10-acae-fc8a67087a35#sha256=e307939bf33a066e1218cded0e22955ce9cb47322d8f57a334011e84fb56045c",
+    "recordingRef": "recording:be62fb35-b396-400e-b63c-d0d258618c9b/observation_31d0257eb861887e764c496f3c95f38e/stream_49b60dadc15c17e583d371c19cae7e44#sha256=1d5177655e6642b17f6ff54b8c6ebcb5216f2b8f91d423055bf36c04b36598f7",
+    "higherRelations": 4,
+    "lowerRelations": 4
+  },
+  "codeMigrationTool": {
+    "artifactRef": "artifact:04a5e0aa-bdcd-4b0c-8e6d-469425300633#sha256=6b65ff2db328bc72b7970a43dcfea40d90fa27a6af162fd9adaf8ef53e8f2597",
+    "recordingRef": "recording:8f74355b-c1f4-4b1c-a235-e34a06cd9704/observation_0dbdc3ee7ece7749a3066aa213cc8438/stream_29ca9a8b299813b4596e33b7cf2d445e#sha256=208a4dcbbb6311d318e1deaf910f958137e87e18555faf4bff4cfb8e583854fd",
+    "higherRelations": 3,
+    "lowerRelations": 3
+  }
 }

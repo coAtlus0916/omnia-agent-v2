@@ -44,6 +44,7 @@ ADR 只记录跨模块、长期有效且需要解释取舍的决定。产品/协
 | [ADR-0033](0033-menu-only-shell-and-independent-feature-windows.md) | Shell 第二列只保留功能菜单，Feature Surface 保持受控隔离 | Accepted；默认 placement 由 ADR-0034 更新 | 用户 UI 产品决策 + v4 证据 |
 | [ADR-0034](0034-tabbed-feature-host-and-detachable-surfaces.md) | 第三列浏览器式 Feature 标签、功能栏折叠及弹出/最小化/关闭 | Accepted | 用户 UI 产品决策 + v4 折叠证据 |
 | [ADR-0035](0035-remote-only-connector-and-link-code-pairing.md) | Remote-only Connector、一次性链接码与长期设备 binding | Accepted | 用户正式产品决策 + v4 配对方向证据 |
+| [ADR-0037](0037-generic-page-observation-and-managed-stream.md) | 通用 Page Observation 与 Managed Stream 原语 | Accepted；源码已实现，待 Remote canary | 用户 Connector 边界决策 + 录制平台缺口审计 |
 
 Accepted 表示架构方向已确定。根据 ADR-0031，未确定的 Windows sandbox/认证可以后续加固，
 但不再阻碍 Feature 安装、启用或开发测试；真实 Worker/后台/Operation 依赖仍必须接通。

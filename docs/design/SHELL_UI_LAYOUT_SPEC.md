@@ -164,7 +164,7 @@ Feature 视觉上可 dock 在第三列，但安全架构不变：
 
 - 每个已安装 Feature 在 manifest 中登记真实 Surface 入口、最小尺寸、合同版本和所需 capability；Shell 不硬编码 URL 或菜单叶子；
 - Feature 包运行在 Shell 管理的独立无特权 sandboxed renderer/WebContents 中。docked 只是由 Shell 把隔离 Surface 合成到第三列 viewport，绝不直接 import Feature 包代码或共享 DOM/CSS/内存 Store；
-- 标签先显示真实 bootstrap/loading 状态，成功后原子切换到工作台；失败保留明确错误和重试，不显示示例数据；
+- 标签先显示真实 bootstrap/loading 状态，成功后原子切换到工作台，不显示示例数据：用户选择 Feature 后，Shell 第三列在 `selectFeature` 返回真实 Worker Surface 且原生 Surface 完成附着前显示无百分比的“正在读取功能状态”；隔离 Feature WebContents 在收到 `feature:bootstrap` 前显示无百分比的“正在载入功能界面”。两段均为真实阶段投影，不使用定时进度；失败继续走现有错误与安全回退链路，不新增无后端支撑的重试入口；
 - 活动 Feature 内容头部右上角显示 `↗` 弹出、`−` 最小化、`×` 关闭。`Comments` 活动时不显示这组三按钮；
 - `↗` 把同一 Surface 迁移为正常显示的独立窗口；主标签移除，菜单显示“已在独立窗口打开”。再次点菜单聚焦现有窗口；
 - `−` 先把同一 Surface 迁移到独立窗口，待状态接续完成后直接调用 Windows 原生最小化，不能闪现第二套可操作界面；再次点菜单恢复并聚焦；

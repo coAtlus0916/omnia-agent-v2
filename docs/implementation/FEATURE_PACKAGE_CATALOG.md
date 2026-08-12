@@ -7,20 +7,20 @@
 
 ```text
 v5 便携产品根
-├─ Shell 原装平台（随 Shell 0.4.12 开箱存在）
+├─ Shell 原装平台（随固定 Shell 0.4.14 开箱存在）
 │  ├─ 首页 / 三列聊天 / 设置 / 缩放 / Splitter
 │  ├─ Core SQLite / Feature Registry / Documentation Registry
 │  ├─ 通用 Feature Worker、Store/Event/Managed Content ports
 │  └─ RemoteConnectorTransport、Remote binding 与 Gate 基础设施（无 Local）
 ├─ 内置独立 Feature（官方签名 .ofp，随 Shell 携带并自动安装）
 │  ├─ omnia.recording 0.3.0
-│  ├─ omnia.create-associate 0.2.10（source only）
+│  ├─ omnia.create-associate 0.2.52（历史安装基线）；0.2.92 / sequence 94 candidate
 │  └─ omnia.delete-elements 0.2.1
 ├─ Connector Operation 包（官方签名 .ofop，按 Feature/capability 装载）
 │  └─ 通过公司电脑 Remote Operation host 执行固定 step gate
 └─ 必需的 Remote 额外部署
-   ├─ v5 Bridge 0.4.5
-   └─ v5 Remote Connector 0.3.15 / sequence 18（stable 自动升级）
+   ├─ v5 Bridge 0.4.8
+   └─ v5 Remote Connector 0.3.20（stable 自动升级）
 ```
 
 “Shell 原装”是平台能力，不等于把业务写死在 Shell；录制虽然随 Shell 携带，仍是独立签名、独立 Worker、可独立升级的 Feature。“后装”表示干净 Shell 不带该业务，安装 .ofp 后才登记和启用。“Operation 包”只承载经过签名的具体 Omnia 能力，不允许把任意 URL/method/body 交给 Connector。“额外部署”表示仅安装 Feature 仍不够，还需 Remote Connector、Bridge 或对应 Operation 能力。
@@ -29,7 +29,7 @@ v5 便携产品根
 
 | 能力 | 真实状态 | Remote-only 实现 | 额外配置/边界 |
 |---|---|---|---|
-| 连接、刷新、保活、安全锁 | Shell 0.4.12：显式 Workspace 锁与 Omnia 真实所在部分全局关联锁，同一读取单飞、单事务 CAS 保存、成员漂移失败关闭 | 顶部 Connect → Bridge 0.4.5 → Remote Worker 0.3.15 固定 `facets/byEngagementIds` 读取 → Core 验证 `CustomWorkspace.parentId`/冻结 | 真实端点与 17 Group/193 Workspace 关系已只读采样；0.3.15 stable 自动升级已现场确认 |
+| 连接、刷新、保活、安全锁 | 固定 Shell 0.4.14：显式 Workspace 锁与 Omnia 真实所在部分全局关联锁，同一读取单飞、单事务 CAS 保存、成员漂移失败关闭 | 顶部 Connect → Bridge 0.4.8 → Remote Worker 0.3.20 固定 `facets/byEngagementIds` 读取 → Core 验证 `CustomWorkspace.parentId`/冻结 | 真实端点与 17 Group/193 Workspace 关系已只读采样；0.3.20 在 0.3.19 的业务期禁刷新基础上，修复空闲刷新未产生新 API 请求时错误丢弃仍有效授权的回归 |
 | 三列聊天、附件、输入区 | 已实现 | 不依赖 Connector | Provider 未配置时只保存，不造假回复 |
 | DeepSeek / OpenAI-compatible Custom | 已实现 | 不依赖 Connector | Nova 专有协议未校验 |
 | 全局缩放、可拖动分隔线 | Shell 0.4.1 已验证并由 0.4.2 回归 | 不适用 | Shell/Settings/docked/detached/新建窗口一致；偏好写入 Core 数据库 |
@@ -37,14 +37,14 @@ v5 便携产品根
 
 ## 3. 独立 Feature 状态
 
-首批开发顺序：**录制 → 删除元素 → 删除聊天记录 → 新建与关联**。当前 Shell 功能栏扁平显示已安装 Feature，不再显示“其他/元素管理”等业务分组；这项展示规则不改变 Feature 的独立包边界。
+首批开发顺序：**录制 → 删除元素 → 删除聊天记录 → 新建与关联**。Shell 功能栏通用渲染已验签 Feature manifest 的最多三级导航声明：无分组叶子保持根级顺序，声明了 group 的真实 Feature 按组显示；空分组不显示，Renderer 不按 `featureId` 猜测归类。当前 Delete 声明为“其他 → 删除元素”，Workpaper 声明为“底稿 → 底稿编制”。导航 parent 不改变 Feature 身份、route、Run 或独立包边界。
 
 | 顺序 | Feature | 当前版本/状态 | 交付方式 | Remote-only 状态 | 模板依赖 | 下一步 |
 |---:|---|---|---|---|---|---|
 | 1 | 录制 | 官方签名 omnia.recording 0.3.0 / sequence 4，已内置 Shell 0.4.8 | 独立 .ofp 随便携包内置；不是 Shell 硬编码业务 | 播放器式 start/pause/resume/stop/export；当前页自动采集 Risk/Control；分块进入 Core Artifact；公司电脑真实录制待 canary | 无 | 在授权 Pack/公司电脑完成现场录制 canary |
 | 2 | 删除元素 | 官方签名 .ofp 0.2.1 / sequence 8，随 Shell 0.4.12 内置 | builtin bootstrap 自动安装/升级；声明式真实目录、多选和 Comments 唯一删除图计划卡 | Information/TOOL 零 blocker；APP/DB/OS 展开派生 GRA、GRA Control 级联快照与 DB/OS–APP 解关联；每步独立 Core command/receipt/readback；Remote canary 待完成 | 无 | 完成目标 Pack 工作簿创建图的全量删除 canary；不得 fallback 到历史 Local 路径 |
 | 3 | 删除聊天记录 | 未交付，仅产品设计 | 未来独立后装 .ofp | 不依赖 Omnia 的本地事务仍未实现 | 无 | 开发真实本地事务、附件引用清理和恢复测试；没有闭环前不要显示入口 |
-| 4 | 新建与关联 | `omnia.create-associate@0.2.10 / sequence 12` 源码（未打包） | 独立 .ofp + .ofop 源码；Shell 0.4.12 builtin 已指向待生成的 0.2.10 包 | Worker/Operation 的 Omnia/Core GUID 统一为非全零 8-4-4-4-12 十六进制，不限制 RFC version/variant；authority 继续使用真实 `facets/byEngagementIds` 与 Workspace Group/parentId，并受显式安全锁约束 | 有 | 由发布负责人生成签名不可变包；完成真实 SAP ECC canary；接通真实 AI review port |
+| 4 | 新建与关联 | `omnia.create-associate@0.2.92 / sequence 94` candidate | Connector/Bridge/Shell transport 不变 | APP/DB/OS/Tool 保持既有 Return；DCNO Higher 使用 immutable recording/read-only 目录证据和参数化 Infrastructure 生命周期，Lower 保持 `PLAN.RISK_CONTROL_RAIT_UNSUPPORTED` fail-close；当前不宣称 live Return canary | 有 | 定向离线验证与包内自检；现场 canary 另行验收 |
 
 ### 3.1 录制的准确边界
 
@@ -92,3 +92,19 @@ Candidate package: `feature-packages/create-associate/candidates/create-associat
 ## omnia.create-associate 0.2.10 / omnia.recording 0.3.0 / omnia.delete-elements 0.2.1 / Shell 0.4.12
 
 create-associate 0.2.10 是未打包的源码版本；它保留 staged upload 和 0.2.9 authority 行为，并修正 Worker/Operation 把 Omnia/Core GUID 误套 RFC UUID version/variant 的问题。有效身份现在要求规范 8-4-4-4-12 十六进制且非全零，仍执行字符串规范化。delete-elements 0.2.1 使用通用 `selectionBrowser` 呈现真实 Section/Workspace/元素类型目录和持久多选，Comments 卡是删除图计划唯一 owner；APP/DB/OS 的派生 GRA、Control 级联和关系清理均显式进入 Core intent/command/receipt/readback。Shell 仍为 0.4.12；真实 mutation/readback canary 仍待执行。
+
+## omnia.create-associate 0.2.94 / sequence 96 source candidate
+
+The exact V5 workbook is the signed download/upload contract. Oracle EBS, OS AD, and 代码迁移工具 are recognized but blocked pending their own recordings; no content ID, GRA, relation, scoring, or Risk-Control mapping is inferred. Existing S/4/DCNO evidence and the Connector boundary are unchanged.
+
+## omnia.create-associate 0.2.93 / sequence 95 candidate
+
+SAP S/4 HANA 的完整冻结流 recordingId `34ea8734-0d21-4ef2-88a5-6455ae94b8bd` 含 1587 个连续事件，SHA-256 `65fff6c856998e303189a2a35bd59b51754402673887bd8c574015be17edb9d8`。最终 Risk 回读证明 30 条 Higher 关系，母版和签名目录身份表直接使用 `SAPS4.*`、`SAPCUA.*`、`SAPCHARM.*`、`IMP.*` 原生编号；没有 `SAP.xx` 序号/描述映射。S/4 Lower 无录制证据，保持零关系并在远端写入前 fail-close。评分 15 项和 `isRelevant=true` 合同不变，`linkedAppCount=0` 不构成 APP-to-APP 关联证据。Feature-only 变更不修改 Connector、Bridge、Shell 或 Core；当前不是 live Return canary。
+
+## omnia.create-associate 0.2.92 / sequence 94 history
+
+DCNO 的 immutable Artifact `110eba6d-dd39-4b20-bfd5-83caefd20260` / recordingId `8aa3673e-53b7-4902-bca6-7b86d5cc62be` 含 992 events，提供 `Infrastructure`/`Network`、GRA contentId `60241274`（通用网络设备）、同 Workspace APP 的 `InfrastructureApplication`/ConcurrencyTabId 602 和 any-Higher-else-Lower RAIT 证据。Higher 现场目录是 3 Risk/8 Control，精确启用 `RAITCOR008→DCNO.05/.21/.22/.23/.24` 与 `RAITCOR006→DCNO.10` 六条关系；`RAITCOR001` 下现场 `APP.03`/`APP.06` disabled，不自动关联。DCNO 不使用 APP 专属 IT风险评估/Factors、settings、scoring 或 AI review，但保留 GRA/Risk-Control/Evaluation；Lower 无录制证据，保持 `PLAN.RISK_CONTROL_RAIT_UNSUPPORTED` fail-close，不推断 Lower 目录/关系。代码只在 Feature 签名 Operation 增加 Network 参数并复用 DB/OS 参数化 Infrastructure 引擎，Connector 只承载 Operation/传输。当前只有录制、只读目录和定向离线证据，不是 live Return canary；S/4 HANA 的 `blocked_pending_full_live_catalog` 不变。
+
+## omnia.create-associate 0.2.52 / Shell 0.4.14
+
+0.2.52 / sequence 54 已由仓库官方打包脚本生成并安装到现有 release 根，activation generation 50。它保留既有四 Plane、权限、安全锁、幂等、签名 Operation 和权威回读合同，并沿用 0.2.51 的 v4 跨行依赖图：默认三路、硬上限四路；DB/OS 等待同 Workspace 的精确 APP 依赖，同一行以及同一 GRA 内的 mutation/read-back 仍串行。0.2.52 修正 Risk-Control 命令绑定：risk/control 名称与分类只取自批准后的冻结目标，实时目录只补远端 ID、Scope/Assertion 与并发证据，Core 的不可变意图校验仍在 Connector mutation 前失败关闭。共享 Renderer 对同一真实 Surface revision 的 receipt-backed progress 做单调合并，并原位更新既有进度节点。安装和本地构建不代表真实 Pack canary；必须用包含 SAP ECC、Generic APP、DB、OS、Tool 的真实工作簿完成现场回归后才能更新该状态。

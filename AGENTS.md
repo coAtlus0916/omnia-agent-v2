@@ -46,3 +46,11 @@
 - Shell 0.4.14 是当前固定基线。后续日常开发不再为每次变更生成新 EXE、便携 ZIP 或 `releases/<patch>`；固定启动器构建当前工作区，再由 0.4.14 的固定 Electron 宿主加载最新 `dist` 与 builtin Feature。Feature/Operation 变更只更新同一产品根内对应 `.ofp/.ofop`；只有用户明确要求更换 Electron、内置 Python 或形成新的不可变发布候选时才运行 Windows 打包。
 - 跨进程 JSON 状态需要“删除字段”时必须使用显式清除语义，不能用会被序列化丢弃的 `undefined`；授权身份必须与展示层级解耦，安全边界使用 Pack + 精确对象 ID，Section 等展示元数据缺失时不得伪造关系；启动期不可恢复错误必须弹出真实原因，可恢复的本地保护数据错误应先完整隔离旧数据再创建新数据根，禁止静默退出。
 - 遇到 Omnia 私有接口或层级合同缺口时，先复用现有录制能力做一次只读现场采样：只根据真实页面请求路径、方法和响应结构选择固定 allowlist 端点，不按名称、顺序或文档猜关系。采样分析完立即删除本地诊断正文，产品代码只保留经验证的固定读取合同。
+
+## 新建与关联能力架构（强制执行）
+
+- 新建与关联按“能力唯一实现、元素参数化调用”设计，不按 APP、DB、OS、TOOL、DCNO 复制解析器、校验器、评分器、关联器或回传引擎。对象差异必须进入签名 `kind/capability registry`；同一能力只能有一个运行时实现和一个状态来源。
+- Python 只负责资料解析、确定性规则校验和生成冻结的计划 IR；Feature Worker 只负责 Run 状态机、依赖图与调度；Operation 只执行签名包允许的参数化 Omnia API；Connector Core 只负责传输、会话、Gate 与 Operation host。不得在四层之间复制同一套业务判断。
+- APP 的通用评分项与 Risk-Control 关系是两个独立能力。所有支持评分的 APP 共用同一评分实现；产品类型只选择受管 GRA content 与 Risk-Control family，不得按 SAP ECC、SAP S/4 HANA 等产品名复制执行流程。
+- 新元素类型必须遵守 [新建与关联能力架构](docs/implementation/CREATE_ASSOCIATE_CAPABILITY_ARCHITECTURE.md) 的注册、支持矩阵和验收门禁。缺少真实 live contract（包括精确对象类型、端点、请求、读回和失败边界）时必须 fail-close，入口隐藏或真实禁用；DCNO 不得凭模板名称猜测 Network 写入合同。
+- `source_files/phase_1_14_复核.py` 仅是规则参考材料。经确认的确定性规则必须重写并固化到当前 Feature 的原生 Python 规则中；禁止在运行时 import、执行或随包打入该参考脚本。非确定性的 Factors Considered 复核继续通过统一 AI Provider，不得另接第二套 AI 调用。

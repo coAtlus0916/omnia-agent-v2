@@ -2,26 +2,176 @@
 
 const crypto = require('node:crypto');
 const zlib = require('node:zlib');
+const { setTimeout: delay } = require('node:timers/promises');
 
 const FEATURE_ID = 'omnia.create-associate';
 const FEATURE_VERSION = '__FEATURE_VERSION__';
 const MAX_USER_ELEMENTS = 200;
+let ACTIVE_KIND_REGISTRY = null;
+function installKindRegistry(governance){
+  const registry=governance?.kindRegistry;
+  if(!registry||typeof registry!=='object'||Array.isArray(registry)||!Object.keys(registry).length)fail('GOVERNANCE.KIND_REGISTRY_MISSING','Signed kind capability registry is missing.');
+  for(const [kind,spec] of Object.entries(registry)){
+    if(!spec||!spec.objectType||!spec.objectSubtype||!spec.id||!Array.isArray(spec.reviewFields)||!spec.reviewFields.length||!spec.capabilities||!Array.isArray(spec.stageNodes)||!Array.isArray(spec.derivations))fail('GOVERNANCE.KIND_REGISTRY_INVALID',`Signed kind capability is invalid: ${kind}.`);
+    if(spec.relation&&(!spec.relationPolicy||spec.relationPolicy.targetKind!=='APP'||!Number.isInteger(spec.relationPolicy.min)||!Number.isInteger(spec.relationPolicy.max)||spec.relationPolicy.min<0||spec.relationPolicy.max<spec.relationPolicy.min))fail('GOVERNANCE.RELATION_POLICY_INVALID',`Signed relation policy is invalid: ${kind}.`);
+    if(spec.riskControlSupportedRaitValues!==undefined&&(!Array.isArray(spec.riskControlSupportedRaitValues)||!spec.riskControlSupportedRaitValues.length||spec.riskControlSupportedRaitValues.some((value)=>!['Higher','Lower'].includes(value))||new Set(spec.riskControlSupportedRaitValues).size!==spec.riskControlSupportedRaitValues.length))fail('GOVERNANCE.RISK_CONTROL_RAIT_SCOPE_INVALID',`Signed Risk-Control RAIT scope is invalid: ${kind}.`);
+  }
+  ACTIVE_KIND_REGISTRY=registry;return registry;
+}
+function kindCapability(kind,registry=ACTIVE_KIND_REGISTRY){const spec=registry?.[kind];if(!spec)fail('GOVERNANCE.KIND_UNDECLARED',`Element kind is not declared: ${kind}.`);return spec;}
+function infrastructureKinds(registry=ACTIVE_KIND_REGISTRY){return new Set(Object.entries(registry||{}).filter(([,spec])=>spec.inheritRait===true).map(([kind])=>kind));}
+const CAPABILITY_STAGE_REQUIREMENTS=Object.freeze({
+  object:['object'],gra:['gra'],settings:['settings'],relation:['relation'],directRait:['gra_state'],inheritedRait:['inherited_rait'],
+  appScoring:['app_category','app_scoring','documentation'],riskControl:['risk_classification','risk_control'],evaluation:['evaluation']
+});
+function frozenStageNodes(planRow){
+  const stages=Array.isArray(planRow?.stageNodes)?planRow.stageNodes.map((value)=>String(value)):[];
+  if(!stages.length||new Set(stages).size!==stages.length)fail('RETURN.CAPABILITY_STAGE_PLAN_INVALID',`Frozen capability stage plan is invalid: ${planRow?.rowKey||'(missing row)'}.`);
+  const declared=new Set(stages),capabilities=planRow?.capabilities||{};
+  for(const [capability,requiredStages] of Object.entries(CAPABILITY_STAGE_REQUIREMENTS)){
+    if(capabilities[capability]===true&&requiredStages.some((stage)=>!declared.has(stage)))fail('RETURN.CAPABILITY_STAGE_PLAN_INVALID',`Frozen capability ${capability} is missing its declared stage nodes for ${planRow?.rowKey||'(missing row)'}.`);
+    if(capabilities[capability]!==true&&requiredStages.some((stage)=>declared.has(stage)))fail('RETURN.CAPABILITY_STAGE_PLAN_INVALID',`Frozen stage plan enables undeclared capability ${capability} for ${planRow?.rowKey||'(missing row)'}.`);
+  }
+  return Object.freeze([...stages]);
+}
+function freezePlanCapabilities(planRow){
+  const capabilities=planRow?.capabilities;
+  if(!capabilities||typeof capabilities!=='object'||Array.isArray(capabilities)||!Object.keys(capabilities).length
+    ||Object.values(capabilities).some((value)=>typeof value!=='boolean')){
+    fail('RETURN.CAPABILITY_PROJECTION_INVALID',`Frozen capability projection is invalid: ${planRow?.rowKey||'(missing row)'}.`);
+  }
+  return Object.freeze(Object.fromEntries(Object.entries(capabilities).map(([key,value])=>[String(key),value])));
+}
+function frozenReturnIntents(planRow){
+  const intents=planRow?.returnIntents;
+  if(!intents||intents.schemaVersion!=='omnia.create-associate.deterministic-return-intents/v1'||typeof intents.semanticDigest!=='string'){
+    fail('RETURN.DETERMINISTIC_INTENTS_INVALID',`Frozen Python Return intents are invalid: ${planRow?.rowKey||'(missing row)'}.`);
+  }
+  const body=Object.fromEntries(Object.entries(intents).filter(([key])=>key!=='semanticDigest'));
+  if(digest(Buffer.from(canonical(body)))!==intents.semanticDigest
+    ||!Array.isArray(intents.relationTargets)||!Array.isArray(intents.riskControlCatalogRelations)
+    ||!Array.isArray(intents.riskControlRelations)||!Array.isArray(intents.riskClassifications)||!Array.isArray(intents.scoringItems)){
+    fail('RETURN.DETERMINISTIC_INTENTS_DRIFT',`Frozen Python Return intents drifted: ${planRow?.rowKey||'(missing row)'}.`);
+  }
+  return intents;
+}
+function assertReturnPlanCapabilities(planRows,returnRows){
+  const planned=Array.isArray(planRows)?planRows:[],projected=Array.isArray(returnRows)?returnRows:[];
+  if(planned.length!==projected.length)fail('RETURN.CAPABILITY_PROJECTION_DRIFT','Return-plan row inventory differs from the frozen Python capability plan.');
+  const byRowKey=new Map(projected.map((row)=>[String(row?.rowKey||''),row]));
+  if(byRowKey.size!==projected.length)fail('RETURN.CAPABILITY_PROJECTION_DRIFT','Return-plan capability projection contains duplicate or missing row keys.');
+  for(const planRow of planned){
+    const prepared=byRowKey.get(String(planRow?.rowKey||'')),expected=freezePlanCapabilities(planRow),expectedIntents=frozenReturnIntents(planRow);
+    if(!prepared||!prepared.capabilities||typeof prepared.capabilities!=='object'||Array.isArray(prepared.capabilities)
+      ||canonical(prepared.capabilities)!==canonical(expected))fail('RETURN.CAPABILITY_PROJECTION_DRIFT',`Return-plan capabilities differ from the frozen Python plan for ${planRow?.rowKey||'(missing row)'}.`);
+    const preparedIntents=frozenReturnIntents(prepared);
+    if(preparedIntents.semanticDigest!==expectedIntents.semanticDigest)fail('RETURN.DETERMINISTIC_INTENTS_DRIFT',`Return-plan deterministic intents differ from the frozen Python plan for ${planRow?.rowKey||'(missing row)'}.`);
+    frozenStageNodes(prepared);
+  }
+  return true;
+}
+function hasFrozenStage(row,stage){return Array.isArray(row?.stageNodes)&&row.stageNodes.includes(stage);}
+function buildFrozenDependencyGraph(rows){
+  const values=Array.isArray(rows)?rows:[];
+  const nodes=values.map((row,index)=>{
+    const dependencies=Array.isArray(row?.dependencyRowKeys)?row.dependencyRowKeys.map((value)=>String(value)):null;
+    if(!row?.rowKey||dependencies===null||new Set(dependencies).size!==dependencies.length||dependencies.includes(String(row.rowKey)))fail('RETURN.DEPENDENCY_GRAPH_INVALID',`Frozen dependency list is invalid for ${row?.rowKey||'(missing row)'}.`);
+    frozenStageNodes(row);
+    return{id:String(row.rowKey),index,row,dependencies};
+  });
+  const byId=new Map(nodes.map((node)=>[node.id,node]));
+  if(byId.size!==nodes.length)fail('RETURN.DEPENDENCY_GRAPH_INVALID','Return dependency graph contains duplicate row keys.');
+  for(const node of nodes)for(const dependency of node.dependencies)if(!byId.has(dependency))fail('RETURN.DEPENDENCY_GRAPH_INVALID',`Return dependency ${dependency} is missing.`);
+  const visiting=new Set(),visited=new Set();
+  const visit=(node)=>{if(visiting.has(node.id))fail('RETURN.DEPENDENCY_GRAPH_INVALID',`Return dependency graph contains a cycle at ${node.id}.`);if(visited.has(node.id))return;visiting.add(node.id);for(const dependency of node.dependencies)visit(byId.get(dependency));visiting.delete(node.id);visited.add(node.id);};
+  for(const node of nodes)visit(node);
+  return nodes;
+}
+function dependencyBlockedByFailure(node,failedRowKeys){return node.dependencies.some((dependency)=>failedRowKeys.has(dependency));}
+function returnExecutionPolicy(payload={}){return{schemaVersion:'omnia.create-associate.return-execution-policy/v1',continueOnIsolatedFailure:payload?.continue_on_isolated_failure!==false};}
+const RETURN_DEFAULT_CONCURRENCY = 8;
+const RETURN_MAX_CONCURRENCY = 8;
+// Pack mutations that touch different Risk/Factor identities do not share a
+// concurrency token. Use the same bounded capacity as the signed return plan
+// and Connector Next Agent; same-Risk relations remain serialized in lanes.
+const RETURN_WITHIN_GRA_CONCURRENCY = 8;
+const RETURN_READBACK_MAX_ATTEMPTS = 8;
 const RETURN_CAPABILITY = Object.freeze({
   scenarioId: 'create-associate-return-v1',
   capabilityId: 'phase1-full-return-v1'
 });
-const V8_SHA256 = '1ED937A50253CEDF431CE02A0CC7A3B3E576597BBD6CAA6C967738D7B2DA4538';
+async function boundedDelay(milliseconds) {
+  const value = Math.max(0, Math.min(5_000, Math.trunc(Number(milliseconds) || 0)));
+  if (value > 0) await delay(value);
+}
+async function runBoundedIndependent(items, limit, worker) {
+  const values = Array.isArray(items) ? items : [];
+  if (!values.length) return [];
+  const results = new Array(values.length);
+  const failures = [];
+  let cursor = 0;
+  const run = async () => {
+    for (;;) {
+      const index = cursor++;
+      if (index >= values.length) return;
+      try { results[index] = await worker(values[index], index); }
+      catch (error) { failures.push({ index, error }); }
+    }
+  };
+  const workerCount = Math.min(values.length, Math.max(1, Math.trunc(Number(limit) || 1)));
+  await Promise.all(Array.from({ length: workerCount }, () => run()));
+  if (failures.length) throw failures.sort((left, right) => left.index - right.index)[0].error;
+  return results;
+}
+const V8_SHA256 = '6511D225827D805B2C7D8DBFE85D09C076E17C21F4A6B9EF13DDF3BCC4A9135D';
 const GOVERNANCE = '__GOVERNANCE_JSON__';
 const EXPECTED_SHEETS = Object.freeze([
   '使用说明', '字段母版', 'Risk-Control关系', 'V4接口证据', '规则与枚举',
   '覆盖与质检', '原始字段追溯', 'SAP ECC录制证据', '评分项与规则'
 ]);
 
-function fail(code, message) { const error = new Error(message); error.code = code; throw error; }
+function fail(code, message) {
+  const error = new Error(message);
+  error.name = 'CreateAssociateWorkerError';
+  error.code = code;
+  throw error;
+}
 function digest(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
+const AI_REVIEW_DISPLAY_LANGUAGE = 'zh-CN';
+const AI_REVIEW_LANGUAGE_VERSION = 'zh-CN-simplified/v1';
+function isChineseAiReviewDisplayText(value,{allowEmpty=false}={}){
+  const text=String(value??'').normalize('NFC').trim();
+  return (!text&&allowEmpty)||Boolean(text&&/[\p{Script=Han}]/u.test(text));
+}
+function assertChineseAiReviewDisplayText(value,label,{allowEmpty=false}={}){
+  if(!isChineseAiReviewDisplayText(value,{allowEmpty})){
+    fail('AI.REVIEW_OUTPUT_LANGUAGE_INVALID',`${label} must be user-facing Simplified Chinese (${AI_REVIEW_DISPLAY_LANGUAGE}); obvious English-only output is rejected.`);
+  }
+}
+function aiReviewItemUsesChineseDisplayText(item){
+  return isChineseAiReviewDisplayText(item?.summary)
+    &&Array.isArray(item?.concerns)
+    &&item.concerns.every((concern)=>isChineseAiReviewDisplayText(concern?.message)
+      &&isChineseAiReviewDisplayText(concern?.suggestion,{allowEmpty:true}));
+}
+function assertAiReviewOutputUsesChineseDisplayText(output){
+  for(const [index,item] of (Array.isArray(output?.items)?output.items:[]).entries()){
+    assertChineseAiReviewDisplayText(item?.summary,`Factors review item ${index+1} summary`);
+    for(const [concernIndex,concern] of (Array.isArray(item?.concerns)?item.concerns:[]).entries()){
+      assertChineseAiReviewDisplayText(concern?.message,`Factors review item ${index+1} concern ${concernIndex+1} message`);
+      assertChineseAiReviewDisplayText(concern?.suggestion,`Factors review item ${index+1} concern ${concernIndex+1} suggestion`,{allowEmpty:true});
+    }
+  }
+  return true;
+}
 function deriveGraName(elementId){return `GRA-${String(elementId||'').normalize('NFC').trim()}`;}
-function descriptionRawField(kind){return kind==='APP'?'Derived Application Description':`Derived ${kind} Description`;}
-function descriptionRuleId(kind){return kind==='APP'?'v8.app-description-from-element-id.v1':`v4.${kind.toLocaleLowerCase('en-US')}-description-from-element-id.v1`;}
+function elementDescriptionDerivation(kind){
+  const derivation=kindCapability(kind).derivations.find((item)=>item.valueSource==='element_id'&&String(item.fieldId||'').endsWith('.IT.DESCRIPTION'));
+  if(!derivation?.rawFieldKey||!derivation?.ruleId)fail('GOVERNANCE.DESCRIPTION_DERIVATION_MISSING',`Signed element description derivation is missing: ${kind}.`);
+  return derivation;
+}
+function descriptionRawField(kind){return elementDescriptionDerivation(kind).rawFieldKey;}
+function descriptionRuleId(kind){return elementDescriptionDerivation(kind).ruleId;}
 function issueId(origin,code,fieldKey){return `${origin}-${digest(Buffer.from(`${code}|${fieldKey}`)).slice(0,48)}`;}
 function issue(origin,code,fieldKey,issueType,state,message,checkId){return{issueId:issueId(origin,code,fieldKey),origin,code,fieldKey,issueType,state,message,checkId};}
 function canonical(value) {
@@ -174,8 +324,9 @@ function parseV8(input) {
     fail('WORKBOOK.HEADER_ROW_MISMATCH', 'V8 governance headers must be on row 4.');
   }
   const ids = new Set(fields.map((row) => row.values.field_id));
-  if (fields.length !== 187 || ids.size !== 187 || relations.length !== 68 || evidence.length !== 21 || traces.length !== 180) {
-    fail('WORKBOOK.COUNT_MISMATCH', 'V8 counts must be fields=187, relations=68, evidence=21, field traces=180.');
+  const relationIds=new Set(relations.map((row)=>String(row.values.relation_id||'')));
+  if (fields.length < 187 || ids.size !== fields.length || relations.length < 68 || relationIds.size !== relations.length || evidence.length < 21 || traces.length < 180) {
+    fail('WORKBOOK.COUNT_MISMATCH', 'V8 governance must preserve the 187/68/21/180 baseline and keep all field/relation identities unique.');
   }
   const sapRelations = relations.filter((row) => String(row.values.relation_id).includes('.SAP_ECC.'));
   const higher = sapRelations.filter((row) => row.values.link_required_higher === 'Y');
@@ -186,332 +337,21 @@ function parseV8(input) {
     fail('WORKBOOK.SAP_CONTRACT_MISMATCH', 'SAP relation contract must be Higher=18, Lower=17, SAP.03 Higher-only.');
   }
   const scoreSheet = byName.get('评分项与规则');
-  const scoreHeaders = scoreSheet?.[10] || [];
-  const scoreItems = (scoreSheet || []).slice(11, 26).map((row, index) => ({
-    sourceRow: index + 11,
+  const scoreHeaderIndex=(scoreSheet||[]).findIndex((row)=>row?.some((value)=>String(value||'').trim()==='item_id'));
+  if(scoreHeaderIndex<0) fail('WORKBOOK.SCORING_HEADER_MISSING','Scoring governance has no item_id header.');
+  const scoreHeaders = scoreSheet[scoreHeaderIndex] || [];
+  const scoreItems = (scoreSheet || []).slice(scoreHeaderIndex+1).filter((row)=>row&&row.some((value)=>value!=='')).map((row, index) => ({
+    sourceRow: index + scoreHeaderIndex + 1,
     values: Object.fromEntries(scoreHeaders.map((header, column) => [String(header), row?.[column] ?? '']))
   }));
-  const writable = scoreItems.filter((row) => String(row.values['Higher适用']).startsWith('Y') && String(row.values['request位置']).includes('request-'));
-  const notApplicable = scoreItems.filter((row) => String(row.values['Higher适用']).startsWith('N') && String(row.values.item_id).endsWith('_13'));
-  if (scoreItems.length !== 15 || writable.length !== 14 || notApplicable.length !== 1) {
-    fail('WORKBOOK.SCORING_CONTRACT_MISMATCH', `Scoring contract must be 15/14/1; observed ${scoreItems.length}/${writable.length}/${notApplicable.length}; headers=${scoreHeaders.join('|')}.`);
+  const scoreIds=new Set(scoreItems.map((row)=>String(row.values.item_id||'')));
+  const appScoreItems=scoreItems.filter((row)=>String(row.values.item_id||'').startsWith('APP.RF.'));
+  const writable = appScoreItems.filter((row) => String(row.values['Higher适用']).startsWith('Y') && String(row.values['request位置']).includes('request-'));
+  const notApplicable = appScoreItems.filter((row) => String(row.values['Higher适用']).startsWith('N') && String(row.values.item_id).endsWith('_13'));
+  if (scoreItems.length < 15 || scoreIds.size !== scoreItems.length || appScoreItems.length !== 15 || writable.length !== 14 || notApplicable.length !== 1) {
+    fail('WORKBOOK.SCORING_CONTRACT_MISMATCH', `Scoring governance must keep the single APP-generic 15/14/1 capability; observed total=${scoreItems.length}, APP=${appScoreItems.length}/${writable.length}/${notApplicable.length}; headers=${scoreHeaders.join('|')}.`);
   }
   return { sha256, fields, relations, evidence, traces, sap, scores, scoreItems };
-}
-
-function parseUserWorkbook(bytes, sourceArtifactId, governance = {}) {
-  const entries = zipEntries(bytes);
-  const strings = sharedStrings(entries);
-  const sheets = workbook(entries);
-  if (sheets.length === 0) fail('WORKBOOK.SHEET_DIRECTORY_MISSING', 'XLSX workbook contains no readable worksheet directory.');
-  const definitions = [
-    { kind: 'APP', id: '系统ID', required: ['系统ID', 'APP类型', 'System Risk Classification', 'Factors Considered', 'Omnia工作区'], relation: '' },
-    { kind: 'DB', id: '数据库ID', required: ['数据库ID', 'DB 类型', 'Omnia工作区', '关联系统ID'], relation: '关联系统ID' },
-    { kind: 'OS', id: '服务器ID', required: ['服务器ID', 'OS 类型', 'Omnia工作区', '关联系统ID'], relation: '关联系统ID' },
-    { kind: 'TOOL', id: 'IT TOOL ID', required: ['IT TOOL ID', 'Tool 类型', 'System Risk Classification', 'Omnia工作区'], relation: '' }
-  ];
-  const rows = [];
-  const candidates = [];
-  const issues = [];
-  for (const sheet of sheets) {
-    const sheetBytes = entries.get(sheet.path);
-    if (!sheet.path || !sheetBytes) fail('WORKBOOK.SHEET_PART_MISSING', `XLSX worksheet part is missing for ${sheet.name || '(unnamed sheet)'}.`);
-    const values = sheetRows(sheetBytes, strings);
-    const headers = [];
-    for (let rowNumber = 1; rowNumber < values.length; rowNumber += 1) {
-      const row = values[rowNumber] || [];
-      const definition = definitions.find((item) => row.includes(item.id));
-      if (definition) headers.push({ rowNumber, definition, row });
-    }
-    for (let index = 0; index < headers.length; index += 1) {
-      const header = headers[index];
-      const end = headers[index + 1]?.rowNumber || values.length;
-      const normalized = Array.from({ length: Math.max(header.row.length, 1) }, (_unused, column) =>
-        String(header.row[column] || '').normalize('NFKC').replace(/\s+/gu, ' ').trim()
-      );
-      const present = normalized.filter(Boolean);
-      if (new Set(present).size !== present.length) fail('WORKBOOK.AMBIGUOUS_HEADER', `Duplicate normalized columns in ${sheet.name} row ${header.rowNumber}.`);
-      const columns = new Map(normalized.map((name, column) => [name, column]));
-      for (let sourceRow = header.rowNumber + 1; sourceRow < end; sourceRow += 1) {
-        const source = values[sourceRow] || [];
-        const elementId = String(source[columns.get(header.definition.id)] || '').trim();
-        if (!elementId) continue;
-        const populatedColumns = [...columns.values()].filter((column) => String(source[column] || '').trim()).length;
-        if (populatedColumns < 2) continue;
-        if (rows.length >= MAX_USER_ELEMENTS) fail('PARSER.ELEMENT_LIMIT_EXCEEDED','当前版本单次最多处理200个元素，请拆分工作簿后重新上传；文件未写入后台。');
-        const rowKey = digest(`${header.definition.kind}|${sheet.name.normalize('NFC')}|${sourceRow}`);
-        const fields = Object.fromEntries([...columns].filter(([name]) => name).map(([name, column]) => [name, String(source[column] || '').trim()]));
-        const relations = header.definition.relation
-          ? String(fields[header.definition.relation] || '').split(/[、,，;；]/u).map((value) => value.trim()).filter(Boolean)
-          : [];
-        const logical = { rowKey, kind: header.definition.kind, elementId, sourceSheet: sheet.name, sourceRow, fields, relations };
-        rows.push(logical);
-        const rowCandidatesByRawField = new Map();
-        for (const [rawFieldKey, value] of Object.entries(fields)) {
-          const canonicalFieldId = String(governance.fieldAliases?.[header.definition.kind]?.[rawFieldKey] || '');
-          const fieldKey = canonicalFieldId ? `${rowKey}.${canonicalFieldId}` : `${rowKey}.unmapped.${digest(rawFieldKey)}`;
-          const fieldCandidate = {
-            fieldKey, rawFieldKey, canonicalFieldId, revision: 1, valueKind: 'source', value,
-            status: value ? 'accepted' : 'needs_input',
-            provenance: {
-              sourceArtifactId, sourceSheet: sheet.name, sourceRow, rowKey,
-              fieldKey,
-              sourceTraceId: `input:${digest(`${sourceArtifactId}|${sheet.name}|${sourceRow}|${rawFieldKey}`)}`,
-              derivationRule: 'verbatim_user_workbook_cell'
-            }
-          };
-          candidates.push(fieldCandidate);
-          rowCandidatesByRawField.set(rawFieldKey, fieldCandidate);
-          if (!canonicalFieldId) issues.push(issue('parser','PARSER.UNMAPPED_FIELD',fieldKey,'ambiguous','blocking',
-            `原始列 ${rawFieldKey} 无法唯一映射到 V8 canonical field_id。`,'template_structure'));
-          if(rawFieldKey==='System Risk Classification'&&value&&!['Higher','Lower'].includes(value)) issues.push(issue('local','LOCAL.INVALID_ENUM',fieldKey,'invalid_enum','needs_input',`${header.definition.kind} ${elementId} 的 RAIT 仅允许 Higher 或 Lower。`,'valid_values'));
-        }
-        const idCandidate=rowCandidatesByRawField.get(header.definition.id);
-        const graRule=governance.derivationRules?.find((item)=>item.ruleId==='v4.phase1-gra-name-from-element-id.v1');
-        if(!idCandidate||!graRule||graRule.algorithm!=='prefix_literal'||graRule.prefix!=='GRA-'||graRule.targetFieldId!=='P1.RUNTIME.GRA.NAME') fail('GOVERNANCE.GRA_NAME_RULE_MISSING','Signed GRA name derivation rule is unavailable.');
-        const graFieldKey=`${rowKey}.P1.RUNTIME.GRA.NAME`;
-        candidates.push({fieldKey:graFieldKey,rawFieldKey:'Derived GRA Name',canonicalFieldId:'P1.RUNTIME.GRA.NAME',revision:1,valueKind:'derived',value:deriveGraName(elementId),status:'accepted',provenance:{
-          sourceArtifactId:`${governance.sourceRef}:sha256:${String(governance.sourceSha256).toLocaleLowerCase('en-US')}`,sourceSheet:'V4接口证据',sourceRow:1,rowKey,fieldKey:graFieldKey,
-          sourceTraceId:String(graRule.sourceTraceId),derivationRule:String(graRule.ruleId),dependencyFieldKey:idCandidate.fieldKey
-        }});
-        logical.fields['Derived GRA Name']=deriveGraName(elementId);
-        {
-          const kind=header.definition.kind;const targetFieldId=`P1.${kind}.IT.DESCRIPTION`;const dependencyFieldId=`P1.${kind}.IT.ELEMENT_ID`;
-          const declaration=governance.fields?.find((item)=>item.fieldId===targetFieldId);
-          const rule=governance.derivationRules?.find((item)=>item.ruleId===descriptionRuleId(kind));
-          if(!declaration||!rule||rule.targetFieldId!==targetFieldId||rule.algorithm!=='canonical_element_id'||rule.dependencyFieldId!==dependencyFieldId) fail('GOVERNANCE.DESCRIPTION_RULE_MISSING',`Signed ${kind} description derivation rule is unavailable.`);
-          candidates.push({fieldKey:`${rowKey}.${targetFieldId}`,rawFieldKey:descriptionRawField(kind),canonicalFieldId:targetFieldId,revision:1,valueKind:'derived',value:elementId,status:'accepted',provenance:{
-            sourceArtifactId:`${governance.sourceRef}:sha256:${String(governance.sourceSha256).toLocaleLowerCase('en-US')}`,sourceSheet:'字段母版',sourceRow:Number(declaration.sourceRow),rowKey,fieldKey:`${rowKey}.${targetFieldId}`,
-             sourceTraceId:String(rule.sourceTraceId),derivationRule:String(rule.ruleId),dependencyFieldKey:idCandidate.fieldKey
-          }});
-          logical.fields[descriptionRawField(kind)]=elementId;
-        }
-        if(header.definition.kind==='APP'){
-          const relevantDeclaration=governance.fields?.find((item)=>item.fieldId==='P1.APP.IT.IS_RELEVANT');
-          const relevantRule=governance.derivationRules?.find((item)=>item.ruleId==='v8.app-is-relevant-false.v1');
-          if(!relevantDeclaration||Number(relevantDeclaration.sourceRow)!==9||relevantDeclaration.defaultRuleId!=='v8.app-is-relevant-false.v1'||relevantDeclaration.defaultValue!==false
-            ||!relevantRule||relevantRule.targetFieldId!=='P1.APP.IT.IS_RELEVANT'||relevantRule.algorithm!=='constant_boolean_false'||relevantRule.constantValue!==false||relevantRule.sourceTraceId!=='SRC.IT元素.011') fail('GOVERNANCE.IS_RELEVANT_RULE_MISSING','Signed APP isRelevant constant-false rule is unavailable.');
-          const relevantFieldKey=`${rowKey}.P1.APP.IT.IS_RELEVANT`;
-          candidates.push({fieldKey:relevantFieldKey,rawFieldKey:'Derived Application Is Relevant',canonicalFieldId:'P1.APP.IT.IS_RELEVANT',revision:1,valueKind:'rule_default',value:false,status:'accepted',provenance:{
-            sourceArtifactId:`${governance.sourceRef}:sha256:${String(governance.sourceSha256).toLocaleLowerCase('en-US')}`,sourceSheet:'字段母版',sourceRow:Number(relevantDeclaration.sourceRow),rowKey,fieldKey:relevantFieldKey,
-            sourceTraceId:String(relevantRule.sourceTraceId),derivationRule:String(relevantRule.ruleId)
-          }});
-          logical.fields['Derived Application Is Relevant']=false;
-          const dataDeclaration=governance.fields?.find((item)=>item.fieldId==='P1.APP.IT.IS_DATA_AVAILABLE');
-          const dataRule=governance.derivationRules?.find((item)=>item.ruleId==='v4.app-is-data-available-false.v1');
-          if(!dataDeclaration||dataDeclaration.defaultRuleId!=='v4.app-is-data-available-false.v1'||dataDeclaration.defaultValue!==false
-            ||!dataRule||dataRule.targetFieldId!=='P1.APP.IT.IS_DATA_AVAILABLE'||dataRule.algorithm!=='constant_boolean_false'||dataRule.constantValue!==false) fail('GOVERNANCE.IS_DATA_AVAILABLE_RULE_MISSING','Signed v4-compatible APP isDataAvailable constant-false rule is unavailable.');
-          const dataFieldKey=`${rowKey}.P1.APP.IT.IS_DATA_AVAILABLE`;
-          candidates.push({fieldKey:dataFieldKey,rawFieldKey:'Derived Application Is Data Available',canonicalFieldId:'P1.APP.IT.IS_DATA_AVAILABLE',revision:1,valueKind:'rule_default',value:false,status:'accepted',provenance:{
-            sourceArtifactId:`${governance.sourceRef}:sha256:${String(governance.sourceSha256).toLocaleLowerCase('en-US')}`,sourceSheet:'V4接口证据',sourceRow:Number(dataDeclaration.sourceRow),rowKey,fieldKey:dataFieldKey,
-            sourceTraceId:String(dataRule.sourceTraceId),derivationRule:String(dataRule.ruleId)
-          }});
-          logical.fields['Derived Application Is Data Available']=false;
-        }
-        for (const required of header.definition.required) {
-          if (!String(fields[required] || '').trim()) {
-            const candidate = rowCandidatesByRawField.get(required);
-            const fieldKey=candidate?.fieldKey || `${rowKey}.missing.${digest(required)}`;
-            issues.push(issue('local','LOCAL.REQUIRED_FIELD',fieldKey,'missing',candidate ? 'needs_input' : 'blocking',
-              `${header.definition.kind} ${elementId} 缺少必填字段 ${required}。`,'required_fields'));
-          }
-        }
-      }
-    }
-  }
-  const identity = new Map();
-  for (const row of rows) {
-    const workspaceIdentity = String(Object.entries(row.fields).find(([name]) => name.includes('Omnia'))?.[1] || '').normalize('NFKC');
-    const key = `${row.kind}|${row.elementId}|${workspaceIdentity}`.toLocaleLowerCase('en-US');
-    const previous = identity.get(key);
-    if (previous) issues.push(issue('local','LOCAL.DUPLICATE_IDENTITY',`${row.rowKey}.identity`,'conflict','blocking',
-      canonical(previous.fields) === canonical(row.fields)
-        ? `${row.kind} ${row.elementId} 在同一规范身份下重复；为防止重复创建，必须由用户在源资料中只保留一行。`
-        : `${row.kind} ${row.elementId} 存在冲突的重复行。`,'unique_names')); else identity.set(key, row);
-  }
-  const appRowsByElementId = new Map();
-  const infrastructureRows = [];
-  for (const row of rows) {
-    if (row.kind === 'APP') {
-      const appIdentity = row.elementId.toLocaleLowerCase('en-US');
-      const matches = appRowsByElementId.get(appIdentity);
-      if (matches) matches.push(row); else appRowsByElementId.set(appIdentity, [row]);
-    } else if (row.kind === 'DB' || row.kind === 'OS') infrastructureRows.push(row);
-  }
-  const apps = new Set(appRowsByElementId.keys());
-  for (const row of infrastructureRows) {
-    for (const target of row.relations) if (!apps.has(target.toLocaleLowerCase('en-US'))) issues.push(issue('local','UNSUPPORTED.EXTERNAL_APP_REFERENCE',`${row.rowKey}.relationship-target-live`,'contract_mismatch','blocking',
-      `${row.kind} ${row.elementId} 引用的 APP ${target} 不在当前批次；0.2.1 未实现冻结外部目标与权威 RAIT 读回，禁止准备回传。`,'relationship_targets'));
-  }
-  for(const row of infrastructureRows){
-    const appRows=[];
-    for (const target of row.relations) appRows.push(...(appRowsByElementId.get(target.toLocaleLowerCase('en-US')) || []));
-    const modes=[...new Set(appRows.map((app)=>String(app.fields['System Risk Classification']||'')))];
-    if(appRows.length===1&&modes.length===1&&['Higher','Lower'].includes(modes[0])){
-      const canonicalFieldId=`P1.${row.kind}.GRA.RAIT_CONCLUSION`;
-      if(!governance.fieldIds?.includes(canonicalFieldId)) fail('GOVERNANCE.INHERITANCE_FIELD_MISSING',`${canonicalFieldId} is absent from signed governance.`);
-      const fieldKey=`${row.rowKey}.${canonicalFieldId}`;
-      candidates.push({fieldKey,rawFieldKey:'Inherited System Risk Classification',canonicalFieldId,revision:1,valueKind:'inherited',value:modes[0],status:'accepted',provenance:{
-        sourceArtifactId,sourceSheet:row.sourceSheet,sourceRow:row.sourceRow,rowKey:row.rowKey,fieldKey,
-        sourceTraceId:`inheritance:${digest(`${appRows[0].rowKey}|${row.rowKey}|${row.relations[0]}`)}`,
-        derivationRule:`planned_db_os_rait_from_app_edge:${appRows[0].rowKey};remote_verification_required_before_return`
-      }});
-      row.fields['Inherited System Risk Classification']=modes[0];
-    }
-  }
-  if (rows.length === 0 || candidates.length === 0) fail('PARSER.NO_SUPPORTED_ROWS',
-    'No populated APP/DB/OS/Tool rows were found in the workbook; field revisions were not created.');
-  const issueNamespace=digest(Buffer.from(String(sourceArtifactId)));
-  for(const candidate of issues)candidate.issueId=issueId(candidate.origin||'parser',`${issueNamespace}|${candidate.code||candidate.issueType}`,candidate.fieldKey);
-  return { rows, candidates, issues, issueNamespace, sheetNames: sheets.map((sheet) => sheet.name) };
-}
-
-function escapeXml(value) {
-  return String(value ?? '').replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;').replace(/"/gu, '&quot;');
-}
-function columnName(index) { let name = ''; for (let value = index; value > 0; value = Math.floor((value - 1) / 26)) name = String.fromCharCode(65 + ((value - 1) % 26)) + name; return name; }
-function displayUnits(value) {
-  const text = value && typeof value === 'object' && value.formula ? '0' : String(value ?? '');
-  return text.split(/\r?\n/u).map((line) => [...line].reduce((total, character) => total + (/[^\u0000-\u00ff]/u.test(character) ? 2 : 1), 0));
-}
-function deterministicRowHeight(values, widths, options, header) {
-  if (header) return Number(options.headerRowHeight || 26);
-  const lineCount = values.reduce((maximum, value, index) => {
-    const capacity = Math.max(6, Math.floor(Number(widths[index] || 24) - 2));
-    const lines = displayUnits(value).reduce((total, units) => total + Math.max(1, Math.ceil(units / capacity)), 0);
-    return Math.max(maximum, lines);
-  }, 1);
-  const estimated = 5 + lineCount * Number(options.lineHeight || 14.25);
-  return Math.min(Number(options.maxRowHeight || 96), Math.max(Number(options.minRowHeight || 22), estimated));
-}
-function worksheetXml(headers, rows, options = {}) {
-  const widths = options.columnWidths || headers.map((_value, index) => index === 0 ? 34 : 24);
-  if (widths.length !== headers.length || widths.some((width) => !Number.isFinite(Number(width)) || Number(width) < 6)) {
-    fail('OUTPUT.LAYOUT_INVALID', 'Runtime workbook column layout is incomplete.');
-  }
-  const cell = (value, row, column, style = 0) => {
-    const ref = `${columnName(column)}${row}`;
-    if (value && typeof value === 'object' && value.formula) return `<c r="${ref}" s="${style}"><f>${escapeXml(value.formula)}</f><v>0</v></c>`;
-    return `<c r="${ref}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${escapeXml(value)}</t></is></c>`;
-  };
-  const data = [headers, ...rows].map((values, index) => {
-    const height = deterministicRowHeight(values, widths, options, index === 0);
-    return `<row r="${index + 1}" ht="${height.toFixed(2)}" customHeight="1">${values.map((value, column) => cell(value, index + 1, column + 1, index === 0 ? 1 : 2)).join('')}</row>`;
-  }).join('');
-  const lastColumn = columnName(headers.length);
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetPr><pageSetUpPr fitToPage="1" autoPageBreaks="1"/></sheetPr><dimension ref="A1:${lastColumn}${rows.length + 1}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols>${headers.map((_value, index) => `<col min="${index + 1}" max="${index + 1}" width="${Number(widths[index]).toFixed(2)}" customWidth="1"/>`).join('')}</cols><sheetData>${data}</sheetData><autoFilter ref="A1:${lastColumn}${rows.length + 1}"/>${options.validation ? `<dataValidations count="1"><dataValidation type="list" allowBlank="0" sqref="${options.validation}"><formula1>&quot;accepted,needs_input,blocked&quot;</formula1></dataValidation></dataValidations>` : ''}<sheetProtection sheet="1" objects="1" scenarios="1"/><printOptions horizontalCentered="1"/><pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/><pageSetup paperSize="9" orientation="landscape" pageOrder="overThenDown" fitToWidth="${Number(options.fitToWidth || 1)}" fitToHeight="${Number(options.fitToHeight || 0)}"/></worksheet>`;
-}
-
-const CRC_TABLE = Array.from({ length: 256 }, (_, value) => { let crc = value; for (let bit = 0; bit < 8; bit += 1) crc = (crc & 1) ? (0xedb88320 ^ (crc >>> 1)) : (crc >>> 1); return crc >>> 0; });
-function crc32(bytes) { let crc = 0xffffffff; for (const byte of bytes) crc = CRC_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8); return (crc ^ 0xffffffff) >>> 0; }
-function zip(files) {
-  const local = []; const central = []; let offset = 0;
-  for (const [pathname, content] of Object.entries(files)) {
-    const name = Buffer.from(pathname, 'utf8'); const bytes = Buffer.from(content); const crc = crc32(bytes);
-    const header = Buffer.alloc(30); header.writeUInt32LE(0x04034b50, 0); header.writeUInt16LE(20, 4); header.writeUInt16LE(0x800, 6); header.writeUInt32LE(crc, 14); header.writeUInt32LE(bytes.length, 18); header.writeUInt32LE(bytes.length, 22); header.writeUInt16LE(name.length, 26);
-    local.push(header, name, bytes);
-    const directory = Buffer.alloc(46); directory.writeUInt32LE(0x02014b50, 0); directory.writeUInt16LE(20, 4); directory.writeUInt16LE(20, 6); directory.writeUInt16LE(0x800, 8); directory.writeUInt32LE(crc, 16); directory.writeUInt32LE(bytes.length, 20); directory.writeUInt32LE(bytes.length, 24); directory.writeUInt16LE(name.length, 28); directory.writeUInt32LE(offset, 42);
-    central.push(directory, name); offset += header.length + name.length + bytes.length;
-  }
-  const directoryBytes = Buffer.concat(central); const end = Buffer.alloc(22); const count = Object.keys(files).length;
-  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(count, 8); end.writeUInt16LE(count, 10); end.writeUInt32LE(directoryBytes.length, 12); end.writeUInt32LE(offset, 16);
-  return Buffer.concat([...local, directoryBytes, end]);
-}
-
-function buildRuntimeWorkbook(parsed, metadata, baseBytes) {
-  const resultRows = parsed.rows.map((row) => [row.rowKey,row.kind,row.elementId,row.fields['Omnia工作区']||'',row.fields['System Risk Classification']||row.fields['Inherited System Risk Classification']||'',row.relations.join('、'),parsed.issues.some((issue)=>issue.fieldKey.startsWith(row.rowKey)&&['needs_input','blocking'].includes(issue.state))?'needs_input':'accepted']);
-  const planRows = parsed.rows.flatMap((row) => {
-    const blocked = parsed.issues.some((issue) => issue.fieldKey.startsWith(row.rowKey) && ['needs_input', 'blocking'].includes(issue.state));
-    const disposition = blocked ? 'blocked_missing_input' : 'supported_after_preflight';
-    const plans = [
-      [row.rowKey, 'it_element', row.kind, row.elementId, blocked ? 'blocked_missing_input' : 'supported_after_preflight', 'object-type-aware exact identity/workspace/subtype preflight; create or exact reuse followed by mandatory readback'],
-      [row.rowKey, 'gra', row.kind, deriveGraName(row.elementId), disposition, 'content/workspace/identity preflight'],
-      [row.rowKey, 'field_diff', row.kind, row.elementId, blocked ? 'blocked_missing_input' : 'conditional', 'signed field Operation + readback']
-    ];
-    for (const relation of row.relations) plans.push([row.rowKey, 'element_relation', row.kind, relation, disposition, 'only an APP in this workbook or a separately implemented exact live reference may be used; external APP reference is disabled'],);
-    plans.push([row.rowKey, 'risk_control_multiset', row.kind, row.elementId, blocked ? 'blocked_missing_input' : 'conditional', 'governance IR + live catalog exact multiset']);
-    return plans;
-  });
-  const traceRows = parsed.candidates.map((field) => [field.provenance.sourceArtifactId, field.provenance.sourceSheet, field.provenance.sourceRow, field.provenance.rowKey, field.fieldKey, field.canonicalFieldId, field.revision, field.valueKind, field.value, field.status, field.provenance.sourceTraceId, field.provenance.derivationRule]);
-  const issueRows = parsed.issues.map((issue) => [issue.issueId, issue.issueType, issue.state, issue.fieldKey, issue.message]);
-  issueRows.unshift(['SUMMARY', '行数', 'calculated', 'parsedRows', { formula: `COUNTA('处理结果'!A2:A${resultRows.length + 1})` }]);
-  issueRows.push(
-    ['SUPPORT.app_create', 'support', 'supported_after_preflight', 'APP create', 'Signed exact create-only permit, mutation and mandatory authority readback.'],
-    ['SUPPORT.existing_reuse', 'support', 'supported_after_preflight', 'existing exact reuse', 'APP/DB/OS/Tool may reuse an exact unique live object after Workspace/type identity readback.'],
-    ['SUPPORT.db_os_tool_create', 'support', 'supported_after_preflight', 'DB/OS/Tool create', 'The object-type-aware create-only preflight repeats the live exact search; creation uses the recorded DB=Database, OS=OperatingSystem, Tool=Tool subtype contract and mandatory read-back.'],
-    ['SUPPORT.external_app_reference', 'support', 'blocked_not_implemented', 'external APP reference', 'External APP exact preflight plus verified RAIT readback is not implemented; reference is disabled.'],
-    ['SUPPORT.gra', 'support', 'supported_after_preflight', 'gra', 'Signed exact create/reconcile Operation; requires live content identity.'],
-    ['SUPPORT.field_diff', 'support', 'conditional', 'field_diff', 'Only fields with signed Operations and readback may execute.'],
-    ['SUPPORT.element_relation.db_os_to_app','support','supported_after_preflight','element_relation','DB/OS 关联系统ID -> in-workbook APP；执行 InfrastructureApplication 精确双向读回合同。'],
-    ['SUPPORT.element_relation.tool','support','not_applicable_no_input_contract','element_relation','The current user template has no Tool relation field; Tool object/GRA/RAIT Return is supported without fabricating a relationship.'],
-    ['SUPPORT.risk_control', 'support', 'conditional', 'risk_control', 'Governance multiset plus live catalog/hidden-data validation required.'],
-    ['SUPPORT.not_applicable', 'support', 'not_applicable', 'explicit_n_a', 'Governance-declared N/A operations are omitted, never synthesized.'],
-    ['SUPPORT.production_return', 'support', 'pending_canary', 'return', 'In-feature explicit confirmation and exact authority canary remain mandatory.']
-  );
-  const sheets = [
-    ['处理结果', ['rowKey', '类型', '元素ID', '工作区', 'RAIT', '关联APP', '状态'], resultRows, { validation: `G2:G${Math.max(2, resultRows.length + 1)}`, columnWidths: [36, 12, 24, 20, 14, 24, 20], maxRowHeight: 72 }],
-    ['执行计划', ['rowKey', 'operationKind', '对象类型', '目标身份', 'disposition', '门禁'], planRows, { columnWidths: [36, 22, 14, 26, 26, 48], maxRowHeight: 90 }],
-    ['来源追踪', ['sourceArtifactId', 'sourceSheet', 'sourceRow', 'rowKey', 'fieldKey', 'canonicalFieldId', 'revision', 'valueKind', 'value', 'status', 'sourceTraceId', 'derivationRule'], traceRows, { columnWidths: [22, 14, 8, 26, 28, 22, 8, 12, 18, 12, 26, 30], fitToWidth: 2, fitToHeight: 1, maxRowHeight: 110 }],
-    ['问题与支持矩阵', ['issueId', 'issueType', 'state', 'fieldKey', 'message'], issueRows, { columnWidths: [34, 20, 26, 28, 64], maxRowHeight: 110 }]
-  ];
-  const workbookSheets = sheets.map((sheet, index) => `<sheet name="${escapeXml(sheet[0])}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`).join('');
-  const relations = sheets.map((_sheet, index) => `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`).join('');
-  const overrides = sheets.map((_sheet, index) => `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('');
-  const generated = {
-    '[Content_Types].xml': `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${overrides}<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/></Types>`,
-    '_rels/.rels': '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/></Relationships>',
-    'xl/workbook.xml': `<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><workbookPr/><bookViews><workbookView/></bookViews><sheets>${workbookSheets}</sheets><calcPr calcId="191029" fullCalcOnLoad="1"/></workbook>`,
-    'xl/_rels/workbook.xml.rels': `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${relations}<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
-    'xl/styles.xml': '<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="10"/><name val="Aptos"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="10"/><name val="Aptos"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF1F4E78"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="3"><xf xfId="0"/><xf xfId="0" fontId="1" fillId="2" applyFont="1" applyFill="1" applyAlignment="1"><alignment wrapText="1" vertical="center"/></xf><xf xfId="0" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf></cellXfs></styleSheet>',
-    'docProps/core.xml': `<?xml version="1.0" encoding="UTF-8"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Omnia Create Associate Run ${escapeXml(metadata.runId)}</dc:title><dc:subject>candidate; source=${escapeXml(metadata.sourceArtifactId)}; governance=${escapeXml(metadata.governanceDigest)}</dc:subject></cp:coreProperties>`
-  };
-  sheets.forEach((sheet, index) => { generated[`xl/worksheets/sheet${index + 1}.xml`] = worksheetXml(sheet[1], sheet[2], sheet[3]); });
-  let files = generated;
-  let baseDigest = '';
-  if (baseBytes) {
-    const original = zipEntries(Buffer.from(baseBytes));
-    const originalSheetNames = workbook(original).map((sheet) => sheet.name);
-    if (originalSheetNames.join('|') !== sheets.map((sheet) => sheet[0]).join('|')) {
-      fail('OUTPUT.BASE_STRUCTURE_INVALID', 'Signed runtime-template base workbook sheet contract drifted.');
-    }
-    const mutableParts = new Set(['docProps/core.xml', ...sheets.map((_sheet, index) => `xl/worksheets/sheet${index + 1}.xml`)]);
-    files = Object.fromEntries(original);
-    for (const pathname of mutableParts) {
-      if (!original.has(pathname) || !generated[pathname]) fail('OUTPUT.BASE_PART_MISSING', `Signed runtime-template base part is missing: ${pathname}`);
-      files[pathname] = generated[pathname];
-    }
-    for (const [pathname, bytes] of original) {
-      if (!mutableParts.has(pathname) && digest(Buffer.from(files[pathname])) !== digest(bytes)) {
-        fail('OUTPUT.UNDECLARED_PART_CHANGED', `Runtime-template patch changed an undeclared OOXML part: ${pathname}`);
-      }
-    }
-    baseDigest = digest(Buffer.from(baseBytes));
-  }
-  const bytes = zip(files);
-  const compiled = zipEntries(bytes);
-  const runtimeSheets = workbook(compiled).map((sheet) => sheet.name);
-  if (runtimeSheets.join('|') !== sheets.map((sheet) => sheet[0]).join('|')) fail('OUTPUT.STRUCTURE_INVALID', 'Runtime workbook sheet contract drifted.');
-  const sheetXml = sheets.map((_sheet, index) => compiled.get(`xl/worksheets/sheet${index + 1}.xml`)?.toString('utf8') || '');
-  if (sheetXml.some((source, index) => (source.match(/<row\b/gu) || []).length !== (source.match(/<row\b[^>]*\bht="[0-9.]+"[^>]*\bcustomHeight="1"/gu) || []).length)) {
-    fail('OUTPUT.LAYOUT_INVALID', 'Every populated runtime workbook row must have a deterministic custom height.');
-  }
-  if (!/fitToWidth="2"[^>]*fitToHeight="1"/u.test(sheetXml[2]) || !/pageOrder="overThenDown"/u.test(sheetXml[2]) || (sheetXml[2].match(/<col\b/gu) || []).length !== 12) {
-    fail('OUTPUT.LAYOUT_INVALID', 'Source trace must retain all twelve fields in a readable two-page-wide print layout.');
-  }
-  const xml = [...compiled].map(([name, value]) => name.endsWith('.xml') ? value.toString('utf8') : '').join('');
-  if (!xml.includes('<f>') || !xml.includes('<dataValidations') || !xml.includes('<sheetProtection')) fail('OUTPUT.VALIDATION_INVALID', 'Runtime workbook formula/enum/protection contract is incomplete.');
-  return {
-    bytes,
-    baseDigest: baseDigest || digest(bytes),
-    patchDigest: digest(Buffer.from(canonical({
-      mutableParts: ['docProps/core.xml', ...sheets.map((_sheet, index) => `xl/worksheets/sheet${index + 1}.xml`)],
-      rows: parsed.rows,
-      candidates: parsed.candidates,
-      issues: parsed.issues,
-      metadata:{sourceArtifactId:metadata.sourceArtifactId,governanceDigest:metadata.governanceDigest,baseDigest:baseDigest||digest(bytes)}
-    }))),
-    semanticDigest: digest(Buffer.from(canonical({ rows: parsed.rows, candidates:parsed.candidates,issues: parsed.issues,sourceArtifactId:metadata.sourceArtifactId,governanceDigest:metadata.governanceDigest,baseDigest:baseDigest||digest(bytes) })))
-  };
 }
 
 const RETURN_OPERATIONS = Object.freeze({
@@ -524,6 +364,7 @@ const RETURN_OPERATIONS = Object.freeze({
   relationPreflight: 'omnia.create-associate.relation.preflight.v1', relationWrite: 'omnia.create-associate.relation.associate.v1', relationRead: 'omnia.create-associate.relation.reconcile.v1',
   graPreflight: 'omnia.create-associate.gra.preflight.v1', graCreate: 'omnia.create-associate.gra.create.v1', graRead: 'omnia.create-associate.gra.reconcile.v1',
   graStatePreflight: 'omnia.create-associate.gra-state.preflight.v1', graStateWrite: 'omnia.create-associate.gra-state.patch.v1', graStateRead: 'omnia.create-associate.gra-state.reconcile.v1',
+  riskFactorCategoryPreflight: 'omnia.create-associate.risk-factor-category.preflight.v1', riskFactorCategoryWrite: 'omnia.create-associate.risk-factor-category.patch.v1', riskFactorCategoryRead: 'omnia.create-associate.risk-factor-category.reconcile.v1',
   factorPreflight: 'omnia.create-associate.risk-factor.preflight.v1', factorWrite: 'omnia.create-associate.risk-factor.patch.v1', factorRead: 'omnia.create-associate.risk-factor.reconcile.v1',
   documentationPreflight: 'omnia.create-associate.documentation.preflight.v1', documentationWrite: 'omnia.create-associate.documentation.patch.v1', documentationRead: 'omnia.create-associate.documentation.reconcile.v1',
   evaluationPreflight: 'omnia.create-associate.evaluation.preflight.v1', evaluationWrite: 'omnia.create-associate.evaluation.submit.v1', evaluationRead: 'omnia.create-associate.evaluation.reconcile.v1',
@@ -531,11 +372,17 @@ const RETURN_OPERATIONS = Object.freeze({
   riskCatalog: 'omnia.create-associate.risk-control.catalog.v1', riskPreflight: 'omnia.create-associate.risk-control.preflight.v1', riskWrite: 'omnia.create-associate.risk-control.associate.v1', riskRead: 'omnia.create-associate.risk-control.reconcile.v1'
 });
 function rowField(row, governance, fieldId) {
-  const alias = Object.entries(governance.fieldAliases?.[row.kind] || {}).find(([, canonicalId]) => canonicalId === fieldId)?.[0];
+  const alias = Object.entries(kindCapability(row.kind,governance.kindRegistry).aliases||{}).find(([, canonicalId]) => canonicalId === fieldId)?.[0];
   return alias ? String(row.fields[alias] || '').trim() : '';
 }
-function objectType(kind) { return kind === 'APP' ? 'Application' : kind === 'TOOL' ? 'ITTool' : 'Infrastructure'; }
-function objectSubtypeId(kind) { return kind === 'DB' ? 'Database' : kind === 'OS' ? 'OperatingSystem' : kind === 'TOOL' ? 'Tool' : ''; }
+function authorityContentNameFor(row,governance,registry=governance.kindRegistry){
+  const inputValue=rowField(row,governance,`P1.${row.kind}.GRA.GRA_CONTENT`);
+  const declared=(kindCapability(row.kind,registry).pendingRecordingContentValues||[]).find((item)=>String(item?.inputValue||'')===inputValue);
+  return String(declared?.expectedOmniaContentName||'').trim()||inputValue;
+}
+function rowWorkspaceName(row) { return String(row?.fields?.['Omnia工作区'] || '').normalize('NFKC').trim(); }
+function objectType(kind) { return kindCapability(kind).objectType; }
+function objectSubtypeId(kind) { return kindCapability(kind).objectSubtype; }
 function authorityObjectSubtype(kind) { return kind === 'APP' ? 'Application' : objectSubtypeId(kind); }
 function identityKey(prefix, value) { return `${prefix}:${digest(Buffer.from(canonical(value))).slice(0, 48)}`; }
 function objectBusinessIdentity(kind, elementId, workspaceId) {
@@ -617,6 +464,43 @@ function governedCatalogNumber(value) {
   const label = String(value || '').normalize('NFKC').trim();
   return label.split(/[｜|]/u, 1)[0].trim();
 }
+function governedCatalogDescription(value) {
+  const label = String(value || '').normalize('NFKC').replace(/\s+/gu, ' ').trim();
+  const match = /^(?:[\p{L}\p{N}][\p{L}\p{N} ./_-]*\.\d+)\s*(?:[|｜]|[-–—:：])\s*(.+)$/u.exec(label);
+  return catalogIdentityText(match ? match[1] : label);
+}
+function governedCatalogNumberParts(value) {
+  const label=String(value||'').normalize('NFKC').trim();
+  const match=/^([\p{L}\p{N}]+)\.(\d{1,4})$/u.exec(label.replace(/[^\p{L}\p{N}.]+/gu,''));
+  if(!match)return null;
+  const ordinal=Number(match[2]);
+  return Number.isSafeInteger(ordinal)&&ordinal>0
+    ?{prefix:catalogIdentityText(match[1]),ordinal}:null;
+}
+function catalogIdentityEvidenceGaps(relations) {
+  return (Array.isArray(relations) ? relations : []).filter((relation) => {
+    if (relation?.catalogIdentityRequired !== true) return false;
+    const parts = governedCatalogNumberParts(relation.catalogControlNumber);
+    const evidence = relation.catalogIdentityEvidence;
+    return !parts || relation.catalogIdentityStatus !== 'signed_live_exact'
+      || !evidence || typeof evidence !== 'object'
+      || !String(evidence.evidenceRef || '').trim()
+      || !String(evidence.sourceTraceId || '').trim();
+  });
+}
+function riskControlCatalogFingerprint(catalog) {
+  const risks = (Array.isArray(catalog?.risks) ? catalog.risks : []).map((item) => ({
+    riskId: String(item?.riskId || ''), riskRiskScopeId: String(item?.riskRiskScopeId || ''),
+    riskScopeId: String(item?.riskScopeId || ''), riskNumber: catalogIdentityText(item?.riskNumber),
+    name: catalogIdentityText(item?.name), classification: catalogIdentityText(item?.classification),
+    assertion: catalogIdentityText(item?.assertion), assertionType: catalogIdentityText(item?.assertionType)
+  })).sort((left, right) => canonical(left).localeCompare(canonical(right)));
+  const controls = (Array.isArray(catalog?.controls) ? catalog.controls : []).map((item) => ({
+    controlId: String(item?.controlId || ''), controlNumber: catalogIdentityText(item?.controlNumber),
+    name: catalogIdentityText(item?.name)
+  })).sort((left, right) => canonical(left).localeCompare(canonical(right)));
+  return digest(Buffer.from(canonical({ risks, controls })));
+}
 function catalogRiskIdentityMatches(catalog, relation) {
   const number = catalogIdentityText(governedCatalogNumber(relation.riskName));
   const expectedName = catalogIdentityText(relation.riskName);
@@ -630,38 +514,19 @@ function catalogRiskMatches(catalog, relation, classification) {
   return catalogRiskIdentityMatches(catalog,relation).filter((item)=>catalogIdentityText(item.classification)===expectedClassification);
 }
 function catalogControlMatches(catalog, relation) {
-  const number = catalogIdentityText(governedCatalogNumber(relation.controlName));
-  const expectedName = catalogIdentityText(relation.controlName);
-  return (Array.isArray(catalog?.controls) ? catalog.controls : []).filter((item) => {
-    const liveNumber = catalogIdentityText(item.controlNumber);
-    return liveNumber ? liveNumber === number : catalogIdentityText(item.name) === expectedName;
-  });
+  const signedCatalogNumber = catalogIdentityText(relation?.catalogControlNumber);
+  const number = signedCatalogNumber || catalogIdentityText(governedCatalogNumber(relation.controlName));
+  if(!number)return [];
+  return (Array.isArray(catalog?.controls) ? catalog.controls : [])
+    .filter((item) => catalogIdentityText(item.controlNumber)===number);
 }
 function unresolvedCatalogRelations(catalog, relations, mode) {
   return relations.filter((relation) => catalogRiskMatches(catalog, relation, relation[`classification${mode}`]).length !== 1
     || catalogControlMatches(catalog, relation).length !== 1);
 }
-function requestedRelationFamily(kind, content) {
-  const value = catalogIdentityText(content);
-  const aliases = {
-    APP: { GENERIC: ['generic', 'generic application'], SAP_ECC: ['sap ecc'] },
-    DB: { GENERIC: ['generic', 'generic database'], ORACLE: ['oracle', 'oracle database'], SQL: ['sql', 'sql database'] },
-    OS: { GENERIC: ['generic', 'generic operating system'], UNIX: ['unix'], WIN: ['win', 'windows'] },
-    TOOL: { TICKET: ['工单工具', 'ticketing tool'], IDENTITY: ['身份和访问管理工具', 'identity & access management tool'] }
-  }[kind];
-  if (!aliases) fail('RETURN.RELATION_SCOPE_DRIFT', `Unsupported V8 relation object kind: ${kind}.`);
-  const matches = Object.entries(aliases).filter(([, values]) => values.map(catalogIdentityText).includes(value)).map(([family]) => family);
-  if (matches.length !== 1) fail('RETURN.RELATION_SCOPE_DRIFT', `GRA content ${kind}/${content} has no unique governed V8 relation family.`);
-  return matches[0];
+function uncertainError(error) {
+  return error && ['CONNECTOR.RESPONSE_LOST', 'REMOTE.MUTATION_UNCERTAIN'].includes(String(error.code || ''));
 }
-function relationApplicable(relation, row, content, mode) {
-  const match = /^REL\.(APP|DB|OS|TOOL)\.(GENERIC|SAP_ECC|ORACLE|SQL|UNIX|WIN|TICKET|IDENTITY)\./u.exec(String(relation.relationId || ''));
-  if (!match) fail('RETURN.RELATION_SCOPE_DRIFT', `V8 relation ${relation.relationId || '(missing)'} has no canonical object/subtype family.`);
-  return match[1] === row.kind && match[2] === requestedRelationFamily(row.kind, content)
-    && String(relation[`catalogPresent${mode}`] || '').startsWith('Y');
-}
-function linkRequired(relation, mode) { return String(relation[`linkRequired${mode}`] || '').startsWith('Y'); }
-function uncertainError(error) { return error && error.code === 'CONNECTOR.RESPONSE_LOST'; }
 function descriptionEditorJson(value) {
   const plainText=String(value||'').trim(); const editorData=plainText?`<p>${plainText.replace(/[&<>"]/gu,(char)=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[char]))}</p>`:'';
   return JSON.stringify({editorData,suggestionsData:[],trackChangesEnableFlagInEditor:false,plainText});
@@ -730,6 +595,17 @@ function progressSurface(latest,parsed){
   const rows=parsed?.rows||[];
   return {workflow:workflowSurface(latest),scopes:[{id:scopeId,parentId:scopeId,label:`Run ${run.run_id}`,parentLabel:'新建与关联',selected:true}],items:rows.map((row)=>({id:`element:${row.rowKey}`,scopeId,type:row.kind,title:row.elementId,subtitle:`目标工作区 ${String(row.fields['Omnia工作区']||'未填写')}；GRA ${String(row.fields['Derived GRA Name']||deriveGraName(row.elementId))}`,selectable:false,disabledReason:'目标身份来自当前受管资料，只读展示。',concurrencyToken:String(run.state_revision)}))};
 }
+function legacyRecoveryInspectionEligible(inspection){
+  return inspection?.schemaVersion==='omnia.feature-return-recovery-inspection-result/v1'&&inspection.eligible===true
+    &&inspection.featureId===FEATURE_ID&&inspection.sourceFeatureVersion==='0.2.60'
+    &&inspection.successorFeatureVersion===FEATURE_VERSION&&inspection.recoveryMode==='partial_close_no_reuse'
+    &&inspection.state==='returning'&&Number(inspection.counts?.uncertain||0)===0&&Number(inspection.counts?.inFlight||0)===0
+    &&Array.isArray(inspection.reconcileRequired)&&inspection.reconcileRequired.length<=1;
+}
+function legacyRecoveryAction(latest){
+  void latest;
+  return{actionId:'recover-interrupted-run',enabled:false,reason:'恢复上传已暂停；请使用正常上传流程。'};
+}
 function workflowNavigationActions(latest,currentStepId){
   const run=latest?.run;const state=String(run?.state||'');const revision=Number(run?.state_revision||0);
   const events=Array.isArray(latest?.events)?latest.events:[];const lastEvent=events[events.length-1];
@@ -737,11 +613,13 @@ function workflowNavigationActions(latest,currentStepId){
   const intents=Array.isArray(latest?.returnProgress)?latest.returnProgress:[];
   const commandStarted=intents.filter((item)=>String(item.command_state||'pending')!=='pending'||['commanded','verified','uncertain','failed'].includes(String(item.state||''))).length;
   const uncertain=intents.filter((item)=>String(item.command_state||'')==='uncertain'||String(item.state||'')==='uncertain').length;
-  const stableRestart=['acquiring','needs_input','ready_for_review','waiting_confirmation','succeeded','failed','cancelled','not_evaluable'].includes(state);
-  const restartEnabled=Boolean(run)&&stableRestart&&!alreadyRestarted;
+  const stableRestart=['draft','acquiring','processing','needs_input','converting','validating_output','ready_for_review','waiting_confirmation','returning','verifying','succeeded','failed','cancelled','not_evaluable'].includes(state);
+  const forceCancellable=state==='returning'&&uncertain===0;
+  const restartEnabled=Boolean(run)&&stableRestart&&uncertain===0&&!alreadyRestarted;
   const restartReason=!run?'当前没有需要重置的 Run。'
     :alreadyRestarted?'当前 Run 已保留审计并返回新的上传入口。'
-      :restartEnabled?(state==='succeeded'||state==='failed'?'保留终态 Run、命令、回执和读回审计；下一次上传建立新 Run。':'取消当前未写入 Run 并保留 Artifact、修订、确认和事件审计；下一次上传建立新 Run。')
+      :forceCancellable?'先强制取消剩余回传调度，保留已写入并验证的 Omnia 数据与全部审计，再建立新的上传入口。'
+        :restartEnabled?(state==='succeeded'||state==='failed'?'保留终态 Run、命令、回执和读回审计；下一次上传建立新 Run。':state==='verifying'?'结束剩余本地核验调度，保留所有命令、回执、读回和已验证远端写入；不回滚、不重放。':'CAS 结束当前流程并保留 Artifact、修订、确认和事件审计；下一次上传建立新 Run。')
         :state==='uncertain'?`存在 ${uncertain||commandStarted} 个结果不确定的命令；只能先执行只读核验，禁止重新开始。`
           :['returning','verifying','reconciling'].includes(state)?`已有 ${commandStarted} 个命令进入写入或核验阶段；禁止取消或掩盖当前 Return。`
             :'后台校验仍在运行；完成或失败关闭前禁止重新开始。';
@@ -751,12 +629,15 @@ function workflowNavigationActions(latest,currentStepId){
   else if(state==='waiting_confirmation'&&commandStarted===0){previousEnabled=true;previousReason='撤销未消费的冻结确认并返回校验；旧确认令牌立即失效。';}
   else if(state==='waiting_confirmation')previousReason='冻结确认已经产生命令或回执，禁止返回上一步。';
   else if(state==='uncertain')previousReason=`存在 ${uncertain||commandStarted} 个结果不确定的命令；只能先执行只读核验。`;
+  else if(forceCancellable){previousEnabled=true;previousReason=`强制停止剩余本地回传调度；已写入并验证的 ${intents.filter((item)=>String(item.state||'')==='verified'||['readback_verified','closed_not_applied'].includes(String(item.command_state||''))).length} 项不会回滚或重放。`;}
   else if(['returning','verifying','reconciling'].includes(state))previousReason=`已有 ${commandStarted} 个命令进入写入或核验阶段；禁止返回上一步。`;
   else if(['succeeded','failed','cancelled','not_evaluable'].includes(state))previousReason='当前 Run 已进入终态；可重新开始新上传，但不能改写既有流程历史。';
   else previousReason='后台校验仍在运行；完成前禁止返回上一步。';
   return[
-    {actionId:'restart-run',enabled:restartEnabled,reason:restartReason},
-    {actionId:'back-to-upload',enabled:previousEnabled,reason:previousReason}
+    legacyRecoveryAction(latest),
+    {actionId:'fresh-start-on-reopen',enabled:restartEnabled,reason:restartReason},
+    {actionId:'restart-run',label:'结束旧流程并全新开始',enabled:restartEnabled,reason:restartReason},
+    {actionId:'back-to-upload',label:forceCancellable?'强制取消回传':'返回上一步',enabled:previousEnabled,reason:previousReason}
   ];
 }
 function validationPresentation(parsed,live={}){
@@ -780,9 +661,9 @@ function validationPresentation(parsed,live={}){
     ['valid_values','名称与填写内容合法',checkFailed('valid_values')?'failed':'passed',checkFailed('valid_values')?'存在不受支持能力、超长值、枚举或非法名称。':'子类型、RAIT、长度与名称符合已发布规则。'],
     ['unique_names','批次内元素 ID 与 GRA 名称唯一',checkFailed('unique_names')?'failed':'passed',checkFailed('unique_names')?'存在重复元素 ID 或派生 GRA 名。':'元素 ID 与派生 GRA 名在批内唯一。'],
     ['omnia_id_conflicts','已核验当前 Pack 与回收站中的同名元素影响',liveState('omnia_id_conflicts'),checkFailed('omnia_id_conflicts')?'活动对象、创建能力或回收站证明未闭合。':liveCheck('omnia_id_conflicts').reason],
-    ['infrastructure_links','基础设施已关联系统',checkFailed('infrastructure_links')?'failed':'passed',checkFailed('infrastructure_links')?'DB/OS 必须恰好关联一个批内、同工作区 APP。':'DB/OS 已填写一个精确批内关联系统。'],
+    ['infrastructure_links','基础设施已关联系统',checkFailed('infrastructure_links')?'failed':'passed',checkFailed('infrastructure_links')?'基础设施必须至少关联一个批内、同工作区 APP。':'基础设施已填写一个或多个精确批内关联系统。'],
     ['infrastructure_rait','多系统关联的 RAIT 一致',liveState('infrastructure_rait'),checkFailed('infrastructure_rait')?'继承 RAIT 不唯一，或其 APP 来源未通过实时身份、类型、状态、工作区与 RAIT 校验。':liveCheck('infrastructure_rait').reason],
-    ['relationship_targets','关联目标可解析且类型正确',liveState('relationship_targets'),checkFailed('relationship_targets')?'存在 0.2.1 不支持的批外 APP、不精确目标，或目标 APP 未通过实时身份校验。':liveCheck('relationship_targets').reason],
+    ['relationship_targets','关联目标可解析且类型正确',liveState('relationship_targets'),checkFailed('relationship_targets')?'DB/OS/Tool/DCNO 存在批外 APP、不精确目标、跨工作区目标、非 APP 目标，或目标 APP 未通过实时身份校验。':liveCheck('relationship_targets').reason],
     ['workspace_presence','Omnia 工作区已填写',workspaceMissing?'failed':'passed',workspaceMissing?'存在缺失工作区。':'所有非排除行已填写工作区。'],
     ['factors_considered_ai_review','Factors Considered 智能复核',liveCheck('factors_considered_ai_review').state,liveCheck('factors_considered_ai_review').reason],
     ['workspace_live','Omnia 工作区名称实时有效',liveCheck('workspace_live').state,liveCheck('workspace_live').reason]
@@ -791,40 +672,23 @@ function validationPresentation(parsed,live={}){
   return {progress:{label:'校验进度',completed,total:checks.length,percent:Math.floor(completed*100/checks.length),state:failed?'failed':checks.some((item)=>item[2]==='warning')||warnings.length?'warning':pending?'pending':'passed',message:`${completed}/${checks.length} 项已执行；error ${errors.length}，warning ${warnings.length}。`,items:checks.map(([itemId,label,state,detail])=>({itemId,label,state,detail}))},issues:issues.map((issue)=>{const row=parsed.rows.find((candidate)=>String(issue.fieldKey).startsWith(`${candidate.rowKey}.`));return{issueId:issue.issueId,scope:row?(issue.fieldKey.includes('.identity')?'element':'field'):'global',severity:['needs_input','blocking'].includes(issue.state)?'error':'warning',elementId:row?.elementId||'',fieldKey:issue.fieldKey,message:issue.message};})};
 }
 function reviewBlocked(parsed,live={}){return validationPresentation(parsed,live).progress.items.some((item)=>item.state==='failed'||item.state==='pending');}
-const REVIEW_MATRIX=Object.freeze({
-  APP:[['系统ID','元素ID','text',true,200],['APP类型','APP子类型','enum',true,120],['System Risk Classification','RAIT','enum',true,20],['Factors Considered','Factors Considered','textarea',true,8000],['Omnia工作区','Omnia工作区','text',true,200]],
-  DB:[['数据库ID','元素ID','text',true,200],['DB 类型','DB子类型','enum',true,120],['Omnia工作区','Omnia工作区','text',true,200],['关联系统ID','关联系统ID','text',true,500],['Inherited System Risk Classification','RAIT（只读继承）','readonly',false,20]],
-  OS:[['服务器ID','元素ID','text',true,200],['OS 类型','OS子类型','enum',true,120],['Omnia工作区','Omnia工作区','text',true,200],['关联系统ID','关联系统ID','text',true,500],['Inherited System Risk Classification','RAIT（只读继承）','readonly',false,20]],
-  TOOL:[['IT TOOL ID','元素ID','text',true,200],['Tool 类型','Tool子类型','enum',true,120],['System Risk Classification','RAIT','enum',true,20],['Omnia工作区','Omnia工作区','text',true,200]]
-});
-const REVIEW_ENUMS=Object.freeze({'System Risk Classification':['Higher','Lower'],'APP类型':['Generic','SAP ECC'],'DB 类型':['Generic','Oracle','SQL'],'OS 类型':['Generic','UNIX','WIN'],'Tool 类型':['工单工具','身份和访问管理工具']});
+const REVIEW_FIELDS_BY_KIND=new Proxy({}, {get(_target,kind){return kindCapability(String(kind)).reviewFields.map((field)=>[field.rawFieldKey,field.label,field.inputKind,field.required,field.maxLength]);}});
+function reviewAllowedValues(parsed,raw){for(const spec of Object.values(parsed?.kindRegistry||ACTIVE_KIND_REGISTRY||{})){const field=spec.reviewFields.find((item)=>item.rawFieldKey===raw);if(field)return field.allowedValues||[];}return[];}
 function activeRows(parsed){const excluded=new Set(parsed.excludedRowKeys||[]);return (parsed.rows||[]).filter((row)=>!excluded.has(row.rowKey));}
+function aiReviewEligibleRows(parsed){return activeRows(parsed).filter((row)=>kindCapability(String(row.kind),parsed?.kindRegistry).capabilities?.aiReview===true);}
 function reviewCandidate(parsed,row,raw){return (parsed.candidates||[]).find((candidate)=>candidate.provenance?.rowKey===row.rowKey&&candidate.rawFieldKey===raw);}
 function activeReviewIssues(parsed){const excluded=new Set(parsed.excludedRowKeys||[]),rows=parsed.rows||[];return (parsed.issues||[]).filter((issue)=>issue.state!=='resolved'&&!rows.some((row)=>excluded.has(row.rowKey)&&String(issue.fieldKey).startsWith(`${row.rowKey}.`)));}
 function reviewPresentation(parsed){
   const rows=parsed.rows||[],active=activeRows(parsed),issues=activeReviewIssues(parsed);const firstIssue=issues.find((issue)=>['needs_input','blocking'].includes(issue.state));const selected=active.find((row)=>firstIssue&&String(firstIssue.fieldKey).startsWith(`${row.rowKey}.`))||active[0]||rows[0];const fields=[];
-  for(const row of active){for(const [raw,label,inputKind,required,maxLength] of REVIEW_MATRIX[row.kind]){const candidate=reviewCandidate(parsed,row,raw);const messages=issues.filter((issue)=>issue.fieldKey===candidate?.fieldKey||String(issue.fieldKey).startsWith(`${row.rowKey}.`)&&issue.message.includes(raw)).map((issue)=>issue.message);fields.push({rowKey:row.rowKey,kind:row.kind,fieldKey:candidate?.fieldKey||`${row.rowKey}.readonly.${digest(raw)}`,rawFieldKey:raw,label,expectedRevision:Number(candidate?.revision||0),inputKind,currentValue:String(row.fields[raw]??''),allowedValues:REVIEW_ENUMS[raw]||[],required:Boolean(required),maxLength:Number(maxLength),editable:inputKind!=='readonly'&&Boolean(candidate),message:messages.join(' '),sourceSheet:candidate?.provenance?.sourceSheet||row.sourceSheet,sourceRow:Number(candidate?.provenance?.sourceRow||row.sourceRow),derivation:candidate?.provenance?.derivationRule||'verbatim_user_workbook_cell'});}const gra=reviewCandidate(parsed,row,'Derived GRA Name');fields.push({rowKey:row.rowKey,kind:row.kind,fieldKey:gra?.fieldKey||`${row.rowKey}.derived.gra-name`,rawFieldKey:'Derived GRA Name',label:'GRA 名称（派生）',expectedRevision:Number(gra?.revision||0),inputKind:'readonly',currentValue:String(gra?.value??deriveGraName(row.elementId)),allowedValues:[],required:true,maxLength:200,editable:false,message:'',sourceSheet:gra?.provenance?.sourceSheet||row.sourceSheet,sourceRow:Number(gra?.provenance?.sourceRow||row.sourceRow),derivation:gra?.provenance?.derivationRule||'v4.phase1-gra-name-from-element-id.v1'});const rawDescription=descriptionRawField(row.kind),description=reviewCandidate(parsed,row,rawDescription);fields.push({rowKey:row.rowKey,kind:row.kind,fieldKey:description?.fieldKey||`${row.rowKey}.derived.description`,rawFieldKey:rawDescription,label:'Description（派生）',expectedRevision:Number(description?.revision||1),inputKind:'readonly',currentValue:String(description?.value??row.elementId),allowedValues:[],required:true,maxLength:200,editable:false,message:'',sourceSheet:description?.provenance?.sourceSheet||'字段母版',sourceRow:Number(description?.provenance?.sourceRow||0),derivation:description?.provenance?.derivationRule||descriptionRuleId(row.kind)});}
-  const kinds=[['APP','Application'],['DB','Database'],['OS','Operating System'],['TOOL','IT Tool']];return{selectedKind:selected?.kind||'APP',selectedRowKey:selected?.rowKey||'',elementTypes:kinds.map(([kind,label])=>{const typed=active.filter((row)=>row.kind===kind),typedIssues=issues.filter((issue)=>typed.some((row)=>String(issue.fieldKey).startsWith(`${row.rowKey}.`)));return{kind,label,count:typed.length,issueCount:typedIssues.filter((issue)=>['needs_input','blocking'].includes(issue.state)).length,warningCount:typedIssues.filter((issue)=>issue.state==='waived').length,disabled:typed.length===0,reason:typed.length?'':`本批没有 ${label} 行。`};}),elements:rows.map((row)=>{const rowIssues=issues.filter((issue)=>String(issue.fieldKey).startsWith(`${row.rowKey}.`));return{rowKey:row.rowKey,kind:row.kind,elementId:row.elementId,label:`${row.elementId} · ${row.sourceSheet}:${row.sourceRow}`,sourceSheet:row.sourceSheet,sourceRow:row.sourceRow,issueCount:rowIssues.filter((issue)=>['needs_input','blocking'].includes(issue.state)).length,warningCount:rowIssues.filter((issue)=>issue.state==='waived').length,derivedDisplay:`${deriveGraName(row.elementId)} / ${String(row.fields[descriptionRawField(row.kind)]||row.elementId)}`,blocking:rowIssues.some((issue)=>['needs_input','blocking'].includes(issue.state)),excluded:(parsed.excludedRowKeys||[]).includes(row.rowKey)};}),fields,issueOrder:issues.map((issue)=>{const row=rows.find((candidate)=>String(issue.fieldKey).startsWith(`${candidate.rowKey}.`));return{issueId:issue.issueId,rowKey:row?.rowKey||'',fieldKey:issue.fieldKey,severity:['needs_input','blocking'].includes(issue.state)?'error':'warning',message:issue.message};})};
+  for(const row of active){for(const [raw,label,inputKind,required,maxLength] of REVIEW_FIELDS_BY_KIND[row.kind]){const candidate=reviewCandidate(parsed,row,raw);const messages=issues.filter((issue)=>issue.fieldKey===candidate?.fieldKey||String(issue.fieldKey).startsWith(`${row.rowKey}.`)&&issue.message.includes(raw)).map((issue)=>issue.message);const decisionMessage=raw==='Inherited System Risk Classification'?String(row.inheritanceDecision?.message||''):'';fields.push({rowKey:row.rowKey,kind:row.kind,fieldKey:candidate?.fieldKey||`${row.rowKey}.readonly.${digest(raw)}`,rawFieldKey:raw,label,expectedRevision:Number(candidate?.revision||0),inputKind,currentValue:String(row.fields[raw]??''),allowedValues:reviewAllowedValues(parsed,raw),required:Boolean(required),maxLength:Number(maxLength),editable:inputKind!=='readonly'&&Boolean(candidate),message:[...messages,decisionMessage].filter(Boolean).join(' '),sourceSheet:candidate?.provenance?.sourceSheet||row.sourceSheet,sourceRow:Number(candidate?.provenance?.sourceRow||row.sourceRow),derivation:candidate?.provenance?.derivationRule||'verbatim_user_workbook_cell'});}const gra=reviewCandidate(parsed,row,'Derived GRA Name');fields.push({rowKey:row.rowKey,kind:row.kind,fieldKey:gra?.fieldKey||`${row.rowKey}.derived.gra-name`,rawFieldKey:'Derived GRA Name',label:'GRA 名称（派生）',expectedRevision:Number(gra?.revision||0),inputKind:'readonly',currentValue:String(gra?.value??deriveGraName(row.elementId)),allowedValues:[],required:true,maxLength:200,editable:false,message:'',sourceSheet:gra?.provenance?.sourceSheet||row.sourceSheet,sourceRow:Number(gra?.provenance?.sourceRow||row.sourceRow),derivation:gra?.provenance?.derivationRule||'v4.phase1-gra-name-from-element-id.v1'});const rawDescription=descriptionRawField(row.kind),description=reviewCandidate(parsed,row,rawDescription);fields.push({rowKey:row.rowKey,kind:row.kind,fieldKey:description?.fieldKey||`${row.rowKey}.derived.description`,rawFieldKey:rawDescription,label:'Description（派生）',expectedRevision:Number(description?.revision||1),inputKind:'readonly',currentValue:String(description?.value??row.elementId),allowedValues:[],required:true,maxLength:200,editable:false,message:'',sourceSheet:description?.provenance?.sourceSheet||'字段母版',sourceRow:Number(description?.provenance?.sourceRow||0),derivation:description?.provenance?.derivationRule||descriptionRuleId(row.kind)});}
+  const kinds=[['APP','Application'],['DB','Database'],['OS','Operating System'],['TOOL','IT Tool'],['DCNO','DCNO']];return{selectedKind:selected?.kind||'APP',selectedRowKey:selected?.rowKey||'',elementTypes:kinds.map(([kind,label])=>{const typed=active.filter((row)=>row.kind===kind),typedIssues=issues.filter((issue)=>typed.some((row)=>String(issue.fieldKey).startsWith(`${row.rowKey}.`)));return{kind,label,count:typed.length,issueCount:typedIssues.filter((issue)=>['needs_input','blocking'].includes(issue.state)).length,warningCount:typedIssues.filter((issue)=>issue.state==='waived').length,disabled:typed.length===0,reason:typed.length?'':`本批没有 ${label} 行。`};}),elements:rows.map((row)=>{const rowIssues=issues.filter((issue)=>String(issue.fieldKey).startsWith(`${row.rowKey}.`));return{rowKey:row.rowKey,kind:row.kind,elementId:row.elementId,label:`${row.elementId} · ${row.sourceSheet}:${row.sourceRow}`,sourceSheet:row.sourceSheet,sourceRow:row.sourceRow,issueCount:rowIssues.filter((issue)=>['needs_input','blocking'].includes(issue.state)).length,warningCount:rowIssues.filter((issue)=>issue.state==='waived').length,derivedDisplay:`${deriveGraName(row.elementId)} / ${String(row.fields[descriptionRawField(row.kind)]||row.elementId)}`,inheritanceDecision:row.inheritanceDecision||null,blocking:rowIssues.some((issue)=>['needs_input','blocking'].includes(issue.state)),excluded:(parsed.excludedRowKeys||[]).includes(row.rowKey)};}),fields,issueOrder:issues.map((issue)=>{const row=rows.find((candidate)=>String(issue.fieldKey).startsWith(`${candidate.rowKey}.`));return{issueId:issue.issueId,rowKey:row?.rowKey||'',fieldKey:issue.fieldKey,severity:['needs_input','blocking'].includes(issue.state)?'error':'warning',message:issue.message};})};
 }
-function recomputeLocalIssues(parsed){
-  const rows=activeRows(parsed);const issues=(parsed.issues||[]).filter((candidate)=>candidate.origin==='parser');
-  const add=(row,code,fieldKey,issueType,state,message,checkId)=>{const created=issue('local',code,fieldKey||`${row?.rowKey||'global'}.${issueType}`,issueType,state,message,checkId);created.issueId=issueId('local',`${parsed.issueNamespace||'legacy'}|${code}`,created.fieldKey);issues.push(created);};
-  const candidateByRowAndRawField=new Map();
-  for(const candidate of parsed.candidates||[]){const key=`${candidate.provenance?.rowKey||''}\u0000${candidate.rawFieldKey||''}`;if(!candidateByRowAndRawField.has(key))candidateByRowAndRawField.set(key,candidate);}
-  const indexedCandidate=(row,raw)=>candidateByRowAndRawField.get(`${row.rowKey}\u0000${raw}`);
-  for(const row of rows){for(const [raw,label,inputKind,required,maxLength] of REVIEW_MATRIX[row.kind]){const value=String(row.fields[raw]??'').normalize('NFC').trim(),candidate=indexedCandidate(row,raw);if(required&&!value)add(row,'LOCAL.REQUIRED_FIELD',candidate?.fieldKey||`${row.rowKey}.missing.${digest(raw)}`,'missing','needs_input',`${row.kind} ${row.elementId} 缺少必填字段 ${label}。`,'required_fields');if(value.length>Number(maxLength))add(row,'LOCAL.FIELD_TOO_LONG',candidate?.fieldKey,'invalid_enum','needs_input',`${row.kind} ${row.elementId} 的 ${label} 超过 ${maxLength} 字符上限。`,'valid_values');const allowed=REVIEW_ENUMS[raw];if(value&&allowed&&!allowed.includes(value))add(row,'LOCAL.INVALID_ENUM',candidate?.fieldKey,'invalid_enum','needs_input',`${row.kind} ${row.elementId} 的 ${label} 仅允许 ${allowed.join(' / ')}。`,'valid_values');if(raw===REVIEW_MATRIX[row.kind][0][0]){row.elementId=value;const illegal=/[\u0000-\u001f\u007f<>:"/\\|?*、，,;；]/u.test(value)||/^\.+$/u.test(value);if(illegal||deriveGraName(value).length>200)add(row,'LOCAL.ILLEGAL_ELEMENT_NAME',candidate?.fieldKey,'invalid_enum','needs_input',`${row.kind} 元素 ID 含非法字符，或派生 GRA 名超过 200 字符。`,'valid_values');}}}
-  const identities=new Map(),graNames=new Map();for(const row of rows){const identity=String(row.elementId).toLocaleLowerCase('en-US'),gra=deriveGraName(row.elementId).toLocaleLowerCase('en-US');if(identities.has(identity)||graNames.has(gra))add(row,'LOCAL.DUPLICATE_IDENTITY',`${row.rowKey}.identity`,'conflict','blocking',`${row.kind} ${row.elementId} 的元素 ID 或派生 GRA 名在全批次重复。`,'unique_names');else{identities.set(identity,row);graNames.set(gra,row);}}
-  const appRowsByElementId=new Map(),infrastructureRows=[];
-  for(const row of rows){if(row.kind==='APP'){const key=row.elementId.toLocaleLowerCase('en-US'),matches=appRowsByElementId.get(key);if(matches)matches.push(row);else appRowsByElementId.set(key,[row]);}else if(row.kind==='DB'||row.kind==='OS')infrastructureRows.push(row);}
-  for(const row of infrastructureRows){row.relations=String(row.fields['关联系统ID']||'').split(/[、,，;；]/u).map((value)=>value.trim()).filter(Boolean);if(row.relations.length!==1)add(row,'LOCAL.EXACTLY_ONE_APP_REQUIRED',`${row.rowKey}.relations`,'ambiguous','blocking',`${row.kind} ${row.elementId} 必须恰好关联一个批内 APP；0.2.1 不支持零个或多个继承边。`,'infrastructure_links');const matches=row.relations.length===1?(appRowsByElementId.get(row.relations[0].toLocaleLowerCase('en-US'))||[]):[];if(row.relations.length===1&&matches.length===0)add(row,'UNSUPPORTED.EXTERNAL_APP_REFERENCE',`${row.rowKey}.relationship-target-live`,'contract_mismatch','blocking',`${row.kind} ${row.elementId} 引用批外 APP ${row.relations[0]}；0.2.1 未冻结外部目标与 RAIT，禁止回传。`,'relationship_targets');if(matches.length>1)add(row,'LOCAL.AMBIGUOUS_APP_REFERENCE',`${row.rowKey}.relations`,'ambiguous','blocking',`${row.kind} ${row.elementId} 的批内 APP 关联存在歧义。`,'infrastructure_links');if(matches.length===1){const source=matches[0],rowWorkspace=String(row.fields['Omnia工作区']||'').normalize('NFKC').trim(),sourceWorkspace=String(source.fields['Omnia工作区']||'').normalize('NFKC').trim();if(rowWorkspace!==sourceWorkspace)add(row,'LOCAL.CROSS_WORKSPACE_INHERITANCE',`${row.rowKey}.relations`,'contract_mismatch','blocking',`${row.kind} ${row.elementId} 与 APP ${source.elementId} 不在同一 Omnia 工作区。`,'infrastructure_links');const mode=String(source.fields['System Risk Classification']||'');if(!['Higher','Lower'].includes(mode))add(row,'LOCAL.RAIT_INHERITANCE_INVALID',`${row.rowKey}.inheritance`,'conflict','blocking',`${row.kind} ${row.elementId} 的唯一 APP RAIT 不可用。`,'infrastructure_rait');else row.fields['Inherited System Risk Classification']=mode;}}
-  parsed.issues=issues;return issues;
-}
-function reviewSurface(latest,plan,compiled,message){const parsed=plan.parsed,progress=progressSurface(latest,parsed),validation=validationPresentation(parsed,plan.liveValidation||{}),blocker=reviewBlocked(parsed,plan.liveValidation||{}),activeCount=activeRows(parsed).length;return{stateVersion:Number(latest.run.state_revision),status:blocker?'blocked':'ready',statusMessage:message,scopes:progress.scopes,items:progress.items,workflow:progress.workflow,progress:validation.progress,issues:validation.issues,review:reviewPresentation(parsed),editors:[],artifacts:[],actions:[
+function reviewSurface(latest,plan,compiled,message){const parsed=plan.parsed,progress=progressSurface(latest,parsed),validation=validationPresentation(parsed,plan.liveValidation||{}),returnBlocked=reviewBlocked(parsed,plan.liveValidation||{}),activeCount=activeRows(parsed).length;return{stateVersion:Number(latest.run.state_revision),status:returnBlocked?'blocked':'ready',statusMessage:message,scopes:progress.scopes,items:progress.items,workflow:progress.workflow,progress:validation.progress,issues:validation.issues,review:reviewPresentation(parsed),editors:[],artifacts:[],actions:[
   {actionId:'download-source-template',enabled:false,reason:'校验步骤不显示上传动作。'},{actionId:'stage-source-workbook',enabled:false,reason:'请先返回上传。'},{actionId:'confirm-upload',enabled:false,reason:'当前资料已经确认。'},{actionId:'validate-staged-upload',enabled:false,reason:'当前校验已经完成。'},
-  ...workflowNavigationActions(latest,'validate'),{actionId:'apply-revisions',enabled:true,reason:'保存所有 dirty 字段并完整重跑校验。'},{actionId:'remove-batch-row',enabled:activeCount>1,reason:activeCount>1?'仅移出本批，不调用 Connector，不删除 Omnia。':'批次仅剩一行，禁止移除。'},{actionId:'revalidate-all',enabled:true,reason:'在原 Run 上重跑全部本地与可用实时校验。'},{actionId:'prepare-return',enabled:!blocker,reason:blocker?'存在 error、未执行实时项或全局 blocker。':''},
+  ...workflowNavigationActions(latest,'validate'),{actionId:'apply-revisions',enabled:true,reason:'保存所有 dirty 字段并完整重跑校验。'},{actionId:'remove-batch-row',enabled:activeCount>1,reason:activeCount>1?'仅移出本批，不调用 Connector，不删除 Omnia。':'批次仅剩一行，禁止移除。'},{actionId:'revalidate-all',enabled:true,reason:'在原 Run 上重跑全部本地与可用实时校验。'},{actionId:'prepare-return',enabled:!returnBlocked,reason:returnBlocked?'存在 error、未执行实时项或全局 blocker。':''},
   {actionId:'confirm-return',enabled:false,reason:'请先提交审核并冻结回传计划。'},{actionId:'continue-return',enabled:false,reason:'当前没有可继续的冻结计划。'},{actionId:'reconcile-return',enabled:false,reason:'当前没有待核验的写入结果。'}]};}
 function uploadSurface(latest,message,fresh=false){
-  const run=latest?.run;const staged=run?.state==='acquiring';
+  const run=latest?.run;const staged=run?.state==='acquiring';const recoveryOnly=legacyRecoveryAction(latest).enabled===true;
   const workflow={revision:Math.max(1,Number(latest?.run?.state_revision||1)),currentStepId:'upload',steps:[
     {stepId:'upload',label:'上传资料',state:'current',detail:'上传系统信息'},
     {stepId:'validate',label:'校验',state:'pending',detail:'等待上传'},
@@ -832,7 +696,7 @@ function uploadSurface(latest,message,fresh=false){
   ]};
   const source=staged?(latest.artifacts||[]).filter((item)=>String(item.kind)==='source').slice(-1):[];
   return{stateVersion:Number(run?.state_revision||1),status:'ready',statusMessage:message,scopes:[],items:[],workflow,clearFields:['progress','review'],issues:[],editors:[],artifacts:source.map((item)=>({artifactId:String(item.artifact_id),kind:'source',name:String(item.original_name),sha256:String(item.sha256),sizeBytes:Number(item.size_bytes),available:false,reason:'待确认上传'})),actions:[
-    {actionId:'download-source-template',enabled:true,reason:''},{actionId:'stage-source-workbook',enabled:true,reason:''},{actionId:'confirm-upload',enabled:staged,reason:staged?'':'请先选择或拖入一个 .xlsx 文件。'},{actionId:'validate-staged-upload',enabled:false,reason:'等待确认上传。'},
+    {actionId:'download-source-template',enabled:!recoveryOnly,reason:recoveryOnly?'请先只读核验并关闭旧中断 Run。':''},{actionId:'stage-source-workbook',enabled:!recoveryOnly,reason:recoveryOnly?'请先只读核验并关闭旧中断 Run。':''},{actionId:'confirm-upload',enabled:!recoveryOnly&&staged,reason:recoveryOnly?'请先只读核验并关闭旧中断 Run。':staged?'':'请先选择或拖入一个 .xlsx 文件。'},{actionId:'validate-staged-upload',enabled:false,reason:recoveryOnly?'请先只读核验并关闭旧中断 Run。':'等待确认上传。'},
     ...workflowNavigationActions(latest,'upload'),{actionId:'apply-revisions',enabled:false,reason:'等待校验。'},{actionId:'remove-batch-row',enabled:false,reason:'等待校验。'},{actionId:'revalidate-all',enabled:false,reason:'等待校验。'},{actionId:'prepare-return',enabled:false,reason:'等待校验通过。'},
     {actionId:'confirm-return',enabled:false,reason:'请先提交审核并冻结回传计划。'},{actionId:'continue-return',enabled:false,reason:'当前没有可继续的冻结计划。'},{actionId:'reconcile-return',enabled:false,reason:'当前没有待核验的写入结果。'}]};
 }
@@ -842,11 +706,11 @@ function processingSurface(latest,message){
     {actionId:'download-source-template',enabled:false,reason:'正在校验。'},{actionId:'stage-source-workbook',enabled:false,reason:'正在校验。'},{actionId:'confirm-upload',enabled:false,reason:'已确认上传。'},{actionId:'validate-staged-upload',enabled:true,reason:''},...workflowNavigationActions(latest,'validate'),{actionId:'apply-revisions',enabled:false,reason:'正在校验。'},{actionId:'remove-batch-row',enabled:false,reason:'正在校验。'},{actionId:'revalidate-all',enabled:false,reason:'正在校验。'},{actionId:'prepare-return',enabled:false,reason:'正在校验。'},
     {actionId:'confirm-return',enabled:false,reason:'请先提交审核并冻结回传计划。'},{actionId:'continue-return',enabled:false,reason:'当前没有可继续的冻结计划。'},{actionId:'reconcile-return',enabled:false,reason:'当前没有待核验的写入结果。'}]};
 }
-function returnSurface(latest,message){
+function returnSurface(latest,message,execution={}){
   const run=latest?.run;const progress=progressSurface(latest);const state=String(run?.state||'');
   const status=state==='succeeded'?'ready':state==='failed'?'error':state==='uncertain'?'stale':'loading';
-  const intents=latest?.returnProgress||[]; const completed=intents.filter((item)=>item.state==='verified'||['readback_verified','closed_not_applied'].includes(item.command_state)).length; const effectiveCompleted=state==='succeeded'?intents.length:completed;const percent=intents.length?Math.floor(effectiveCompleted*100/intents.length):0;
-  const intentState=(item)=>item.state==='verified'||['readback_verified','closed_not_applied'].includes(item.command_state)?'passed':item.state==='uncertain'||item.command_state==='uncertain'?'uncertain':item.state==='failed'||item.command_state==='failed'?'failed':['submitted','committed'].includes(item.command_state)?'running':'pending';
+  const intents=latest?.returnProgress||[]; const completed=intents.filter((item)=>item.command_state==='readback_verified').length; const effectiveCompleted=state==='succeeded'?intents.length:completed;const percent=intents.length?Math.floor(effectiveCompleted*100/intents.length):0;
+  const intentState=(item)=>item.command_state==='readback_verified'?'passed':item.state==='uncertain'||item.command_state==='uncertain'?'uncertain':item.state==='failed'||item.command_state==='failed'?'failed':['submitted','committed'].includes(item.command_state)?'running':'pending';
   const category=(item)=>{const key=String(item.target_key||''),kind=String(item.target_kind||'');if(kind==='object'&&key.startsWith('object|'))return'元素';if(kind==='object'&&key.startsWith('gra|'))return'GRA';if(kind==='relation')return'关系';if(kind==='risk_control')return'Risk-Control';return'设置';};
   const categoryOrder=['元素','GRA','关系','Risk-Control','设置'];
   const grouped=categoryOrder.map((label)=>({label,rows:intents.filter((item)=>category(item)===label)})).filter((group)=>group.rows.length).map((group,index)=>{
@@ -854,9 +718,11 @@ function returnSurface(latest,message){
     const groupState=failedCount?'failed':uncertainCount?'uncertain':runningCount?'running':done===group.rows.length?'passed':'pending';
     return{itemId:`return-group-${index}`,label:group.label,state:groupState,detail:'',completed:done,total:group.rows.length,percent:group.rows.length?Math.floor(done*100/group.rows.length):0};
   });
-  const issues=state==='failed'?[{issueId:`return-failed-${String(run?.run_id||'run')}`,scope:'global',severity:'error',elementId:'',fieldKey:'return',message:'回传未完成，本次计划已安全停止。请重新建立回传计划；系统会复用已经写入并验证的内容。'}]
+  const forceCancelled=execution?.state==='force_cancelled';
+  const issues=state==='failed'?[{issueId:`return-failed-${String(run?.run_id||'run')}`,scope:'global',severity:forceCancelled?'warning':'error',elementId:'',fieldKey:'return',message:forceCancelled?'回传已按用户要求强制取消。已在 Omnia 写入并验证的内容保持不变；剩余计划不会继续调度，也不会执行回滚或重放。':'回传未完成，本次计划已安全停止。请重新建立回传计划；系统会复用已经写入并验证的内容。'}]
     :state==='uncertain'?[{issueId:`return-uncertain-${String(run?.run_id||'run')}`,scope:'global',severity:'warning',elementId:'',fieldKey:'return',message:'写入结果尚未完成核验，请保持当前页面并执行只读核验。'}]:[];
-  return {stateVersion:Number(run?.state_revision||1),status,statusMessage:'',workflow:progress.workflow,clearFields:['review'],
+  for(const failed of Array.isArray(execution.itemFailures)?execution.itemFailures:[])issues.push({issueId:`return-item-${failed.rowKey}`,scope:'element',severity:failed.state==='uncertain'?'warning':'error',elementId:String(failed.elementId||''),fieldKey:`${failed.rowKey}.return`,message:String(failed.message||'Return item was isolated.').slice(0,500)});
+  return {stateVersion:Number(run?.state_revision||1),status,statusMessage:message||(forceCancelled?'回传已强制取消；已验证的远端结果与完整审计均已保留，现在可以重新开始。':''),workflow:progress.workflow,clearFields:['review'],
     progress:{label:'回传进度',completed:effectiveCompleted,total:intents.length,percent,state:state==='uncertain'?'uncertain':state==='failed'?'failed':state==='succeeded'?'passed':'running',message:'',items:grouped},
     scopes:[],items:[],editors:[],issues,artifacts:[],actions:[
       {actionId:'download-source-template',enabled:false,reason:'回传阶段不再显示上传操作。'},
@@ -873,33 +739,107 @@ function returnSurface(latest,message){
       {actionId:'reconcile-return',enabled:state==='uncertain',reason:state==='uncertain'?'':'当前没有待核验的写入结果。'}]};
 }
 
+async function forceCancelReturnRun(store,latest){
+  const run=latest?.run;const runId=String(run?.run_id||'');
+  if(!runId||String(run.state)!=='returning')fail('RETURN.FORCE_CANCEL_STATE','只有正在回传且没有不确定写入的当前 Run 可以强制取消。');
+  const progress=Array.isArray(latest.returnProgress)?latest.returnProgress:await store.call('loadReturnProgress',{runId});
+  const uncertain=progress.filter((item)=>String(item.state||'')==='uncertain'||String(item.command_state||'')==='uncertain');
+  if(uncertain.length)fail('RETURN.FORCE_CANCEL_UNCERTAIN','存在写入结果不确定的命令；必须先完成只读核验，禁止强制取消。');
+  const verified=progress.filter((item)=>String(item.state||'')==='verified'||['readback_verified','closed_not_applied'].includes(String(item.command_state||''))).length;
+  const total=progress.length;const cancelledAt=new Date().toISOString();
+  const stateRevision=await store.call('transitionRun',{runId,expectedRevision:Number(run.state_revision),toState:'failed',eventType:'return.force_cancelled',error:`用户强制取消剩余回传调度；已验证 ${verified}/${total} 项保持不变，未执行回滚或重放。`,details:{verifiedTargets:verified,totalTargets:total,remainingTargets:Math.max(0,total-verified),remoteRollback:false,mutationReplay:false}});
+  const checkpoint=await store.call('loadPlan',runId);
+  const execution={...(checkpoint?.execution||{}),state:'force_cancelled',partial:verified<total,forceCancelledAt:cancelledAt,verifiedTargets:verified,totalTargets:total,remainingTargets:Math.max(0,total-verified),remoteRollback:false,mutationReplay:false};
+  if(checkpoint)await store.call('savePlan',{...checkpoint,execution,updatedAt:cancelledAt});
+  return{runId,stateRevision:Number(stateRevision),verified,total,execution};
+}
+
+async function closeRunForFreshStart(store,latest,forceCancelledRuns=new Set(),trigger='explicit_feature_fresh_start'){
+  let run=latest?.run;const initialState=String(run?.state||'');const runId=String(run?.run_id||'');
+  if(!runId)fail('RUN.RESTART_BLOCKED','No current Run is available to restart.');
+  const progress=Array.isArray(latest?.returnProgress)?latest.returnProgress:await store.call('loadReturnProgress',{runId});
+  const uncertain=(Array.isArray(progress)?progress:[]).filter((item)=>String(item?.state||'')==='uncertain'||String(item?.command_state||'')==='uncertain');
+  if(['uncertain','reconciling'].includes(initialState)||uncertain.length){
+    fail('RUN.RESTART_RECONCILE_REQUIRED','旧流程存在未闭合的写入结果；必须先执行只读核验，禁止丢弃、回滚或重放。');
+  }
+  if(initialState==='returning'){
+    forceCancelledRuns.add(runId);
+    try{await forceCancelReturnRun(store,{...latest,returnProgress:Array.isArray(progress)?progress:[]});}
+    catch(error){forceCancelledRuns.delete(runId);throw error;}
+  }else if(['draft','processing'].includes(initialState)){
+    const nextState='cancelled';
+    await store.call('transitionRun',{runId,expectedRevision:Number(run.state_revision),toState:nextState,eventType:'run.fresh_start_force_closed',details:{trigger,preserveArtifacts:true,preserveRevisions:true,remoteRollback:false,mutationReplay:false}});
+  }else if(['converting','validating_output','verifying'].includes(initialState)){
+    forceCancelledRuns.add(runId);
+    const verified=(Array.isArray(progress)?progress:[]).filter((item)=>String(item?.state||'')==='verified'||['readback_verified','closed_not_applied'].includes(String(item?.command_state||''))).length;
+    await store.call('transitionRun',{runId,expectedRevision:Number(run.state_revision),toState:'failed',eventType:'run.fresh_start_force_closed',error:`Feature fresh start closed ${initialState}; verified remote results and immutable audit were preserved.`,details:{trigger,interruptedStage:initialState,verifiedTargets:verified,totalTargets:Array.isArray(progress)?progress.length:0,preserveArtifacts:true,preserveRevisions:true,preserveCommands:true,preserveReceipts:true,remoteRollback:false,mutationReplay:false}});
+  }
+  latest=await store.call('loadLatestRun',{});run=latest?.run;
+  if(!run||String(run.run_id)!==runId)fail('RUN.RESTART_IDENTITY_DRIFT','Current Run identity changed while closing the old workflow.');
+  const restarted=await store.call('restartRun',{runId,expectedRevision:Number(run.state_revision)});
+  const current=await store.call('loadLatestRun',{});
+  return{current,restarted,initialState,runId};
+}
+
 function createFeatureWorker(dependencies) {
   if (!dependencies?.store?.call) fail('WORKER.STORE_REQUIRED', 'A typed persistent Store port is required.');
   const store = dependencies.store;
+  const forceCancelledRuns=new Set();
   const connector = dependencies.connector;
   const ai = dependencies.ai;
-  const {createPythonSidecarBridge}=require('./python-bridge.cjs');
+  const {createPythonSidecarBridge}=require('./create-associate-python-bridge.cjs');
   const python=createPythonSidecarBridge({ports:dependencies,maxFrameBytes:1024*1024,requestTimeoutMs:120000,heartbeatIntervalMs:5000,heartbeatTimeoutMs:15000});
   if (!connector?.invoke) fail('WORKER.CONNECTOR_REQUIRED', 'A signed Operation Connector port is required.');
   const governance = dependencies.governance || (GOVERNANCE.startsWith('__') ? null : JSON.parse(GOVERNANCE));
-  if (!governance || governance.sourceSha256 !== V8_SHA256 || governance.fieldCount !== 187 || governance.relationCount !== 68) {
+  if (!governance || governance.sourceSha256 !== V8_SHA256 || Number(governance.fieldCount)<187 || Number(governance.relationCount)<68) {
     fail('GOVERNANCE.NOT_FROZEN', 'The signed V8-derived governance contract is unavailable or drifted.');
   }
+  installKindRegistry(governance);
   const governanceSemanticDigest = digest(Buffer.from(canonical({
-    fields: governance.fields, relations: governance.relations, scoringItems: governance.scoringItems, derivationRules: governance.derivationRules
+    kindRegistry: governance.kindRegistry, fields: governance.fields, relations: governance.relations, scoringItems: governance.scoringItems, derivationRules: governance.derivationRules
   })));
+  const compatibleFrozenGovernanceDigests=new Set([governance.semanticDigest]);
+  for(const entry of governance.catalogIdentityRegistry?.compatibleFrozenGovernanceDigests||[]){
+    if(entry?.scope!=='execution_catalog_alias_only'||!/^[0-9a-f]{64}$/u.test(String(entry.semanticDigest||''))
+      ||!String(entry.relationIdPrefix||'').trim()||!String(entry.evidenceRef||'').trim()
+      ||!governance.relations.some((relation)=>String(relation.relationId||'').startsWith(String(entry.relationIdPrefix)))){
+      fail('GOVERNANCE.CATALOG_ALIAS_COMPATIBILITY_INVALID','Signed execution catalog-alias compatibility evidence is invalid.');
+    }
+    compatibleFrozenGovernanceDigests.add(String(entry.semanticDigest));
+  }
+  const governanceRelationById=new Map(governance.relations.map((relation)=>[String(relation.relationId||''),relation]));
+  const catalogIdentityFields=new Set(['catalogIdentityRequired','catalogControlNumber','catalogIdentityStatus','catalogIdentityEvidence']);
+  const withoutCatalogIdentity=(relation)=>Object.fromEntries(Object.entries(relation||{}).filter(([key])=>!catalogIdentityFields.has(key)));
+  const executionCatalogRelations=(frozenRelations)=>(frozenRelations||[]).map((frozen)=>{
+    const current=governanceRelationById.get(String(frozen?.relationId||''));
+    if(!current||canonical(withoutCatalogIdentity(current))!==canonical(withoutCatalogIdentity(frozen))){
+      fail('RETURN.CATALOG_ALIAS_BUSINESS_DRIFT',`Execution catalog alias relation differs from the frozen business relation: ${String(frozen?.relationId||'')}.`);
+    }
+    if(current.catalogIdentityStatus!=='signed_live_exact')return frozen;
+    if(current.catalogIdentityRequired!==true||!String(current.catalogControlNumber||'').trim()
+      ||!String(current.catalogIdentityEvidence?.evidenceRef||'').trim()||!String(current.catalogIdentityEvidence?.sourceTraceId||'').trim()){
+      fail('RETURN.CATALOG_ALIAS_EVIDENCE_INVALID',`Execution catalog alias has no exact signed evidence: ${String(frozen?.relationId||'')}.`);
+    }
+    return{...frozen,catalogIdentityRequired:true,catalogControlNumber:current.catalogControlNumber,
+      catalogIdentityStatus:current.catalogIdentityStatus,catalogIdentityEvidence:current.catalogIdentityEvidence};
+  });
   const ensureStagedPlan=async(latest)=>{
     const run=latest?.run;if(!run||run.state!=='acquiring'||!run.source_artifact_id)fail('RUN.NOT_STAGED','The latest Run has no recoverable staged source.');
     const existing=await store.call('loadPlan',String(run.run_id));if(existing?.descriptor)return existing;
     const artifact=await store.call('readArtifactBytes',{artifactId:String(run.source_artifact_id)});
     if(String(artifact.runId)!==String(run.run_id)||String(artifact.traceId)!==String(run.trace_id)||artifact.kind!=='source')fail('ARTIFACT.RUN_BINDING_MISMATCH','Recovered staged artifact binding drifted.');
     const descriptor={schemaVersion:'omnia.feature-artifact/v1',artifactId:String(artifact.artifactId),runId:String(artifact.runId),traceId:String(artifact.traceId),featureId:FEATURE_ID,featureVersion:FEATURE_VERSION,surfaceId:'create-associate.workbench',kind:'source',originalName:String(artifact.originalName),mediaType:String(artifact.mediaType),sizeBytes:Number(artifact.sizeBytes),sha256:String(artifact.sha256),importedAt:String(artifact.importedAt)};
-    const recovered={schemaVersion:'omnia.create-associate.staged-upload/v1',planId:String(run.run_id),runId:String(run.run_id),traceId:String(run.trace_id),descriptor,stageState:'acquiring',updatedAt:new Date().toISOString()};
+    const recovered={schemaVersion:'omnia.create-associate.staged-upload/v1',planId:String(run.run_id),runId:String(run.run_id),traceId:String(run.trace_id),descriptor,
+      stageState:'acquiring',updatedAt:new Date().toISOString()};
     await store.call('savePlan',recovered);return recovered;
   };
-  if (!Array.isArray(governance.fields) || governance.fields.length !== 187
-    || !Array.isArray(governance.relations) || governance.relations.length !== 68
-    || !Array.isArray(governance.scoringItems) || governance.scoringItems.length !== 15
+  const toolSpec=kindCapability('TOOL');const toolRelationFieldId=toolSpec.aliases?.[toolSpec.relation];
+  const toolApplicationExtension=governance.fields?.find((field)=>field.fieldId===toolRelationFieldId);
+  if (!Array.isArray(governance.fields) || governance.fields.length !== Number(governance.fieldCount)
+    || !Array.isArray(governance.relations) || governance.relations.length !== Number(governance.relationCount)
+    || !Array.isArray(governance.scoringItems) || governance.scoringItems.length < 15
+    || !toolApplicationExtension || Number(toolApplicationExtension.sourceRow)!==48
+    || toolApplicationExtension.sourceTraceId!=='SRC.IT元素.060'
     || governance.semanticDigest !== governanceSemanticDigest) {
     fail('GOVERNANCE.IR_DRIFT', 'The signed governance IR semantic digest or inventory drifted.');
   }
@@ -958,6 +898,22 @@ function createFeatureWorker(dependencies) {
     return { output, templateInstanceId };
   }
 
+  async function validateParsedIr(parsed,runId){
+    const parsedHandle=await store.call('createPythonJsonInputHandle',{runId,value:parsed,maxBytes:32*1024*1024});
+    return invokePythonJson('validate_ir',{schemaVersion:'omnia.create-associate.python-operation/v1',parsedHandle},runId);
+  }
+
+  async function compilePlanIr(parsed,runId){
+    const parsedHandle=await store.call('createPythonJsonInputHandle',{runId,value:parsed,maxBytes:32*1024*1024});
+    const governanceHandle=await store.call('createPythonJsonInputHandle',{runId,value:governance,maxBytes:16*1024*1024});
+    const planIr=await invokePythonJson('build_plan_ir',{schemaVersion:'omnia.create-associate.python-operation/v1',parsedHandle,governanceHandle},runId);
+    if(!planIr||planIr.schemaVersion!=='omnia.create-associate.capability-plan-ir/v1'||planIr.parsedDigest!==parsed.semanticDigest
+      ||planIr.governanceDigest!==governance.semanticDigest||!Array.isArray(planIr.rows)||!planIr.semanticDigest){
+      fail('PLAN.PYTHON_RESULT_INVALID','Managed Python plan compiler returned an invalid capability plan IR.');
+    }
+    return planIr;
+  }
+
   async function invoke(operationId, connectorBinding, request) {
     return connector.invoke({ schemaVersion: 'omnia.operation-invocation/v1', featureId: FEATURE_ID,
       featureVersion: FEATURE_VERSION, operationId, request: { connectorBinding, ...request } });
@@ -966,6 +922,7 @@ function createFeatureWorker(dependencies) {
     const maxSettlingMs = 120_000; const maxReads = 40; const startedAt = Date.now();
     const jitterSeed = parseInt(digest(Buffer.from(canonical({ request, mode, relationIds: relations.map((item) => item.relationId) }))).slice(0, 8), 16);
     let catalog = { risks: [], controls: [], diagnostics: {} }; let missing = relations; let attempts = 0; let waitedMs = 0;
+    let lastFingerprint='';let stableReads=0;
     while (attempts < maxReads) {
       if(attempts>0&&Date.now()-startedAt>=maxSettlingMs) break;
       attempts += 1;
@@ -973,16 +930,29 @@ function createFeatureWorker(dependencies) {
       missing = unresolvedCatalogRelations(catalog, relations, mode);
       if (!missing.length) return catalog;
       const elapsedMs = Date.now() - startedAt;
+      const fingerprint=riskControlCatalogFingerprint(catalog);
+      stableReads=fingerprint===lastFingerprint?stableReads+1:1;
+      lastFingerprint=fingerprint;
+      const diagnostics=catalog?.diagnostics||{};
+      const acceptedRisks=Number(diagnostics.acceptedRisks??catalog?.risks?.length??0);
+      const acceptedControls=Number(diagnostics.acceptedControls??catalog?.controls?.length??0);
+      if(acceptedRisks>0&&acceptedControls>0&&stableReads>=3&&elapsedMs>=5_000){
+        fail('RETURN.RISK_CONTROL_GOVERNANCE_INCOMPATIBLE',`Generated Risk/Control catalog remained unchanged for ${stableReads} reads (${elapsedMs}ms elapsed) but does not match signed governance; risks=${acceptedRisks}, controls=${acceptedControls}, missing=${missing.map((item)=>item.relationId).join(', ')}, fingerprint=${fingerprint}.`);
+      }
       const remainingMs = maxSettlingMs - elapsedMs;
       if (remainingMs <= 0 || attempts >= maxReads) break;
       const exponentialMs = Math.min(5_000, Math.round(750 * (1.55 ** (attempts - 1))));
       const jitterRatio = 0.85 + (((jitterSeed + attempts * 2654435761) >>> 0) % 301) / 1000;
       const delayMs = Math.min(remainingMs, Math.max(250, Math.round(exponentialMs * jitterRatio)));
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      await boundedDelay(delayMs);
       waitedMs += delayMs;
     }
     const diagnostics = catalog?.diagnostics || {};
-    fail('RETURN.RISK_CONTROL_CATALOG_SETTLING_TIMEOUT', `Generated Risk/Control catalog remained incomplete after ${attempts} bounded reads (${waitedMs}ms passive wait, ${Date.now()-startedAt}ms elapsed); risks=${Number(diagnostics.acceptedRisks??catalog?.risks?.length??0)}, controls=${Number(diagnostics.acceptedControls??catalog?.controls?.length??0)}, missing=${missing.map((item) => item.relationId).join(', ')}.`);
+    const identitySamples=Array.isArray(diagnostics.controlIdentitySamples)
+      ?diagnostics.controlIdentitySamples.slice(0,8).map((item)=>({
+        controlNumber:String(item?.controlNumber||'').slice(0,160),name:String(item?.name||'').slice(0,160)
+      })):[];
+    fail('RETURN.RISK_CONTROL_CATALOG_SETTLING_TIMEOUT', `Generated Risk/Control catalog remained incomplete after ${attempts} bounded reads (${waitedMs}ms passive wait, ${Date.now()-startedAt}ms elapsed); risks=${Number(diagnostics.acceptedRisks??catalog?.risks?.length??0)}, controls=${Number(diagnostics.acceptedControls??catalog?.controls?.length??0)}, missing=${missing.map((item) => item.relationId).join(', ')}, controlIdentitySamples=${JSON.stringify(identitySamples)}.`);
   }
   async function waitForGeneratedRiskIdentities(connectorBinding,row,riskAssessmentId,intents){
     const maxSettlingMs=120_000;const maxReads=40;const startedAt=Date.now();let attempts=0;let waitedMs=0;let missing=intents;
@@ -1001,7 +971,7 @@ function createFeatureWorker(dependencies) {
       const exponentialMs=Math.min(5_000,Math.round(750*(1.55**(attempts-1))));
       const jitterRatio=0.85+(((jitterSeed+attempts*2654435761)>>>0)%301)/1000;
       const delayMs=Math.min(remainingMs,Math.max(250,Math.round(exponentialMs*jitterRatio)));
-      await new Promise((resolve)=>setTimeout(resolve,delayMs));waitedMs+=delayMs;
+      await boundedDelay(delayMs);waitedMs+=delayMs;
     }
     fail('RETURN.RISK_IDENTITY_SETTLING_TIMEOUT',`Generated Risk identities remained incomplete after ${attempts} bounded reads (${waitedMs}ms passive wait, ${Date.now()-startedAt}ms elapsed); missing=${missing.map((item)=>item.riskNumber).join(', ')}.`);
   }
@@ -1012,14 +982,16 @@ function createFeatureWorker(dependencies) {
       if (observed?.verified === true && observed.status === 'EvaluationComplete') return observed;
       const status = String(observed?.status || 'unknown');
       if (/failed|cancelled|canceled|deleted/iu.test(status)) fail('RETURN.EVALUATION_TERMINAL_FAILURE', `GRA evaluation entered terminal status ${status}.`);
-      if (attempt < 119) await new Promise((resolve) => setTimeout(resolve, 1000));
+      // The authoritative remote read already provides the pacing boundary.
+      // Re-read immediately so a completed evaluation is observed without an
+      // additional fixed client-side wait.
     }
     fail('RETURN.EVALUATION_SETTLING_TIMEOUT', `GRA evaluation did not reach EvaluationComplete after 120 bounded reads; last status=${String(observed?.status || 'unknown')}.`);
   }
   function authorityRequest(checkpoint, context) {
-    const workspaceNames = [...new Set(activeRows(checkpoint.parsed).map((row) => rowField(row, governance, `P1.${row.kind}.IT.WORKSPACE`)))];
+    const workspaceNames = [...new Set(activeRows(checkpoint.parsed).map((row) => rowWorkspaceName(row)))];
     const graContents = [...new Map(activeRows(checkpoint.parsed).map((row) => {
-      const value = rowField(row, governance, `P1.${row.kind}.GRA.GRA_CONTENT`);
+      const value=authorityContentNameFor(row,governance,checkpoint.parsed?.kindRegistry);
       return [`${row.kind}|${value}`, { elementKind: row.kind, objectType: objectType(row.kind),
         objectSubtype: authorityObjectSubtype(row.kind), contentName: value }];
     })).values()];
@@ -1029,7 +1001,7 @@ function createFeatureWorker(dependencies) {
   async function runFactorsConsideredAiReview(checkpoint) {
     const parsed=checkpoint.parsed;
     parsed.issues=(parsed.issues||[]).filter((candidate)=>candidate.origin!=='ai_review'&&!String(candidate.issueId||'').startsWith('ai-review-'));
-    const apps=activeRows(parsed).filter((row)=>row.kind==='APP');
+    const apps=aiReviewEligibleRows(parsed);
     if(!apps.length){
       checkpoint.aiReview={state:'skipped',reasonCode:'AI.REVIEW_NOT_APPLICABLE',capturedAt:new Date().toISOString()};
       return{state:'skipped',reason:'本批无 APP，Factors Considered 智能复核不适用。'};
@@ -1049,13 +1021,14 @@ function createFeatureWorker(dependencies) {
       checkpoint.aiReview={state:'not_evaluable',reasonCode:'AI.REVIEW_PORT_UNAVAILABLE',capturedAt:new Date().toISOString()};
       return{state:'warning',reason};
     }
-    const items=apps.map((row)=>({
-      rowKey:String(row.rowKey),elementId:String(row.elementId),applicationType:String(row.fields['APP类型']||''),
-      rait:String(row.fields['System Risk Classification']||''),factorsConsidered:String(row.fields['Factors Considered']||'')
-    }));
+    const items=apps.map((row)=>({rowKey:String(row.rowKey),rait:String(row.fields['System Risk Classification']||''),factorsConsidered:String(row.fields['Factors Considered']||'')}));
     const instructions=[
       'Review each APP Factors Considered value only as a non-authoritative quality suggestion.',
-      'Assess clarity, specificity, completeness, and internal consistency with the declared Higher/Lower RAIT. Do not invent business facts, change the field, authorize a mutation, or decide whether Return may proceed.',
+      'Use only the literal Factors Considered text and declared Higher/Lower RAIT. Do not infer from an application name, application type, external domain knowledge, industry experience, or stereotypes.',
+      'Check two dimensions: whether the Factors text is internally coherent without contradictions, and whether its own words support the declared Higher/Lower conclusion.',
+      'Higher/Lower characteristics are text-matching guidance only. Treat orders or financial information as key data only when the Factors text explicitly says so; employee personal information or company payroll alone must not be assumed to be key data.',
+      'Do not invent business facts, change or rewrite the field, authorize a mutation, or decide whether Return may proceed. Every concern remains a non-authoritative warning.',
+      'Write every user-visible summary, concern.message, and every non-empty concern.suggestion in Simplified Chinese (zh-CN). Internal schemaVersion, rowKey, assessment, and concern.code values must remain in the declared English contract. 用户可见的 summary、message 和非空 suggestion 必须使用简体中文，不得返回纯英文展示文本。',
       'Return exactly {"schemaVersion":"omnia.create-associate.factors-review/v1","items":[...]} with one item for every input rowKey and no extras.',
       'Each item must contain exactly rowKey, assessment, summary, concerns. assessment is clear, needs_attention, or not_evaluable. concerns is an array of at most 5 objects containing exactly code, message, suggestion.'
     ].join(' ');
@@ -1064,11 +1037,11 @@ function createFeatureWorker(dependencies) {
       const actual=Object.keys(value).sort(),wanted=[...expected].sort();
       if(actual.length!==wanted.length||actual.some((key,index)=>key!==wanted[index]))fail('AI.REVIEW_OUTPUT_INVALID',`${label} fields are invalid.`);
     };
-    const inputDigest=digest(Buffer.from(canonical({capabilityId:'factors_considered_quality/v1',instructions,items})));
+    const inputDigest=digest(Buffer.from(canonical({capabilityId:'factors_considered_quality/v1',languageVersion:AI_REVIEW_LANGUAGE_VERSION,instructions,items})));
     const cached=checkpoint.aiReview;
-    if(cached?.inputDigest===inputDigest&&cached.reviewId&&['passed','warning'].includes(cached.state)&&Array.isArray(cached.items)
+    if(cached?.languageVersion===AI_REVIEW_LANGUAGE_VERSION&&cached?.inputDigest===inputDigest&&cached.reviewId&&['passed','warning'].includes(cached.state)&&Array.isArray(cached.items)
       &&cached.items.length===items.length&&new Set(cached.items.map((item)=>String(item.rowKey||''))).size===items.length
-      &&cached.items.every((item)=>items.some((inputItem)=>inputItem.rowKey===String(item.rowKey||'')))){
+      &&cached.items.every((item)=>items.some((inputItem)=>inputItem.rowKey===String(item.rowKey||''))&&aiReviewItemUsesChineseDisplayText(item))){
       for(const reviewed of cached.items){
         const rowKey=String(reviewed.rowKey),row=apps.find((candidate)=>candidate.rowKey===rowKey),fieldKey=factorCandidate(row)?.fieldKey||`${rowKey}.factors-considered-ai`;
         for(const concern of Array.isArray(reviewed.concerns)?reviewed.concerns:[]){
@@ -1090,6 +1063,7 @@ function createFeatureWorker(dependencies) {
       for(const value of Object.values(result.usage))if(value!==null&&(!Number.isSafeInteger(value)||value<0))fail('AI.REVIEW_USAGE_INVALID','AI review usage values must be non-negative integers or null.');
       exactKeys(result.output,['schemaVersion','items'],'Factors review output');
       if(result.output.schemaVersion!=='omnia.create-associate.factors-review/v1'||!Array.isArray(result.output.items)||result.output.items.length!==items.length)fail('AI.REVIEW_COVERAGE_INVALID','AI review output row count differs from the exact APP input.');
+      assertAiReviewOutputUsesChineseDisplayText(result.output);
       const inputKeys=new Set(items.map((item)=>item.rowKey)),seen=new Set();let attention=0,notEvaluable=0;
       for(const reviewed of result.output.items){
         exactKeys(reviewed,['rowKey','assessment','summary','concerns'],'Factors review item');
@@ -1114,12 +1088,12 @@ function createFeatureWorker(dependencies) {
       const reason=attention||notEvaluable
         ?`真实 AI 复核 ${result.reviewId} 已完成（${result.model}，${result.capturedAt}，${usageText}）；${attention} 个 APP 有质量建议，${notEvaluable} 个 APP 无法评估。建议不授权写入且不自动改字段。`
         :`真实 AI 复核 ${result.reviewId} 已完成（${result.model}，${result.capturedAt}，${usageText}）；全部 ${items.length} 个 APP 无质量关注。该结论不授权写入。`;
-      checkpoint.aiReview={state:attention||notEvaluable?'warning':'passed',inputDigest,reviewId:result.reviewId,capabilityId:result.capabilityId,provider:result.provider,model:result.model,capturedAt:result.capturedAt,usage:result.usage,items:result.output.items,reason};
+      checkpoint.aiReview={state:attention||notEvaluable?'warning':'passed',languageVersion:AI_REVIEW_LANGUAGE_VERSION,inputDigest,reviewId:result.reviewId,capabilityId:result.capabilityId,provider:result.provider,model:result.model,capturedAt:result.capturedAt,usage:result.usage,items:result.output.items,reason};
       return{state:attention||notEvaluable?'warning':'passed',reason,reviewId:result.reviewId,usage:result.usage,capturedAt:result.capturedAt};
     }catch(error){
-      const code=String(error?.code||'AI.REVIEW_FAILED'),message=String(error?.message||error).slice(0,500),reason=`AI 复核未完成（${code}）：${message}；此项不视为通过，且不自动改字段。`;
+      const code=String(error?.code||'AI.REVIEW_FAILED'),message=String(error?.message||error).slice(0,500),reason=`AI 复核未完成（${code}）；未生成合格的简体中文复核结果。此项不视为通过、不自动修改字段，可在当前 Run 重新校验。`;
       parsed.issues.push(aiIssue(code,'global.ai_review',reason));
-      checkpoint.aiReview={state:'not_evaluable',inputDigest,reasonCode:code,message,capturedAt:new Date().toISOString()};
+      checkpoint.aiReview={state:'not_evaluable',languageVersion:AI_REVIEW_LANGUAGE_VERSION,inputDigest,reasonCode:code,message,capturedAt:new Date().toISOString()};
       return{state:'warning',reason};
     }
   }
@@ -1134,7 +1108,7 @@ function createFeatureWorker(dependencies) {
       checkpoint.liveIdentityResolutions={};
       let ownedRecoveries=0,creatable=0,nameConflicts=0,identityBlocks=0;
       for(const row of activeRows(checkpoint.parsed)){
-        const workspaceId=byName.get(rowField(row,governance,`P1.${row.kind}.IT.WORKSPACE`).normalize('NFKC'));
+        const workspaceId=byName.get(rowWorkspaceName(row));
         if(row.kind==='APP'){
           const request=applicationIdentityRequest(row.elementId,workspaceId,rowField(row,governance,'P1.APP.GRA.RAIT_CONCLUSION'));
           try{
@@ -1170,27 +1144,39 @@ function createFeatureWorker(dependencies) {
         else if(identity.state==='none')creatable+=1;
       }
       const active=activeRows(checkpoint.parsed),appRowsByIdentity=new Map();
-      for(const app of active.filter((candidate)=>candidate.kind==='APP')){const key=app.elementId.toLocaleLowerCase('en-US'),matches=appRowsByIdentity.get(key);if(matches)matches.push(app);else appRowsByIdentity.set(key,[app]);}
+      for(const app of active.filter((candidate)=>candidate.kind==='APP')){const key=String(app.elementId).normalize('NFKC').toLocaleLowerCase('en-US'),matches=appRowsByIdentity.get(key);if(matches)matches.push(app);else appRowsByIdentity.set(key,[app]);}
       let liveTargetFailures=0;
-      for(const row of active.filter((candidate)=>candidate.kind==='DB'||candidate.kind==='OS')){
-        const matches=row.relations.length===1?(appRowsByIdentity.get(row.relations[0].toLocaleLowerCase('en-US'))||[]):[];
+      for(const row of active.filter((candidate)=>kindCapability(candidate.kind).capabilities?.relation===true)){
+        for(const appExternalId of row.relations){
+        const matches=appRowsByIdentity.get(String(appExternalId).normalize('NFKC').toLocaleLowerCase('en-US'))||[];
         if(matches.length!==1)continue;
         const source=matches[0],resolution=checkpoint.liveIdentityResolutions[source.rowKey];
         const disposition=String(resolution?.disposition||''),targetReady=disposition==='create'||(['resume','reuse'].includes(disposition)&&resolution?.ownership?.proven===true);
         if(targetReady)continue;
         liveTargetFailures+=1;
         checkpoint.parsed.issues.push(liveIssue('LIVE.RELATIONSHIP_APP_IDENTITY_FAILED',`${row.rowKey}.relationship-target-live`,'contract_mismatch','blocking',`${row.kind} ${row.elementId} 的关联 APP ${source.elementId} 未通过实时身份、Application 类型、活动状态与工作区校验。`,'relationship_targets'));
-        checkpoint.parsed.issues.push(liveIssue('LIVE.INFRASTRUCTURE_RAIT_SOURCE_FAILED',`${row.rowKey}.inheritance-live`,'contract_mismatch','blocking',`${row.kind} ${row.elementId} 的 RAIT 来源 APP ${source.elementId} 未通过实时身份、Application 类型、活动状态、工作区与 RAIT 校验。`,'infrastructure_rait'));
+        if(infrastructureKinds().has(row.kind))checkpoint.parsed.issues.push(liveIssue('LIVE.INFRASTRUCTURE_RAIT_SOURCE_FAILED',`${row.rowKey}.inheritance-live`,'contract_mismatch','blocking',`${row.kind} ${row.elementId} 的 RAIT 来源 APP ${source.elementId} 未通过实时身份、Application 类型、活动状态、工作区与 RAIT 校验。`,'infrastructure_rait'));
+        }
       }
       const targetFailed=checkpoint.parsed.issues.some((candidate)=>candidate.state==='blocking'&&candidate.checkId==='relationship_targets');
       const raitFailed=checkpoint.parsed.issues.some((candidate)=>candidate.state==='blocking'&&candidate.checkId==='infrastructure_rait');
       const conflictsFailed=identityBlocks>0;
-      const conflictReason=`APP/DB/OS/Tool 活动、回收站与歧义身份解析已执行；发现 ${ownedRecoveries} 个具有严格 Agent-managed 归属证明的恢复对象、${creatable} 个可进入创建预检的新对象${nameConflicts?`，${nameConflicts} 个未授权活动同名冲突`:''}${identityBlocks-nameConflicts>0?`，${identityBlocks-nameConflicts} 个身份被拒绝或解析失败`:''}。`;
-      return withAiReview({omnia_id_conflicts:{state:conflictsFailed?'failed':'passed',reason:conflictReason},relationship_targets:{state:targetFailed?'failed':'passed',reason:targetFailed?`存在 0.2.1 不支持的批外 APP、不精确目标或 ${liveTargetFailures} 个未通过实时身份校验的 APP 目标。`:'所有 DB/OS 目标均可解析为批内唯一、同工作区且类型正确的 APP；批内新建 APP 使用计划身份，不声明远端已存在。'},infrastructure_rait:{state:raitFailed?'failed':'passed',reason:raitFailed?'存在继承 RAIT 不唯一，或 APP 来源未通过实时身份、类型、状态、工作区与 RAIT 校验。':'所有 DB/OS RAIT 来源均绑定到已通过实时校验的 APP；批内新建 APP 使用已校验的计划 RAIT。'},workspace_live:{state:'passed',reason:`${query.workspaceNames.length} 个工作区已按当前 Pack 权威目录精确匹配。`}});
+      const mixedInheritance=active.some((row)=>infrastructureKinds().has(row.kind)&&row.inheritanceDecision?.mixedSources===true);
+      const conflictReason=`所有声明的 APP/Infrastructure/Tool 活动、回收站与歧义身份解析已执行；发现 ${ownedRecoveries} 个具有严格 Agent-managed 归属证明的恢复对象、${creatable} 个可进入创建预检的新对象${nameConflicts?`，${nameConflicts} 个未授权活动同名冲突`:''}${identityBlocks-nameConflicts>0?`，${identityBlocks-nameConflicts} 个身份被拒绝或解析失败`:''}。`;
+      const inheritancePassedReason=mixedInheritance?'所有基础设施 RAIT 来源均已通过实时校验；来源混合时按 Higher 优先设置为 Higher。':'所有基础设施 RAIT 来源均绑定到已通过实时校验的 APP；批内新建 APP 使用已校验的计划 RAIT。';
+      return withAiReview({omnia_id_conflicts:{state:conflictsFailed?'failed':'passed',reason:conflictReason},relationship_targets:{state:targetFailed?'failed':'passed',reason:targetFailed?`存在不支持的批外 APP、不精确目标或 ${liveTargetFailures} 个未通过实时身份校验的 APP 目标。`:'所有 DB/OS/Tool/DCNO 关系目标均可解析为批内唯一、同工作区且类型正确的 APP；批内新建 APP 使用计划身份，不声明远端已存在。'},infrastructure_rait:{state:raitFailed?'failed':'passed',reason:raitFailed?'存在缺失/无效继承 RAIT，或 APP 来源未通过实时身份、类型、状态、工作区与 RAIT 校验。':inheritancePassedReason},workspace_live:{state:'passed',reason:`${query.workspaceNames.length} 个工作区已按当前 Pack 权威目录精确匹配。`}});
     }catch(error){const reason=`实时校验失败（APP 身份/回收站、非 APP 活动对象、关系目标类型或工作区检查未闭合；可在原 Run 重试）：${String(error.message||error)}`;checkpoint.parsed.issues.push(liveIssue('LIVE.VALIDATION_FAILED','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return withAiReview(failedLiveChecks(reason));}
   }
   async function buildReturnPreparation(checkpoint, context) {
     if(reviewBlocked(checkpoint.parsed,checkpoint.liveValidation||{})) fail('RETURN.REVIEW_BLOCKED','Canonical Review contains a failed or pending check; prepare-return is forbidden.');
+    const planIr=checkpoint.planIr;
+    const planIrDigest=planIr&&digest(Buffer.from(canonical(Object.fromEntries(Object.entries(planIr).filter(([key])=>key!=='semanticDigest')))));
+    if(!planIr||planIr.schemaVersion!=='omnia.create-associate.capability-plan-ir/v1'||planIr.parsedDigest!==checkpoint.parsed.semanticDigest
+      ||!compatibleFrozenGovernanceDigests.has(planIr.governanceDigest)||planIr.semanticDigest!==planIrDigest||!Array.isArray(planIr.rows)){
+      fail('RETURN.CAPABILITY_PLAN_IR_DRIFT','Frozen Python capability plan IR is missing or differs from the reviewed workbook.');
+    }
+    const active=activeRows(checkpoint.parsed),planRowsByKey=new Map(planIr.rows.map((item)=>[item.rowKey,item]));
+    if(active.length!==planRowsByKey.size||active.some((row)=>!planRowsByKey.has(row.rowKey)))fail('RETURN.CAPABILITY_PLAN_ROW_DRIFT','Frozen Python capability plan row inventory differs from Review.');
     const observedAuthority = await invoke(RETURN_OPERATIONS.authority, context.connectorBinding, {
       allowedWorkspaceIds: context.safetyLock.workspaceIds, query: authorityRequest(checkpoint, context).query
     });
@@ -1208,20 +1194,29 @@ function createFeatureWorker(dependencies) {
     }
     const workspaces = new Map(authority.workspaces.map((item) => [String(item.name).normalize('NFKC'), item.workspaceId]));
     const graContents = new Map(authority.graContents.map((item) => [`${item.elementKind}|${String(item.contentName).normalize('NFKC')}`, item]));
-    const plannedApps = activeRows(checkpoint.parsed).filter((item) => item.kind === 'APP').map((item) => ({
-      elementId: item.elementId, workspaceName: rowField(item, governance, 'P1.APP.IT.WORKSPACE'),
-      mode: rowField(item, governance, 'P1.APP.GRA.RAIT_CONCLUSION')
+    const plannedApps = planIr.rows.filter((item)=>item.kind==='APP').map((item) => ({
+      rowKey:item.rowKey,elementId:item.object.externalId,workspaceName:item.object.workspaceName,mode:item.rait?.value
     }));
     const rowsPrepared = []; const targets = []; const preflights = [];
-    for (const row of activeRows(checkpoint.parsed)) {
-      const type = objectType(row.kind); const workspaceName = rowField(row, governance, `P1.${row.kind}.IT.WORKSPACE`);
+    for (const row of active) {
+      const planRow=planRowsByKey.get(row.rowKey);
+      if(planRow.kind!==row.kind||planRow.object?.externalId!==row.elementId||planRow.status!=='ready_for_remote_preflight')fail('RETURN.CAPABILITY_PLAN_ROW_INVALID',`Frozen capability plan row is not executable: ${row.kind}/${row.elementId}.`);
+      const returnIntents=frozenReturnIntents(planRow);
+      if(returnIntents.blockedUnresolvedRait===true)fail('RETURN.DETERMINISTIC_INTENTS_BLOCKED',`Frozen Python Return intents have unresolved RAIT: ${row.kind}/${row.elementId}.`);
+      if(canonical(returnIntents.relationTargets)!==canonical(row.relations||[]))fail('RETURN.DETERMINISTIC_INTENTS_DRIFT',`Frozen Python relation targets differ from Review: ${row.kind}/${row.elementId}.`);
+      const stageNodes=frozenStageNodes(planRow);
+      if(!Array.isArray(planRow.dependencyRowKeys)||new Set(planRow.dependencyRowKeys).size!==planRow.dependencyRowKeys.length)fail('RETURN.CAPABILITY_PLAN_DEPENDENCY_INVALID',`Frozen capability dependencies are invalid: ${row.kind}/${row.elementId}.`);
+      const dependencySourceRows=planRow.dependencyRowKeys.map((rowKey)=>active.find((candidate)=>candidate.rowKey===rowKey));
+      if(dependencySourceRows.some((candidate)=>!candidate))fail('RETURN.CAPABILITY_PLAN_DEPENDENCY_INVALID',`Frozen capability dependency is missing: ${row.kind}/${row.elementId}.`);
+      const type = objectType(row.kind); const workspaceName = String(planRow.object.workspaceName||'');
       const workspaceId = workspaces.get(workspaceName.normalize('NFKC'));
-      const contentName = rowField(row, governance, `P1.${row.kind}.GRA.GRA_CONTENT`);
-      const content = graContents.get(`${row.kind}|${contentName.normalize('NFKC')}`);
+      const contentName = String(planRow.object.contentName||'');
+      const authorityContentName=authorityContentNameFor(row,governance,checkpoint.parsed?.kindRegistry);
+      if(workspaceName!==rowField(row,governance,`P1.${row.kind}.IT.WORKSPACE`)||contentName!==rowField(row,governance,`P1.${row.kind}.GRA.GRA_CONTENT`))fail('RETURN.DETERMINISTIC_INTENTS_DRIFT',`Frozen Python object scope differs from Review: ${row.kind}/${row.elementId}.`);
+      const content = graContents.get(`${row.kind}|${authorityContentName.normalize('NFKC')}`);
       if (!workspaceId || !content) fail('RETURN.AUTHORITY_UNRESOLVED', `Authority identity is unavailable for ${row.kind}/${row.elementId}.`);
       const objectTarget = { targetIdentityKey: identityKey('object', [row.kind, row.elementId, workspaceId]), workspaceId };
-      const declaredMode = row.kind === 'APP' || row.kind === 'TOOL'
-        ? normalizeRait(rowField(row, governance, `P1.${row.kind}.GRA.RAIT_CONCLUSION`)) : '';
+      const declaredMode = planRow.rait?.strategy === 'direct' ? normalizeRait(planRow.rait?.value) : '';
       const subtypeId=objectSubtypeId(row.kind);
       const appIdentityRequest=row.kind==='APP'?applicationIdentityRequest(row.elementId,workspaceId,declaredMode,objectTarget.targetIdentityKey):null;
       const objectQuery = appIdentityRequest?.query||{ objectType: type, subtypeId, externalId: row.elementId, workspaceId,graName:deriveGraName(row.elementId) };
@@ -1259,17 +1254,21 @@ function createFeatureWorker(dependencies) {
       });
       if(graObserved.found) await invoke(RETURN_OPERATIONS.graRead,context.connectorBinding,{target:{targetIdentityKey:identityKey('gra',graBusinessIdentity(row.kind,row.elementId,workspaceId)),workspaceId},riskAssessmentId:responseId(graObserved.item,'GRA preflight'),query:{entityId:objectId,name:deriveGraName(row.elementId),itElementType:type,inkContentId:content.inkContentId,typeId:content.typeId}});
       let mode = declaredMode; let inheritanceSources = [];
-      if (['DB','OS'].includes(row.kind)) {
-        if(row.relations.length!==1) fail('RETURN.APP_REFERENCE_CARDINALITY',`${row.kind} ${row.elementId} requires exactly one in-workbook APP inheritance edge.`);
-        inheritanceSources = row.relations.map((externalId) => {
-          const matches = plannedApps.filter((item) => item.elementId.toLocaleLowerCase('en-US') === externalId.toLocaleLowerCase('en-US'));
-          if (matches.length !== 1) fail('RETURN.APP_REFERENCE_AMBIGUOUS', `${row.kind} ${row.elementId} does not reference exactly one in-workbook APP identity for ${externalId}.`);
-          if(matches[0].workspaceName.normalize('NFKC')!==workspaceName.normalize('NFKC')) fail('RETURN.APP_REFERENCE_WORKSPACE_DRIFT',`${row.kind} ${row.elementId} and APP ${externalId} must use the same frozen Workspace.`);
-          return { externalId, workspaceName: matches[0].workspaceName, plannedMode: matches[0].mode };
+      if (planRow.rait?.strategy === 'any_higher_else_all_lower') {
+        const inheritance=row.inheritance;
+        if(!inheritance||inheritance.schemaVersion!=='omnia.create-associate.infrastructure-app-inheritance/v1'||!['Higher','Lower'].includes(inheritance.rait)||!Array.isArray(inheritance.sourceApps)||!inheritance.sourceApps.length)fail('RETURN.INHERITANCE_IR_MISSING',`${row.kind} ${row.elementId} has no governed APP inheritance result; revalidate the source workbook before Return.`);
+        const sourceKeys=new Set(inheritance.sourceApps.map((source)=>`${String(source.rowKey||'')}\u0000${String(source.elementId||'').normalize('NFKC')}`));
+        if(sourceKeys.size!==inheritance.sourceApps.length||sourceKeys.size!==row.relations.length)fail('RETURN.INHERITANCE_IR_DRIFT',`${row.kind} ${row.elementId} APP inheritance source count drifted.`);
+        inheritanceSources=inheritance.sourceApps.map((source)=>{
+          const matches=plannedApps.filter((item)=>item.rowKey===source.rowKey&&item.elementId.normalize('NFKC')===String(source.elementId||'').normalize('NFKC'));
+          if(matches.length!==1||matches[0].workspaceName.normalize('NFKC')!==workspaceName.normalize('NFKC'))fail('RETURN.INHERITANCE_SOURCE_DRIFT',`${row.kind} ${row.elementId} has a missing, ambiguous, or cross-workspace governed APP inheritance source.`);
+          return{externalId:matches[0].elementId,rowKey:matches[0].rowKey,workspaceName:matches[0].workspaceName,plannedMode:matches[0].mode};
         });
-        const modes = [...new Set(inheritanceSources.map((item) => item.plannedMode))];
-        if (modes.length !== 1 || !['Higher','Lower'].includes(modes[0])) fail('RETURN.RAIT_INHERITANCE_AMBIGUOUS', `${row.kind} ${row.elementId} has no unique planned APP RAIT inheritance value.`);
-        mode = modes[0];
+        const relationIds=new Set(row.relations.map((relation)=>String(relation).normalize('NFKC').toLocaleLowerCase('en-US'))),sourceIds=new Set(inheritanceSources.map((source)=>String(source.externalId).normalize('NFKC').toLocaleLowerCase('en-US')));
+        if(relationIds.size!==row.relations.length||relationIds.size!==sourceIds.size||[...relationIds].some((id)=>!sourceIds.has(id)))fail('RETURN.INHERITANCE_RELATION_DRIFT',`${row.kind} ${row.elementId} relation targets differ from its governed inheritance IR.`);
+        const expectedMode=inheritanceSources.some((source)=>source.plannedMode==='Higher')?'Higher':inheritanceSources.every((source)=>source.plannedMode==='Lower')?'Lower':'';
+        if(expectedMode!==inheritance.rait)fail('RETURN.INHERITANCE_RAIT_DRIFT',`${row.kind} ${row.elementId} governed inherited RAIT no longer matches its frozen APP sources.`);
+        mode=inheritance.rait;
       }
       if (mode && !['Higher', 'Lower'].includes(mode)) fail('RETURN.RAIT_INVALID', `${row.kind} ${row.elementId} has an unsupported RAIT value.`);
       const identityDisposition=appIdentity?.disposition||(genericIdentity?.state==='active'?'resume':'create');
@@ -1279,13 +1278,14 @@ function createFeatureWorker(dependencies) {
       const prepared = { rowKey: row.rowKey, kind: row.kind, elementId: row.elementId, objectType: type,
         workspaceName, workspaceId, content, subtypeId, mode, declaredMode, inheritanceSources, objectTarget, objectQuery, objectObserved, objectId,graName:deriveGraName(row.elementId),
         identityDisposition,identityResolution,
-        graObserved, graId: graObserved.found ? responseId(graObserved.item, 'GRA preflight') : '', relations: row.relations };
-      prepared.description=String(row.fields[descriptionRawField(row.kind)]||'');
+        graObserved, graId: graObserved.found ? responseId(graObserved.item, 'GRA preflight') : '', relations:[...returnIntents.relationTargets], relationPolicy:planRow.relationPolicy,
+        dependencyRowKeys:[...planRow.dependencyRowKeys],stageNodes:[...stageNodes],capabilities:freezePlanCapabilities(planRow),returnIntents };
+      prepared.description=String(returnIntents.description||'');
       if(prepared.description!==row.elementId) fail('RETURN.DESCRIPTION_DERIVATION_DRIFT',`${row.kind} ${row.elementId} description differs from the signed derived field revision.`);
-      if(row.kind==='APP'){
-        prepared.isRelevant=row.fields['Derived Application Is Relevant'];
-        if(prepared.isRelevant!==false) fail('RETURN.IS_RELEVANT_RULE_DRIFT',`APP ${row.elementId} isRelevant differs from the signed constant-false rule revision.`);
-        prepared.isDataAvailable=row.fields['Derived Application Is Data Available'];
+      if(hasFrozenStage(prepared,'settings')){
+        prepared.isRelevant=returnIntents.settings?.isRelevant;
+        if(prepared.isRelevant!==true) fail('RETURN.IS_RELEVANT_RULE_DRIFT',`APP ${row.elementId} isRelevant differs from the signed constant-true rule revision.`);
+        prepared.isDataAvailable=returnIntents.settings?.isDataAvailable;
         if(prepared.isDataAvailable!==false) fail('RETURN.DATA_AVAILABILITY_RULE_DRIFT',`APP ${row.elementId} isDataAvailable differs from the signed v4-compatible constant-false rule revision.`);
         if(!objectId)prepared.dataAvailability=freezeAppDataAvailability('create',undefined,prepared.isDataAvailable);
         if(!String(content.itElementTypeId||'')) fail('RETURN.APP_TYPE_AUTHORITY_MISSING',`APP ${row.elementId} has no live authority-resolved IT Element type identity.`);
@@ -1297,25 +1297,33 @@ function createFeatureWorker(dependencies) {
         evidenceOperationIds:row.kind==='APP'?[RETURN_OPERATIONS.objectRead,RETURN_OPERATIONS.objectIdentityResolve,RETURN_OPERATIONS.objectCreatePreflight]:[RETURN_OPERATIONS.objectRead,RETURN_OPERATIONS.objectPreflight,RETURN_OPERATIONS.objectCreatePreflight] });
       targets.push({ kind: 'object', key: `gra|${row.rowKey}`, rowKey: row.rowKey, workspace: workspaceId, objectType: 'GRA', externalId: prepared.graName,
         disposition:graObserved.found?'reuse':'create',resolvedObjectId:graObserved.found?responseId(graObserved.item,'GRA preflight'):'',entityObjectTargetKey:`object|${row.rowKey}`,
-        contentIdentity:{inkContentId:content.inkContentId,typeId:content.typeId},mutationOperationId:RETURN_OPERATIONS.graCreate,
+        contentName,contentIdentity:{inkContentId:content.inkContentId,typeId:content.typeId},mutationOperationId:RETURN_OPERATIONS.graCreate,
         operationTargetIdentityKey:graOperationIdentity('gra',prepared),evidenceOperationIds:[RETURN_OPERATIONS.graRead,RETURN_OPERATIONS.graPreflight] });
-      if(row.kind==='APP') targets.push({kind:'field',key:`object-settings|${row.rowKey}`,rowKey:row.rowKey,workspace:workspaceId,objectType:type,externalId:row.elementId,objectTargetKey:`object|${row.rowKey}`,mode:objectId?'existing_with_token':'create_bootstrap',typeId:content.itElementTypeId,isRelevant:prepared.isRelevant,isDataAvailable:prepared.dataAvailability?.value,dataAvailabilityDisposition:prepared.dataAvailability?.disposition,
+      if(hasFrozenStage(prepared,'settings')) targets.push({kind:'field',key:`object-settings|${row.rowKey}`,rowKey:row.rowKey,workspace:workspaceId,objectType:type,externalId:row.elementId,objectTargetKey:`object|${row.rowKey}`,mode:objectId?'existing_with_token':'create_bootstrap',typeId:content.itElementTypeId,isRelevant:prepared.isRelevant,isDataAvailable:prepared.dataAvailability?.value,dataAvailabilityDisposition:prepared.dataAvailability?.disposition,
         mutationOperationId:RETURN_OPERATIONS.objectSettingsWrite,operationTargetIdentityKey:identityKey('object-settings',[...objectBusinessIdentity(row.kind,row.elementId,workspaceId),'application-settings']),evidenceOperationIds:[RETURN_OPERATIONS.objectSettingsRead]});
       targets.push({ kind: 'field', key: `gra-status|${row.rowKey}`, rowKey: row.rowKey, workspace: workspaceId, objectType: 'GRA', graTargetKey: `gra|${row.rowKey}`, fieldId: 'status', value: 'EvaluationStarted',
         mutationOperationId:RETURN_OPERATIONS.graStateWrite,operationTargetIdentityKey:graOperationIdentity('gra-state',prepared,'status'),evidenceOperationIds:[RETURN_OPERATIONS.graStateRead] });
-      if (['APP','DB','OS','TOOL'].includes(row.kind)) targets.push({ kind: 'field', key: `gra-rait|${row.rowKey}`, rowKey: row.rowKey, workspace: workspaceId, objectType: 'GRA', graTargetKey: `gra|${row.rowKey}`, fieldId: 'itElementRaitConclusionLevelId', value: mode,
+      if (hasFrozenStage(prepared,'gra_state')||hasFrozenStage(prepared,'inherited_rait')) targets.push({ kind: 'field', key: `gra-rait|${row.rowKey}`, rowKey: row.rowKey, workspace: workspaceId, objectType: 'GRA', graTargetKey: `gra|${row.rowKey}`, fieldId: 'itElementRaitConclusionLevelId', value: mode,
         mutationOperationId:RETURN_OPERATIONS.graStateWrite,operationTargetIdentityKey:graOperationIdentity('gra-state',prepared,'itElementRaitConclusionLevelId'),evidenceOperationIds:[RETURN_OPERATIONS.graStateRead] });
-      for (const relation of row.relations) targets.push({ kind: 'relation', key: `element-relation|${row.rowKey}|${relation}`, rowKey: row.rowKey, workspace: workspaceId, relationType: 'InfrastructureApplication',
-        sourceObjectTargetKey:`object|${row.rowKey}`,targetExternalId:relation,mutationOperationId:RETURN_OPERATIONS.relationWrite,
-        operationTargetIdentityMode:'resolved_relation',operationTargetIdentityKey:'post-create-resolution',evidenceOperationIds:[RETURN_OPERATIONS.relationRead] });
-      const selectedGovernance = governance.relations.filter((relation) => relationApplicable(relation, row, contentName, mode || 'Higher'));
-      const requiredGovernance=selectedGovernance.filter((item)=>linkRequired(item,mode||'Higher'));
+      if(hasFrozenStage(prepared,'app_category')) targets.push({kind:'field',key:`risk-factor-category|${row.rowKey}`,rowKey:row.rowKey,workspace:workspaceId,objectType:'GRA',graTargetKey:`gra|${row.rowKey}`,fieldId:'applicable',value:true,
+        categoryName:'IT风险评估（如果测试运行有效性）',mutationOperationId:RETURN_OPERATIONS.riskFactorCategoryWrite,
+        operationTargetIdentityKey:graOperationIdentity('risk-factor-category',prepared,'IT风险评估（如果测试运行有效性）'),
+        evidenceOperationIds:[RETURN_OPERATIONS.riskFactorCategoryRead,RETURN_OPERATIONS.riskFactorCategoryPreflight]});
+      for (const relation of hasFrozenStage(prepared,'relation')?returnIntents.relationTargets:[]) {
+        const dependencyMatches=dependencySourceRows.filter((candidate)=>candidate.elementId.normalize('NFKC').toLocaleLowerCase('en-US')===String(relation).normalize('NFKC').toLocaleLowerCase('en-US'));
+        if(dependencyMatches.length!==1)fail('RETURN.CAPABILITY_PLAN_DEPENDENCY_INVALID',`Frozen relation dependency is absent or ambiguous: ${row.kind}/${row.elementId}/${relation}.`);
+        targets.push({ kind: 'relation', key: `element-relation|${row.rowKey}|${relation}`, rowKey: row.rowKey, workspace: workspaceId, relationType: planRow.relationPolicy.relationType,
+          sourceObjectTargetKey:`object|${row.rowKey}`,targetExternalId:relation,targetDependencyRowKey:dependencyMatches[0].rowKey,mutationOperationId:RETURN_OPERATIONS.relationWrite,
+          operationTargetIdentityMode:'resolved_relation',operationTargetIdentityKey:'post-create-resolution',evidenceOperationIds:[RETURN_OPERATIONS.relationRead] });
+      }
+      const selectedGovernance = hasFrozenStage(prepared,'risk_control')?returnIntents.riskControlCatalogRelations:[];
+      const requiredGovernance=hasFrozenStage(prepared,'risk_control')?returnIntents.riskControlRelations:[];
       const classificationTargets=new Map();
-      for(const relation of requiredGovernance){
-        const classification=relation[`classification${mode||'Higher'}`];const riskNumber=governedCatalogNumber(relation.riskName);
+      for(const risk of returnIntents.riskClassifications){
+        const classification=risk.classification;const riskNumber=risk.riskNumber;
         const uniqueKey=catalogIdentityText(riskNumber);const existing=classificationTargets.get(uniqueKey);
         if(existing&&catalogIdentityText(existing.classification)!==catalogIdentityText(classification))fail('RETURN.RISK_CLASSIFICATION_GOVERNANCE_CONFLICT',`Generated Risk ${riskNumber} has conflicting governed classifications.`);
-        if(!existing)classificationTargets.set(uniqueKey,{riskName:relation.riskName,riskNumber,classification});
+        if(!existing)classificationTargets.set(uniqueKey,{riskName:risk.riskName,riskNumber,classification});
       }
       for(const risk of classificationTargets.values()) targets.push({kind:'field',key:`risk-classification|${row.rowKey}|${risk.riskNumber}`,rowKey:row.rowKey,workspace:workspaceId,objectType:'GRA',graTargetKey:`gra|${row.rowKey}`,fieldId:'classificationType',value:risk.classification,riskName:risk.riskName,riskNumber:risk.riskNumber,
         mutationOperationId:RETURN_OPERATIONS.riskClassificationWrite,operationTargetIdentityKey:graOperationIdentity('risk-classification',prepared,`${risk.riskNumber}|${risk.classification}`),evidenceOperationIds:[RETURN_OPERATIONS.riskClassificationRead,RETURN_OPERATIONS.riskClassificationPreflight]});
@@ -1324,30 +1332,30 @@ function createFeatureWorker(dependencies) {
         objectType: 'GRA', graTargetKey: `gra|${row.rowKey}`, relationId: relation.relationId, riskName: relation.riskName, controlName: relation.controlName,
         classification: relation[`classification${mode || 'Higher'}`],mutationOperationId:RETURN_OPERATIONS.riskWrite,operationTargetIdentityKey:graOperationIdentity('risk-control',prepared,relation.relationId),evidenceOperationIds:[RETURN_OPERATIONS.riskRead]
       });
-      if (row.kind === 'APP' && contentName.toLocaleLowerCase('en-US').includes('sap ecc')) {
-        for (const item of governance.scoringItems) {
-          const applicable = mode === 'Higher' ? String(item.higherApplicable).startsWith('Y') : true;
-          if (applicable) targets.push({ kind: 'field', key: `risk-factor|${row.rowKey}|${item.itemId}`, rowKey: row.rowKey, workspace: workspaceId, objectType: 'GRA', graTargetKey: `gra|${row.rowKey}`, fieldId: item.itemId, value: mode,
-            mutationOperationId:RETURN_OPERATIONS.factorWrite,operationTargetIdentityKey:graOperationIdentity('risk-factor',prepared,item.itemId),evidenceOperationIds:[RETURN_OPERATIONS.factorRead,RETURN_OPERATIONS.factorPreflight] });
-        }
-        const factors = rowField(row, governance, 'P1.APP.GRA.FACTORS_CONSIDERED');
+      if (hasFrozenStage(prepared,'app_scoring')) {
+        for (const item of returnIntents.scoringItems) targets.push({ kind: 'field', key: `risk-factor|${row.rowKey}|${item.itemId}`, rowKey: row.rowKey, workspace: workspaceId, objectType: 'GRA', graTargetKey: `gra|${row.rowKey}`, fieldId: item.itemId, itemLabel:item.label, value: mode,contentName,
+          mutationOperationId:RETURN_OPERATIONS.factorWrite,operationTargetIdentityKey:graOperationIdentity('risk-factor',prepared,item.itemId),evidenceOperationIds:[RETURN_OPERATIONS.factorRead,RETURN_OPERATIONS.factorPreflight] });
+        const factors = String(returnIntents.documentation||'');
         if (factors) targets.push({ kind: 'documentation', key: `documentation|${row.rowKey}`, rowKey: row.rowKey, workspace: workspaceId, objectType: 'GRA', graTargetKey: `gra|${row.rowKey}`, plainText: factors,
           mutationOperationId:RETURN_OPERATIONS.documentationWrite,operationTargetIdentityKey:graOperationIdentity('documentation',prepared,'factors-considered'),evidenceOperationIds:[RETURN_OPERATIONS.documentationRead] });
       }
-      targets.push({ kind: 'evaluation', key: `evaluation|${row.rowKey}`, rowKey: row.rowKey, workspace: workspaceId, objectType: 'GRA', graTargetKey: `gra|${row.rowKey}`, value: 'EvaluationComplete',
+      if(hasFrozenStage(prepared,'evaluation')) targets.push({ kind: 'evaluation', key: `evaluation|${row.rowKey}`, rowKey: row.rowKey, workspace: workspaceId, objectType: 'GRA', graTargetKey: `gra|${row.rowKey}`, value: 'EvaluationComplete',
         mutationOperationId:RETURN_OPERATIONS.evaluationWrite,operationTargetIdentityKey:graOperationIdentity('evaluation',prepared,'EvaluationComplete'),evidenceOperationIds:[RETURN_OPERATIONS.evaluationRead] });
     }
     for(const relation of targets.filter((item)=>item.kind==='relation')){
-      const matches=rowsPrepared.filter((item)=>item.kind==='APP'&&item.elementId.toLocaleLowerCase('en-US')===String(relation.targetExternalId).toLocaleLowerCase('en-US'));
+      const matches=rowsPrepared.filter((item)=>item.rowKey===relation.targetDependencyRowKey&&String(item.workspaceId)===String(relation.workspace)&&item.elementId.normalize('NFKC').toLocaleLowerCase('en-US')===String(relation.targetExternalId).normalize('NFKC').toLocaleLowerCase('en-US'));
       if(matches.length!==1) fail('RETURN.RELATION_TARGET_UNVERIFIED',`Relation ${relation.key} does not resolve to one exact in-workbook APP target.`);
+      if(String(matches[0].workspaceId)!==String(relation.workspace))fail('RETURN.RELATION_TARGET_WORKSPACE_DRIFT',`Relation ${relation.key} source and APP target must use the same frozen Workspace.`);
       relation.targetObjectTargetKey=`object|${matches[0].rowKey}`;
       relation.targetWorkspace=matches[0].workspaceId;
     }
-    for(const row of rowsPrepared.filter((item)=>['DB','OS'].includes(item.kind))){
-      if(row.inheritanceSources.length!==1) fail('RETURN.RAIT_INHERITANCE_AMBIGUOUS',`${row.kind} ${row.elementId} requires exactly one APP inheritance edge.`);
-      const source=rowsPrepared.find((item)=>item.kind==='APP'&&item.elementId.toLocaleLowerCase('en-US')===row.inheritanceSources[0].externalId.toLocaleLowerCase('en-US')&&item.workspaceName.normalize('NFKC')===row.inheritanceSources[0].workspaceName.normalize('NFKC'));
-      if(!source) fail('RETURN.RAIT_INHERITANCE_AMBIGUOUS',`${row.kind} ${row.elementId} APP inheritance source is not an exact planned identity.`);
-      targets.push({kind:'field',key:`inheritance-source|${row.rowKey}|${source.rowKey}`,rowKey:row.rowKey,workspace:source.workspaceId,objectType:'GRA',graTargetKey:`gra|${source.rowKey}`,sourceRowKey:source.rowKey,fieldId:'itElementRaitConclusionLevelId',value:row.mode,mutationOperationId:RETURN_OPERATIONS.graStateWrite,operationTargetIdentityKey:inheritanceOperationIdentity(source,row),evidenceOperationIds:[RETURN_OPERATIONS.graStateRead]});
+    for(const row of rowsPrepared.filter((item)=>hasFrozenStage(item,'inherited_rait'))){
+      if(!row.inheritanceSources.length) fail('RETURN.RAIT_INHERITANCE_AMBIGUOUS',`${row.kind} ${row.elementId} has no governed APP inheritance sources.`);
+      for(const sourceReference of row.inheritanceSources){
+        const source=rowsPrepared.find((item)=>row.dependencyRowKeys.includes(item.rowKey)&&item.rowKey===sourceReference.rowKey&&item.elementId.normalize('NFKC')===sourceReference.externalId.normalize('NFKC')&&item.workspaceName.normalize('NFKC')===sourceReference.workspaceName.normalize('NFKC'));
+        if(!source) fail('RETURN.RAIT_INHERITANCE_AMBIGUOUS',`${row.kind} ${row.elementId} APP inheritance source is not an exact planned identity.`);
+        targets.push({kind:'field',key:`inheritance-source|${row.rowKey}|${source.rowKey}`,rowKey:row.rowKey,workspace:source.workspaceId,objectType:'GRA',graTargetKey:`gra|${source.rowKey}`,sourceRowKey:source.rowKey,fieldId:'itElementRaitConclusionLevelId',value:sourceReference.plannedMode,mutationOperationId:RETURN_OPERATIONS.graStateWrite,operationTargetIdentityKey:inheritanceOperationIdentity(source,row),evidenceOperationIds:[RETURN_OPERATIONS.graStateRead]});
+      }
     }
     const normalized=(value)=>String(value||'').normalize('NFKC').replace(/\s+/gu,' ').trim();
     for(const row of rowsPrepared){
@@ -1355,7 +1363,7 @@ function createFeatureWorker(dependencies) {
       const rowPreview={rowKey:row.rowKey,elementId:row.elementId,workspaceId:row.workspaceId,changes:[]};
       rowPreview.changes.push({targetKey:`object|${row.rowKey}`,disposition:row.identityDisposition,current:row.objectId||'absent',desired:`${row.objectType}/${row.elementId}`,operationId:RETURN_OPERATIONS.objectCreate,evidenceOperationIds:row.kind==='APP'?[RETURN_OPERATIONS.objectIdentityResolve,RETURN_OPERATIONS.objectRead]:[RETURN_OPERATIONS.objectRead]});
       rowPreview.changes.push({targetKey:`gra|${row.rowKey}`,disposition:row.graId?'reuse':'create',current:row.graId||'absent',desired:`${row.content.contentName}/${row.graName}`,operationId:RETURN_OPERATIONS.graCreate,evidenceOperationId:RETURN_OPERATIONS.graRead});
-      if(row.kind==='APP'){
+      if(hasFrozenStage(row,'settings')){
         const settingsIntent=rowTargets.find((item)=>item.key===`object-settings|${row.rowKey}`);
         if(row.objectId){
           const target={targetIdentityKey:settingsIntent.operationTargetIdentityKey,workspaceId:row.workspaceId};
@@ -1384,12 +1392,13 @@ function createFeatureWorker(dependencies) {
         if(!desiredStatus||!desiredRait) fail('RETURN.GRA_STATE_INTENT_MISSING',`GRA ${row.graId} has no complete frozen status/RAIT target.`);
         const graStateReady=String(state.status)===String(desiredStatus)&&normalizeRait(state.itElementRaitConclusionLevelId||state.itElementRaitConclusionLevelName)===normalizeRait(desiredRait);
         const evaluationComplete=String(state.status)==='EvaluationComplete';
-        const deferred=rowTargets.filter((item)=>item.kind==='risk_control'||String(item.key).startsWith('risk-classification|')||String(item.key).startsWith('risk-factor|')||item.kind==='documentation'||item.kind==='evaluation');
+        const deferred=rowTargets.filter((item)=>item.kind==='risk_control'||String(item.key).startsWith('risk-classification|')||String(item.key).startsWith('risk-factor-category|')||String(item.key).startsWith('risk-factor|')||item.kind==='documentation'||item.kind==='evaluation');
         if(!graStateReady){
           for(const intent of deferred){
             const desired=intent.kind==='risk_control'?{relationId:intent.relationId,riskName:intent.riskName,controlName:intent.controlName,classification:intent.classification}
               :String(intent.key).startsWith('risk-classification|')?{riskName:intent.riskName,classification:intent.value}
-                :String(intent.key).startsWith('risk-factor|')?{itemId:intent.fieldId,selectionMode:intent.value}
+                :String(intent.key).startsWith('risk-factor-category|')?{categoryName:intent.categoryName,applicable:intent.value}
+                :String(intent.key).startsWith('risk-factor|')?{itemId:intent.fieldId,itemLabel:intent.itemLabel,selectionMode:intent.value,contentName:intent.contentName}
                 :intent.kind==='documentation'?{plainText:intent.plainText}:{value:intent.value};
             if(Object.values(desired).some((value)=>value===undefined||value===null||value==='')||!Array.isArray(intent.evidenceOperationIds)) fail('RETURN.DEFERRED_INTENT_INVALID',`Deferred GRA target ${intent.key} is incomplete.`);
             intent.resolutionMode='post_state_catalog';rowPreview.changes.push({targetKey:intent.key,disposition:'post-state-resolution',current:'GRA state/RAIT not ready',desired,operationId:intent.mutationOperationId,evidenceOperationIds:intent.evidenceOperationIds});
@@ -1423,9 +1432,19 @@ function createFeatureWorker(dependencies) {
               rowPreview.changes.push({targetKey:intent.key,disposition:observed.verified===true?'reuse':'associate',current:observed.verified===true?'exact association':'absent',desired:{risk:intent.riskName,classification:intent.classification,control:intent.controlName,assertionType:risk.assertionType,assertion:risk.assertion},resolvedIds:intent.resolvedCatalog,operationId:intent.mutationOperationId,evidenceOperationId:intent.evidenceOperationIds[0]});
             }
           }
+          const categoryIntent=rowTargets.find((item)=>String(item.key).startsWith('risk-factor-category|'));
+          let categoryReady=false;
+          if(categoryIntent){
+            const target={targetIdentityKey:categoryIntent.operationTargetIdentityKey,workspaceId:row.workspaceId};
+            const observed=await invoke(RETURN_OPERATIONS.riskFactorCategoryPreflight,context.connectorBinding,{target,query:{riskAssessmentId:row.graId,categoryId:'',categoryName:categoryIntent.categoryName,objectType:'Application'}});
+            categoryIntent.resolvedCategory={categoryId:observed.categoryId,categoryName:observed.categoryName};
+            categoryReady=observed.applicable===true;
+            rowPreview.changes.push({targetKey:categoryIntent.key,disposition:observed.applicable===true?'reuse':'patch',current:observed.applicable,desired:true,resolvedIds:categoryIntent.resolvedCategory,operationId:categoryIntent.mutationOperationId,evidenceOperationId:categoryIntent.evidenceOperationIds[0]});
+          }
           for(const intent of rowTargets.filter((item)=>String(item.key).startsWith('risk-factor|'))){
+            if(!categoryReady){intent.resolutionMode='post_category_verification';rowPreview.changes.push({targetKey:intent.key,disposition:'post-category-resolution',current:'IT Risk Factor category is not yet verified applicable',desired:{itemId:intent.fieldId,itemLabel:intent.itemLabel,selectionMode:intent.value,contentName:intent.contentName},operationId:intent.mutationOperationId,evidenceOperationIds:intent.evidenceOperationIds});continue;}
             const target={targetIdentityKey:intent.operationTargetIdentityKey,workspaceId:row.workspaceId};
-            const observed=await invoke(RETURN_OPERATIONS.factorPreflight,context.connectorBinding,{target,query:{riskAssessmentId:row.graId,itemId:intent.fieldId,selectionMode:intent.value}});
+            const observed=await invoke(RETURN_OPERATIONS.factorPreflight,context.connectorBinding,{target,query:{riskAssessmentId:row.graId,itemId:intent.fieldId,itemLabel:intent.itemLabel,selectionMode:intent.value,contentName:intent.contentName}});
             intent.resolvedFactor={factorId:observed.factorId,selectedValue:observed.selected?.value,selectedName:observed.selected?.name,spectrumDigest:digest(Buffer.from(canonical(observed.spectrum||[])))};
             const selected=Number(observed.selected?.value),current=Number(observed.current?.value??observed.current);
             rowPreview.changes.push({targetKey:intent.key,disposition:observed.applicable===false?'not-applicable':selected===current?'reuse':'patch',current:observed.current,desired:observed.selected,operationId:intent.mutationOperationId,evidenceOperationId:observed.applicable===false?RETURN_OPERATIONS.factorPreflight:RETURN_OPERATIONS.factorRead});
@@ -1448,6 +1467,7 @@ function createFeatureWorker(dependencies) {
         preview.changes.push({targetKey:intent.key,disposition:observed.associated===true&&observed.inconsistent===false?'reuse':'associate',current:observed,desired:{sourceObjectId:source.objectId,targetObjectId:targetRow.objectId,relationType:intent.relationType},operationId:intent.mutationOperationId,evidenceOperationId:intent.evidenceOperationIds[0]});
       }else preview.changes.push({targetKey:intent.key,disposition:'post-create-resolution',current:'source-or-target-object-not-yet-created',desired:{sourceObjectTargetKey:intent.sourceObjectTargetKey,targetObjectTargetKey:intent.targetObjectTargetKey,relationType:intent.relationType},operationId:intent.mutationOperationId,evidenceOperationId:intent.evidenceOperationIds[0]});
     }
+    assertReturnPlanCapabilities(planIr.rows,rowsPrepared);
     return { authority, rows: rowsPrepared, targets, preflights };
   }
 
@@ -1455,7 +1475,19 @@ function createFeatureWorker(dependencies) {
     shutdown: async () => { await python.close(); return true; },
     health: async () => {
       await python.start();
-      let latest=await store.call('loadLatestRun',{}); let run=latest?.run;
+      let latest=(await store.call('loadLatestRun',{}))||{}; let run=latest?.run;
+      try{
+        latest.legacyRecoveryInspection=await store.call('inspectLegacyReturnRecovery',{
+          schemaVersion:'omnia.feature-return-recovery-inspection/v1',runId:'',sourceFeatureVersion:''
+        });
+        if(!legacyRecoveryInspectionEligible(latest.legacyRecoveryInspection)){
+          latest.legacyRecoveryInspection=null;
+          latest.legacyRecoveryInspectionError='Core 未返回唯一、可恢复的中断 Run。';
+        }
+      }catch(error){
+        latest.legacyRecoveryInspection=null;
+        latest.legacyRecoveryInspectionError=`恢复检查不可用：${String(error?.message||error)}`;
+      }
       if(run&&['waiting_confirmation','returning','verifying','uncertain','reconciling','succeeded','failed'].includes(String(run.state))) latest.returnProgress=await store.call('loadReturnProgress',{runId:String(run.run_id)});
       let recoveredSurfacePatch=null;
       if(run?.state==='acquiring'){
@@ -1485,10 +1517,19 @@ function createFeatureWorker(dependencies) {
           artifacts:(latest.artifacts||[]).filter((item)=>String(item.kind)!=='source').map((item)=>({artifactId:String(item.artifact_id),kind:String(item.kind),name:String(item.original_name),sha256:String(item.sha256),sizeBytes:Number(item.size_bytes),available:true,reason:''})),editors:[],actions:[
             {actionId:'stage-source-workbook',enabled:true,reason:''},...workflowNavigationActions(latest,'upload'),{actionId:'apply-revisions',enabled:false,reason:'中断 Run 不允许原地修订。'},{actionId:'prepare-return',enabled:false,reason:'离线处理未完成；必须重新导入并生成新 Run。'}]};
       }
-      if(run&&['waiting_confirmation','returning','verifying','uncertain','reconciling'].includes(String(run.state))){
-        recoveredSurfacePatch=returnSurface(latest,'');
+      const healthEvents=Array.isArray(latest?.events)?latest.events:[];
+      const healthLastEvent=healthEvents[healthEvents.length-1];
+      const restartAlreadyAudited=Boolean(run)
+        && String(healthLastEvent?.event_type||'')==='run.restart_requested'
+        && Number(healthLastEvent?.revision||0)===Number(run.state_revision);
+      if(restartAlreadyAudited){
+        recoveredSurfacePatch=uploadSurface(latest,'旧流程审计已保留；请上传新文件建立全新 Run。',true);
+      }else if(run&&['waiting_confirmation','returning','verifying','uncertain','reconciling'].includes(String(run.state))){
+        const checkpoint=await store.call('loadPlan',String(run.run_id));
+        recoveredSurfacePatch=returnSurface(latest,'',checkpoint?.execution||{});
       }else if(run&&['succeeded','failed'].includes(String(run.state))&&Array.isArray(latest.returnProgress)&&latest.returnProgress.length){
-        recoveredSurfacePatch=returnSurface(latest,'');
+        const checkpoint=await store.call('loadPlan',String(run.run_id));
+        recoveredSurfacePatch=returnSurface(latest,'',checkpoint?.execution||{});
       }
       if(run&&['needs_input','ready_for_review'].includes(run.state)){
         const checkpoint=await store.call('loadPlan',String(run.run_id));
@@ -1496,18 +1537,136 @@ function createFeatureWorker(dependencies) {
           ?uploadSurface(latest,'已恢复持久化 Upload 层；原 Run、Artifact、修订与排除状态未改变。')
           :reviewSurface(latest,checkpoint,null,'已恢复持久化 Review 层。');
       }
+      if(!run)recoveredSurfacePatch=uploadSurface(latest,'',true);
       return {ready:true,featureId:FEATURE_ID,featureVersion:FEATURE_VERSION,transport:'remote-only',recoveredMessageCard:null,recoveredSurfacePatch};
     },
     handleAction: async (input) => {
-      if(input?.actionId==='restart-run'){
-        const latest=await store.call('loadLatestRun',{}),run=latest?.run;
-        if(!run)fail('RUN.RESTART_BLOCKED','No current Run is available to restart.');
-        const restarted=await store.call('restartRun',{runId:String(run.run_id),expectedRevision:Number(run.state_revision)});
+      if(input?.actionId==='recover-interrupted-run'){
+        const inspection=await store.call('inspectLegacyReturnRecovery',{
+          schemaVersion:'omnia.feature-return-recovery-inspection/v1',runId:'',sourceFeatureVersion:''
+        });
+        const currentRunAtRecovery=await store.call('loadLatestRun',{});
+        if(currentRunAtRecovery?.run)fail('RETURN.RECOVERY_CURRENT_RUN_EXISTS','当前版本已有 Run；旧中断 Run 保持不变。');
+        if(input.payload?.['authorize-legacy-recovery']!==true)fail('RETURN.RECOVERY_CONFIRMATION_REQUIRED','请先明确确认：仅执行只读核验并关闭旧中断 Run，随后需重新上传已更换元素名称的文件。');
+        if(!input.context?.connectorBinding||!input.context?.safetyLock){
+          fail('RETURN.RECOVERY_AUTHORITY_REQUIRED','恢复中断 Run 需要当前 Connector binding 与 safety lock；旧 Run 保持不变。');
+        }
+        if(inspection?.schemaVersion!=='omnia.feature-return-recovery-inspection-result/v1'||inspection.eligible!==true
+          ||inspection.featureId!==FEATURE_ID||inspection.sourceFeatureVersion!=='0.2.60'
+          ||inspection.successorFeatureVersion!==FEATURE_VERSION||inspection.recoveryMode!=='partial_close_no_reuse'
+          ||!inspection.runId||!Number.isSafeInteger(Number(inspection.stateRevision))||inspection.state!=='returning'
+          ||Number(inspection.counts?.uncertain||0)!==0||Number(inspection.counts?.inFlight||0)!==0||!Array.isArray(inspection.reconcileRequired)
+          ||inspection.reconcileRequired.length>1||!inspection.sourceArtifact?.artifactId||!inspection.sourceArtifact?.sha256){
+          fail('RETURN.RECOVERY_INSPECTION_REJECTED','Core 未返回唯一、可安全关闭的 0.2.60 中断 Run；旧 Run 保持不变。');
+        }
+        const authorization=await store.call('authorizeLegacyReturnRecovery',{
+          schemaVersion:'omnia.feature-return-recovery-authorization-request/v1',runId:String(inspection.runId),
+          sourceFeatureVersion:String(inspection.sourceFeatureVersion),expectedStateRevision:Number(inspection.stateRevision),
+          connectorBinding:input.context.connectorBinding,safetyLock:input.context.safetyLock
+        });
+        if(authorization?.schemaVersion!=='omnia.feature-return-recovery-authorization/v1'
+          ||!authorization.authorizationId||String(authorization.runId)!==String(inspection.runId)
+          ||authorization.sourceFeatureVersion!==inspection.sourceFeatureVersion||authorization.successorFeatureVersion!==FEATURE_VERSION
+          ||Number(authorization.expectedStateRevision)!==Number(inspection.stateRevision)
+          ||!Array.isArray(authorization.reconcileRequired)
+          ||authorization.reconcileRequired.length!==inspection.reconcileRequired.length
+          ||canonical(authorization.reconcileRequired)!==canonical(inspection.reconcileRequired)
+          ||!Number.isFinite(Date.parse(String(authorization.expiresAt||'')))||Date.parse(String(authorization.expiresAt))<=Date.now()){
+          fail('RETURN.RECOVERY_AUTHORIZATION_INVALID','Core legacy recovery authorization 不完整或已过期；旧 Run 保持不变。');
+        }
+        if(inspection.reconcileRequired.length===1){
+          const inspected=inspection.reconcileRequired[0];
+          const authorized=authorization.reconcileRequired[0];
+          if(!inspected?.commandId||inspected.commandId!==authorized?.commandId
+            ||inspected.targetKind!=='object'||authorized.targetKind!=='object'
+            ||inspected.operationId!==RETURN_OPERATIONS.graCreate||authorized.operationId!==RETURN_OPERATIONS.graCreate
+            ||!String(inspected.targetKey||'').startsWith('gra|')||inspected.targetKey!==authorized.targetKey
+            ||inspected.targetIdentityKey!==authorized.targetIdentityKey){
+            fail('RETURN.RECOVERY_COMMAND_UNSUPPORTED','Legacy recovery 只接受 Core 授权的唯一 GRA create command；旧 Run 保持不变。');
+          }
+          const spec=authorized.reconcileSpec;
+          const reconcileOperation=spec?.reconcileOperation||spec?.preflightOperation;
+          const reconcileRequest=spec?.reconcileRequest||spec?.preflightRequest;
+          const evidenceIds=new Set(Array.isArray(authorized.evidenceOperationIds)?authorized.evidenceOperationIds:[]);
+          const target=reconcileRequest?.target;const query=reconcileRequest?.query;const mutation=spec?.mutationPayload;
+          if(spec?.commandId!==authorized.commandId||spec?.targetKey!==authorized.targetKey
+            ||spec?.mutationOperation!==RETURN_OPERATIONS.graCreate||spec?.commandKind!=='create_gra'
+            ||spec?.preflightOperation!==RETURN_OPERATIONS.graPreflight||spec?.reconcileOperation!==RETURN_OPERATIONS.graPreflight
+            ||reconcileOperation!==RETURN_OPERATIONS.graPreflight||spec?.readOperation!==RETURN_OPERATIONS.graRead||spec?.readRequest!==null
+            ||canonical(spec.preflightRequest)!==canonical(spec.reconcileRequest)||evidenceIds.size!==2
+            ||!evidenceIds.has(RETURN_OPERATIONS.graPreflight)||!evidenceIds.has(RETURN_OPERATIONS.graRead)
+            ||!target?.targetIdentityKey||target.targetIdentityKey!==authorized.targetIdentityKey
+            ||reconcileRequest?.target?.targetIdentityKey!==spec?.target?.targetIdentityKey
+            ||!target.workspaceId||query?.workspaceId!==target.workspaceId||mutation?.facetId!==target.workspaceId
+            ||query?.entityId!==mutation?.entityId||query?.name!==mutation?.name||!query?.itElementType
+            ||Object.keys(query||{}).sort().join(',')!=='entityId,itElementType,name,workspaceId'
+            ||Object.keys(mutation||{}).sort().join(',')!=='engagementId,entityId,facetId,inkContentId,name,typeId'
+            ||!mutation?.inkContentId||!mutation?.typeId||mutation?.engagementId!==input.context.connectorBinding.engagementId){
+            fail('RETURN.RECOVERY_SPEC_INVALID','Legacy GRA recovery specification 与冻结 command/target/Workspace/Engagement 不一致；旧 Run 保持不变。');
+          }
+          const recoveryContext={schemaVersion:'omnia.feature-return-recovery-receipt-context/v1',authorizationId:String(authorization.authorizationId),
+            runId:String(inspection.runId),commandId:String(authorized.commandId)};
+          const preflight=await invoke(RETURN_OPERATIONS.graPreflight,input.context.connectorBinding,{...reconcileRequest,recoveryContext});
+          if(!preflight||typeof preflight!=='object'||Array.isArray(preflight)||Object.getPrototypeOf(preflight)!==Object.prototype){
+            fail('RETURN.RECOVERY_RESPONSE_INVALID','Legacy GRA preflight 未返回可签名的 plain record；旧 Run 保持不变。');
+          }
+          const {__recoveryReceiptId:preflightReceiptId,...originalPreflight}=preflight;
+          if(!String(preflightReceiptId||''))fail('RETURN.RECOVERY_RECEIPT_MISSING','Legacy GRA preflight 未返回 Core 签发的只读 receipt；旧 Run 保持不变。');
+          let outcome='';let recoveryReceiptId='';let evidencePayload;
+          if(preflight?.found===false){
+            outcome='not_applied';recoveryReceiptId=String(preflightReceiptId);evidencePayload=originalPreflight;
+          }else if(preflight?.found===true){
+            const riskAssessmentId=responseId(preflight.item,'legacy recovery GRA preflight');
+            const readRequest={target,riskAssessmentId,query:{entityId:mutation.entityId,name:mutation.name,itElementType:query.itElementType,
+              inkContentId:mutation.inkContentId,typeId:mutation.typeId},recoveryContext};
+            const readback=await invoke(RETURN_OPERATIONS.graRead,input.context.connectorBinding,readRequest);
+            if(responseId(readback,'legacy recovery GRA read-back')!==riskAssessmentId){
+              fail('RETURN.RECOVERY_READBACK_UNCERTAIN','Legacy GRA read-back 未返回唯一相同 identity；旧 Run 保持不变。');
+            }
+            if(!readback||typeof readback!=='object'||Array.isArray(readback)||Object.getPrototypeOf(readback)!==Object.prototype){
+              fail('RETURN.RECOVERY_RESPONSE_INVALID','Legacy GRA read-back 未返回可签名的 plain record；旧 Run 保持不变。');
+            }
+            const {__recoveryReceiptId,...originalReadback}=readback;
+            outcome='applied';recoveryReceiptId=String(__recoveryReceiptId||'');evidencePayload=originalReadback;
+          }else fail('RETURN.RECOVERY_PREFLIGHT_UNCERTAIN','Legacy GRA preflight 未精确证明 applied 或 not_applied；旧 Run 保持不变。');
+          if(!recoveryReceiptId)fail('RETURN.RECOVERY_RECEIPT_MISSING','Legacy recovery Operation 未返回 Core 签发的只读 receipt；旧 Run 保持不变。');
+          const recorded=await store.call('recordLegacyReturnRecoveryOutcome',{
+            schemaVersion:'omnia.feature-return-recovery-outcome/v1',authorizationId:String(authorization.authorizationId),
+            runId:String(inspection.runId),commandId:String(authorized.commandId),outcome,recoveryReceiptId,payload:evidencePayload
+          });
+          if(recorded?.schemaVersion!=='omnia.feature-return-recovery-outcome-result/v1'
+            ||!recorded.outcomeId||recorded.outcome!==outcome||!Number.isFinite(Date.parse(String(recorded.recordedAt||'')))){
+            fail('RETURN.RECOVERY_OUTCOME_NOT_RECORDED','Core 未持久化精确 legacy recovery outcome；旧 Run 保持不变。');
+          }
+        }
+        const closed=await store.call('closeLegacyPartialReturn',{
+          schemaVersion:'omnia.feature-return-partial-close/v1',authorizationId:String(authorization.authorizationId),
+          runId:String(inspection.runId),sourceFeatureVersion:String(inspection.sourceFeatureVersion),expectedStateRevision:Number(inspection.stateRevision)
+        });
+        if(closed?.schemaVersion!=='omnia.feature-return-partial-close-result/v1'
+          ||String(closed?.runId)!==String(inspection.runId)||closed?.state!=='failed'
+          ||!Number.isSafeInteger(Number(closed.stateRevision))||closed.recoveryMode!=='partial_close_no_reuse'){
+          fail('RETURN.RECOVERY_CLOSE_FAILED','Core 未完成旧 Run 的 CAS partial-close；旧 Run 不得视为已关闭。');
+        }
         const current=await store.call('loadLatestRun',{});
-        return{surfacePatch:uploadSurface(current,restarted.terminalAuditPreserved===true?'终态 Run、命令、回执与读回证据均已保留；下一次上传将建立新的 Run。':'当前未写入 Run 已取消并保留 Artifact、修订、确认与事件审计；下一次上传将建立新的 Run。',true)};
+        if(current?.run)fail('RETURN.RECOVERY_NEW_RUN_CONFLICT','旧 Run 已关闭，但当前版本已存在另一个 Run；系统未自动上传或确认。');
+        return{surfacePatch:uploadSurface(current,'旧中断 Run 已经只读核验并安全关闭。请重新上传已更换元素名称的文件，完成全新校验、预检与确认；系统不会自动上传、确认或回传。',true)};
+      }
+      if(input?.actionId==='restart-run'||input?.actionId==='fresh-start-on-reopen'){
+        const latest=await store.call('loadLatestRun',{});
+        const trigger=input.actionId==='fresh-start-on-reopen'?'surface_reopen':'explicit_feature_fresh_start';
+        const closed=await closeRunForFreshStart(store,latest,forceCancelledRuns,trigger);
+        const preservedRemote=['returning','verifying','succeeded','failed'].includes(closed.initialState)||closed.restarted.terminalAuditPreserved===true;
+        return{surfacePatch:uploadSurface(closed.current,preservedRemote?'旧流程已显式结束；已写入并验证的 Omnia 数据、命令、回执与读回证据均已保留，未执行回滚或重放。现在可以上传资料建立新 Run。':'旧流程已通过 Core CAS 结束；Artifact、修订、确认与事件审计均已保留。现在可以上传资料建立新 Run。',true)};
       }
       if(input?.actionId==='back-to-upload'){
         const latest=await store.call('loadLatestRun',{}),run=latest?.run;
+        if(run?.state==='returning'){
+          const runId=String(run.run_id);forceCancelledRuns.add(runId);
+          let cancelled;try{cancelled=await forceCancelReturnRun(store,latest);}catch(error){forceCancelledRuns.delete(runId);throw error;}
+          const current=await store.call('loadLatestRun',{});
+          return{surfacePatch:returnSurface(current,`已强制取消剩余回传调度：${cancelled.verified}/${cancelled.total} 项已在 Omnia 验证并原样保留；未完成项不会继续执行。`,cancelled.execution)};
+        }
         if(run?.state==='waiting_confirmation'){
           const checkpoint=await store.call('loadPlan',String(run.run_id));
           if(!checkpoint?.parsed||!checkpoint?.descriptor)fail('RUN.CHECKPOINT_MISSING','The durable Review checkpoint is unavailable.');
@@ -1568,9 +1727,14 @@ function createFeatureWorker(dependencies) {
           if(!spec.readRequest) fail('RETURN.RECONCILE_READ_MISSING','Reconcile has no serialized exact read request.');
           await store.call('freezeReturnEvidenceSpec',{runId,commandId:spec.commandId,operationId:spec.readOperation,request:{connectorBinding:binding,...spec.readRequest}});
           const readRequest={...spec.readRequest,receiptContext:{runId,commandId:spec.commandId}};
-          observed=spec.waitForEvaluationComplete
-            ?await waitForEvaluationComplete(binding,readRequest)
-            :await invoke(spec.readOperation,binding,readRequest);
+          if(spec.waitForEvaluationComplete) observed=await waitForEvaluationComplete(binding,readRequest);
+          else {
+            const attempts=Math.max(1,Math.min(RETURN_READBACK_MAX_ATTEMPTS,Number(spec.readbackPolicy?.maxAttempts||RETURN_READBACK_MAX_ATTEMPTS)));
+            for(let attempt=0;attempt<attempts;attempt+=1){
+              observed=await invoke(spec.readOperation,binding,readRequest);
+              if(observed?.verified===true||attempt===attempts-1)break;
+            }
+          }
           applied=observed?.verified===true;
         }
         await store.call('recordReturnEvidence',{runId,commandId:spec.commandId,evidenceType:'reconcile',commandState:applied?'readback_verified':manualUnresolved?'uncertain':'closed_not_applied',payload:observed,receiptId:observed?.__operationReceiptId||'',verified:applied,error:applied?'':manualUnresolved?'APP identity remains create/skip; the uncertain mutation is not replayed and requires manual reconcile.':'Authoritative reconcile proved the uncertain mutation was not applied.'});
@@ -1582,8 +1746,12 @@ function createFeatureWorker(dependencies) {
             await store.call('projectVerifiedReturn',{runId,commandId:spec.commandId,binding,workspaceId:targetSpec.workspace,projectionKind:'object',objectType:targetSpec.objectType,objectId,provenance:{rowKey:rowPlan.rowKey,targetKey:targetSpec.key,reconciled:true},payload:observed});
           }
         }
-        await store.call('transitionRun',{runId,expectedRevision:revision,toState:applied?'returning':manualUnresolved?'uncertain':'failed',eventType:applied?'return.reconcile_resolved':manualUnresolved?'return.reconcile_manual_required':'return.reconcile_not_applied',details:{applied,manualUnresolved}});
-        await store.call('savePlan',{...checkpoint,execution:{state:applied?'reconciled':manualUnresolved?'uncertain':'reconciled',lastCommandId:spec.commandId,applied,reconcileSpec:manualUnresolved?spec:undefined},updatedAt:new Date().toISOString()});
+        const remainingFailures=(Array.isArray(checkpoint.execution?.itemFailures)?checkpoint.execution.itemFailures:[])
+          .filter((item)=>String(item?.reconcileSpec?.commandId||'')!==String(spec.commandId));
+        const nextUncertain=remainingFailures.find((item)=>item?.state==='uncertain'&&item?.reconcileSpec);
+        const nextState=manualUnresolved||nextUncertain?'uncertain':'returning';
+        await store.call('transitionRun',{runId,expectedRevision:revision,toState:nextState,eventType:applied?'return.reconcile_resolved':manualUnresolved?'return.reconcile_manual_required':'return.reconcile_not_applied',details:{applied,manualUnresolved,remainingUncertain:Boolean(nextUncertain)}});
+        await store.call('savePlan',{...checkpoint,execution:{...checkpoint.execution,state:nextUncertain?'uncertain':manualUnresolved?'uncertain':'reconciled',itemFailures:remainingFailures,lastCommandId:spec.commandId,applied,reconcileSpec:manualUnresolved?spec:nextUncertain?.reconcileSpec},updatedAt:new Date().toISOString()});
         const latestAfterReconcile=await store.call('loadLatestRun',{});
         return {surfacePatch:returnSurface(latestAfterReconcile,'')};
       }
@@ -1592,7 +1760,28 @@ function createFeatureWorker(dependencies) {
         const runId = String(input.payload?.runId || actionLatest?.run?.run_id || '');
         const checkpoint = await store.call('loadPlan', runId);
         if (!checkpoint?.returnPlan || !checkpoint?.confirmation) fail('RETURN.PLAN_MISSING', 'The frozen Return plan is unavailable.');
+        assertReturnPlanCapabilities(checkpoint.planIr?.rows,checkpoint.returnPlan.rows);
+        if(input.actionId==='continue-return'){
+          const completionProgress=await store.call('loadReturnProgress',{runId});
+          const terminalNoopTargets=new Set(Array.isArray(checkpoint.execution?.terminalNoopTargets)
+            ?checkpoint.execution.terminalNoopTargets.map(String):[]);
+          const allVerified=completionProgress.length>0&&completionProgress.every((item)=>
+            String(item.command_state||'')==='readback_verified'||terminalNoopTargets.has(String(item.target_key||'')));
+          if(allVerified){
+            await store.call('validateReturnAuthority',{runId,connectorBinding:input.context.connectorBinding,safetyLock:input.context.safetyLock});
+            await store.call('recordBootstrapCapabilityEvidence',{
+              schemaVersion:'omnia.feature-capability-evidence-bootstrap/v1',runId,...RETURN_CAPABILITY,
+              connectorBinding:input.context.connectorBinding,safetyLock:input.context.safetyLock
+            });
+            await store.call('finishReturn',{runId,outcome:'succeeded'});
+            checkpoint.execution={...(checkpoint.execution||{}),state:'completed',partial:false,itemFailures:[],completedAt:new Date().toISOString()};
+            await store.call('savePlan',{...checkpoint,updatedAt:new Date().toISOString()});
+            const finalizedLatest=await store.call('loadLatestRun',{});
+            return{surfacePatch:returnSurface(finalizedLatest,'',checkpoint.execution)};
+          }
+        }
         const current = await buildReturnPreparation(checkpoint, input.context);
+        assertReturnPlanCapabilities(checkpoint.planIr?.rows,current.rows);
         const currentPreflightDigest = digest(Buffer.from(canonical({ authority: current.authority, preflights: current.preflights })));
         if (input.actionId === 'confirm-return' && currentPreflightDigest !== checkpoint.preflightDigest) fail('RETURN.PREFLIGHT_CHANGED', 'Authority, object identity, or GRA preflight changed before confirmation.');
         if(input.actionId==='confirm-return'&&Number(checkpoint.confirmation.stateVersion)!==1) fail('RETURN.CONFIRMATION_VERSION_INVALID','The frozen confirmation state version is invalid.');
@@ -1604,11 +1793,162 @@ function createFeatureWorker(dependencies) {
         const executeReturn=async()=>{
         const plan = checkpoint.returnPlan; const planDigest = approved.planDigest; const binding = input.context.connectorBinding;
         const targetByKey = new Map(plan.targets.map((item) => [item.key, item]));
-        const progress = new Map((await store.call('loadReturnProgress', { runId })).map((item) => [item.target_key, item.state]));
+        const progressRows = new Map((await store.call('loadReturnProgress', { runId })).map((item) => [item.target_key, item]));
+        const terminalNoopTargets=new Set(Array.isArray(checkpoint.execution?.terminalNoopTargets)
+          ?checkpoint.execution.terminalNoopTargets.map(String):[]);
+        // A verified intent only proves that the immutable desired state was
+        // frozen and audited.  It does not prove that a closed-not-applied
+        // command reached Omnia.  Keep the command state authoritative here
+        // so an explicit Continue can safely retry only after reconcile has
+        // proved the prior attempt was not applied.
+        const progress = new Map([...progressRows].map(([key,item]) => [
+          key,
+          item.command_state==='readback_verified'||terminalNoopTargets.has(String(key))
+            ? 'verified'
+            : String(item.command_state||item.state||'')
+        ]));
+        // `persistVerifiedTarget` advances this live map after every exact
+        // authoritative read-back.  Looking only at the invocation-start
+        // `progressRows` snapshot made later stages falsely treat a command
+        // completed milliseconds earlier as unfinished, forcing an otherwise
+        // healthy Return to pause after each intra-row dependency boundary.
         const done = (key) => progress.get(key) === 'verified';
         const objectIds = new Map(); const graIds = new Map();
         const runtimeKey=(kind,elementId,workspaceId)=>`${kind}|${elementId}|${workspaceId}`.toLocaleLowerCase('en-US');
+        const concurrency=Math.max(1,Math.min(RETURN_MAX_CONCURRENCY,RETURN_DEFAULT_CONCURRENCY));
+        const reservations=new Map();
+        const continueOnIsolatedFailure=plan.executionPolicy?.continueOnIsolatedFailure!==false;
+        const isolatedRows=new Map();
+        const terminal={outcome:'',error:null,reconcileSpec:null};
+        let checkpointSaveTail=Promise.resolve();
+        const terminalRank=(outcome)=>outcome==='uncertain'?2:outcome==='failed'?1:0;
+        function signalTerminal(error,reconcileSpec=null){
+          const normalized=error instanceof Error?error:new Error(String(error||'Return execution failed.'));
+          if(reconcileSpec)normalized.returnReconcileSpec=reconcileSpec;
+          if(continueOnIsolatedFailure)return normalized;
+          const outcome=normalized.code==='RETURN.UNCERTAIN'?'uncertain':'failed';
+          if(terminalRank(outcome)>terminalRank(terminal.outcome)){
+            terminal.outcome=outcome;terminal.error=normalized;terminal.reconcileSpec=reconcileSpec||null;
+          }else if(!terminal.error){terminal.outcome=outcome;terminal.error=normalized;terminal.reconcileSpec=reconcileSpec||null;}
+          else if(outcome==='uncertain'&&!terminal.reconcileSpec&&reconcileSpec)terminal.reconcileSpec=reconcileSpec;
+          return normalized;
+        }
+        async function isolateRow(row,error){
+          const normalized=error instanceof Error?error:new Error(String(error||'Return item failed.'));
+          const state=normalized.code==='RETURN.UNCERTAIN'?'uncertain':'failed';
+          const previous=isolatedRows.get(row.rowKey);
+          if(previous&&previous.state==='uncertain')return;
+          const item={rowKey:row.rowKey,elementId:row.elementId,state,code:String(normalized.code||'RETURN.FAILED'),message:String(normalized.message||normalized),reconcileSpec:normalized.returnReconcileSpec||null};
+          isolatedRows.set(row.rowKey,item);
+          await saveExecution({state:'running',partial:true,itemFailures:[...isolatedRows.values()]});
+        }
+        async function saveExecution(execution){
+          checkpointSaveTail=checkpointSaveTail.catch(()=>undefined).then(async()=>{
+            const state=forceCancelledRuns.has(runId)?'force_cancelled':terminal.outcome||execution.state||'running';
+            checkpoint.execution={...(checkpoint.execution||{}),...execution,state,
+              ...(terminal.reconcileSpec?{reconcileSpec:terminal.reconcileSpec}:{})};
+            await store.call('savePlan',{...checkpoint,updatedAt:new Date().toISOString()});
+          });
+          return checkpointSaveTail;
+        }
+        async function withReservations(keys,operation){
+          const acquired=[];
+          for(const key of [...new Set((keys||[]).filter(Boolean))].sort()){
+            const previous=reservations.get(key)||Promise.resolve();let release;
+            const held=new Promise((resolve)=>{release=resolve;});const tail=previous.then(()=>held);
+            reservations.set(key,tail);await previous;acquired.push({key,tail,release});
+          }
+          try{return await operation();}
+          finally{for(const reservation of acquired.reverse()){reservation.release();if(reservations.get(reservation.key)===reservation.tail)reservations.delete(reservation.key);}}
+        }
+        const rowReservationKeys=(row)=>[
+          `object|${row.workspaceId}|${row.objectType}|${row.elementId}`.toLocaleLowerCase('en-US'),
+          `gra|${row.workspaceId}|${row.graName}`.toLocaleLowerCase('en-US')
+        ];
+        async function runCoreDependencyRows(rows,worker){
+          const values=Array.isArray(rows)?rows:[];
+          const nodes=buildFrozenDependencyGraph(values);
+          const byId=new Map(nodes.map((node)=>[node.id,node]));
+          const pending=new Set(nodes.map((node)=>node.id));const completed=new Set();const failed=new Set();const active=new Map();
+          const start=(node)=>{
+            pending.delete(node.id);
+            const task=withReservations(rowReservationKeys(node.row),()=>worker(node.row,node.index))
+              .then(()=>({id:node.id,error:null}),error=>({id:node.id,error}));
+            active.set(node.id,task);
+          };
+          while(pending.size||active.size){
+            if(!terminal.outcome||continueOnIsolatedFailure){
+              for(const node of nodes){
+                if(active.size>=concurrency)break;
+                if(!pending.has(node.id))continue;
+                if(isolatedRows.has(node.id)){pending.delete(node.id);failed.add(node.id);continue;}
+                if(dependencyBlockedByFailure(node,failed)){pending.delete(node.id);failed.add(node.id);await isolateRow(node.row,Object.assign(new Error('A required frozen-plan dependency did not complete.'),{code:'RETURN.DEPENDENCY_BLOCKED'}));continue;}
+                if(!node.dependencies.every((dependency)=>completed.has(dependency)))continue;
+                start(node);
+              }
+            }
+            if(!active.size){
+              if(!pending.size)break;
+              if(terminal.outcome)break;
+              fail('RETURN.DEPENDENCY_GRAPH_STALLED',`Return dependency graph cannot make progress: ${[...pending].join(', ')}.`);
+            }
+            const settled=await Promise.race(active.values());active.delete(settled.id);
+            if(settled.error){if(continueOnIsolatedFailure){failed.add(settled.id);await isolateRow(byId.get(settled.id).row,settled.error);}else signalTerminal(settled.error);}else completed.add(settled.id);
+            if(terminal.outcome&&active.size){
+              const inFlight=await Promise.all(active.values());active.clear();
+              for(const result of inFlight){if(result.error)signalTerminal(result.error);else completed.add(result.id);}
+            }
+          }
+          if(terminal.error)throw terminal.error;
+        }
+        // A row's post-settings work may begin as soon as that row reaches its
+        // verified GRA state.  Core dependency completion remains separate from
+        // post-settings completion so DB/OS still wait for their exact APP's
+        // state transition, while unrelated rows can evaluate and associate in
+        // the same bounded window.
+        async function runDependencyPipelineRows(rows,coreWorker,postSettingsWorker){
+          const values=Array.isArray(rows)?rows:[];
+          const nodes=buildFrozenDependencyGraph(values);
+          const byId=new Map(nodes.map((node)=>[node.id,node]));
+          const pendingCore=new Set(nodes.map((node)=>node.id));const pendingPost=new Set();const completedCore=new Set();const failed=new Set();const active=new Map();
+          const start=(node,stage)=>{
+            const worker=stage==='core'?coreWorker:postSettingsWorker;
+            if(stage==='core')pendingCore.delete(node.id);else pendingPost.delete(node.id);
+            const task=withReservations(rowReservationKeys(node.row),()=>worker(node.row,node.index))
+              .then(()=>({id:node.id,stage,error:null}),error=>({id:node.id,stage,error}));
+            active.set(`${stage}|${node.id}`,task);
+          };
+          while(pendingCore.size||pendingPost.size||active.size){
+            if(!terminal.outcome||continueOnIsolatedFailure){
+              while(active.size<concurrency){
+                // Post-settings work is queued first: this is the row-level
+                // pipeline edge. Existing core work continues in other slots.
+                const postNode=nodes.find((node)=>pendingPost.has(node.id)&&!isolatedRows.has(node.id));
+                if(postNode){start(postNode,'post');continue;}
+                for(const node of nodes.filter((candidate)=>pendingCore.has(candidate.id)&&(isolatedRows.has(candidate.id)||dependencyBlockedByFailure(candidate,failed)))){pendingCore.delete(node.id);failed.add(node.id);if(!isolatedRows.has(node.id))await isolateRow(node.row,Object.assign(new Error('A required frozen-plan dependency did not complete.'),{code:'RETURN.DEPENDENCY_BLOCKED'}));}
+                for(const node of nodes.filter((candidate)=>pendingPost.has(candidate.id)&&isolatedRows.has(candidate.id)))pendingPost.delete(node.id);
+                const coreNode=nodes.find((node)=>pendingCore.has(node.id)&&node.dependencies.every((dependency)=>completedCore.has(dependency)));
+                if(!coreNode)break;
+                start(coreNode,'core');
+              }
+            }
+            if(!active.size){
+              if(!pendingCore.size&&!pendingPost.size)break;
+              if(terminal.outcome)break;
+              fail('RETURN.DEPENDENCY_GRAPH_STALLED',`Return dependency pipeline cannot make progress: ${[...pendingCore].join(', ')}.`);
+            }
+            const settled=await Promise.race(active.values());active.delete(`${settled.stage}|${settled.id}`);
+            if(settled.error){if(continueOnIsolatedFailure){failed.add(settled.id);await isolateRow(byId.get(settled.id).row,settled.error);}else signalTerminal(settled.error);}
+            else if(settled.stage==='core'){completedCore.add(settled.id);pendingPost.add(settled.id);}
+            if(terminal.outcome&&active.size){
+              const inFlight=await Promise.all(active.values());active.clear();
+              for(const result of inFlight)if(result.error)signalTerminal(result.error);else if(result.stage==='core')completedCore.add(result.id);
+            }
+          }
+          if(terminal.error)throw terminal.error;
+        }
         async function commandFor(targetKey,operationId,request,evidenceTargetIdentityKey='') {
+          if(forceCancelledRuns.has(runId))fail('RETURN.FORCE_CANCELLED','回传已被用户强制取消；禁止继续准备或调度命令。');
           const targetSpec = targetByKey.get(targetKey); if (!targetSpec) fail('RETURN.INTENT_MISSING', `Frozen target is missing: ${targetKey}`);
           return store.call('prepareReturnCommand', { runId, planDigest, targetKind: targetSpec.kind, targetKey,
             operationId, request, evidenceOperationIds:targetSpec.evidenceOperationIds,
@@ -1623,19 +1963,27 @@ function createFeatureWorker(dependencies) {
         }
         async function persistVerifiedTarget(targetKey,commandId){
           progress.set(targetKey,'verified');
-          checkpoint.execution={state:'running',background:false,lastVerifiedTargetKey:targetKey,lastCommandId:commandId,verifiedTargets:[...progress.values()].filter((state)=>state==='verified').length};
-          await store.call('savePlan',{...checkpoint,updatedAt:new Date().toISOString()});
+          await saveExecution({state:'running',background:false,lastVerifiedTargetKey:targetKey,lastCommandId:commandId,verifiedTargets:[...progress.values()].filter((state)=>state==='verified').length});
         }
         async function verifiedMutation(spec) {
           const command = await commandFor(spec.targetKey,spec.mutationOperation,spec.mutationPayload,spec.target.targetIdentityKey);
           let before;
           try {
-            before = await invoke(spec.preflightOperation, binding, { ...spec.preflightRequest, planDigest });
+            // Several execution branches must read the current value to decide
+            // whether a write is needed. When that exact read already carried
+            // this planDigest it also granted the in-process, target-bound
+            // mutation permit. Reuse its result as the command's durable
+            // preflight evidence instead of issuing the identical remote read
+            // a second time. The signed mutation handler's action-time checks
+            // and the post-effect authoritative read-back remain unchanged.
+            before = spec.preflightResult === undefined
+              ? await invoke(spec.preflightOperation, binding, { ...spec.preflightRequest, planDigest })
+              : spec.preflightResult;
             if (spec.acceptPreflight && !spec.acceptPreflight(before)) fail('RETURN.PREFLIGHT_BLOCKED', `Preflight blocked ${spec.targetKey}.`);
             await evidence(command.commandId, 'preflight', 'prepared', before, true);
           } catch (error) {
             await evidence(command.commandId, 'preflight', 'failed', { code: error.code || 'RETURN.PREFLIGHT_FAILED', message: error.message }, false, error.message);
-            await store.call('finishReturn', { runId, outcome: 'failed', error: error.message }); throw error;
+            signalTerminal(error);throw error;
           }
           if(spec.raceReadOperation){
             await freezeRead(command.commandId,spec.raceReadOperation,spec.raceReadRequest);
@@ -1652,44 +2000,72 @@ function createFeatureWorker(dependencies) {
             reconcileRequest: spec.reconcileRequest||spec.preflightRequest,
             readOperation: spec.readOperation, readRequest: typeof spec.readRequest === 'function' ? null : spec.readRequest,
             waitForEvaluationComplete:spec.waitForEvaluationComplete===true,
+            readbackPolicy:spec.readbackPolicy||null,
             mutationOperation: spec.mutationOperation, commandKind: spec.commandKind, mutationPayload:spec.mutationPayload };
           await store.call('saveReturnReconcileSpec', { runId, commandId: command.commandId, spec: durableReconcileSpec });
+          if(forceCancelledRuns.has(runId))fail('RETURN.FORCE_CANCELLED','回传已被用户强制取消；禁止提交尚未开始的远端写入。');
           await evidence(command.commandId, 'request', 'submitted', { operationId: spec.mutationOperation, request: spec.mutationPayload });
           let response;
           try {
+            if(forceCancelledRuns.has(runId))fail('RETURN.FORCE_CANCELLED','回传已被用户强制取消；禁止提交尚未开始的远端写入。');
             response = await invoke(spec.mutationOperation, binding, { target: spec.target, planDigest,
               command: { commandId: command.commandId, idempotencyKey: command.idempotencyKey, kind: spec.commandKind, payload: spec.mutationPayload } });
           } catch (error) {
             if (uncertainError(error)) {
               await evidence(command.commandId, 'request', 'uncertain', { operationId: spec.mutationOperation }, false, error.message);
-              await store.call('savePlan', { ...checkpoint, execution: { state: 'uncertain', reconcileSpec: durableReconcileSpec }, updatedAt: new Date().toISOString() });
-              await store.call('finishReturn', { runId, outcome: 'uncertain', error: error.message });
-              const uncertain = new Error(error.message); uncertain.code = 'RETURN.UNCERTAIN'; throw uncertain;
+              const uncertain = new Error(error.message); uncertain.code = 'RETURN.UNCERTAIN';
+              signalTerminal(uncertain,durableReconcileSpec);await saveExecution({state:'uncertain',reconcileSpec:durableReconcileSpec});throw uncertain;
             }
             await evidence(command.commandId, 'request', 'failed', { operationId: spec.mutationOperation }, false, error.message);
-            await store.call('finishReturn', { runId, outcome: 'failed', error: error.message }); throw error;
+            signalTerminal(error);throw error;
+          }
+          if(response?.__connectorMutationNotStarted===true){
+            const retryCount=Number(spec.notStartedRetryCount||0);
+            if(retryCount>=1)fail('RETURN.PRE_EFFECT_RETRY_EXHAUSTED',`Connector rejected ${spec.targetKey} before effect after one safe retry.`);
+            return verifiedMutation({...spec,notStartedRetryCount:retryCount+1});
           }
           await evidence(command.commandId, 'commit', 'committed', response, true);
           const query = typeof spec.readRequest === 'function' ? spec.readRequest(response) : spec.readRequest;
           try {
             await freezeRead(command.commandId,spec.readOperation,query);
             const readRequest = { ...query, receiptContext: { runId, commandId: command.commandId } };
-            const observed = spec.waitForEvaluationComplete
-              ? await waitForEvaluationComplete(binding, readRequest)
-              : await invoke(spec.readOperation, binding, readRequest);
+            let observed;
+            if (spec.waitForEvaluationComplete) observed = await waitForEvaluationComplete(binding, readRequest);
+            else {
+              const attempts=Math.max(1,Math.min(RETURN_READBACK_MAX_ATTEMPTS,Number(spec.readbackPolicy?.maxAttempts||RETURN_READBACK_MAX_ATTEMPTS)));
+              for(let attempt=0;attempt<attempts;attempt+=1){
+                observed=await invoke(spec.readOperation,binding,readRequest);
+                if(spec.verify(observed,response)||attempt===attempts-1)break;
+              }
+            }
             if (!spec.verify(observed, response)) fail('RETURN.READBACK_MISMATCH', `Verified read-back failed for ${spec.targetKey}.`);
             const readEvidence = await evidence(command.commandId, 'readback', 'readback_verified', observed, true);
             await persistVerifiedTarget(spec.targetKey,command.commandId);
             return { command, response, observed, readEvidence };
           } catch (error) {
             await evidence(command.commandId, 'reconcile', 'uncertain', { code: error.code || 'RETURN.READBACK_FAILED', message: error.message }, false, error.message);
-            await store.call('savePlan', { ...checkpoint, execution: { state: 'uncertain', reconcileSpec: durableReconcileSpec }, updatedAt: new Date().toISOString() });
-            await store.call('finishReturn', { runId, outcome: 'uncertain', error: error.message });
-            const uncertain = new Error(error.message); uncertain.code = 'RETURN.UNCERTAIN'; throw uncertain;
+            const uncertain = new Error(error.message); uncertain.code = 'RETURN.UNCERTAIN';
+            signalTerminal(uncertain,durableReconcileSpec);await saveExecution({state:'uncertain',reconcileSpec:durableReconcileSpec});throw uncertain;
           }
+        }
+        async function waitForReadOnly(operationId,request,label,maxAttempts=RETURN_READBACK_MAX_ATTEMPTS){
+          let lastError;
+          for(let attempt=0;attempt<Math.max(1,Math.min(RETURN_READBACK_MAX_ATTEMPTS,Number(maxAttempts)));attempt+=1){
+            try{return await invoke(operationId,binding,request);}catch(error){lastError=error;}
+          }
+          if(lastError)throw lastError;
+          fail('RETURN.READINESS_UNAVAILABLE',`${label} did not become readable.`);
         }
         async function verifiedExisting(spec) {
           const command = await commandFor(spec.targetKey,spec.mutationOperation,spec.readRequest,spec.readRequest.target.targetIdentityKey);
+          await store.call('saveReturnReconcileSpec', { runId, commandId: command.commandId, spec: {
+            commandId: command.commandId, targetKey: spec.targetKey, target: spec.readRequest.target,
+            preflightOperation: spec.preflightOperation, preflightRequest: spec.preflightRequest,
+            reconcileOperation: spec.readOperation, reconcileRequest: spec.readRequest,
+            readOperation: spec.readOperation, readRequest: spec.readRequest,
+            mutationOperation: spec.mutationOperation, commandKind: 'verify_existing',
+            mutationPayload: spec.readRequest, noMutation: true
+          } });
           try {
             const before = await invoke(spec.preflightOperation, binding, { ...spec.preflightRequest, planDigest });
             if(spec.acceptPreflight&&!spec.acceptPreflight(before)) fail('RETURN.PREFLIGHT_BLOCKED',`Existing identity preflight blocked ${spec.targetKey}.`);
@@ -1702,11 +2078,17 @@ function createFeatureWorker(dependencies) {
             return { command, observed };
           } catch (error) {
             await evidence(command.commandId, 'preflight', 'failed', { code: error.code || 'RETURN.EXISTING_READ_FAILED', message: error.message }, false, error.message);
-            await store.call('finishReturn', { runId, outcome: 'failed', error: error.message }); throw error;
+            signalTerminal(error);throw error;
           }
         }
         async function closeVerified(targetKey, mutationOperation, readOperation, readRequest, verify) {
           const command = await commandFor(targetKey,mutationOperation,readRequest,readRequest.target.targetIdentityKey);
+          await store.call('saveReturnReconcileSpec', { runId, commandId: command.commandId, spec: {
+            commandId: command.commandId, targetKey, target: readRequest.target,
+            reconcileOperation: readOperation, reconcileRequest: readRequest,
+            readOperation, readRequest, mutationOperation, commandKind: 'verify_existing',
+            mutationPayload: readRequest, noMutation: true
+          } });
           await freezeRead(command.commandId,readOperation,readRequest);
           const observed = await invoke(readOperation, binding, { ...readRequest, receiptContext: { runId, commandId: command.commandId } });
           if (!verify(observed)) fail('RETURN.READBACK_MISMATCH', `Existing authoritative read-back failed for ${targetKey}.`);
@@ -1725,9 +2107,9 @@ function createFeatureWorker(dependencies) {
             provenance: { rowKey: row.rowKey, targetKey }, payload: result.observed });
         }
         try {
-          const ordered = [...current.rows].sort((a, b) => (a.kind === 'APP' ? 0 : 1) - (b.kind === 'APP' ? 0 : 1));
+          const ordered = [...current.rows];
           const executionModes = new Map();
-          for (const row of ordered) {
+          await runCoreDependencyRows(ordered,async(row)=>{
             let objectId = row.objectId;
             let objectResult;
             if (done(`object|${row.rowKey}`)) {
@@ -1759,11 +2141,12 @@ function createFeatureWorker(dependencies) {
             }
             objectIds.set(runtimeKey(row.kind,row.elementId,row.workspaceId), objectId);
             if (objectResult) await projectObject(objectResult, row, `object|${row.rowKey}`, row.objectType, objectId);
-            if(row.kind==='APP'&&!done(`object-settings|${row.rowKey}`)){
+            if(hasFrozenStage(row,'settings')&&!done(`object-settings|${row.rowKey}`)){
               const settingsKey=`object-settings|${row.rowKey}`; const settingsTarget={targetIdentityKey:targetByKey.get(settingsKey).operationTargetIdentityKey,workspaceId:row.workspaceId};
               const settingsIntent=targetByKey.get(settingsKey);if(!settingsIntent)fail('RETURN.INTENT_MISSING',`Frozen APP settings target is missing: ${settingsKey}`);
-              const before=await invoke(RETURN_OPERATIONS.objectSettingsPreflight,binding,{target:settingsTarget,objectId});
-              const allowedSettingsModes=row.identityDisposition==='create'?['create_bootstrap']:row.identityDisposition==='reuse'?['existing_with_token']:row.identityDisposition==='resume'?['existing_with_token','recover_owned_create_bootstrap']:[];
+              const before=await invoke(RETURN_OPERATIONS.objectSettingsPreflight,binding,{target:settingsTarget,objectId,planDigest});
+              const settingsIdentityDisposition=row.identityDisposition==='resume'&&settingsIntent.mode==='create_bootstrap'?'create':row.identityDisposition;
+              const allowedSettingsModes=settingsIdentityDisposition==='create'?['create_bootstrap']:settingsIdentityDisposition==='reuse'?['existing_with_token']:settingsIdentityDisposition==='resume'?['existing_with_token','recover_owned_create_bootstrap']:[];
               if(!allowedSettingsModes.includes(settingsIntent.mode))fail('RETURN.OBJECT_SETTINGS_MODE_DRIFT',`APP ${row.elementId} settings mode differs from the frozen identity disposition.`);
               const beforeToken=latestApplicationSettingsToken(before,settingsIntent.mode==='existing_with_token',`APP ${row.elementId} settings execution preflight`);
               if(['create_bootstrap','recover_owned_create_bootstrap'].includes(settingsIntent.mode)&&beforeToken)fail('RETURN.OBJECT_SETTINGS_MODE_DRIFT',`APP ${row.elementId} bootstrap mode cannot consume a pre-existing concurrency token.`);
@@ -1772,33 +2155,36 @@ function createFeatureWorker(dependencies) {
                 const proof=await store.call('proveOwnedCreatedObject',{objectId,workspaceId:row.workspaceId,externalId:row.elementId,expectedObjectType:'Application',connectorBinding:binding});
                 if(proof?.proven!==true||proof.runId!==settingsIntent.ownedCreateProof?.runId||proof.commandId!==settingsIntent.ownedCreateProof?.commandId)fail('RETURN.OBJECT_SETTINGS_OWNERSHIP_DRIFT',`APP ${row.elementId} owned-create proof changed after plan freeze.`);
               }
-              const desiredData=resolveFrozenAppDataAvailability(row.identityDisposition,before,{disposition:settingsIntent.dataAvailabilityDisposition,value:settingsIntent.isDataAvailable});
+              const desiredData=resolveFrozenAppDataAvailability(settingsIdentityDisposition,before,{disposition:settingsIntent.dataAvailabilityDisposition,value:settingsIntent.isDataAvailable});
               if(typeof desiredData!=='boolean') fail('RETURN.OBJECT_SETTINGS_AUTHORITY_MISSING',`APP ${row.elementId} settings lack exact data-availability authority.`);
               const query={objectId,typeId:row.content.itElementTypeId,isRelevant:row.isRelevant,isDataAvailable:desiredData,number:row.elementId,mode:settingsIntent.mode};
               const settingsResult=settingsIntent.mode==='existing_with_token'&&String(before.typeId)===String(query.typeId)&&before.isRelevant===row.isRelevant&&before.isDataAvailable===desiredData&&String(before.number||before.referenceNumber)===row.elementId
                 ? await closeVerified(settingsKey,RETURN_OPERATIONS.objectSettingsWrite,RETURN_OPERATIONS.objectSettingsRead,{target:settingsTarget,query},(observed)=>observed.verified===true)
-                : await verifiedMutation({targetKey:settingsKey,target:settingsTarget,preflightOperation:RETURN_OPERATIONS.objectSettingsPreflight,preflightRequest:{target:settingsTarget,objectId},mutationOperation:RETURN_OPERATIONS.objectSettingsWrite,commandKind:'patch_object_settings',mutationPayload:{engagementId:binding.engagementId,workspaceId:row.workspaceId,objectId,typeId:row.content.itElementTypeId,isRelevant:row.isRelevant,isDataAvailable:desiredData,mode:settingsIntent.mode},readOperation:RETURN_OPERATIONS.objectSettingsRead,readRequest:{target:settingsTarget,query},verify:(observed)=>observed.verified===true});
+                : await verifiedMutation({targetKey:settingsKey,target:settingsTarget,preflightOperation:RETURN_OPERATIONS.objectSettingsPreflight,preflightRequest:{target:settingsTarget,objectId},preflightResult:before,mutationOperation:RETURN_OPERATIONS.objectSettingsWrite,commandKind:'patch_object_settings',mutationPayload:{engagementId:binding.engagementId,workspaceId:row.workspaceId,objectId,typeId:row.content.itElementTypeId,isRelevant:row.isRelevant,isDataAvailable:desiredData,mode:settingsIntent.mode},readOperation:RETURN_OPERATIONS.objectSettingsRead,readRequest:{target:settingsTarget,query},verify:(observed)=>observed.verified===true});
               await projectObject(settingsResult,row,settingsKey,row.objectType,objectId);
             }
             // v4 ordering is intentional: an Infrastructure must be linked to its
             // exact in-batch Application and verified from both directions before
             // its GRA is created. The later relation pass sees the committed target
             // and remains a no-op for resume compatibility.
-            if(['DB','OS'].includes(row.kind)){
+            if(hasFrozenStage(row,'relation')&&row.relations.length){
+              const relationType=String(row.relationPolicy?.relationType||'');const relationConcurrencyTabId=Number(row.relationPolicy?.concurrencyTabId||0);
               for(const appExternalId of row.relations){
-                const appRows=ordered.filter((item)=>item.kind==='APP'&&item.elementId.toLocaleLowerCase('en-US')===appExternalId.toLocaleLowerCase('en-US'));
-                if(appRows.length!==1) fail('RETURN.RELATION_TARGET_UNVERIFIED',`Application ${appExternalId} does not resolve to one exact Workspace-bound object.`);
-                const appId=objectIds.get(runtimeKey('APP',appRows[0].elementId,appRows[0].workspaceId));
-                if(!appId) fail('RETURN.RELATION_TARGET_UNVERIFIED',`Application ${appExternalId} is not a verified exact object.`);
                 const targetKey=`element-relation|${row.rowKey}|${appExternalId}`;
+                const dependencyRowKey=targetByKey.get(targetKey)?.targetDependencyRowKey;
+                const targetKind=String(row.relationPolicy?.targetKind||'');
+                const appRows=ordered.filter((item)=>item.kind===targetKind&&item.rowKey===dependencyRowKey&&item.workspaceId===row.workspaceId&&item.elementId.normalize('NFKC').toLocaleLowerCase('en-US')===String(appExternalId).normalize('NFKC').toLocaleLowerCase('en-US'));
+                if(appRows.length!==1) fail('RETURN.RELATION_TARGET_UNVERIFIED',`Application ${appExternalId} does not resolve to one exact Workspace-bound object.`);
+                const appId=objectIds.get(runtimeKey(targetKind,appRows[0].elementId,appRows[0].workspaceId));
+                if(!appId) fail('RETURN.RELATION_TARGET_UNVERIFIED',`Application ${appExternalId} is not a verified exact object.`);
                 if(done(targetKey)) continue;
-                const target={targetIdentityKey:`relation|${row.workspaceId}|${objectId}|${appId}|InfrastructureApplication`,workspaceId:row.workspaceId};
-                const query={associationType:'InfrastructureApplication',itElementId:objectId,associatingEntityId:appId,workspaceId:row.workspaceId};
-                const before=await invoke(RETURN_OPERATIONS.relationPreflight,binding,{target,query});
+                const target={targetIdentityKey:`relation|${row.workspaceId}|${objectId}|${appId}|${relationType}`,workspaceId:row.workspaceId};
+                const query={associationType:relationType,itElementId:objectId,associatingEntityId:appId,workspaceId:row.workspaceId};
+                const before=await invoke(RETURN_OPERATIONS.relationPreflight,binding,{target,query,planDigest});
                 const relationResult=before.associated===true&&before.inconsistent===false
                   ?await closeVerified(targetKey,RETURN_OPERATIONS.relationWrite,RETURN_OPERATIONS.relationRead,{target,query},(observed)=>observed.associated===true&&observed.inconsistent===false)
-                  :await verifiedMutation({targetKey,target,preflightOperation:RETURN_OPERATIONS.relationPreflight,preflightRequest:{target,query},mutationOperation:RETURN_OPERATIONS.relationWrite,commandKind:'associate_relation',acceptPreflight:(observed)=>observed.associated===false&&observed.inconsistent===false,mutationPayload:{ItElementId:objectId,AssociatingEntityIds:[appId],associationType:'InfrastructureApplication',ConcurrencyTabId:602,workspaceId:row.workspaceId,engagementId:binding.engagementId},readOperation:RETURN_OPERATIONS.relationRead,readRequest:{target,query},verify:(observed)=>observed.associated===true&&observed.inconsistent===false});
-                await store.call('projectVerifiedReturn',{runId,commandId:relationResult.command.commandId,binding,workspaceId:row.workspaceId,projectionKind:'relation',relationType:'InfrastructureApplication',relationKey:targetKey,sourceObjectId:objectId,targetObjectId:appId,payload:relationResult.observed});
+                  :await verifiedMutation({targetKey,target,preflightOperation:RETURN_OPERATIONS.relationPreflight,preflightRequest:{target,query},preflightResult:before,mutationOperation:RETURN_OPERATIONS.relationWrite,commandKind:'associate_relation',acceptPreflight:(observed)=>observed.associated===false&&observed.inconsistent===false,mutationPayload:{ItElementId:objectId,AssociatingEntityIds:[appId],associationType:relationType,ConcurrencyTabId:relationConcurrencyTabId,workspaceId:row.workspaceId,engagementId:binding.engagementId},readOperation:RETURN_OPERATIONS.relationRead,readRequest:{target,query},verify:(observed)=>observed.associated===true&&observed.inconsistent===false});
+                await store.call('projectVerifiedReturn',{runId,commandId:relationResult.command.commandId,binding,workspaceId:row.workspaceId,projectionKind:'relation',relationType,relationKey:targetKey,sourceObjectId:objectId,targetObjectId:appId,payload:relationResult.observed});
               }
             }
             const graTarget = { targetIdentityKey: targetByKey.get(`gra|${row.rowKey}`).operationTargetIdentityKey, workspaceId: row.workspaceId };
@@ -1820,151 +2206,212 @@ function createFeatureWorker(dependencies) {
               verify: (value, response) => responseId(value, 'GRA read-back') === responseId(response, 'created GRA') });
             graId = graId || responseId(graResult.response, 'created GRA'); graIds.set(runtimeKey(row.kind,row.elementId,row.workspaceId), graId);
             if (graResult) await projectObject(graResult, row, `gra|${row.rowKey}`, 'GRA', graId);
-          }
-          for (const row of ordered) {
+          });
+          await runDependencyPipelineRows(ordered,async(row)=>{
             const objectId = objectIds.get(runtimeKey(row.kind,row.elementId,row.workspaceId)); const graId = graIds.get(runtimeKey(row.kind,row.elementId,row.workspaceId));
             let mode = row.mode;
-            const statePatches = ['APP','TOOL'].includes(row.kind) ? [['status','EvaluationStarted'], ['rait',mode]] : [['status','EvaluationStarted']];
+            const statePatches = hasFrozenStage(row,'gra_state') ? [['status','EvaluationStarted'], ['rait',mode]] : [['status','EvaluationStarted']];
             for (const [patchKind, value] of statePatches) {
               const targetKey = `gra-${patchKind === 'status' ? 'status' : 'rait'}|${row.rowKey}`;
               if (done(targetKey)) continue;
               const target = { targetIdentityKey: targetByKey.get(targetKey).operationTargetIdentityKey, workspaceId: row.workspaceId };
-              const before = await invoke(RETURN_OPERATIONS.graStatePreflight, binding, { target, riskAssessmentId: graId });
+              const before = await invoke(RETURN_OPERATIONS.graStatePreflight, binding, { target, riskAssessmentId: graId, planDigest });
               const currentValue = patchKind === 'status' ? before.status : before.itElementRaitConclusionLevelId || before.itElementRaitConclusionLevelName;
               const stateResult = String(currentValue) === String(value)
                 ? await closeVerified(targetKey,RETURN_OPERATIONS.graStateWrite,RETURN_OPERATIONS.graStateRead,{target,query:{riskAssessmentId:graId,patchKind,value}},(observed)=>observed.verified===true)
-                : await verifiedMutation({ targetKey, target, preflightOperation: RETURN_OPERATIONS.graStatePreflight,
+                : await verifiedMutation({ targetKey, target, preflightOperation: RETURN_OPERATIONS.graStatePreflight, preflightResult: before,
                   preflightRequest: { target, riskAssessmentId: graId }, mutationOperation: RETURN_OPERATIONS.graStateWrite,
                   commandKind: 'patch_gra_state', mutationPayload: { engagementId: binding.engagementId, workspaceId: row.workspaceId, riskAssessmentId: graId, patchKind, value },
                   readOperation: RETURN_OPERATIONS.graStateRead, readRequest: { target, query: { riskAssessmentId: graId, patchKind, value } }, verify: (observed) => observed.verified === true });
               await projectGraRevision(stateResult, row, targetKey, graId);
             }
+            const relationType=String(row.relationPolicy?.relationType||'');const relationConcurrencyTabId=Number(row.relationPolicy?.concurrencyTabId||0);
             for (const appExternalId of row.relations) {
-              const appRows=ordered.filter((item)=>item.kind==='APP'&&item.elementId.toLocaleLowerCase('en-US')===appExternalId.toLocaleLowerCase('en-US'));
-              if(appRows.length!==1) fail('RETURN.RELATION_TARGET_UNVERIFIED', `Application ${appExternalId} does not resolve to one exact Workspace-bound object.`);
-              const appId = objectIds.get(runtimeKey('APP',appRows[0].elementId,appRows[0].workspaceId));
-              if (!appId) fail('RETURN.RELATION_TARGET_UNVERIFIED', `Application ${appExternalId} is not a verified exact object.`);
               const targetKey = `element-relation|${row.rowKey}|${appExternalId}`;
+              const dependencyRowKey=targetByKey.get(targetKey)?.targetDependencyRowKey;
+              const targetKind=String(row.relationPolicy?.targetKind||'');
+              const appRows=ordered.filter((item)=>item.kind===targetKind&&item.rowKey===dependencyRowKey&&item.workspaceId===row.workspaceId&&item.elementId.normalize('NFKC').toLocaleLowerCase('en-US')===String(appExternalId).normalize('NFKC').toLocaleLowerCase('en-US'));
+              if(appRows.length!==1) fail('RETURN.RELATION_TARGET_UNVERIFIED', `Application ${appExternalId} does not resolve to one exact Workspace-bound object.`);
+              const appId = objectIds.get(runtimeKey(targetKind,appRows[0].elementId,appRows[0].workspaceId));
+              if (!appId) fail('RETURN.RELATION_TARGET_UNVERIFIED', `Application ${appExternalId} is not a verified exact object.`);
               if (done(targetKey)) continue;
-              const target = { targetIdentityKey:`relation|${row.workspaceId}|${objectId}|${appId}|InfrastructureApplication`, workspaceId: row.workspaceId };
-              const query = { associationType: 'InfrastructureApplication', itElementId: objectId, associatingEntityId: appId, workspaceId: row.workspaceId };
-              const relationBefore = await invoke(RETURN_OPERATIONS.relationPreflight, binding, { target, query });
+              const target = { targetIdentityKey:`relation|${row.workspaceId}|${objectId}|${appId}|${relationType}`, workspaceId: row.workspaceId };
+              const query = { associationType: relationType, itElementId: objectId, associatingEntityId: appId, workspaceId: row.workspaceId };
+              const relationBefore = await invoke(RETURN_OPERATIONS.relationPreflight, binding, { target, query, planDigest });
               const result = relationBefore.associated === true && relationBefore.inconsistent === false
                 ? await closeVerified(targetKey,RETURN_OPERATIONS.relationWrite,RETURN_OPERATIONS.relationRead,{target,query},(observed)=>observed.associated===true&&observed.inconsistent===false)
-                : await verifiedMutation({ targetKey, target, preflightOperation: RETURN_OPERATIONS.relationPreflight,
+                : await verifiedMutation({ targetKey, target, preflightOperation: RETURN_OPERATIONS.relationPreflight, preflightResult: relationBefore,
                 preflightRequest: { target, query }, mutationOperation: RETURN_OPERATIONS.relationWrite, commandKind: 'associate_relation',
                 acceptPreflight:(observed)=>observed.associated===false&&observed.inconsistent===false,
-                mutationPayload: { ItElementId: objectId, AssociatingEntityIds: [appId], associationType: 'InfrastructureApplication', ConcurrencyTabId: 602, workspaceId: row.workspaceId, engagementId: binding.engagementId },
+                mutationPayload: { ItElementId: objectId, AssociatingEntityIds: [appId], associationType: relationType, ConcurrencyTabId: relationConcurrencyTabId, workspaceId: row.workspaceId, engagementId: binding.engagementId },
                 readOperation: RETURN_OPERATIONS.relationRead, readRequest: { target, query }, verify: (observed) => observed.associated === true && observed.inconsistent === false });
               await store.call('projectVerifiedReturn', { runId, commandId: result.command.commandId, binding, workspaceId: row.workspaceId,
-                projectionKind: 'relation', relationType: 'InfrastructureApplication', relationKey: targetKey,
+                projectionKind: 'relation', relationType, relationKey: targetKey,
                 sourceObjectId: objectId, targetObjectId: appId, payload: result.observed });
             }
-            if(['DB','OS'].includes(row.kind)){
-              const source=row.inheritanceSources[0]; const appRow=ordered.find((item)=>item.kind==='APP'&&item.elementId.toLocaleLowerCase('en-US')===source.externalId.toLocaleLowerCase('en-US')&&item.workspaceName.normalize('NFKC')===source.workspaceName.normalize('NFKC'));
+            if(hasFrozenStage(row,'inherited_rait')){
+              for(const source of row.inheritanceSources){ const appRow=ordered.find((item)=>item.kind==='APP'&&item.rowKey===source.rowKey&&item.elementId.normalize('NFKC')===source.externalId.normalize('NFKC')&&item.workspaceName.normalize('NFKC')===source.workspaceName.normalize('NFKC'));
               if(!appRow) fail('RETURN.RAIT_INHERITANCE_DRIFT',`${row.kind} ${row.elementId} inheritance source disappeared.`);
               const appGraId=graIds.get(runtimeKey('APP',appRow.elementId,appRow.workspaceId)); const sourceKey=`inheritance-source|${row.rowKey}|${appRow.rowKey}`;
               const sourceTarget={targetIdentityKey:targetByKey.get(sourceKey).operationTargetIdentityKey,workspaceId:appRow.workspaceId};
               const sourceBefore=await invoke(RETURN_OPERATIONS.graStatePreflight,binding,{target:sourceTarget,riskAssessmentId:appGraId});
               const liveInheritedMode=normalizeRait(sourceBefore.itElementRaitConclusionLevelId||sourceBefore.itElementRaitConclusionLevelName);
-              if(!['Higher','Lower'].includes(liveInheritedMode)||liveInheritedMode!==normalizeRait(appRow.mode)) fail('RETURN.RAIT_INHERITANCE_DRIFT',`${row.kind} ${row.elementId} live APP GRA RAIT differs from the frozen APP plan.`);
+              if(!['Higher','Lower'].includes(liveInheritedMode)||liveInheritedMode!==normalizeRait(source.plannedMode)) fail('RETURN.RAIT_INHERITANCE_DRIFT',`${row.kind} ${row.elementId} live APP GRA RAIT differs from the frozen APP plan.`);
               if(!done(sourceKey)){
                 const sourceResult=await closeVerified(sourceKey,RETURN_OPERATIONS.graStateWrite,RETURN_OPERATIONS.graStateRead,{target:sourceTarget,query:{riskAssessmentId:appGraId,patchKind:'rait',value:liveInheritedMode}},(observed)=>observed.verified===true);
                 await projectGraRevision(sourceResult,appRow,sourceKey,appGraId);
               }
-              mode=liveInheritedMode;
+              mode=row.mode;
               const targetKey=`gra-rait|${row.rowKey}`;
               if(!done(targetKey)){
-                const target={targetIdentityKey:targetByKey.get(targetKey).operationTargetIdentityKey,workspaceId:row.workspaceId}; const before=await invoke(RETURN_OPERATIONS.graStatePreflight,binding,{target,riskAssessmentId:graId}); const currentValue=before.itElementRaitConclusionLevelId||before.itElementRaitConclusionLevelName;
-                const stateResult=String(currentValue)===String(mode)?await closeVerified(targetKey,RETURN_OPERATIONS.graStateWrite,RETURN_OPERATIONS.graStateRead,{target,query:{riskAssessmentId:graId,patchKind:'rait',value:mode}},(observed)=>observed.verified===true):await verifiedMutation({targetKey,target,preflightOperation:RETURN_OPERATIONS.graStatePreflight,preflightRequest:{target,riskAssessmentId:graId},mutationOperation:RETURN_OPERATIONS.graStateWrite,commandKind:'patch_gra_state',mutationPayload:{engagementId:binding.engagementId,workspaceId:row.workspaceId,riskAssessmentId:graId,patchKind:'rait',value:mode},readOperation:RETURN_OPERATIONS.graStateRead,readRequest:{target,query:{riskAssessmentId:graId,patchKind:'rait',value:mode}},verify:(observed)=>observed.verified===true});
+                const target={targetIdentityKey:targetByKey.get(targetKey).operationTargetIdentityKey,workspaceId:row.workspaceId}; const before=await invoke(RETURN_OPERATIONS.graStatePreflight,binding,{target,riskAssessmentId:graId,planDigest}); const currentValue=before.itElementRaitConclusionLevelId||before.itElementRaitConclusionLevelName;
+                const stateResult=String(currentValue)===String(mode)?await closeVerified(targetKey,RETURN_OPERATIONS.graStateWrite,RETURN_OPERATIONS.graStateRead,{target,query:{riskAssessmentId:graId,patchKind:'rait',value:mode}},(observed)=>observed.verified===true):await verifiedMutation({targetKey,target,preflightOperation:RETURN_OPERATIONS.graStatePreflight,preflightRequest:{target,riskAssessmentId:graId},preflightResult:before,mutationOperation:RETURN_OPERATIONS.graStateWrite,commandKind:'patch_gra_state',mutationPayload:{engagementId:binding.engagementId,workspaceId:row.workspaceId,riskAssessmentId:graId,patchKind:'rait',value:mode},readOperation:RETURN_OPERATIONS.graStateRead,readRequest:{target,query:{riskAssessmentId:graId,patchKind:'rait',value:mode}},verify:(observed)=>observed.verified===true});
                 await projectGraRevision(stateResult,row,targetKey,graId);
+              }
+              }
+            }
+            if(hasFrozenStage(row,'app_category')){
+              const categoryKey=`risk-factor-category|${row.rowKey}`;
+              if(!done(categoryKey)){
+                const categoryIntent=targetByKey.get(categoryKey);
+                const target={targetIdentityKey:categoryIntent.operationTargetIdentityKey,workspaceId:row.workspaceId};
+                const preflightRequest={target,query:{riskAssessmentId:graId,categoryId:categoryIntent.resolvedCategory?.categoryId||'',categoryName:categoryIntent.categoryName,objectType:'Application'}};
+                const before=await invoke(RETURN_OPERATIONS.riskFactorCategoryPreflight,binding,{...preflightRequest,planDigest});
+                const categoryId=String(categoryIntent.resolvedCategory?.categoryId||before.categoryId||'');
+                if(!categoryId||categoryId!==String(before.categoryId||''))fail('RETURN.RISK_FACTOR_CATEGORY_IDENTITY_DRIFT',`APP ${row.elementId} IT Risk Factor category identity changed after confirmation.`);
+                const readRequest={target,query:{riskAssessmentId:graId,categoryId,categoryName:categoryIntent.categoryName,objectType:'Application'}};
+                const categoryResult=before.applicable===true
+                  ?await closeVerified(categoryKey,RETURN_OPERATIONS.riskFactorCategoryWrite,RETURN_OPERATIONS.riskFactorCategoryRead,readRequest,(observed)=>observed.verified===true)
+                  :await verifiedMutation({targetKey:categoryKey,target,preflightOperation:RETURN_OPERATIONS.riskFactorCategoryPreflight,preflightRequest,preflightResult:before,
+                    mutationOperation:RETURN_OPERATIONS.riskFactorCategoryWrite,commandKind:'enable_app_it_risk_assessment_category',
+                    mutationPayload:{engagementId:binding.engagementId,workspaceId:row.workspaceId,riskAssessmentId:graId,categoryId,categoryName:categoryIntent.categoryName,objectType:'Application'},
+                    readOperation:RETURN_OPERATIONS.riskFactorCategoryRead,readRequest,verify:(observed)=>observed.verified===true});
+                await projectGraRevision(categoryResult,row,categoryKey,graId);
               }
             }
             executionModes.set(row.rowKey, mode);
-          }
-          // v4 phase order: complete SAP ECC Risk Factors and documentation before
-          // submitting any evaluation. Verified receipts remain authoritative on resume.
-          for (const row of ordered) {
+          },async(row)=>{
+            {
+            // v4 keeps a single GRA's factors and documentation serial.  The
+            // pipeline only removes the cross-row barrier before evaluation.
             const mode=executionModes.get(row.rowKey)||row.mode;
             const graId=graIds.get(runtimeKey(row.kind,row.elementId,row.workspaceId));
-            const contentName=row.content.contentName;
-            if (row.kind === 'APP' && String(contentName).toLocaleLowerCase('en-US').includes('sap ecc')) {
-              for (const item of governance.scoringItems) {
-                const targetKey = `risk-factor|${row.rowKey}|${item.itemId}`;
-                if (!targetByKey.has(targetKey)) continue;
-                if (done(targetKey)) continue;
-                const target = { targetIdentityKey: targetByKey.get(targetKey).operationTargetIdentityKey, workspaceId: row.workspaceId };
-                const factorPreflight = await invoke(RETURN_OPERATIONS.factorPreflight, binding, { target, query: { riskAssessmentId: graId, itemId: item.itemId, selectionMode: mode } });
+            if (hasFrozenStage(row,'app_scoring')) {
+              const categoryKey=`risk-factor-category|${row.rowKey}`;
+              if(!done(categoryKey))fail('RETURN.RISK_FACTOR_CATEGORY_NOT_VERIFIED',`APP ${row.elementId} scoring cannot start before its IT Risk Factor category is verified applicable.`);
+              const factorIntents=plan.targets.filter((item)=>item.rowKey===row.rowKey&&String(item.key).startsWith('risk-factor|'));
+              if(!factorIntents.length)fail('RETURN.SCORING_GOVERNANCE_MISSING',`APP ${row.elementId} has no frozen governed Risk Factor scoring intents.`);
+              const readinessIntent=factorIntents.find((item)=>!done(item.key));
+              let readinessPreflight=null;
+              if(readinessIntent){
+                const readinessTarget={targetIdentityKey:readinessIntent.operationTargetIdentityKey,workspaceId:row.workspaceId};
+                const readinessQuery={riskAssessmentId:graId,itemId:readinessIntent.fieldId,itemLabel:readinessIntent.itemLabel,selectionMode:mode,contentName:readinessIntent.contentName};
+                readinessPreflight=await waitForReadOnly(RETURN_OPERATIONS.factorPreflight,{target:readinessTarget,query:readinessQuery,planDigest},`APP ${row.elementId} scoring interface`);
+              }
+              await runBoundedIndependent(factorIntents, RETURN_WITHIN_GRA_CONCURRENCY, async (factorIntent) => {
+                const targetKey = factorIntent.key;
+                if (done(targetKey)) return;
+                const target = { targetIdentityKey: factorIntent.operationTargetIdentityKey, workspaceId: row.workspaceId };
+                const factorQuery={riskAssessmentId:graId,itemId:factorIntent.fieldId,itemLabel:factorIntent.itemLabel,selectionMode:mode,contentName:factorIntent.contentName};
+                const factorPreflight = readinessIntent?.key===factorIntent.key&&readinessPreflight
+                  ?readinessPreflight
+                  :await invoke(RETURN_OPERATIONS.factorPreflight, binding, { target, query: factorQuery, planDigest });
                 if (factorPreflight.applicable === false) {
-                  const preflightRequest={target,query:{riskAssessmentId:graId,itemId:item.itemId,selectionMode:mode}};
+                  const preflightRequest={target,query:factorQuery};
                   const command = await commandFor(targetKey,RETURN_OPERATIONS.factorWrite,preflightRequest,target.targetIdentityKey);
                   await freezeRead(command.commandId,RETURN_OPERATIONS.factorPreflight,preflightRequest);
                   const observed=await invoke(RETURN_OPERATIONS.factorPreflight,binding,{...preflightRequest,receiptContext:{runId,commandId:command.commandId}});
-                  if(observed.applicable!==false) fail('RETURN.FACTOR_APPLICABILITY_DRIFT',`Risk Factor ${item.itemId} applicability changed during authoritative closure.`);
-                  await evidence(command.commandId,'reconcile','closed_not_applied',observed,true); continue;
+                  if(observed.applicable!==false) fail('RETURN.FACTOR_APPLICABILITY_DRIFT',`Risk Factor ${factorIntent.fieldId} applicability changed during authoritative closure.`);
+                  await evidence(command.commandId,'reconcile','closed_not_applied',observed,true);
+                  // A Pack-authoritative `applicable:false` is a terminal no-op,
+                  // not a failed mutation. Persist that Feature-owned business
+                  // conclusion so Continue can finish without reissuing the
+                  // same closure. Connector remains a generic envelope host.
+                  terminalNoopTargets.add(targetKey);
+                  progress.set(targetKey,'verified');
+                  await saveExecution({terminalNoopTargets:[...terminalNoopTargets].sort()});
+                  return;
                 }
                 const selectedValue = Number(factorPreflight.selected?.value); const currentValue = Number(factorPreflight.current?.value ?? factorPreflight.current);
-                const factorReadRequest={target,query:{riskAssessmentId:graId,itemId:item.itemId,selectionMode:mode}};
+                const factorReadRequest={target,query:factorQuery};
                 const frozenFactor=targetByKey.get(targetKey).resolvedFactor;
                 const liveFactor={factorId:factorPreflight.factorId,selectedValue:factorPreflight.selected?.value,spectrumDigest:digest(Buffer.from(canonical(factorPreflight.spectrum||[])))};
-                if(frozenFactor&&(String(frozenFactor.factorId)!==String(liveFactor.factorId)||Number(frozenFactor.selectedValue)!==Number(liveFactor.selectedValue)||String(frozenFactor.spectrumDigest)!==String(liveFactor.spectrumDigest))) fail('RETURN.FACTOR_SPECTRUM_DRIFT',`Risk Factor ${item.itemId} live spectrum changed after confirmation.`);
+                if(frozenFactor&&(String(frozenFactor.factorId)!==String(liveFactor.factorId)||Number(frozenFactor.selectedValue)!==Number(liveFactor.selectedValue)||String(frozenFactor.spectrumDigest)!==String(liveFactor.spectrumDigest))) fail('RETURN.FACTOR_SPECTRUM_DRIFT',`Risk Factor ${factorIntent.fieldId} live spectrum changed after confirmation.`);
                 const exactFactor=frozenFactor||liveFactor;
-                const factorResult = selectedValue === currentValue ? await closeVerified(targetKey,RETURN_OPERATIONS.factorWrite,RETURN_OPERATIONS.factorRead,factorReadRequest,(observed)=>observed.verified===true) : await verifiedMutation({ targetKey, target, preflightOperation: RETURN_OPERATIONS.factorPreflight,
-                  preflightRequest: { target, query: { riskAssessmentId: graId, itemId: item.itemId, selectionMode: mode } },
-                  mutationOperation:RETURN_OPERATIONS.factorWrite,commandKind:'patch_risk_factor',mutationPayload:{engagementId:binding.engagementId,workspaceId:row.workspaceId,riskAssessmentId:graId,itemId:item.itemId,selectionMode:mode,
+                const factorResult = selectedValue === currentValue ? await closeVerified(targetKey,RETURN_OPERATIONS.factorWrite,RETURN_OPERATIONS.factorRead,factorReadRequest,(observed)=>observed.verified===true) : await verifiedMutation({ targetKey, target, preflightOperation: RETURN_OPERATIONS.factorPreflight, preflightResult: factorPreflight,
+                  preflightRequest: { target, query: factorQuery },
+                  mutationOperation:RETURN_OPERATIONS.factorWrite,commandKind:'patch_risk_factor',mutationPayload:{engagementId:binding.engagementId,workspaceId:row.workspaceId,riskAssessmentId:graId,itemId:factorIntent.fieldId,itemLabel:factorIntent.itemLabel,selectionMode:mode,contentName:factorIntent.contentName,
                     factorId:exactFactor.factorId,selectedValue:exactFactor.selectedValue,spectrumDigest:exactFactor.spectrumDigest},
-                  readOperation: RETURN_OPERATIONS.factorRead, readRequest: { target, query: { riskAssessmentId: graId, itemId: item.itemId, selectionMode: mode } }, verify: (observed) => observed.verified === true });
+                  readOperation: RETURN_OPERATIONS.factorRead, readRequest: { target, query: factorQuery }, verify: (observed) => observed.verified === true });
                 await projectGraRevision(factorResult, row, targetKey, graId);
-              }
+              });
               const docKey = `documentation|${row.rowKey}`; const docIntent = targetByKey.get(docKey);
               if (docIntent && !done(docKey)) {
                 const target = { targetIdentityKey: docIntent.operationTargetIdentityKey, workspaceId: row.workspaceId };
                 const plainText = docIntent.plainText; const editorData = `<p>${plainText.replace(/[&<>]/gu, (char) => ({ '&':'&amp;','<':'&lt;','>':'&gt;' }[char]))}</p>`;
-                const currentDoc = await invoke(RETURN_OPERATIONS.documentationPreflight, binding, { target, riskAssessmentId: graId });
+                const currentDoc = await invoke(RETURN_OPERATIONS.documentationPreflight, binding, { target, riskAssessmentId: graId, planDigest });
                 const observedDoc = observedDocumentation(currentDoc);
                 const docResult = String(observedDoc?.editorData || '') === editorData && String(observedDoc?.plainText || '') === plainText
                   ? await closeVerified(docKey,RETURN_OPERATIONS.documentationWrite,RETURN_OPERATIONS.documentationRead,{target,query:{riskAssessmentId:graId,editorData,plainText}},(observed)=>observed.verified===true)
-                  : await verifiedMutation({ targetKey: docKey, target, preflightOperation: RETURN_OPERATIONS.documentationPreflight,
+                  : await verifiedMutation({ targetKey: docKey, target, preflightOperation: RETURN_OPERATIONS.documentationPreflight, preflightResult: currentDoc,
                   preflightRequest: { target, riskAssessmentId: graId }, mutationOperation: RETURN_OPERATIONS.documentationWrite, commandKind: 'patch_documentation',
                   mutationPayload: { engagementId: binding.engagementId, workspaceId: row.workspaceId, riskAssessmentId: graId, editorData, plainText },
                   readOperation: RETURN_OPERATIONS.documentationRead, readRequest: { target, query: { riskAssessmentId: graId, editorData, plainText } }, verify: (observed) => observed.verified === true });
                 await projectGraRevision(docResult, row, docKey, graId);
               }
             }
-          }
+            }
+            {
           // Submission is not complete until the signed read operation observes
           // EvaluationComplete. Pending/content generation states are polled within
           // the bounded v4 window and do not become uncertain on the first read.
-          for (const row of ordered) {
             const graId=graIds.get(runtimeKey(row.kind,row.elementId,row.workspaceId));
-            const evaluationKey = `evaluation|${row.rowKey}`; const evaluationTarget = { targetIdentityKey: targetByKey.get(evaluationKey).operationTargetIdentityKey, workspaceId: row.workspaceId };
-            if (done(evaluationKey)) continue;
-            const currentEvaluation = await invoke(RETURN_OPERATIONS.evaluationPreflight, binding, { target: evaluationTarget, riskAssessmentId: graId });
-            const evaluationResult = currentEvaluation.status === 'EvaluationComplete'
-              ? await closeVerified(evaluationKey,RETURN_OPERATIONS.evaluationWrite,RETURN_OPERATIONS.evaluationRead,{target:evaluationTarget,riskAssessmentId:graId},(observed)=>observed.verified===true)
-              : await verifiedMutation({ targetKey: evaluationKey, target: evaluationTarget, preflightOperation: RETURN_OPERATIONS.evaluationPreflight,
-              preflightRequest: { target: evaluationTarget, riskAssessmentId: graId }, mutationOperation: RETURN_OPERATIONS.evaluationWrite, commandKind: 'submit_evaluation',
-              mutationPayload: { engagementId: binding.engagementId, workspaceId: row.workspaceId, riskAssessmentId: graId },
-              readOperation: RETURN_OPERATIONS.evaluationRead, readRequest: { target: evaluationTarget, riskAssessmentId: graId },
-              waitForEvaluationComplete:true, verify: (observed) => observed.verified === true });
-            await projectGraRevision(evaluationResult, row, evaluationKey, graId);
-          }
-          // Generated Risk/Control identities are read only after every GRA has an
-          // authoritative EvaluationComplete receipt. Frozen identities remain exact;
-          // post-evaluation targets resolve against the newly generated catalog.
-          for (const row of ordered) {
+            const evaluationKey = `evaluation|${row.rowKey}`; const evaluationIntent=targetByKey.get(evaluationKey);
+            if (hasFrozenStage(row,'evaluation')&&!evaluationIntent)fail('RETURN.INTENT_MISSING',`Frozen evaluation target is missing: ${evaluationKey}`);
+            const evaluationTarget = evaluationIntent?{ targetIdentityKey: evaluationIntent.operationTargetIdentityKey, workspaceId: row.workspaceId }:null;
+            if (evaluationIntent&&!done(evaluationKey)) {
+              const currentEvaluation = await invoke(RETURN_OPERATIONS.evaluationPreflight, binding, { target: evaluationTarget, riskAssessmentId: graId, planDigest });
+              const evaluationResult = currentEvaluation.status === 'EvaluationComplete'
+                ? await closeVerified(evaluationKey,RETURN_OPERATIONS.evaluationWrite,RETURN_OPERATIONS.evaluationRead,{target:evaluationTarget,riskAssessmentId:graId},(observed)=>observed.verified===true)
+                : await verifiedMutation({ targetKey: evaluationKey, target: evaluationTarget, preflightOperation: RETURN_OPERATIONS.evaluationPreflight, preflightResult: currentEvaluation,
+                preflightRequest: { target: evaluationTarget, riskAssessmentId: graId }, mutationOperation: RETURN_OPERATIONS.evaluationWrite, commandKind: 'submit_evaluation',
+                mutationPayload: { engagementId: binding.engagementId, workspaceId: row.workspaceId, riskAssessmentId: graId },
+                readOperation: RETURN_OPERATIONS.evaluationRead, readRequest: { target: evaluationTarget, riskAssessmentId: graId },
+                waitForEvaluationComplete:true, verify: (observed) => observed.verified === true });
+              await projectGraRevision(evaluationResult, row, evaluationKey, graId);
+            }
+            }
+            {
+          // Generated Risk/Control identities are resolved only after this row's
+          // signed EvaluationComplete read-back. Frozen identities remain exact.
             const mode=executionModes.get(row.rowKey)||row.mode;
             const graId=graIds.get(runtimeKey(row.kind,row.elementId,row.workspaceId));
-            const contentName=row.content.contentName;
-            const selected=governance.relations.filter((relation)=>relationApplicable(relation,row,contentName,mode));
-            const requiredRelations=selected.filter((item)=>linkRequired(item,mode));
+            const returnIntents=frozenReturnIntents(row);
+            if(mode!==row.mode)fail('RETURN.DETERMINISTIC_INTENTS_DRIFT',`Execution RAIT differs from the frozen Python Return intent: ${row.rowKey}.`);
+            const requiredRelations=hasFrozenStage(row,'risk_control')?executionCatalogRelations(returnIntents.riskControlRelations):[];
+            // A prior Feature generation can crash after the signed read-back
+            // is committed but before Managed Content projection. Repair only
+            // that missing local projection, using the frozen catalog identity
+            // and the exact receipt payload selected by Core; never replay the
+            // already-completed remote association.
+            for(const relation of requiredRelations){
+              const targetKey=`risk-control|${row.rowKey}|${relation.relationId}`;
+              const progressRow=progressRows.get(targetKey);
+              if(progressRow?.command_state!=='readback_verified'||Number(progressRow.relation_projection_count||0)!==0)continue;
+              const targetSpec=targetByKey.get(targetKey);const frozenCatalog=targetSpec?.resolvedCatalog;
+              const sourceObjectId=frozenCatalog?.riskId||progressRow.projection_source_object_id;
+              const targetObjectId=frozenCatalog?.controlId||progressRow.projection_target_object_id;
+              if(!progressRow.command_id||!sourceObjectId||!targetObjectId)fail('RETURN.VERIFIED_PROJECTION_IDENTITY_MISSING',`Verified Risk-Control projection identity is incomplete: ${relation.relationId}.`);
+              await store.call('projectVerifiedReturn',{runId,commandId:progressRow.command_id,binding,workspaceId:row.workspaceId,projectionKind:'relation',relationType:'risk_control',relationKey:targetKey,sourceObjectId,targetObjectId});
+              progressRow.relation_projection_count=1;
+            }
             const pendingRelations=requiredRelations.filter((relation)=>!done(`risk-control|${row.rowKey}|${relation.relationId}`));
             const classificationIntents=plan.targets.filter((item)=>item.rowKey===row.rowKey&&String(item.key).startsWith('risk-classification|'));
             const pendingClassifications=classificationIntents.filter((item)=>!done(item.key));
-            if(!pendingRelations.length&&!pendingClassifications.length) continue;
+            if(!pendingRelations.length&&!pendingClassifications.length) return;
             const catalogRequest={target:{targetIdentityKey:graOperationIdentity('risk-catalog',row,'generated-catalog'),workspaceId:row.workspaceId},riskAssessmentId:graId};
             const generatedRisks=await waitForGeneratedRiskIdentities(binding,row,graId,pendingClassifications);
-            for(const intent of pendingClassifications){
+            await runBoundedIndependent(pendingClassifications,RETURN_WITHIN_GRA_CONCURRENCY,async(intent)=>{
               const risk=generatedRisks.get(intent.key);if(!risk)fail('RETURN.RISK_CLASSIFICATION_IDENTITY_DRIFT',`Generated Risk identity is absent: ${intent.riskNumber}.`);
               const target={targetIdentityKey:intent.operationTargetIdentityKey,workspaceId:row.workspaceId};
               const query={riskAssessmentId:graId,riskName:intent.riskName,riskId:risk.riskId,classification:intent.value};
@@ -1977,11 +2424,15 @@ function createFeatureWorker(dependencies) {
                   raceReadOperation:RETURN_OPERATIONS.riskClassificationRead,raceReadRequest:readRequest,raceAlreadyApplied:(observed)=>observed.verified===true,
                   readOperation:RETURN_OPERATIONS.riskClassificationRead,readRequest,verify:(observed)=>observed.verified===true});
               await projectGraRevision(classificationResult,row,intent.key,graId);
-            }
-            let catalog=await waitForCompleteRiskControlCatalog(binding,catalogRequest,requiredRelations,mode);
-            for(let relationIndex=0;relationIndex<pendingRelations.length;relationIndex+=1){
-              const relation=pendingRelations[relationIndex];
-              if(relationIndex>0) catalog=await invoke(RETURN_OPERATIONS.riskCatalog,binding,catalogRequest);
+            });
+            // Resolve the immutable generated Risk/Control identity set once
+            // per GRA. Each signed mutation Operation still performs its own
+            // action-time exact identity/preflight check, and every mutation
+            // keeps its authoritative read-back. Re-reading the full catalog
+            // before every relation added no safety proof and dominated large
+            // batches with identical network payloads.
+            const catalog=pendingRelations.length?await waitForCompleteRiskControlCatalog(binding,catalogRequest,requiredRelations,mode):null;
+            const relationWork=pendingRelations.map((relation)=>{
               const risks=catalogRiskMatches(catalog,relation,relation[`classification${mode}`]);
               const controls=catalogControlMatches(catalog,relation);
               if(risks.length!==1||controls.length!==1) fail('RETURN.RISK_CONTROL_CATALOG_DRIFT',`Risk/Control catalog identity is absent or ambiguous: ${relation.relationId}.`);
@@ -1989,43 +2440,67 @@ function createFeatureWorker(dependencies) {
               const targetSpec=targetByKey.get(targetKey);const frozenCatalog=targetSpec.resolvedCatalog;
               if(frozenCatalog&&(frozenCatalog.riskId!==risk.riskId||frozenCatalog.riskRiskScopeId!==risk.riskRiskScopeId||(frozenCatalog.riskScopeId&&frozenCatalog.riskScopeId!==risk.riskScopeId)||frozenCatalog.controlId!==control.controlId
                 ||(frozenCatalog.assertionType&&frozenCatalog.assertionType!==risk.assertionType)||frozenCatalog.assertion!==risk.assertion)) fail('RETURN.RISK_CONTROL_CATALOG_IDENTITY_DRIFT',`Risk/Control live identity changed after confirmation: ${relation.relationId}.`);
+              return{relation,risk,control,targetKey,targetSpec,frozenCatalog};
+            });
+            const relationsByRisk=new Map();
+            for(const item of relationWork){const lane=relationsByRisk.get(item.risk.riskId)||[];lane.push(item);relationsByRisk.set(item.risk.riskId,lane);}
+            const riskLanes=[...relationsByRisk.values()];
+            await runBoundedIndependent(riskLanes,RETURN_WITHIN_GRA_CONCURRENCY,async(lane)=>{
+              for(const {relation,risk,control,targetKey,targetSpec,frozenCatalog} of lane){
               const target={targetIdentityKey:targetSpec.operationTargetIdentityKey,workspaceId:row.workspaceId};
               const riskQuery={riskRiskScopeId:risk.riskRiskScopeId,riskScopeId:risk.riskScopeId,riskId:risk.riskId,controlId:control.controlId,assertionType:risk.assertionType,assertion:risk.assertion};
-              const existingRisk=await invoke(RETURN_OPERATIONS.riskRead,binding,{target,query:riskQuery});
-              if(existingRisk.verified===true&&!frozenCatalog&&!['post_state_catalog','post_evaluation_catalog'].includes(targetSpec.resolutionMode)) fail('RETURN.POST_CREATE_RISK_ALREADY_ASSOCIATED',`Post-create Risk-Control ${relation.relationId} became associated before its frozen mutation; a new review is required.`);
-              const result=existingRisk.verified===true
-                ?await closeVerified(targetKey,RETURN_OPERATIONS.riskWrite,RETURN_OPERATIONS.riskRead,{target,query:riskQuery},(observed)=>observed.verified===true)
-                :await verifiedMutation({targetKey,target,preflightOperation:RETURN_OPERATIONS.riskPreflight,
+              const result=await verifiedMutation({targetKey,target,preflightOperation:RETURN_OPERATIONS.riskPreflight,
                   preflightRequest:{target,query:{riskId:risk.riskId,riskClassification:risk.classification,controlId:control.controlId}},
                   mutationOperation:RETURN_OPERATIONS.riskWrite,commandKind:'associate_risk_control',mutationPayload:{
-                    engagementId:binding.engagementId,workspaceId:row.workspaceId,riskAssessmentId:graId,riskName:relation.riskName,
-                    controlName:relation.controlName,riskClassification:relation[`classification${mode}`],riskId:risk.riskId,updatedOn:risk.updatedOn,
+                    engagementId:binding.engagementId,workspaceId:row.workspaceId,riskAssessmentId:graId,riskRiskScopeId:risk.riskRiskScopeId,riskName:targetSpec.riskName,
+                    controlName:targetSpec.controlName,riskClassification:targetSpec.classification,riskId:risk.riskId,updatedOn:risk.updatedOn,
                     isPurgeControlHiddenData:false,controlRiskScopes:[{controlId:control.controlId,riskScopeId:risk.riskScopeId,
                       assertionType:risk.assertionType,riskId:risk.riskId,assertions:[{assertion:risk.assertion}]}]},
                   acceptPreflight:(preflight)=>preflight.requiresPurge===false,
-                  raceReadOperation:RETURN_OPERATIONS.riskRead,raceReadRequest:{target,query:riskQuery},raceAlreadyApplied:(observed)=>observed.verified===true,
-                  readOperation:RETURN_OPERATIONS.riskRead,readRequest:{target,query:riskQuery},verify:(observed)=>observed.verified===true});
-              await store.call('projectVerifiedReturn',{runId,commandId:result.command.commandId,binding,workspaceId:row.workspaceId,projectionKind:'relation',relationType:'risk_control',relationKey:targetKey,sourceObjectId:risk.riskId,targetObjectId:control.controlId,payload:{...result.observed,riskRiskScopeId:risk.riskRiskScopeId,assertionType:risk.assertionType,assertion:risk.assertion,graId}});
+                  readOperation:RETURN_OPERATIONS.riskRead,readRequest:{target,query:riskQuery},readbackPolicy:{maxAttempts:RETURN_READBACK_MAX_ATTEMPTS,delayMs:0},verify:(observed)=>observed.verified===true});
+              await store.call('projectVerifiedReturn',{runId,commandId:result.command.commandId,binding,workspaceId:row.workspaceId,projectionKind:'relation',relationType:'risk_control',relationKey:targetKey,sourceObjectId:risk.riskId,targetObjectId:control.controlId,payload:result.observed});
+              }
+            });
             }
-          }
-          await store.call('recordBootstrapCapabilityEvidence',{
-            schemaVersion:'omnia.feature-capability-evidence-bootstrap/v1',runId,...RETURN_CAPABILITY,
-            connectorBinding:binding,safetyLock:input.context.safetyLock
           });
-          await store.call('finishReturn', { runId, outcome: 'succeeded' });
-          await store.call('savePlan', { ...checkpoint, execution: { state: 'completed' }, updatedAt: new Date().toISOString() });
+          // Reload the durable ledger before declaring the batch complete.  A
+          // row-isolated invocation may leave a mixture of verified, uncertain
+          // and still-frozen intents; the in-memory row result alone is not a
+          // valid terminal signal for the whole Run.
+          const finalProgress=await store.call('loadReturnProgress',{runId});
+          const unresolved=finalProgress.filter((item)=>String(item.command_state||'')!=='readback_verified'
+            &&!terminalNoopTargets.has(String(item.target_key||'')));
+          const uncertain=unresolved.filter((item)=>String(item.state||'')==='uncertain'||String(item.command_state||'')==='uncertain');
+          const resumable=unresolved.filter((item)=>!uncertain.includes(item));
+          const itemFailures=[...isolatedRows.values()];
+          if(uncertain.length){
+            await store.call('finishReturn',{runId,outcome:'uncertain',error:`${uncertain.length} write result(s) require signed read-only reconciliation before Return can continue.`});
+            await saveExecution({state:'uncertain',partial:true,itemFailures,uncertainTargets:uncertain.map((item)=>String(item.target_key||'')),completedAt:new Date().toISOString()});
+          }else if(resumable.length){
+            // Stay in `returning`: no uncertain mutation is replayed, and the
+            // explicit Continue action resumes only the still-frozen ledger.
+            await saveExecution({state:'paused',partial:true,itemFailures,resumableTargets:resumable.map((item)=>String(item.target_key||'')),pausedAt:new Date().toISOString()});
+          }else{
+            await store.call('recordBootstrapCapabilityEvidence',{
+              schemaVersion:'omnia.feature-capability-evidence-bootstrap/v1',runId,...RETURN_CAPABILITY,
+              connectorBinding:binding,safetyLock:input.context.safetyLock
+            });
+            await store.call('finishReturn',{runId,outcome:'succeeded'});
+            await saveExecution({state:'completed',partial:false,itemFailures:[],completedAt:new Date().toISOString()});
+          }
           const completedLatest=await store.call('loadLatestRun',{});
-          return {surfacePatch:returnSurface(completedLatest,'')};
+          return {surfacePatch:returnSurface(completedLatest,'',checkpoint.execution)};
         } catch (error) {
-          if (error?.code === 'RETURN.UNCERTAIN') { const uncertainLatest=await store.call('loadLatestRun',{}); return {surfacePatch:returnSurface(uncertainLatest,'')}; }
+          signalTerminal(error);
+          const outcome=terminal.outcome||'failed';const terminalError=terminal.error||error;
           const failedLatest=await store.call('loadLatestRun',{});
-          if(failedLatest?.run?.state==='returning'||failedLatest?.run?.state==='verifying') await store.call('finishReturn',{runId,outcome:'failed',error:String(error.message||error)});
-          await store.call('savePlan',{...checkpoint,execution:{state:'failed',error:{code:String(error.code||'RETURN.FAILED'),message:String(error.message||error)}},updatedAt:new Date().toISOString()});
+          if(failedLatest?.run?.state==='returning'||failedLatest?.run?.state==='verifying') await store.call('finishReturn',{runId,outcome,error:String(terminalError.message||terminalError)});
+          await saveExecution({state:outcome,error:{code:String(terminalError.code||'RETURN.FAILED'),message:String(terminalError.message||terminalError)},...(terminal.reconcileSpec?{reconcileSpec:terminal.reconcileSpec}:{})});
           const terminalLatest=await store.call('loadLatestRun',{});
-          return {surfacePatch:returnSurface(terminalLatest,'')};
+          return {surfacePatch:returnSurface(terminalLatest,'',checkpoint.execution)};
         }
         };
-        checkpoint.execution={state:'running',background:false,startedAt:new Date().toISOString()};
+        checkpoint.execution={state:'running',background:false,startedAt:new Date().toISOString(),executionPolicy:checkpoint.returnPlan.executionPolicy||null,itemFailures:[]};
         await store.call('savePlan',{...checkpoint,updatedAt:new Date().toISOString()});
         return await executeReturn();
       }
@@ -2036,8 +2511,10 @@ function createFeatureWorker(dependencies) {
         if (!checkpoint?.parsed) fail('RUN.CHECKPOINT_MISSING', 'The durable conversion checkpoint is unavailable.');
         {
           const prepared = await buildReturnPreparation(checkpoint, input.context);
+          const executionPolicy=returnExecutionPolicy(input.payload);
           const plan = { schemaVersion: 'omnia.create-associate.return-plan/v1', runId: run.run_id,
-            authority: prepared.authority, rows: prepared.rows, targets: prepared.targets, initialPreflights: prepared.preflights };
+            authority: prepared.authority, rows: prepared.rows, targets: prepared.targets, initialPreflights: prepared.preflights, executionPolicy };
+          assertReturnPlanCapabilities(checkpoint.planIr?.rows,plan.rows);
           const preflightDigest = digest(Buffer.from(canonical({ authority: prepared.authority, preflights: prepared.preflights })));
           const authorityDigest = digest(Buffer.from(canonical({
             connectorId: input.context.connectorBinding.connectorId, sessionGeneration: Number(input.context.connectorBinding.sessionGeneration),
@@ -2049,7 +2526,7 @@ function createFeatureWorker(dependencies) {
             runId: run.run_id, plan, connectorBinding: input.context.connectorBinding, safetyLock: input.context.safetyLock,
             credentialDigest: authorityDigest, preflightDigest
           });
-          await store.call('savePlan', { ...checkpoint, returnPlan: plan, confirmation: frozen, preflightDigest, updatedAt: new Date().toISOString() });
+          await store.call('savePlan', { ...checkpoint, returnPlan: plan, confirmation: frozen, preflightDigest, executionPolicy, updatedAt: new Date().toISOString() });
           const frozenLatest=await store.call('loadLatestRun',{});
           return {surfacePatch:returnSurface(frozenLatest,'')};
         }
@@ -2059,9 +2536,9 @@ function createFeatureWorker(dependencies) {
         const plan=await store.call('loadPlan',String(run.run_id));if(!plan?.parsed||!plan?.descriptor)fail('RUN.CHECKPOINT_MISSING','The durable Review checkpoint is unavailable.');
         if(input.actionId==='back-to-upload'){plan.reviewNavigation='upload';plan.updatedAt=new Date().toISOString();await store.call('savePlan',plan);return{surfacePatch:uploadSurface(latest,'已返回独立 Upload 层；当前源 Artifact、字段 revisions 与排除状态均保留。')};}
         const revisions=['apply-revisions','revalidate-all'].includes(input.actionId)?(input.payload?.revisions||[]):[];if(!Array.isArray(revisions))fail('REVISION.BATCH_INVALID','Review revisions must be an array.');const derivedRevisions=[];
-        for(const change of revisions){const row=plan.parsed.rows.find((item)=>item.rowKey===change.rowKey),candidate=plan.parsed.candidates.find((item)=>item.fieldKey===change.fieldKey&&item.provenance?.rowKey===change.rowKey);if(!row||!candidate||Number(candidate.revision)!==Number(change.expectedRevision)||['derived','rule_default','inherited'].includes(candidate.valueKind))fail('REVISION.CAS_MISMATCH','Review field changed; reload before saving.');const spec=REVIEW_MATRIX[row.kind].find((item)=>item[0]===candidate.rawFieldKey);const value=String(change.value??'').normalize('NFC').trim();if(!spec||value.length>Number(spec[4]))fail('REVISION.VALUE_INVALID',`${candidate.rawFieldKey} exceeds its official limit.`);candidate.value=value;candidate.revision=Number(change.expectedRevision)+1;candidate.valueKind='user_revision';candidate.status='accepted';row.fields[candidate.rawFieldKey]=value;if(candidate.rawFieldKey===REVIEW_MATRIX[row.kind][0][0]){row.elementId=value;for(const [rawFieldKey,derivedValue] of [['Derived GRA Name',deriveGraName(value)],[descriptionRawField(row.kind),value]]){const derived=reviewCandidate(plan.parsed,row,rawFieldKey);if(!derived||derived.valueKind!=='derived')fail('REVISION.DERIVED_LINEAGE_MISSING',`${rawFieldKey} has no signed derived candidate lineage.`);const expectedRevision=Number(derived.revision);derived.value=derivedValue;derived.revision=expectedRevision+1;derived.status='accepted';derived.provenance.dependencyFieldKey=candidate.fieldKey;row.fields[rawFieldKey]=derivedValue;derivedRevisions.push({fieldKey:derived.fieldKey,expectedRevision,value:derivedValue,dependencyFieldKey:candidate.fieldKey,dependencyRevision:candidate.revision});}}if(candidate.rawFieldKey==='关联系统ID')row.relations=value.split(/[、,，;；]/u).map((item)=>item.trim()).filter(Boolean);}
+        for(const change of revisions){const row=plan.parsed.rows.find((item)=>item.rowKey===change.rowKey),candidate=plan.parsed.candidates.find((item)=>item.fieldKey===change.fieldKey&&item.provenance?.rowKey===change.rowKey);if(!row||!candidate||Number(candidate.revision)!==Number(change.expectedRevision)||['derived','rule_default','inherited'].includes(candidate.valueKind))fail('REVISION.CAS_MISMATCH','Review field changed; reload before saving.');const fields=REVIEW_FIELDS_BY_KIND[row.kind];const spec=fields.find((item)=>item[0]===candidate.rawFieldKey);const value=String(change.value??'').normalize('NFC').trim();if(!spec||value.length>Number(spec[4]))fail('REVISION.VALUE_INVALID',`${candidate.rawFieldKey} exceeds its official limit.`);candidate.value=value;candidate.revision=Number(change.expectedRevision)+1;candidate.valueKind='user_revision';candidate.status='accepted';row.fields[candidate.rawFieldKey]=value;if(candidate.rawFieldKey===fields[0][0]){row.elementId=value;for(const [rawFieldKey,derivedValue] of [['Derived GRA Name',deriveGraName(value)],[descriptionRawField(row.kind),value]]){const derived=reviewCandidate(plan.parsed,row,rawFieldKey);if(!derived||derived.valueKind!=='derived')fail('REVISION.DERIVED_LINEAGE_MISSING',`${rawFieldKey} has no signed derived candidate lineage.`);const expectedRevision=Number(derived.revision);derived.value=derivedValue;derived.revision=expectedRevision+1;derived.status='accepted';derived.provenance.dependencyFieldKey=candidate.fieldKey;row.fields[rawFieldKey]=derivedValue;derivedRevisions.push({fieldKey:derived.fieldKey,expectedRevision,value:derivedValue,dependencyFieldKey:candidate.fieldKey,dependencyRevision:candidate.revision});}}if(candidate.rawFieldKey===String(kindCapability(row.kind).relation||''))row.relations=value.split(/[、,，;；]/u).map((item)=>item.trim()).filter(Boolean);}
         let excludedRowKey='';if(input.actionId==='remove-batch-row'){excludedRowKey=String(input.payload?.rowKey||'');if(Number(input.payload?.expectedRunRevision)!==Number(run.state_revision))fail('RUN.REVISION_MISMATCH','Run revision changed before row removal.');if(activeRows(plan.parsed).length<=1)fail('REVIEW.LAST_ROW','The final active batch row cannot be removed.');if(!activeRows(plan.parsed).some((row)=>row.rowKey===excludedRowKey))fail('REVIEW.ROW_MISSING','Selected batch row is unavailable.');plan.parsed.excludedRowKeys=[...new Set([...(plan.parsed.excludedRowKeys||[]),excludedRowKey])];}
-        recomputeLocalIssues(plan.parsed);plan.liveValidation=await runReviewLiveValidation(plan,input.context);plan.reviewNavigation='review';const validation=validationPresentation(plan.parsed,plan.liveValidation);const blocker=validation.progress.items.some((item)=>item.state==='failed'||item.state==='pending');const compiled=await compileInstance({...plan.parsed,rows:activeRows(plan.parsed)},plan.descriptor,run.run_id,run.trace_id);
+        plan.parsed=await validateParsedIr(plan.parsed,run.run_id);plan.planIr=await compilePlanIr(plan.parsed,run.run_id);plan.liveValidation=await runReviewLiveValidation(plan,input.context);plan.reviewNavigation='review';const validation=validationPresentation(plan.parsed,plan.liveValidation);const blocker=validation.progress.items.some((item)=>item.state==='failed'||item.state==='pending');const compiled=await compileInstance({...plan.parsed,rows:activeRows(plan.parsed)},plan.descriptor,run.run_id,run.trace_id);
         const committed=await store.call('commitReviewValidation',{runId:run.run_id,expectedRunRevision:Number(run.state_revision),revisions,derivedRevisions,issues:plan.parsed.issues,nextState:blocker?'needs_input':'ready_for_review',eventType:input.actionId==='remove-batch-row'?'review.row_excluded':input.actionId==='revalidate-all'?'review.revalidated':'review.saved_and_revalidated',excludedRowKey,templateInstanceId:compiled.templateInstanceId});
         plan.updatedAt=new Date().toISOString();await store.call('savePlan',plan);const current=await store.call('loadLatestRun',{});return{surfacePatch:reviewSurface(current,plan,compiled,`已保存并重跑 11 项校验；Run revision ${committed.stateRevision}。`)};
       }
@@ -2072,7 +2549,8 @@ function createFeatureWorker(dependencies) {
         if(artifact.runId!==descriptor.runId||artifact.traceId!==descriptor.traceId||artifact.artifactId!==descriptor.artifactId)fail('ARTIFACT.RUN_BINDING_MISMATCH','Core-managed artifact Run/trace binding drifted.');
         const latest=await store.call('loadLatestRun',{}),run=latest?.run;
         if(!run||run.state!=='acquiring'||String(run.run_id)!==String(descriptor.runId)||String(run.source_artifact_id)!==String(descriptor.artifactId))fail('RUN.STAGED_SOURCE_MISMATCH','The staged source is not the current acquiring Run.');
-        await store.call('savePlan',{schemaVersion:'omnia.create-associate.staged-upload/v1',planId:String(run.run_id),runId:String(run.run_id),traceId:String(run.trace_id),descriptor,stageState:'acquiring',updatedAt:new Date().toISOString()});
+        await store.call('savePlan',{schemaVersion:'omnia.create-associate.staged-upload/v1',planId:String(run.run_id),runId:String(run.run_id),traceId:String(run.trace_id),descriptor,
+          stageState:'acquiring',updatedAt:new Date().toISOString()});
         return{surfacePatch:uploadSurface(latest,'系统信息文件已暂存；请确认上传后开始校验。')};
       }
       if(input?.actionId==='confirm-upload'){
@@ -2109,7 +2587,7 @@ function createFeatureWorker(dependencies) {
       let compiled,output,unresolved;
       try{
         compiled = await compileInstance(parsed, descriptor, runId, traceId); output=compiled.output;
-        const checkpoint={...stagedPlan,planId:runId,runId,traceId,descriptor,parsed,stageState:'validated',reviewNavigation:'review',createdAt:stagedPlan.createdAt||new Date().toISOString(),updatedAt:new Date().toISOString()};checkpoint.liveValidation=await runReviewLiveValidation(checkpoint,input.context);
+        const checkpoint={...stagedPlan,planId:runId,runId,traceId,descriptor,parsed,stageState:'validated',reviewNavigation:'review',createdAt:stagedPlan.createdAt||new Date().toISOString(),updatedAt:new Date().toISOString()};checkpoint.planIr=await compilePlanIr(parsed,runId);checkpoint.liveValidation=await runReviewLiveValidation(checkpoint,input.context);
         await store.call('recordFieldRevisions', { runId, templateInstanceId: compiled.templateInstanceId, fields: parsed.candidates });
         await store.call('recordIssues', { runId, issues: parsed.issues });
         await store.call('savePlan', checkpoint);
@@ -2124,4 +2602,5 @@ function createFeatureWorker(dependencies) {
   });
 }
 
-module.exports = { createFeatureWorker, parseV8, parseUserWorkbook, buildRuntimeWorkbook, zipEntries, zip, V8_SHA256,deriveGraName,recomputeLocalIssues,validationPresentation,reviewPresentation,reviewBlocked,freezeAppDataAvailability,resolveFrozenAppDataAvailability,workflowSurface,normalizeRait,applicationIdentityRequest,inspectApplicationIdentity,RETURN_OPERATIONS };
+module.exports = { createFeatureWorker, parseV8, zipEntries, V8_SHA256,AI_REVIEW_DISPLAY_LANGUAGE,AI_REVIEW_LANGUAGE_VERSION,isChineseAiReviewDisplayText,assertChineseAiReviewDisplayText,aiReviewItemUsesChineseDisplayText,assertAiReviewOutputUsesChineseDisplayText,deriveGraName,validationPresentation,reviewPresentation,reviewBlocked,freezeAppDataAvailability,resolveFrozenAppDataAvailability,workflowSurface,normalizeRait,applicationIdentityRequest,inspectApplicationIdentity,RETURN_OPERATIONS,
+  buildFrozenDependencyGraph,dependencyBlockedByFailure,returnExecutionPolicy,aiReviewEligibleRows,frozenStageNodes,freezePlanCapabilities,frozenReturnIntents,assertReturnPlanCapabilities,authorityContentNameFor,governedCatalogDescription,catalogIdentityEvidenceGaps,riskControlCatalogFingerprint,catalogControlMatches,unresolvedCatalogRelations,workflowNavigationActions,returnSurface,forceCancelReturnRun,closeRunForFreshStart };

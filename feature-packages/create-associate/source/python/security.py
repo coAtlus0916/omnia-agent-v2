@@ -35,12 +35,17 @@ def _native_path(value: str) -> str:
     return "\\\\?\\" + absolute
 
 
-def _public_path(value: str) -> str:
-    if os.name != "nt" or not value.startswith("\\\\?\\"):
+def _artifact_handle_public_path(value: str) -> str:
+    """Remove only the Windows namespace that this Feature adds to handle paths."""
+    if os.name != "nt":
         return value
-    if value.startswith("\\\\?\\UNC\\"):
-        return "\\\\" + value[8:]
-    return value[4:]
+    namespace = "\\\\?\\"
+    if not value.startswith(namespace):
+        return value
+    unc_namespace = f"{namespace}UNC\\"
+    if value.startswith(unc_namespace):
+        return "\\\\" + value[len(unc_namespace):]
+    return value[len(namespace):]
 
 
 class AuditPolicy:
@@ -58,9 +63,10 @@ class AuditPolicy:
         self._installed = False
 
     def install(self) -> None:
-        if not self._installed:
-            sys.addaudithook(self._audit)
-            self._installed = True
+        if self._installed:
+            return
+        sys.addaudithook(self._audit)
+        self._installed = True
 
     def bind_invocation(self, run_id: str) -> None:
         require(_UUID.fullmatch(run_id) is not None, "HANDLE.RUN_ID_INVALID", "Sidecar invocation Run identity is invalid.")
@@ -79,21 +85,21 @@ class AuditPolicy:
         require(isinstance(raw_path, str) and os.path.isabs(raw_path), "HANDLE.PATH_INVALID", "Artifact handle path must be absolute.")
         require(access in ("read", "write", "readwrite"), "HANDLE.ACCESS_INVALID", "Artifact handle access is invalid.")
         expected_root = os.path.realpath(_native_path(os.path.join(self.temp_root, run_id, handle_id)))
-        require(_within(expected_root, self.temp_root) and os.path.isdir(expected_root), "HANDLE.ROOT_INVALID", "Artifact handle root is unavailable.")
+        require(_inside_authorized_root(expected_root, self.temp_root) and os.path.isdir(expected_root), "HANDLE.ROOT_INVALID", "Artifact handle root is unavailable.")
         if required_access == "read":
             require(access in ("read", "readwrite"), "HANDLE.READ_FORBIDDEN", "Artifact handle does not grant read access.")
             path = os.path.realpath(_native_path(raw_path))
-            require(_within(path, expected_root) and os.path.dirname(path) == expected_root, "HANDLE.PATH_OUTSIDE_RUN", "Artifact handle escaped its Feature/Run temp root.")
+            require(_inside_authorized_root(path, expected_root) and os.path.dirname(path) == expected_root, "HANDLE.PATH_OUTSIDE_RUN", "Artifact handle escaped its Feature/Run temp root.")
             require(os.path.isfile(path), "HANDLE.FILE_MISSING", "Artifact handle does not resolve to a regular file.")
             self.read_paths.add(path)
         else:
             require(access in ("write", "readwrite"), "HANDLE.WRITE_FORBIDDEN", "Artifact handle does not grant write access.")
             parent = os.path.realpath(_native_path(os.path.dirname(raw_path)))
-            require(_within(parent, expected_root) and parent == expected_root, "HANDLE.PATH_OUTSIDE_RUN", "Artifact handle escaped its Feature/Run temp root.")
+            require(_inside_authorized_root(parent, expected_root) and parent == expected_root, "HANDLE.PATH_OUTSIDE_RUN", "Artifact handle escaped its Feature/Run temp root.")
             require(os.path.isdir(parent), "HANDLE.PARENT_MISSING", "Artifact handle parent directory is unavailable.")
             path = os.path.join(parent, os.path.basename(raw_path))
             require(os.path.realpath(path) == path, "HANDLE.PATH_INVALID", "Artifact handle path contains an unresolved alias.")
-            require(_within(path, expected_root), "HANDLE.PATH_OUTSIDE_RUN", "Artifact handle escaped its Feature/Run temp root.")
+            require(_inside_authorized_root(path, expected_root), "HANDLE.PATH_OUTSIDE_RUN", "Artifact handle escaped its Feature/Run temp root.")
             self.write_paths.add(path)
             if access == "readwrite":
                 self.read_paths.add(path)
@@ -138,7 +144,7 @@ class AuditPolicy:
         except OSError as exc:
             raise EngineError("HANDLE.WRITE_FAILED", "Artifact handle could not be written.") from exc
         digest = hashlib.sha256(data).hexdigest()
-        return {"schemaVersion": HANDLE_SCHEMA, "handleId": handle.handle_id, "runId": handle.run_id, "path": _public_path(handle.path), "access": "read", "sizeBytes": len(data), "sha256": digest}
+        return {"schemaVersion": HANDLE_SCHEMA, "handleId": handle.handle_id, "runId": handle.run_id, "path": _artifact_handle_public_path(handle.path), "access": "read", "sizeBytes": len(data), "sha256": digest}
 
     def _audit(self, event: str, args: tuple) -> None:
         if event.startswith("socket.") or event in {"subprocess.Popen", "os.system", "os.posix_spawn", "os.posix_spawnp", "pty.spawn"} or event.startswith("os.spawn"):
@@ -165,11 +171,16 @@ class AuditPolicy:
             raise PermissionError("sidecar filesystem mutation denied")
 
     def _read_allowed(self, path: str) -> bool:
-        return path in self.read_paths or _within(path, self.package_root) or _within(path, self.runtime_root)
+        return path in self.read_paths or _inside_authorized_root(path, self.package_root) or _inside_authorized_root(path, self.runtime_root)
 
 
-def _within(path: str, root: str) -> bool:
+def _inside_authorized_root(path: str, root: str) -> bool:
     try:
-        return os.path.commonpath((path, root)) == root
+        relative = os.path.relpath(path, root)
     except ValueError:
         return False
+    return relative == os.curdir or (
+        not os.path.isabs(relative)
+        and relative != os.pardir
+        and not relative.startswith(os.pardir + os.sep)
+    )

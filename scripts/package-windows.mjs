@@ -2,12 +2,22 @@ import { cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createReadStream, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import {
+  BUILTIN_FEATURE_RELEASE_INVENTORY,
+  BUILTIN_FEATURE_RELEASE_PROJECTION,
+  assertBuiltinFeatureReleaseProjection,
+  validateBuiltinFeatureReleaseInventory,
+  verifyBuiltinFeatureReleaseFile
+} from '../src/main/features/builtin-release-inventory.ts';
 
 if (process.platform !== 'win32') throw new Error('Windows portable packaging must run on Windows.');
 
 const root = path.resolve(import.meta.dirname, '..');
 const packageJson = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
 const version = String(packageJson.version);
+assertBuiltinFeatureReleaseProjection(BUILTIN_FEATURE_RELEASE_PROJECTION);
+const verifiedBuiltins = validateBuiltinFeatureReleaseInventory(root);
+const verifiedBuiltinsById = new Map(verifiedBuiltins.map((item) => [item.entry.featureId, item]));
 const releasesRoot = path.join(root, 'releases');
 const runId = `${process.pid}-${Date.now()}`;
 const releaseTarget = path.join(releasesRoot, version);
@@ -91,16 +101,14 @@ await cp(path.join(root, 'dist', 'renderer'), path.join(appRoot, 'dist', 'render
 await cp(path.join(root, 'dist', 'tools'), path.join(appRoot, 'dist', 'tools'), { recursive: true });
 await cp(path.join(root, 'scripts', 'hot-shell-bootstrap.cjs'), path.join(appRoot, 'hot-shell-bootstrap.cjs'));
 await mkdir(path.join(appRoot, 'builtins'), { recursive: true });
-const builtins = [
-  ['recording', 'recording-0.3.0.ofp'],
-  ['create-associate', 'create-associate-0.2.43.ofp'],
-  ['delete-elements', 'delete-elements-0.2.1.ofp']
-];
-for (const [sourceDirectory, filename] of builtins) {
-  await cp(
-    path.join(root, 'feature-packages', sourceDirectory, 'candidates', filename),
-    path.join(appRoot, 'builtins', filename)
-  );
+for (const copy of BUILTIN_FEATURE_RELEASE_PROJECTION.copyFiles) {
+  const verified = verifiedBuiltinsById.get(copy.featureId);
+  if (!verified || verified.entry.sourceRelativePath !== copy.sourceRelativePath) {
+    throw new Error(`Built-in Feature copy projection is not verified: ${copy.featureId}`);
+  }
+  const target = path.join(release, ...copy.targetRelativePath.split('/'));
+  await cp(verified.absoluteFilename, target);
+  verifyBuiltinFeatureReleaseFile(target, verified.entry);
 }
 await mkdir(path.join(appRoot, 'node_modules'), { recursive: true });
 await writeFile(path.join(appRoot, 'package.json'), JSON.stringify({
@@ -116,15 +124,18 @@ const releaseFiles = [
   'resources/app/dist/main/preload.cjs',
   'resources/app/dist/main/feature-worker-host.cjs',
   'resources/app/dist/tools/feature-installer.cjs',
-  'resources/app/builtins/recording-0.3.0.ofp',
-  'resources/app/builtins/create-associate-0.2.43.ofp',
-  'resources/app/builtins/delete-elements-0.2.1.ofp',
+  ...BUILTIN_FEATURE_RELEASE_PROJECTION.copyFiles.map((item) => item.targetRelativePath),
   'resources/app/dist/renderer/app.js',
   'resources/app/dist/renderer/index.html',
   'resources/app/dist/renderer/styles.css'
 ];
 const digests = {};
 for (const relative of releaseFiles) digests[relative] = await digest(path.join(release, relative));
+for (const builtin of BUILTIN_FEATURE_RELEASE_PROJECTION.releaseManifest) {
+  if (digests[builtin.relativePath] !== builtin.fileSha256) {
+    throw new Error(`Packaged Built-in Feature digest drifted after copy: ${builtin.relativePath}`);
+  }
+}
 await writeFile(path.join(release, 'release-manifest.json'), JSON.stringify({
   schemaVersion: 'omnia.shell-release/v1',
   product: 'omnia-agent-v5-shell',
@@ -139,6 +150,12 @@ await writeFile(path.join(release, 'release-manifest.json'), JSON.stringify({
   },
   signed: false,
   signingStatus: 'organization_code_signing_required_before_distribution',
+  featureReleaseInventory: {
+    schemaVersion: BUILTIN_FEATURE_RELEASE_INVENTORY.schemaVersion,
+    baselinePolicy: BUILTIN_FEATURE_RELEASE_INVENTORY.baselinePolicy,
+    builtinBaseline: BUILTIN_FEATURE_RELEASE_PROJECTION.releaseManifest,
+    postInstallFeatures: BUILTIN_FEATURE_RELEASE_PROJECTION.postInstallFeatures
+  },
   files: digests
 }, null, 2));
 const electronPackage = JSON.parse(await readFile(

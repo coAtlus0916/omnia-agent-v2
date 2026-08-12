@@ -1,14 +1,20 @@
 import { build } from 'esbuild';
 import { cp, mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
+import {
+  BUILTIN_FEATURE_RELEASE_PROJECTION,
+  assertBuiltinFeatureReleaseProjection,
+  validateBuiltinFeatureReleaseInventory
+} from '../src/main/features/builtin-release-inventory.ts';
 
 const root = path.resolve(import.meta.dirname, '..');
+assertBuiltinFeatureReleaseProjection(BUILTIN_FEATURE_RELEASE_PROJECTION);
+validateBuiltinFeatureReleaseInventory(root);
 const dist = path.join(root, 'dist');
 await rm(dist, { recursive: true, force: true });
 await mkdir(path.join(dist, 'renderer'), { recursive: true });
 await mkdir(path.join(dist, 'main'), { recursive: true });
-await mkdir(path.join(dist, 'remote-connector'), { recursive: true });
-await mkdir(path.join(dist, 'bridge'), { recursive: true });
+await mkdir(path.join(dist, 'connector-next'), { recursive: true });
 await mkdir(path.join(dist, 'tools'), { recursive: true });
 
 await Promise.all([
@@ -82,41 +88,44 @@ await Promise.all([
     minify: true
   }),
   build({
-    entryPoints: [path.join(root, 'src/remote-connector/cli.ts')],
-    outfile: path.join(dist, 'remote-connector/cli.cjs'),
-    bundle: true,
-    platform: 'node',
-    format: 'cjs',
-    target: 'node24',
-    sourcemap: false
+    entryPoints: [path.join(root, 'src/connector-next/server/cli.ts')],
+    outfile: path.join(dist, 'connector-next/server.cjs'),
+    bundle: true, platform: 'node', format: 'cjs', target: 'node24', external: ['node:sqlite'], sourcemap: false
+  }),
+    build({
+      entryPoints: [path.join(root, 'src/connector-next/agent/cli.ts')],
+      outfile: path.join(dist, 'connector-next/agent.cjs'),
+      bundle: true, platform: 'node', format: 'cjs', target: 'node24',
+      // Playwright resolves package-relative runtime assets dynamically. Keep
+      // it as a signed sidecar dependency instead of flattening it into the
+      // Agent bundle; the Connector Next packager inventories every member.
+      external: ['node:sqlite', 'playwright-core'],
+      sourcemap: false
+    }),
+  build({
+    entryPoints: [path.join(root, 'src/connector-next/updater/cli.ts')],
+    outfile: path.join(dist, 'connector-next/updater.cjs'),
+    bundle: true, platform: 'node', format: 'cjs', target: 'node24', external: ['node:sqlite'], sourcemap: false
   }),
   build({
-    entryPoints: [path.join(root, 'src/remote-connector/supervisor.ts')],
-    outfile: path.join(dist, 'remote-connector/supervisor.cjs'),
-    bundle: true,
-    platform: 'node',
-    format: 'cjs',
-    target: 'node24',
-    sourcemap: false
+    entryPoints: [path.join(root, 'src/connector-next/updater/bootstrap-cli.ts')],
+    outfile: path.join(dist, 'connector-next/bootstrap.cjs'),
+    bundle: true, platform: 'node', format: 'cjs', target: 'node24', external: ['node:sqlite'], sourcemap: false
   }),
   build({
-    entryPoints: [path.join(root, 'src/remote-connector/worker.ts')],
-    outfile: path.join(dist, 'remote-connector/worker.cjs'),
-    bundle: true,
-    platform: 'node',
-    format: 'cjs',
-    target: 'node24',
-    sourcemap: false,
-    external: ['playwright-core']
+    entryPoints: [path.join(root, 'src/connector-next/installer-cli.ts')],
+    outfile: path.join(dist, 'connector-next/installer.cjs'),
+    bundle: true, platform: 'node', format: 'cjs', target: 'node24', external: ['node:sqlite'], sourcemap: false
   }),
   build({
-    entryPoints: [path.join(root, 'src/bridge/cli.ts')],
-    outfile: path.join(dist, 'bridge/server.cjs'),
-    bundle: true,
-    platform: 'node',
-    format: 'cjs',
-    target: 'node24',
-    sourcemap: false
+    entryPoints: [path.join(root, 'src/connector-next/shell-control-cli.ts')],
+    outfile: path.join(dist, 'connector-next/shell-control.cjs'),
+    bundle: true, platform: 'node', format: 'cjs', target: 'node24', external: ['node:sqlite'], sourcemap: false
+  }),
+  build({
+    entryPoints: [path.join(root, 'src/portable/create-associate-next-launcher.ts')],
+    outfile: path.join(dist, 'connector-next/portable-launcher.cjs'),
+    bundle: true, platform: 'node', format: 'cjs', target: 'node24', external: ['node:sqlite'], sourcemap: false
   })
 ]);
 

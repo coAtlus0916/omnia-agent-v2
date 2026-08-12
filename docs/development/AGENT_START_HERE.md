@@ -24,17 +24,28 @@
 | UI、首页、设置、布局 | [Shell UI 布局规范](../design/SHELL_UI_LAYOUT_SPEC.md)、[全局缩放](../product/GLOBAL_UI_SCALE.md)、[可调整布局](../product/RESIZABLE_LAYOUT_SYSTEM.md)、ADR-0032/0033/0034 | [`src/renderer/index.tsx`](../../src/renderer/index.tsx)、相应 `tests/*ui*` 和 `tests/shell*` |
 | 新 Feature | [Feature 文档模板](FEATURE_DOCUMENTATION_TEMPLATE.md)、[Feature Package 标准](../architecture/FEATURE_PACKAGE_STANDARD.md)、[Feature 包总览](../implementation/FEATURE_PACKAGE_CATALOG.md)、对应 `docs/product/*_FEATURE.md` | 现有 `feature-packages/recording`、`feature-packages/delete-elements` 的 source、manifest 和测试 |
 | 后台数据、模板、Phase 2 | [数据与存储](../data/DATA_AND_STORAGE.md)、[Managed Content 登记簿](../data/AGENT_MANAGED_CONTENT_REGISTRY.md)、[Schema 与迁移](../implementation/DATA_SCHEMA_AND_MIGRATIONS.md)、[模板与文档管线](../data/TEMPLATE_AND_DOCUMENT_PIPELINE.md) | [`src/main/database.ts`](../../src/main/database.ts)、`src/main/features/`、`tests/*database*`、`tests/*managed*` |
-| Connector/Remote-only | [Connector Gate](../architecture/CONNECTOR_GATE.md)、[ADR-0035](../adr/0035-remote-only-connector-and-link-code-pairing.md)、[0.3.8 发布记录](../implementation/REMOTE_CONNECTOR_0_3_8_RELEASE.md)、[Bridge 0.4.4 发布记录](../implementation/BRIDGE_0_4_4_RELEASE.md)、[Bridge 部署合同](../implementation/V5_BRIDGE_DEPLOYMENT.md)、[v4 复用清单](../implementation/V4_REUSE_MANIFEST.md) | [`src/connector/workstation-omnia-session.ts`](../../src/connector/workstation-omnia-session.ts)、[`src/main/connector/remote-connector-transport.ts`](../../src/main/connector/remote-connector-transport.ts)、[`src/remote-connector/worker.ts`](../../src/remote-connector/worker.ts)、[`src/bridge/server.ts`](../../src/bridge/server.ts)、Remote/Bridge tests；不得恢复 Shell Local adapter/router |
+| Connector Next | [Connector Next](../architecture/CONNECTOR_NEXT.md)、[Connector Gate](../architecture/CONNECTOR_GATE.md) | [`src/connector-next`](../../src/connector-next)、[`src/main/connector/connector-next-transport.ts`](../../src/main/connector/connector-next-transport.ts)、[`src/connector`](../../src/connector) 与 Connector Next tests；不得恢复旧 Remote/Bridge 或 Shell Local fallback |
 | AI Provider | [AI Provider 架构](../ai/AI_PROVIDER_ARCHITECTURE.md)、[DeepSeek V4 Flash API 评审](../reviews/DEEPSEEK_V4_FLASH_API_REVIEW.md) | `src/main/services/ai-service.ts`、Provider tests |
 | 诊断日志、交互错误定位 | [统一合同](../contracts/CONTRACTS.md)、[数据与存储](../data/DATA_AND_STORAGE.md)、[Schema 与迁移](../implementation/DATA_SCHEMA_AND_MIGRATIONS.md)、[Shell 实现映射](../implementation/SHELL_IMPLEMENTATION_MAP.md) | `src/main/services/interaction-log-service.ts`、`src/main/index.ts`、`src/renderer/index.tsx`、`tests/interaction-logging.test.ts`；禁止读取或记录 Secret、正文、文件内容和完整路径 |
-| Phase 1 / 新建与关联 | [Phase 1 母版待办](../planning/PHASE1_TEMPLATE_MASTER_WORKBOOK_TODO.md)、[新建与关联设计](../product/CREATE_AND_ASSOCIATE_FEATURE.md)、[四 Plane 差距评估](../research/V4_CREATE_ASSOCIATE_FOUR_PLANE_GAP_ASSESSMENT.md)、[SAP ECC v4 录制审计](../research/SAP_ECC_RECORDING_PHASE1_MASTER_AUDIT.md)、[默认文档准备项目](../planning/CREATE_ASSOCIATE_DEFAULT_DOCUMENT_PROJECT.md)、[当前 V8 母版](../../../outputs/sap_ecc_phase1_master_update/phase1_系统信息填写V8_SAP_ECC_v4录制证据补充.xlsx) | `src/main/features/`、`src/main/database.ts`、`src/connector/operation-host.ts`、对应 operation/feature tests |
-| 录制 | [录制实现](../implementation/RECORDING_FEATURE.md)、[录制产品设计](../product/RECORDING_FEATURE.md)、[v4 删除/录制证据](../research/V4_DELETE_RECORDING_EVIDENCE_BASELINE.md) | `src/connector/recording/`、`feature-packages/recording/source/`、recording tests |
+| Phase 1 / 新建与关联 | [能力架构与新增类型门禁](../implementation/CREATE_ASSOCIATE_CAPABILITY_ARCHITECTURE.md)、[Phase 1 母版待办](../planning/PHASE1_TEMPLATE_MASTER_WORKBOOK_TODO.md)、[新建与关联设计](../product/CREATE_AND_ASSOCIATE_FEATURE.md)、[四 Plane 差距评估](../research/V4_CREATE_ASSOCIATE_FOUR_PLANE_GAP_ASSESSMENT.md)、[SAP ECC v4 录制审计](../research/SAP_ECC_RECORDING_PHASE1_MASTER_AUDIT.md)、[默认文档准备项目](../planning/CREATE_ASSOCIATE_DEFAULT_DOCUMENT_PROJECT.md)、[当前 V8 母版](../../../outputs/sap_ecc_phase1_master_update/phase1_系统信息填写V8_SAP_ECC_v4录制证据补充.xlsx) | `feature-packages/create-associate/source/`、对应 Python/Worker/Operation tests；不要把业务分支写入 Connector Core |
+| 录制 | [录制实现](../implementation/RECORDING_FEATURE.md)、[录制产品设计](../product/RECORDING_FEATURE.md)、[v4 删除/录制证据](../research/V4_DELETE_RECORDING_EVIDENCE_BASELINE.md) | `feature-packages/recording/source/`、`src/connector/page-observation-host.ts`、`src/connector/managed-stream-host.ts`、recording checks |
 | 删除元素 | [删除元素设计](../product/DELETE_ELEMENTS_FEATURE.md)、`feature-packages/delete-elements/README.md`、[Feature 包总览](../implementation/FEATURE_PACKAGE_CATALOG.md) | `feature-packages/delete-elements/source/`、delete tests |
 | 删除聊天记录 | [删除聊天记录设计](../product/DELETE_CHAT_HISTORY_FEATURE.md) | Shell chat store/service、相应 tests；未交付前不得伪造入口 |
 
 ### v4 证据的读取边界
 
 开发者先读 [v4 复用清单](../implementation/V4_REUSE_MANIFEST.md) 和相关研究报告，再按报告给出的精确文件、函数和行号读取 `omnia-agent-v4`。不要默认通读、导入或运行整个 v4；v4 只能提供证据，所有运行时代码和资产必须在 v5 工作区内。
+
+### 新建与关联的能力边界
+
+处理 Phase 1 / 新建与关联前，必须先读 [能力架构与新增类型门禁](../implementation/CREATE_ASSOCIATE_CAPABILITY_ARCHITECTURE.md)，并先回答以下问题：
+
+1. 本次修改的是已有能力实现，还是只增加 `kind/capability registry` 参数与受管母版内容；
+2. 是否出现了按 APP/DB/OS/TOOL/DCNO 或产品名称复制 engine/function/DAG 的重复实现；若有，先收敛到单一能力函数；
+3. Python 计划 IR、Worker 状态机、Operation allowlist 和 Connector transport 是否保持单向分工；
+4. APP 通用评分项是否仍与 Risk-Control family 分开处理；
+5. 新类型是否已有真实 live contract 和写后读回证据；没有时必须 fail-close，不得启用入口；
+6. 参考脚本中的规则是否已经被重写为 Feature 固有规则；禁止 import、执行或打包 `source_files/phase_1_14_复核.py`。
 
 ## 3. 开工前必须输出
 

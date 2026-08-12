@@ -1,0 +1,98 @@
+{
+  "schemaVersion": "omnia.delete.recorded-gra-contract-fixture/v1",
+  "provenance": {
+    "kind": "repository-recorded-live-run",
+    "recordedAt": "2026-07-25",
+    "planEvidence": {
+      "path": "outputs/phase1-live-matrix-20260725-r01/delete-gra-plan-4c07d5e8-a296-4f88-9de3-394318ae64a5.stdout.json",
+      "sha256": "48603e75ac51cb421c3ef3fcab4e35d95291086c1c9c0bed2a82a02141805b1b"
+    },
+    "executeEvidence": {
+      "path": "outputs/phase1-live-matrix-20260725-r01/delete-gra-execute-4c07d5e8-a296-4f88-9de3-394318ae64a5.stdout.json",
+      "sha256": "174dff7195854a7edd66e85917013b56798c0f1aba0fb3efcfc56ec5fc58d4b7"
+    },
+    "implementationEvidence": {
+      "path": "omnia-agent-v4/connector/src/omnia-gateway.js",
+      "preflightLines": "2660-2727",
+      "mutationAndReadbackLines": "2730-2904",
+      "indexLines": "4929-4945"
+    }
+  },
+  "liveRun": {
+    "runId": "4c07d5e8-a296-4f88-9de3-394318ae64a5",
+    "engagementId": "bf2ff2d6-a758-4de4-d3a0-08dec1d74b3b",
+    "workspaceId": "c1218811-b586-f111-b337-0017fa079a58",
+    "workspaceName": "TEST-Auto",
+    "plannedCount": 40,
+    "terminalState": "completed",
+    "deletedCount": 40,
+    "failedCount": 0,
+    "allItemsVerified": true,
+    "recordedSample": {
+      "riskAssessmentId": "bac1ccba-b98c-4e4f-8317-c29fc300f42b",
+      "workItemId": "dcef6c7f-2335-4a7d-8d0f-08deea05b899",
+      "referenceNumber": "GRA-218",
+      "blockerCount": 0,
+      "resultState": "deleted",
+      "verified": true
+    }
+  },
+  "contract": {
+    "catalog": [
+      {
+        "stepId": "gra-workitem-index",
+        "method": "POST",
+        "routeTemplate": "/work/v1/WorkQueries/getWorkitemDetails",
+        "body": {
+          "workItemIds": [],
+          "engagementIds": ["{engagementId}"],
+          "workItemTypes": ["RiskFactorEvaluation"]
+        }
+      },
+      {
+        "stepId": "gra-common-account-index",
+        "method": "POST",
+        "routeTemplate": "/rapr/v0/engagements/{engagementId}/riskassessments/commonAccounts",
+        "body": {
+          "riskAssessmentType": []
+        }
+      },
+      {
+        "stepId": "gra-catalog-detail",
+        "method": "GET",
+        "routeTemplate": "/rapr/v0/engagements/{engagementId}/riskassessments/{riskAssessmentId}"
+      }
+    ],
+    "preflight": [
+      {
+        "stepId": "gra-detail",
+        "method": "GET",
+        "routeTemplate": "/rapr/v0/engagements/{engagementId}/riskassessments/{riskAssessmentId}"
+      },
+      {
+        "stepId": "gra-relationship",
+        "method": "GET",
+        "routeTemplate": "/rapr/v0/engagements/{engagementId}/relationship/byWorkItemId/{workItemId}/workItemType/RiskFactorEvaluation"
+      },
+      {
+        "stepId": "gra-delete-validation",
+        "method": "POST",
+        "routeTemplate": "/rapr/v0/engagements/{engagementId}/riskassessments/{riskAssessmentId}/validate-riskfactor-evaluation?op=Delete"
+      }
+    ],
+    "mutation": {
+      "stepId": "gra-soft-delete",
+      "method": "PATCH",
+      "routeTemplate": "/rapr/v0/engagements/{engagementId}/riskassessments/{riskAssessmentId}/softdelete",
+      "retryPolicy": "never"
+    },
+    "readback": {
+      "stepId": "gra-detail",
+      "method": "GET",
+      "routeTemplate": "/rapr/v0/engagements/{engagementId}/riskassessments/{riskAssessmentId}",
+      "requiredIdentity": ["riskAssessmentId", "engagementId", "workspaceId"],
+      "requiredState": "recycle-bin marker or authoritative absence",
+      "uncertainPolicy": "read-only reconcile; never replay mutation"
+    }
+  }
+}

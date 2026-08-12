@@ -17,7 +17,10 @@ const informationId = '33333333-3333-4333-8333-333333333333';
 const workItemId = '44444444-4444-4444-8444-444444444444';
 const secondInformationId = '55555555-5555-4555-8555-555555555555';
 const secondWorkItemId = '66666666-6666-4666-8666-666666666666';
-const binding = { connectorId: 'connector-test', sessionGeneration: 7, engagementId };
+const binding = {
+  connectorId: 'connector-test', sessionGeneration: 7, engagementId,
+  authorityInstanceId: 'authority-test', tenantOrOrgId: 'tenant-test', packId: 'pack-test'
+};
 
 test('signed Operation host exposes only declared steps and consumes a generic one-time mutation permit', async () => {
   const host = new OperationHost();
@@ -26,9 +29,10 @@ test('signed Operation host exposes only declared steps and consumes a generic o
     featureId: 'omnia.delete-elements',
     featureVersion: '0.1.2',
     operationPackage
-  });
+  }, binding);
   const calls: Array<{ stepId: string; method: string; path: string; body: unknown }> = [];
   let deleted = false;
+  let deliveryCounter = 0;
   const invoke = (operationId: string, request: Record<string, unknown>, mutationAuthorized = false) => host.invoke({
     schemaVersion: 'omnia.operation-invocation/v1',
     featureId: 'omnia.delete-elements',
@@ -36,7 +40,17 @@ test('signed Operation host exposes only declared steps and consumes a generic o
     operationId,
     request,
     operationPackageDigest: registration.packageDigest,
-    mutationAuthorized
+    mutationAuthorized,
+    ...(mutationAuthorized ? { deliveryContext: {
+      schemaVersion: 'omnia.connector-delivery-context/v1' as const,
+      requestId: `00000000-0000-4000-8000-${String(++deliveryCounter).padStart(12, '0')}`,
+      featureId: 'omnia.delete-elements', featureVersion: '0.1.2', operationId,
+      operationPackageDigest: registration.packageDigest,
+      runId: '77777777-7777-4777-8777-777777777777',
+      commandId: '88888888-8888-4888-8888-888888888888',
+      connectorId: binding.connectorId, sessionGeneration: binding.sessionGeneration,
+      purpose: 'mutation' as const
+    } } : {})
   }, binding, async (route, routePath, body) => {
     calls.push({ stepId: route.stepId, method: route.method, path: routePath, body });
     if (route.stepId === 'information-collection') return [
@@ -103,7 +117,7 @@ test('Operation host rejects transport fields and stale Connector binding before
     featureId: 'omnia.delete-elements',
     featureVersion: '0.1.2',
     operationPackage
-  });
+  }, binding);
   const base = {
     schemaVersion: 'omnia.operation-invocation/v1' as const,
     featureId: 'omnia.delete-elements',

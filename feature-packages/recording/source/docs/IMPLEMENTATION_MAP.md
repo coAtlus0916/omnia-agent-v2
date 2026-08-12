@@ -1,14 +1,13 @@
-# 录制 Feature 实现映射
+# 录制实现映射
 
-| 层 | 文件/合同 | 责任 |
+| Plane | 实现 | 真实职责 |
 |---|---|---|
-| Frontend | `frontend/surface.json` + 通用 `recorder` Surface 合同 | 播放器式显示真实录制状态、计时、录制/暂停/停止/导出和自动采集计数 |
-| Middle | `middle/worker.cjs` | 调用窄化 recording command、分块接收导出、提交真实 Artifact、按 Connector 状态更新 Surface |
-| Backend | `FeatureRuntimeStore.commitStandaloneArtifact` + Feature 私有 evidence store | 为无上传源文件的 Connector 证据创建受管 Run/Artifact，并持久录制动作证据 |
-| Connector | `omnia.v5.recording-command/v1` | CDP 录制/暂停/继续/停止、当前页 Risk/Control 自动采集、分块导出与完整性 |
-| Runtime | `FeaturePackageManager` | 仅允许 `omnia.recording` worker 使用专用命令；其他 Feature 不能借用 |
-| Built-in | Shell 启动/bootstrap | 安装随包官方候选，仍保留独立升级版本 |
+| Surface | `frontend/surface.json` | 播放器式状态与真实 Artifact 下载 |
+| Worker | `middle/worker.cjs` | recordingId、Run、观测控制、流读取、摘要、最终化与投影 |
+| Python | `middle/recording-python-bridge.cjs`、`python/recording-engine.py`与其余签名 `python/*.py` | 单职责授权校验、NDJSON 分批摄取、response evidence 组装、目录行构造、SQLite 24h staging、successor lineage 接管、JSON 流式导出 |
+| Core/Data | Feature runtime Store ports、`backend/migrations/001.json` | Processing Run、failed predecessor→唯一 successor 事务、受管 handle、Artifact、计划与私有 SQLite |
+| Connector | 签名 `operation.ofop` + 平台 `PageObservationHost`/`ManagedStreamHost` | 当前 Pack 只读页面观测、源头脱敏、有界 NDJSON 流 |
 
-`omnia.recording@0.3.0 / sequence 4` 源码候选保持独立 Feature；Shell Renderer 只识别通用 `recorder` 与 action `presentation`，不按 `featureId` 或 action id 硬编码录制业务。
+禁止重新引入 `recording_command`、Connector 录制目录、Connector 业务 endpoint 分类或 gzip 分块协议。GRA/Risk/Control 语义只存在于 Feature Python。
 
-详细录制实现位于 v5 自有 `src/connector/recording/recording-service.ts`，不引用任何 v4 运行时路径。Bridge 单消息上限 2 MiB，导出使用 512 KiB 二进制分块，并在 Core 的 64 MiB Artifact 上限前失败关闭；不会静默截断。
+Python 调用边界固定为参数化函数：`_validate_ingest_request` 只授权请求和 handle，`_ingest_observation_events` 只校验并分批落事件，`_catalog_rows` 只生成确定性目录行，`write_recording_artifact` 只从 SQLite 游标流式写受管输出。不得按页面、元素类型或 GRA 产品复制第二套摄取/导出引擎。

@@ -30,8 +30,8 @@ if (!head || head.feature_version !== '0.2.43' || head.runtime_enabled !== 1) {
   throw new Error(`Create/associate Python runtime is not active: ${head?.runtime_reason || 'missing head'}`);
 }
 const packageRoot = path.resolve(productRoot, 'data', ...String(head.package_path).split('/'));
-const entry = path.join(packageRoot, 'python', 'engine.py');
-const bridgePath = path.join(packageRoot, 'middle', 'python-bridge.cjs');
+const entry = path.join(packageRoot, 'python', 'create-associate-engine.py');
+const bridgePath = path.join(packageRoot, 'middle', 'create-associate-python-bridge.cjs');
 const governancePath = path.join(packageRoot, 'backend', 'governance.json');
 const runtimeBasePath = path.join(packageRoot, 'backend', 'runtime-template-base.xlsx');
 for (const required of [entry, bridgePath, governancePath, runtimeBasePath]) {

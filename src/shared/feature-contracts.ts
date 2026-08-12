@@ -53,6 +53,15 @@ export interface DeclarativeFeatureScope {
 
 export interface DeclarativeSelectionBrowser {
   schemaVersion: 'omnia.declarative-selection-browser/v1';
+  /**
+   * A declarative workbench arrangement for real authority catalogs.  The
+   * Renderer owns only geometry; status and actions remain Feature-projected
+   * state/actions.
+   */
+  layout?: {
+    schemaVersion: 'omnia.selection-browser-layout/v1';
+    mode: 'standard' | 'fixed_footer_split';
+  };
   hierarchyLabel: string;
   resultsLabel: string;
   searchPlaceholder: string;
@@ -69,25 +78,101 @@ export interface DeclarativeFeatureAction {
   actionId: string;
   label: string;
   effect: 'read_only' | 'local_state_write' | 'omnia_mutation';
+  /** False removes the action and any associated input from the rendered Surface. */
+  visible?: boolean;
   enabled: boolean;
   reason: string;
-  presentation?: 'default' | 'record' | 'pause' | 'stop' | 'export' | 'refresh' | 'restart' | 'upload' | 'file_input' | 'background';
+  presentation?: 'default' | 'record' | 'pause' | 'stop' | 'export' | 'refresh' | 'recover' | 'restart' | 'upload' | 'return' | 'file_input' | 'background';
+  /** Signed copy and workflow target shown only while this exact action is executing. */
+  pendingPresentation?: DeclarativeFeatureActionPendingPresentation;
   selectionMode?: 'none' | 'single' | 'multiple';
   dependencies?: Array<'remote_connector' | 'safety_lock' | 'verified_canary'>;
   canaryCapability?: {
     scenarioId: string;
     capabilityId: string;
   };
-  input?: {
-    kind: 'open_file';
-    accept: string[];
-    label: string;
-  };
+  input?: DeclarativeFeatureActionInput;
   output?: {
     kind: 'save_managed_asset';
     memberPath: string;
     suggestedName: string;
   };
+}
+
+export interface DeclarativeFeatureActionPendingPresentation {
+  schemaVersion: 'omnia.declarative-action-pending-presentation/v1';
+  title: string;
+  message: string;
+  /** Must identify one step in the same signed Surface workflow. */
+  workflowStepId: string;
+}
+
+/**
+ * Signed, Shell-owned lifecycle dispatch. The referenced action remains a
+ * normal Feature Worker action; Shell only decides when to invoke it.
+ */
+export interface DeclarativeFeatureSurfaceLifecycle {
+  schemaVersion: 'omnia.declarative-feature-surface-lifecycle/v1';
+  /** Runs only when an existing instance transitions from closed to open. */
+  onReopenActionId: string;
+}
+
+export type DeclarativeFeatureActionInput =
+  | {
+    kind: 'open_file';
+    accept: string[];
+    label: string;
+  }
+  | {
+    /** A backend-owned boolean setting submitted with this action's payload. */
+    kind: 'toggle';
+    fieldKey: string;
+    label: string;
+    defaultValue: boolean;
+    /** Optional authoritative value returned by the backend for this projection. */
+    value?: boolean;
+  };
+
+export interface LegacyReturnRecoveryInspectionRequest {
+  schemaVersion: 'omnia.feature-return-recovery-inspection/v1';
+  /** Empty discovers the sole eligible legacy Run for the calling Feature. */
+  runId: string;
+  /** Empty discovers the immutable source Feature version from that Run. */
+  sourceFeatureVersion: string;
+}
+
+export interface LegacyReturnRecoveryAuthorizationRequest {
+  schemaVersion: 'omnia.feature-return-recovery-authorization-request/v1';
+  runId: string;
+  sourceFeatureVersion: string;
+  expectedStateRevision: number;
+  connectorBinding: Record<string, unknown>;
+  safetyLock: Record<string, unknown>;
+}
+
+export interface LegacyReturnRecoveryReceiptContext {
+  schemaVersion: 'omnia.feature-return-recovery-receipt-context/v1';
+  authorizationId: string;
+  runId: string;
+  commandId: string;
+}
+
+export interface LegacyReturnRecoveryOutcomeRequest {
+  schemaVersion: 'omnia.feature-return-recovery-outcome/v1';
+  authorizationId: string;
+  runId: string;
+  commandId: string;
+  outcome: 'applied' | 'not_applied';
+  recoveryReceiptId: string;
+  payload: unknown;
+}
+
+export interface LegacyReturnPartialCloseRequest {
+  schemaVersion: 'omnia.feature-return-partial-close/v1';
+  authorizationId: string;
+  runId: string;
+  sourceFeatureVersion: string;
+  expectedStateRevision: number;
 }
 
 export interface DeclarativeRecorder {
@@ -154,7 +239,7 @@ export interface DeclarativeIssue {
   message: string;
 }
 
-export type DeclarativeReviewElementKind = 'APP' | 'DB' | 'OS' | 'TOOL';
+export type DeclarativeReviewElementKind = 'APP' | 'DB' | 'OS' | 'TOOL' | 'DCNO';
 
 export interface DeclarativeReviewField {
   rowKey: string;
@@ -179,7 +264,7 @@ export interface DeclarativeFeatureReview {
   selectedKind: DeclarativeReviewElementKind;
   selectedRowKey: string;
   elementTypes: Array<{ kind: DeclarativeReviewElementKind; label: string; count: number; issueCount: number; warningCount: number; disabled: boolean; reason: string }>;
-  elements: Array<{ rowKey: string; kind: DeclarativeReviewElementKind; elementId: string; label: string; sourceSheet: string; sourceRow: number; issueCount: number; warningCount: number; derivedDisplay: string; blocking: boolean; excluded: boolean }>;
+  elements: Array<{ rowKey: string; kind: DeclarativeReviewElementKind; elementId: string; label: string; sourceSheet: string; sourceRow: number; issueCount: number; warningCount: number; derivedDisplay: string; inheritanceDecision: null | { schemaVersion: 'omnia.create-associate.infrastructure-rait-decision/v1'; policy: 'any_higher_else_all_lower'; sourceModes: Array<{ rowKey: string; elementId: string; rait: 'Higher' | 'Lower' }>; mixedSources: boolean; result: 'Higher' | 'Lower'; message: string }; blocking: boolean; excluded: boolean }>;
   fields: DeclarativeReviewField[];
   issueOrder: Array<{ issueId: string; rowKey: string; fieldKey: string; severity: 'warning' | 'error'; message: string }>;
 }
@@ -274,6 +359,7 @@ export interface DeclarativeFeatureSurface {
   selectedItemIds: string[];
   search: string;
   actions: DeclarativeFeatureAction[];
+  lifecycle?: DeclarativeFeatureSurfaceLifecycle;
   selectionBrowser?: DeclarativeSelectionBrowser;
   recorder?: DeclarativeRecorder;
   workflow?: DeclarativeWorkflow;

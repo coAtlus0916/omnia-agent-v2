@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Frame, Page, Request, Response } from 'playwright-core';
 import type { ConnectorBinding } from '../shared/operation-contracts.js';
 import {
@@ -10,7 +12,7 @@ import {
   type PageObservationStatus
 } from '../shared/page-observation-contracts.js';
 import { isAllowedOmniaUrl, parseEngagementId } from './omnia-origin.js';
-import { ManagedStreamHost } from './managed-stream-host.js';
+import { ManagedStreamHost, type ManagedStreamOwner } from './managed-stream-host.js';
 
 const MAX_ACTIVE_OBSERVATIONS = 4;
 const MAX_EVENTS = 100_000;
@@ -21,6 +23,7 @@ const RESPONSE_SEGMENT_BYTES = 48 * 1024;
 const MAX_DURATION_MS = 2 * 60 * 60 * 1000;
 const MAX_STOP_DRAIN_MS = 5_000;
 const OBSERVATION_ID = /^observation_[0-9a-f]{32}$/u;
+const OBSERVATION_METADATA_SCHEMA = 'omnia.page-observation-metadata/v1' as const;
 const SENSITIVE_KEY = /(?:authorization|cookie|credential|password|secret|token|api[_-]?key|session(?:id)?|private[_-]?key)/iu;
 const CREDENTIAL_VALUE = /(?:\bbearer\s+[a-z0-9._~+/=-]+|\beyJ[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}\.[a-z0-9_-]{10,})/iu;
 
@@ -72,11 +75,11 @@ export interface PageObservationContext {
 
 type Observation = {
   observationId: string;
-  ownerId: string;
+  owner: ManagedStreamOwner;
   idempotencyKey: string;
   streamId: string;
   policyId: typeof CURRENT_PACK_PAGE_OBSERVATION_POLICY;
-  page: Page;
+  page: Page | null;
   binding: ConnectorBinding;
   allowedOrigins: Set<string>;
   state: PageObservationStatus['state'];
@@ -94,7 +97,7 @@ type Observation = {
   requestIds: WeakMap<Request, string>;
   nextRequestId: number;
   pending: Set<Promise<void>>;
-  timer: NodeJS.Timeout;
+  timer: NodeJS.Timeout | null;
   listeners: {
     request: (request: Request) => void;
     response: (response: Response) => void;
@@ -102,6 +105,7 @@ type Observation = {
     close: () => void;
   };
 };
+
 
 function now(): string {
   return new Date().toISOString();
@@ -170,9 +174,40 @@ export class PageObservationHost {
   private readonly idempotency = new Map<string, string>();
   private readonly bridgedPages = new WeakSet<Page>();
 
-  constructor(private readonly streams: ManagedStreamHost) {}
+  private readonly metadataRoot: string;
+  private inventoryUnknownCount = 0;
 
-  async open(ownerId: string, input: PageObservationOpenRequest, context: PageObservationContext): Promise<PageObservationStatus> {
+  constructor(private readonly streams: ManagedStreamHost) {
+    this.metadataRoot = path.join(streams.root, 'observations');
+    fs.mkdirSync(this.metadataRoot, { recursive: true });
+    this.loadPersistedObservations();
+  }
+
+  maintenanceSnapshot(): { activeObservations: number; finishingObservations: number; inventoryUnknownCount: number } {
+    return {
+      activeObservations: [...this.observations.values()].filter((observation) => (
+        !['stopped', 'failed'].includes(observation.state)
+      )).length,
+      finishingObservations: [...this.observations.values()].filter((observation) => observation.finishing).length,
+      inventoryUnknownCount: this.inventoryUnknownCount
+    };
+  }
+
+  ownedResourceSnapshot(packageDigest: string, binding: ConnectorBinding): {
+    state: 'known' | 'unknown';
+    count: number;
+  } {
+    if (this.inventoryUnknownCount > 0) return { state: 'unknown', count: 0 };
+    return {
+      state: 'known',
+      count: [...this.observations.values()].filter((observation) => (
+        observation.owner.packageDigest === packageDigest
+        && this.sameStableBinding(observation.binding, binding)
+      )).length
+    };
+  }
+
+  async open(owner: ManagedStreamOwner, input: PageObservationOpenRequest, context: PageObservationContext): Promise<PageObservationStatus> {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Page observation open request is invalid.');
     exactKeys(input, ['schemaVersion', 'policyId', 'idempotencyKey'], 'Page observation open request');
     if (input.schemaVersion !== 'omnia.page-observation-open/v1'
@@ -181,21 +216,21 @@ export class PageObservationHost {
       throw new Error('Page observation open request is invalid.');
     }
     this.assertContext(context);
-    const idempotencyKey = `${ownerId}:${input.idempotencyKey}`;
+    const idempotencyKey = `${owner.ownerKey}:${input.idempotencyKey}`;
     const existingId = this.idempotency.get(idempotencyKey);
-    if (existingId) return this.status(ownerId, { schemaVersion: 'omnia.page-observation-control/v1', observationId: existingId });
-    const activeForOwner = [...this.observations.values()].find((item) => item.ownerId === ownerId && !['stopped', 'failed'].includes(item.state));
+    if (existingId) return this.status(owner, { schemaVersion: 'omnia.page-observation-control/v1', observationId: existingId });
+    const activeForOwner = [...this.observations.values()].find((item) => item.owner.ownerKey === owner.ownerKey && !['stopped', 'failed'].includes(item.state));
     if (activeForOwner) throw new Error('This Operation package already owns an active page observation.');
     const activeCount = [...this.observations.values()].filter((item) => !['stopped', 'failed'].includes(item.state)).length;
     if (activeCount >= MAX_ACTIVE_OBSERVATIONS) throw new Error('Connector page observation concurrency limit has been reached.');
 
     const observationId = opaqueId('observation');
-    const streamId = this.streams.create(ownerId, 'application/x-ndjson');
+    const streamId = this.streams.create(owner, 'application/x-ndjson');
     const timestamp = now();
     const observation = {} as Observation;
     Object.assign(observation, {
       observationId,
-      ownerId,
+      owner: structuredClone(owner),
       idempotencyKey: input.idempotencyKey,
       streamId,
       policyId: input.policyId,
@@ -227,6 +262,7 @@ export class PageObservationHost {
     observation.timer.unref?.();
     this.observations.set(observationId, observation);
     this.idempotency.set(idempotencyKey, observationId);
+    this.persist(observation);
     await this.ensureInteractionBridge(context.page);
     this.attach(observation);
     this.append(observation, 'observation.started', {
@@ -238,58 +274,58 @@ export class PageObservationHost {
     return this.publicStatus(observation);
   }
 
-  status(ownerId: string, input: PageObservationControlRequest): PageObservationStatus {
-    const observation = this.controlled(ownerId, input);
+  status(owner: ManagedStreamOwner, input: PageObservationControlRequest): PageObservationStatus {
+    const observation = this.controlled(owner, input);
     return this.publicStatus(observation);
   }
 
-  async pause(ownerId: string, input: PageObservationControlRequest): Promise<PageObservationStatus> {
-    const observation = this.controlled(ownerId, input);
+  async pause(owner: ManagedStreamOwner, input: PageObservationControlRequest): Promise<PageObservationStatus> {
+    const observation = this.controlled(owner, input);
     if (observation.state === 'paused') return this.publicStatus(observation);
     if (observation.state !== 'observing' || observation.finishing) throw new Error('Page observation cannot be paused from its current state.');
-    this.append(observation, 'observation.paused', {}, observation.page.mainFrame());
+    this.append(observation, 'observation.paused', {}, this.pageOf(observation).mainFrame());
     observation.state = 'paused';
     observation.updatedAt = now();
+    this.persist(observation);
     return this.publicStatus(observation);
   }
 
-  async resume(ownerId: string, input: PageObservationControlRequest, context: PageObservationContext): Promise<PageObservationStatus> {
-    const observation = this.controlled(ownerId, input);
+  async resume(owner: ManagedStreamOwner, input: PageObservationControlRequest, context: PageObservationContext): Promise<PageObservationStatus> {
+    const observation = this.controlled(owner, input);
     if (observation.state === 'observing') return this.publicStatus(observation);
     if (observation.state !== 'paused' || observation.finishing) throw new Error('Page observation cannot be resumed from its current state.');
     this.assertSameContext(observation, context);
     observation.state = 'observing';
     observation.updatedAt = now();
-    this.append(observation, 'observation.resumed', {}, observation.page.mainFrame());
-    this.schedule(observation, this.snapshot(observation, observation.page.mainFrame()));
+    this.append(observation, 'observation.resumed', {}, this.pageOf(observation).mainFrame());
+    this.schedule(observation, this.snapshot(observation, this.pageOf(observation).mainFrame()));
+    this.persist(observation);
     return this.publicStatus(observation);
   }
 
-  async stop(ownerId: string, input: PageObservationControlRequest): Promise<PageObservationStatus> {
-    const observation = this.controlled(ownerId, input);
+  async stop(owner: ManagedStreamOwner, input: PageObservationControlRequest): Promise<PageObservationStatus> {
+    const observation = this.controlled(owner, input);
     await this.finish(observation, observation.complete, observation.terminalReason || 'requested');
     return this.publicStatus(observation);
   }
 
-  readChunk(ownerId: string, input: ManagedStreamReadRequest) {
-    return this.streams.read(ownerId, input);
+  readChunk(owner: ManagedStreamOwner, input: ManagedStreamReadRequest) {
+    return this.streams.read(owner, input);
   }
 
-  async releaseOwner(ownerId: string): Promise<void> {
-    const owned = [...this.observations.values()].filter((observation) => observation.ownerId === ownerId);
+  async releaseOwner(owner: ManagedStreamOwner): Promise<void> {
+    const owned = [...this.observations.values()].filter((observation) => (
+      observation.owner.ownerKey === owner.ownerKey && observation.owner.packageDigest === owner.packageDigest
+    ));
     await Promise.allSettled(owned.map((observation) => this.finish(observation, false, 'operation_owner_released')));
-    for (const observation of owned) {
-      this.observations.delete(observation.observationId);
-      this.idempotency.delete(`${ownerId}:${observation.idempotencyKey}`);
-    }
-    this.streams.releaseOwner(ownerId);
+    this.streams.releaseOwner(owner);
   }
 
-  retireOwner(ownerId: string): void {
+  retireOwner(packageDigest: string): void {
     const timestamp = now();
-    for (const observation of [...this.observations.values()]) {
-      if (observation.ownerId !== ownerId) continue;
-      clearTimeout(observation.timer);
+    for (const observation of this.observations.values()) {
+      if (observation.owner.packageDigest !== packageDigest || ['stopped', 'failed'].includes(observation.state)) continue;
+      if (observation.timer) clearTimeout(observation.timer);
       this.detach(observation);
       observation.finishing = true;
       observation.complete = false;
@@ -297,15 +333,100 @@ export class PageObservationHost {
       observation.state = 'failed';
       observation.stoppedAt = timestamp;
       observation.updatedAt = timestamp;
-      this.observations.delete(observation.observationId);
-      this.idempotency.delete(`${ownerId}:${observation.idempotencyKey}`);
+      observation.finishing = false;
+      this.streams.finalize(observation.owner, observation.streamId, false);
+      this.persist(observation);
     }
-    this.streams.releaseOwner(ownerId);
+  }
+
+  preflightOwnerReplacement(
+    packageDigest: string,
+    registrationBinding: ConnectorBinding,
+    successor: (binding: ConnectorBinding) => ManagedStreamOwner
+  ): void {
+    const owned = [...this.observations.values()].filter((observation) => (
+      observation.owner.packageDigest === packageDigest
+      && this.sameStableBinding(observation.binding, registrationBinding)
+    ));
+    const active = owned.find((observation) => !['stopped', 'failed'].includes(observation.state));
+    if (active) {
+      throw new Error('Operation package replacement is blocked by an active page observation; stop it before retrying registration.');
+    }
+    for (const observation of owned) {
+      if (observation.state !== 'stopped' || !observation.complete || observation.omissionCount !== 0) continue;
+      this.controlled(successor(observation.binding), {
+        schemaVersion: 'omnia.page-observation-control/v1',
+        observationId: observation.observationId
+      });
+    }
+  }
+
+  commitOwnerReplacement(
+    packageDigest: string,
+    registrationBinding: ConnectorBinding,
+    successor: (binding: ConnectorBinding) => ManagedStreamOwner
+  ): void {
+    const owned = [...this.observations.values()].filter((observation) => (
+      observation.owner.packageDigest === packageDigest
+      && this.sameStableBinding(observation.binding, registrationBinding)
+    ));
+    for (const observation of owned) {
+      if (observation.state !== 'stopped' || !observation.complete || observation.omissionCount !== 0) continue;
+      const nextOwner = successor(observation.binding);
+      this.controlled(nextOwner, {
+        schemaVersion: 'omnia.page-observation-control/v1',
+        observationId: observation.observationId
+      });
+      this.streams.adoptOwner(observation.owner, nextOwner, observation.streamId);
+    }
+  }
+
+  finalizeOwnerReplacement(
+    packageDigest: string,
+    registrationBinding: ConnectorBinding,
+    successor: (binding: ConnectorBinding) => ManagedStreamOwner
+  ): void {
+    const candidates = [...this.observations.values()].filter((observation) => {
+      if (!this.sameStableBinding(observation.binding, registrationBinding)) return false;
+      const nextOwner = successor(observation.binding);
+      return observation.owner.packageDigest === packageDigest
+        || this.streams.ownerAdoptionPending(observation.streamId, nextOwner);
+    });
+    for (const observation of candidates) {
+      if (observation.state !== 'stopped' || !observation.complete || observation.omissionCount !== 0) continue;
+      const nextOwner = successor(observation.binding);
+      if (!this.streams.ownerAdoptionAllows(observation.streamId, nextOwner)) {
+        throw new Error('Page observation owner finalization lacks a durable managed-stream adoption.');
+      }
+      if (observation.owner.packageDigest === packageDigest) {
+        const previousOwner = observation.owner;
+        observation.owner = structuredClone(nextOwner);
+        try {
+          this.persist(observation);
+        } catch (error) {
+          observation.owner = previousOwner;
+          throw error;
+        }
+      }
+      if (this.streams.ownerAdoptionPending(observation.streamId, nextOwner)) {
+        this.streams.finalizeOwnerAdoption(nextOwner, observation.streamId);
+      }
+    }
+  }
+
+  abortOwnerReplacement(packageDigest: string, binding: ConnectorBinding): void {
+    for (const observation of this.observations.values()) {
+      if (observation.state !== 'stopped' || !observation.complete || observation.omissionCount !== 0) continue;
+      if (!this.sameStableBinding(observation.binding, binding)) continue;
+      this.streams.abortOwnerAdoption(packageDigest, observation.streamId);
+    }
   }
 
   async close(): Promise<void> {
-    for (const ownerId of new Set([...this.observations.values()].map((observation) => observation.ownerId))) {
-      await this.releaseOwner(ownerId);
+    for (const observation of [...this.observations.values()]) {
+      if (!['stopped', 'failed'].includes(observation.state)) {
+        await this.finish(observation, false, 'connector_host_closed');
+      }
     }
   }
 
@@ -313,7 +434,9 @@ export class PageObservationHost {
     if (!context.page || context.page.isClosed() || !isAllowedOmniaUrl(context.page.url())) {
       throw new Error('Page observation requires the current controlled Omnia page.');
     }
-    if (parseEngagementId(context.page.url()) !== context.binding.engagementId
+    if (!context.binding.connectorId || !context.binding.authorityInstanceId || !context.binding.packId
+      || !Number.isSafeInteger(context.binding.sessionGeneration) || context.binding.sessionGeneration < 0
+      || parseEngagementId(context.page.url()) !== context.binding.engagementId
       || context.targetUrl.origin !== new URL(context.page.url()).origin
       || parseEngagementId(context.targetUrl.href) !== context.binding.engagementId
       || !isAllowedOmniaUrl(context.apiOrigin)) {
@@ -327,19 +450,41 @@ export class PageObservationHost {
       || context.binding.connectorId !== observation.binding.connectorId
       || context.binding.sessionGeneration !== observation.binding.sessionGeneration
       || context.binding.engagementId !== observation.binding.engagementId
+      || context.binding.authorityInstanceId !== observation.binding.authorityInstanceId
+      || context.binding.tenantOrOrgId !== observation.binding.tenantOrOrgId
       || context.binding.packId !== observation.binding.packId) {
       throw new Error('Page observation binding changed while it was paused.');
     }
   }
 
-  private controlled(ownerId: string, input: PageObservationControlRequest): Observation {
+  private controlled(owner: ManagedStreamOwner, input: PageObservationControlRequest): Observation {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Page observation control request is invalid.');
     exactKeys(input, ['schemaVersion', 'observationId'], 'Page observation control request');
     if (input.schemaVersion !== 'omnia.page-observation-control/v1' || !OBSERVATION_ID.test(input.observationId)) {
       throw new Error('Page observation control request is invalid.');
     }
     const observation = this.observations.get(input.observationId);
-    if (!observation || observation.ownerId !== ownerId) throw new Error('Page observation is unavailable for this Operation package.');
+    const stableBinding = observation && this.sameStableBinding(observation.owner.binding, owner.binding);
+    const sameStableOwner = observation?.owner.ownerKey === owner.ownerKey;
+    const compatibleLegacyOwner = observation && owner.compatibleSourceOwners?.some((source) => (
+      source.ownerKey === observation.owner.ownerKey && source.packageDigest === observation.owner.packageDigest
+    )) === true;
+    const durableAdoption = observation ? this.streams.ownerAdoptionAllows(observation.streamId, owner) : false;
+    const transferable = observation?.state === 'stopped' && observation.complete && observation.omissionCount === 0;
+    const sameDigest = observation?.owner.packageDigest === owner.packageDigest;
+    const sameSession = observation?.owner.binding.sessionGeneration === owner.binding.sessionGeneration;
+    const compatibleCrossDigest = observation && !sameDigest && transferable
+      && observation.owner.capabilityFingerprint === owner.capabilityFingerprint
+      && owner.packageSequence > observation.owner.packageSequence;
+    const exactNonTransferable = sameStableOwner && sameDigest && sameSession;
+    const transferableOwner = transferable && (
+      (sameStableOwner && sameDigest)
+      || (compatibleCrossDigest && (sameStableOwner || compatibleLegacyOwner || durableAdoption))
+    );
+    if (!observation || !stableBinding
+      || (!exactNonTransferable && !transferableOwner)) {
+      throw new Error('Page observation is unavailable for this signed Operation resource owner and Connector binding.');
+    }
     return observation;
   }
 
@@ -375,7 +520,7 @@ export class PageObservationHost {
       },
       navigation: (frame) => {
         if (observation.finishing) return;
-        if (frame === observation.page.mainFrame()) {
+        if (frame === this.pageOf(observation).mainFrame()) {
           const engagementId = parseEngagementId(frame.url());
           if (!isAllowedOmniaUrl(frame.url()) || engagementId !== observation.binding.engagementId) {
             this.omission(observation, 'target_identity_changed', frame);
@@ -397,13 +542,15 @@ export class PageObservationHost {
   }
 
   private attach(observation: Observation): void {
-    observation.page.on('request', observation.listeners.request);
-    observation.page.on('response', observation.listeners.response);
-    observation.page.on('framenavigated', observation.listeners.navigation);
-    observation.page.on('close', observation.listeners.close);
+    const page = this.pageOf(observation);
+    page.on('request', observation.listeners.request);
+    page.on('response', observation.listeners.response);
+    page.on('framenavigated', observation.listeners.navigation);
+    page.on('close', observation.listeners.close);
   }
 
   private detach(observation: Observation): void {
+    if (!observation.page) return;
     observation.page.off('request', observation.listeners.request);
     observation.page.off('response', observation.listeners.response);
     observation.page.off('framenavigated', observation.listeners.navigation);
@@ -540,7 +687,7 @@ export class PageObservationHost {
       target: {
         engagementId: observation.binding.engagementId,
         frameId: this.frameId(observation, frame),
-        mainFrame: frame === observation.page.mainFrame()
+        mainFrame: frame === this.pageOf(observation).mainFrame()
       },
       kind,
       payload
@@ -556,14 +703,15 @@ export class PageObservationHost {
       void this.finish(observation, false, 'stream_budget_reached');
       return;
     }
-    const appended = this.streams.append(observation.ownerId, observation.streamId, bytes);
+    const appended = this.streams.append(observation.owner, observation.streamId, bytes);
     observation.writtenBytes = appended.nextOffset;
     observation.lastSequence = envelope.sequence;
     observation.eventCount += 1;
     observation.updatedAt = envelope.occurredAt;
+    this.persist(observation);
   }
 
-  private omission(observation: Observation, reason: string, frame = observation.page.mainFrame(), details: Record<string, unknown> = {}): void {
+  private omission(observation: Observation, reason: string, frame = this.pageOf(observation).mainFrame(), details: Record<string, unknown> = {}): void {
     if (observation.state === 'stopped' || observation.state === 'failed') return;
     observation.complete = false;
     observation.omissionCount += 1;
@@ -582,7 +730,7 @@ export class PageObservationHost {
       return;
     }
     observation.finishing = true;
-    clearTimeout(observation.timer);
+    if (observation.timer) clearTimeout(observation.timer);
     this.detach(observation);
     let drained = false;
     let drainTimer: NodeJS.Timeout | undefined;
@@ -604,12 +752,14 @@ export class PageObservationHost {
       reason,
       complete: observation.complete,
       omissionCount: observation.omissionCount
-    }, observation.page.mainFrame());
-    this.streams.finalize(observation.ownerId, observation.streamId);
+    }, this.pageOf(observation).mainFrame());
     observation.state = observation.complete ? 'stopped' : 'failed';
     observation.stoppedAt = now();
     observation.updatedAt = observation.stoppedAt;
     observation.finishing = false;
+    this.persist(observation);
+    this.streams.finalize(observation.owner, observation.streamId, observation.state === 'stopped' && observation.complete && observation.omissionCount === 0);
+    this.persist(observation);
   }
 
   private frameId(observation: Observation, frame: Frame): string {
@@ -621,7 +771,7 @@ export class PageObservationHost {
   }
 
   private requestFrame(observation: Observation, request: Request): Frame {
-    try { return request.frame(); } catch { return observation.page.mainFrame(); }
+    try { return request.frame(); } catch { return this.pageOf(observation).mainFrame(); }
   }
 
   private publicStatus(observation: Observation): PageObservationStatus {
@@ -641,5 +791,144 @@ export class PageObservationHost {
       complete: observation.complete,
       terminalReason: observation.terminalReason
     };
+  }
+
+  private pageOf(observation: Observation): Page {
+    if (!observation.page || observation.page.isClosed()) {
+      throw new Error('Active page observation no longer has a controlled Omnia page.');
+    }
+    return observation.page;
+  }
+
+  private sameStableBinding(left: ConnectorBinding, right: ConnectorBinding): boolean {
+    return left.connectorId === right.connectorId
+      && left.engagementId === right.engagementId
+      && String(left.authorityInstanceId || '') === String(right.authorityInstanceId || '')
+      && String(left.tenantOrOrgId || '') === String(right.tenantOrOrgId || '')
+      && String(left.packId || '') === String(right.packId || '');
+  }
+
+  private persist(observation: Observation): void {
+    const expiresAt = this.streams.streamExpiresAt(observation.streamId);
+    if (!expiresAt) throw new Error('Page observation stream retention metadata is unavailable.');
+    const value = {
+      schemaVersion: OBSERVATION_METADATA_SCHEMA,
+      observationId: observation.observationId,
+      owner: observation.owner,
+      idempotencyKey: observation.idempotencyKey,
+      streamId: observation.streamId,
+      policyId: observation.policyId,
+      binding: observation.binding,
+      state: observation.state,
+      startedAt: observation.startedAt,
+      updatedAt: observation.updatedAt,
+      stoppedAt: observation.stoppedAt,
+      lastSequence: observation.lastSequence,
+      eventCount: observation.eventCount,
+      omissionCount: observation.omissionCount,
+      complete: observation.complete,
+      terminalReason: observation.terminalReason,
+      writtenBytes: observation.writtenBytes,
+      expiresAt
+    };
+    const filename = path.join(this.metadataRoot, `${observation.observationId}.json`);
+    const temporary = `${filename}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+    const handle = fs.openSync(temporary, 'wx', 0o600);
+    try {
+      fs.writeFileSync(handle, JSON.stringify(value));
+      fs.fsyncSync(handle);
+    } finally {
+      fs.closeSync(handle);
+    }
+    fs.renameSync(temporary, filename);
+  }
+
+  private loadPersistedObservations(): void {
+    let entries: fs.Dirent[] = [];
+    try { entries = fs.readdirSync(this.metadataRoot, { withFileTypes: true }); }
+    catch { this.inventoryUnknownCount += 1; return; }
+    const timestamp = now();
+    for (const entry of entries) {
+      if (!entry.isFile() || !/^observation_[0-9a-f]{32}\.json$/u.test(entry.name)) continue;
+      const filename = path.join(this.metadataRoot, entry.name);
+      try {
+        const value = JSON.parse(fs.readFileSync(filename, 'utf8')) as Record<string, any>;
+        exactKeys(value, [
+          'schemaVersion', 'observationId', 'owner', 'idempotencyKey', 'streamId', 'policyId', 'binding',
+          'state', 'startedAt', 'updatedAt', 'stoppedAt', 'lastSequence', 'eventCount', 'omissionCount',
+          'complete', 'terminalReason', 'writtenBytes', 'expiresAt'
+        ], 'Page observation metadata');
+        if (value.schemaVersion !== OBSERVATION_METADATA_SCHEMA || !OBSERVATION_ID.test(value.observationId)
+          || !/^stream_[0-9a-f]{32}$/u.test(value.streamId)
+          || value.policyId !== CURRENT_PACK_PAGE_OBSERVATION_POLICY
+          || !['observing', 'paused', 'stopped', 'failed'].includes(value.state)
+          || !Number.isSafeInteger(value.lastSequence) || value.lastSequence < 0
+          || !Number.isSafeInteger(value.eventCount) || value.eventCount < 0
+          || !Number.isSafeInteger(value.omissionCount) || value.omissionCount < 0
+          || value.eventCount !== value.lastSequence
+          || typeof value.complete !== 'boolean'
+          || !Number.isSafeInteger(value.writtenBytes) || value.writtenBytes < 0
+          || !Number.isFinite(Date.parse(value.startedAt)) || !Number.isFinite(Date.parse(value.updatedAt))
+          || !Number.isFinite(Date.parse(value.expiresAt))) {
+          throw new Error('Page observation metadata fields are invalid.');
+        }
+        if (Date.parse(value.expiresAt) <= Date.now()) {
+          this.streams.audit('page_observation', value.observationId, 'ttl_expired', { expiresAt: value.expiresAt });
+          fs.rmSync(filename, { force: true });
+          continue;
+        }
+        if (!this.streams.hasReadableStream(value.streamId)) {
+          this.inventoryUnknownCount += 1;
+          this.streams.audit('page_observation', value.observationId, 'stream_integrity_unavailable', { streamId: value.streamId });
+          continue;
+        }
+        const owner = value.owner as ManagedStreamOwner;
+        if (!owner || typeof owner !== 'object' || !this.sameStableBinding(owner.binding, value.binding)) {
+          throw new Error('Page observation owner binding is invalid.');
+        }
+        const recoveredActive = !['stopped', 'failed'].includes(value.state);
+        const observation = {
+          observationId: value.observationId,
+          owner,
+          idempotencyKey: value.idempotencyKey,
+          streamId: value.streamId,
+          policyId: value.policyId,
+          page: null,
+          binding: value.binding,
+          allowedOrigins: new Set<string>(),
+          state: recoveredActive ? 'failed' : value.state,
+          startedAt: value.startedAt,
+          updatedAt: recoveredActive ? timestamp : value.updatedAt,
+          stoppedAt: recoveredActive ? timestamp : value.stoppedAt,
+          lastSequence: value.lastSequence,
+          eventCount: value.eventCount,
+          omissionCount: recoveredActive ? value.omissionCount + 1 : value.omissionCount,
+          complete: recoveredActive ? false : value.complete,
+          terminalReason: recoveredActive ? 'connector_restarted' : value.terminalReason,
+          writtenBytes: value.writtenBytes,
+          finishing: false,
+          frameIds: new WeakMap<Frame, string>(),
+          requestIds: new WeakMap<Request, string>(),
+          nextRequestId: 0,
+          pending: new Set<Promise<void>>(),
+          timer: null,
+          listeners: {} as Observation['listeners']
+        } satisfies Observation;
+        observation.listeners = this.listeners(observation);
+        this.observations.set(observation.observationId, observation);
+        this.idempotency.set(`${observation.owner.ownerKey}:${observation.idempotencyKey}`, observation.observationId);
+        if (recoveredActive) {
+          this.persist(observation);
+          this.streams.audit('page_observation', observation.observationId, 'cold_restart_failed_active_observation', {
+            streamId: observation.streamId
+          });
+        }
+      } catch (error) {
+        this.inventoryUnknownCount += 1;
+        this.streams.audit('page_observation_metadata', entry.name, 'metadata_fail_closed', {
+          error: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300)
+        });
+      }
+    }
   }
 }

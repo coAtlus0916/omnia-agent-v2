@@ -1,0 +1,29 @@
+# 录制运行合同
+
+- 0.4.19 及后续资源所有权交接版本要求 Shell 0.4.15 或更高；不具备持久化 handoff ledger 的旧 Shell 不得安装。0.4.20 另外要求 Recording 唯一 Python bridge/engine 路径与显式 `appendEvidence` Store port。
+- recordingId、Processing Run、observationId、streamId 和 frozen Connector binding 必须一一对应。
+- Operation 资源所有权由官方签名 manifest 的稳定 ownerId、compatibilityVersion、capability 与 ABI fingerprint 决定；从无稳定 owner 声明的旧包接管时，必须精确命中签名 `compatibleSourcePackageDigests`。不得按 Feature 版本、显示名或 Operation packageId 猜兼容。
+- 兼容升级必须先让新 Worker 通过 exact identity health，再使用既有 `operation_register` route 执行 prepare/commit/Core CAS/finalize：prepare 只返回绑定 current authority 的 opaque token，新 digest 不可 invoke、旧 digest 与旧 activation head 保持可用；同 token commit 使新旧 exact digest 并存可调用；PackageManager 随后以旧 head exact CAS 切换 Core activation，最后才 finalize 旧注册。Core CAS 前失败或漂移必须把同 token 持久化为 `abort_pending` 并调用通用 abort；abort 响应不确定时禁止安装、回滚、禁用或再次改变 head，重启后只能继续同 token 收敛。Core CAS 后只允许 roll-forward finalize。旧 Connector、ABI fingerprint 漂移、sequence 非单调、active/failed/partial 流或 binding scope 漂移均失败关闭并保留证据。
+- 每个 Feature 同时最多存在一个 Core SQLite handoff ledger。ledger 精确区分 Feature package digest 与 Operation package digest，并绑定 source/target version、两类 digest、source/target activation generation、registration token、exact replaced Operation digest 与 phase。`staged/prepared/committed/abort_pending/finalize_pending` 任一存在时，新的 install、rollback、disable 与其他 head mutation 均失败关闭；source manifest 已声明 `resourceOwner` 时，target 不得删除该声明。
+- 旧 Connector 元数据缺失且 frozen bytes 仅以历史 orphan 形式隔离时，不得从 Worker health 或 Feature 私有计划自动生成 owner claim。原 quarantine 必须保留；只有未来经用户明确确认、保留原件并产生独立审计的法证恢复流程才可处理 unknown-owner 证据。
+- open/pause/resume/stop 的控制意图必须先进入 Feature 私有 SQLite 与计划；持久化失败时不得调用外部控制。
+- 控制响应不确定时只允许 status/readChunk 收敛；status 已证明 stopped 后不得再次调用 stop。
+- PageObservation event 使用 `omnia.page-observation-event/v1`，sequence 从 1 连续递增，且每条 target.engagementId 必须等于终态 status。
+- Managed Stream 使用 `application/x-ndjson`，固定 128 KiB 读取。每个后台 action 最多并发读取 8 个不同 offset，并严格按 offset 组成至多 1 MiB 的一个 Core transfer 块；每块摘要、EOF、总长度和 streamDigest 必须一致，Core commit 必须再次核对整流 SHA-256。
+- Feature 计划必须持久化 frozen size/digest/chunk count、已验证的逐块 identity、Core transferId、next chunk/bytes 和 pending append。pending append 响应不确定时不得盲目重复；同 transfer 无法证明进度就先 abort/release，再对同一 frozen identity 重开 transfer。
+- `recording-run:<recordingId>` 从首次写入起必须使用 Core `compareAndSwapPlan`，顶层 `storeRevision` 每次精确加一；状态、pending/accepted checkpoint、transfer reset、finalized/abandoned handoff 都在 SQLite `BEGIN IMMEDIATE` 中比较后写入。`FEATURE.PLAN_CAS_MISMATCH` 必须原样失败并重新读取事实，禁止捕获后用 `savePlan` 覆盖。`recording-current` 仅是可重建指针，不承载固化事实。
+- 普通 Artifact 只接受 complete stopped observation 且 omissionCount 为 0。
+- Python input/output 只能通过 Core 受管 handle；RPC 禁止嵌入二进制或 base64 Artifact。
+- Python 必须使用发布根 `runtime/python/cpython-3.13.14-embed-amd64/python.exe`，以 `-I -S -E -B` 隔离启动，禁止 PATH、系统 Python、pip、用户 site、字节码写回和网络。
+- SQLite staging 保留 24 小时。Artifact 成功与否只由 Core Processing Run + committed Artifact 决定。
+- 摄取中途失败不得删除已通过序列、identity 与 JSON 校验的当前 SQLite 行；重试只能使用同一 recordingId、runId 与冻结输入，冲突行失败关闭。
+- 同进程冻结流可幂等重试固化；不得重放 stop，也不宣称跨 Connector 进程恢复。
+- 已开始捕获的 response body 属于 stop 排空集合；终态必须排在这些分段之后，排空超时必须带 omission。
+- 固化失败的旧 recordingId 不得阻塞新 recordingId；用户开始新录制前必须先把旧 Processing Run 明确失败收口，旧 SQLite staging 继续按 24 小时保留。
+- “重新开始录制”必须是独立真实动作并紧邻“停止”；只允许在固化失败、录制失败、流不完整或已有 Artifact 时创建新 identity，在 `stop_confirmed/finalizing` 期间必须禁用。重新开始不得重放旧 observation stop，也不得删除旧冻结流或 SQLite 证据。
+- Worker 启动必须从 Core Run 与 Feature 私有计划恢复 Surface；`finalizing` 计划必须继续投影后台固化，并从持久化断点续跑。Core Run 已 failed 时不得投影可点击的固化重试。
+- 唯一例外是 Core failed 的最后事件可证明为升级器 `recording.terminal_projection_reconciled`，且私有计划仍保存同 recordingId 的完整 stopped observation identity。此时 retry 先只读 status/offset 0 固定流身份，再由 Core 创建唯一 successor Processing Run；predecessor 永不回退，successor 必须保留 predecessorRunId 与 frozen lineage。Python staging 只能在 lineage digest 精确匹配、无 Artifact、非 finalized 且 owner 为 predecessor 时事务接管；不得清除事件、目录或 metadata。
+- 具备 recordingId、runId、observationId、streamId、stoppedAt、eventCount 的 `finalization_failed` 是升级时可恢复状态，即使首轮尚未保存 stream digest，也不得由 terminal reconciler 收口。digest/size/chunk count 必须由恢复动作只读探测后 CAS 固化，随后每轮传输继续校验漂移。
+- Operation handoff 后固化仍必须复用原 recordingId、observationId 与 streamId；只允许 status/readChunk，不得再次 stop，不得创建 replacement recordingId，也不得删除旧 frozen stream 后伪称迁移成功。
+- Recording Worker health 不是 Operation owner 证明，不得从私有 plan 自动生成 orphan recovery claim。只有 Connector 已持久化 creator owner receipt 的普通 handoff 可自动进行；历史隔离流缺少不可变 owner receipt 时必须保持 quarantine，后续仅能走用户明确确认、保留原件且有独立审计的法证恢复。
+- “导出录制记录”只在当前 recordingId 已提交 Core Artifact 时启用，直接进入通用 Artifact Save As；不调用 Connector，也不得因为历史列表存在可用 Artifact 而把失败或新建中的当前录制错误绑定到上一份录制。

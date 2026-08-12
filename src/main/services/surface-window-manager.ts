@@ -17,6 +17,7 @@ export interface SurfaceSelfContext {
   instanceId: string;
   placement: SurfacePlacement;
 }
+type SurfaceOpenResult = { instanceId: string; placement: SurfacePlacement; attached: boolean; reason: string; surfaceStateVersion: number };
 interface SurfaceWindowState extends Omit<SurfaceOpenInput, 'placement'> {
   placement: SurfacePlacement;
   view: WebContentsView | null;
@@ -32,6 +33,7 @@ export class SurfaceWindowManager {
   private readonly senderInstances = new Map<number, string>();
   private readonly backgroundActionAttempts = new Set<string>();
   private readonly backgroundActionsInFlight = new Map<string, Promise<ShellSnapshot>>();
+  private readonly reopensInFlight = new Map<string, Promise<SurfaceOpenResult>>();
   private readonly featureHtml: string;
   private activeDockedInstanceId: string | null = null;
   private overlayActive = false;
@@ -55,6 +57,7 @@ export class SurfaceWindowManager {
     this.senderInstances.clear();
     this.backgroundActionAttempts.clear();
     this.backgroundActionsInFlight.clear();
+    this.reopensInFlight.clear();
   }
 
   private selectedSurface(input: Pick<SurfaceOpenInput, 'featureId' | 'featureVersion' | 'surfaceId'>): DeclarativeFeatureSurface | null {
@@ -247,6 +250,84 @@ export class SurfaceWindowManager {
     if (minimized) featureWindow.minimize();
   }
 
+  private async runReopenLifecycle(state: SurfaceWindowState): Promise<DeclarativeFeatureSurface> {
+    let surface = this.selectedSurface(state);
+    if (!surface) throw new Error('Feature context is no longer selected or authorized; reopen it from the registry.');
+    state.authorizedSurface = surface;
+    const actionId = surface.lifecycle?.onReopenActionId;
+    if (!actionId) return surface;
+    const action = surface.actions.find((candidate) => candidate.actionId === actionId);
+    // Dynamic Worker state remains authoritative. A disabled lifecycle action
+    // is a fail-closed no-op (for example, an uncertain Run that must first be
+    // reconciled) and the existing Surface is still opened for recovery.
+    if (!action?.enabled) return surface;
+    try {
+      const snapshot = await this.invokeFeatureAction({
+        featureId: surface.featureId,
+        featureVersion: surface.featureVersion,
+        surfaceId: surface.surfaceId,
+        actionId,
+        expectedStateVersion: surface.stateVersion,
+        payload: {}
+      });
+      const next = snapshot.features.surface;
+      if (!next || !this.matches(state, next)) {
+        throw new Error('Feature on-reopen action returned a drifted Surface identity.');
+      }
+      state.authorizedSurface = next;
+      return next;
+    } catch (error) {
+      // Background-style lifecycle actions persist their real failed Surface.
+      // Open that projection so recovery remains accessible; never synthesize
+      // success or silently fall back to the stale pre-action projection.
+      surface = this.selectedSurface(state);
+      if (surface) {
+        state.authorizedSurface = surface;
+        return surface;
+      }
+      throw error;
+    }
+  }
+
+  private async openExisting(
+    existing: SurfaceWindowState,
+    input: SurfaceOpenInput,
+    reopening: boolean
+  ): Promise<SurfaceOpenResult> {
+    const surface = reopening ? await this.runReopenLifecycle(existing) : this.cachedSurface(existing);
+    const wasDocked = existing.placement === 'docked';
+    if (input.placement === 'docked') {
+      this.activeDockedInstanceId = existing.instanceId;
+      this.overlayActive = false;
+      if (existing.window) this.destroyDetached(existing);
+      if (!existing.view) await this.createDocked(existing, surface, input.bounds);
+      else {
+        existing.bounds = input.bounds || existing.bounds;
+        existing.view.setBounds(this.toHostBounds(existing.bounds));
+        existing.placement = 'docked';
+        if (reopening || !wasDocked) this.bootstrap(existing, surface);
+        this.reconcileDockedViews();
+      }
+    } else if (input.placement === 'detached') {
+      if (this.activeDockedInstanceId === existing.instanceId) this.activeDockedInstanceId = null;
+      if (existing.view) this.destroyDocked(existing);
+      if (!existing.window) await this.createDetached(existing, surface);
+      else { existing.window.show(); existing.window.focus(); existing.placement = 'detached'; this.bootstrap(existing, surface); }
+    } else {
+      if (this.activeDockedInstanceId === existing.instanceId) this.activeDockedInstanceId = null;
+      if (existing.view) this.destroyDocked(existing);
+      if (!existing.window) await this.createDetached(existing, surface, true);
+      else { existing.window.show(); existing.window.minimize(); existing.placement = 'minimized'; this.bootstrap(existing, surface); }
+    }
+    return {
+      instanceId: existing.instanceId,
+      placement: existing.placement,
+      attached: existing.placement !== 'docked' || existing.attached,
+      reason: '',
+      surfaceStateVersion: surface.stateVersion
+    };
+  }
+
   async featureAction(senderId: number, request: FeatureActionRequest): Promise<ShellSnapshot> {
     const instanceId = this.senderInstances.get(senderId);
     const state = instanceId ? this.states.get(instanceId) : undefined;
@@ -281,7 +362,9 @@ export class SurfaceWindowManager {
         this.bootstrapMatching(next);
         return snapshot;
       } catch (error) {
-        this.bootstrapMatching(this.cachedSurface(state));
+        const refreshed = this.getSnapshot().features.surface;
+        if (refreshed && this.matches(state, refreshed)) this.bootstrapMatching(refreshed);
+        else this.bootstrapMatching(this.cachedSurface(state));
         throw error;
       }
     };
@@ -351,42 +434,27 @@ export class SurfaceWindowManager {
     }
   }
 
-  async open(input: SurfaceOpenInput): Promise<{ instanceId: string; placement: SurfacePlacement; attached: boolean; reason: string }> {
+  async open(input: SurfaceOpenInput): Promise<SurfaceOpenResult> {
     const existing = this.states.get(input.instanceId);
     if (existing) {
       const identityChanged = existing.featureId !== input.featureId
         || existing.featureVersion !== input.featureVersion
         || existing.surfaceId !== input.surfaceId;
       if (identityChanged) throw new Error('Feature Surface instance identity has drifted.');
-      const surface = this.cachedSurface(existing);
-      const wasDocked = existing.placement === 'docked';
-      if (input.placement === 'docked') {
-        this.activeDockedInstanceId = existing.instanceId;
-        this.overlayActive = false;
-        if (existing.window) this.destroyDetached(existing);
-        if (!existing.view) await this.createDocked(existing, surface, input.bounds);
-        else {
-          existing.bounds = input.bounds || existing.bounds;
-          existing.view.setBounds(this.toHostBounds(existing.bounds));
-          existing.placement = 'docked';
-          if (identityChanged || !wasDocked) this.bootstrap(existing, surface);
-          this.reconcileDockedViews();
-        }
-      } else if (input.placement === 'detached') {
-        if (this.activeDockedInstanceId === existing.instanceId) this.activeDockedInstanceId = null;
-        if (existing.view) this.destroyDocked(existing);
-        if (!existing.window) await this.createDetached(existing, surface);
-        else { existing.window.show(); existing.window.focus(); existing.placement = 'detached'; this.bootstrap(existing, surface); }
-      } else {
-        if (this.activeDockedInstanceId === existing.instanceId) this.activeDockedInstanceId = null;
-        if (existing.view) this.destroyDocked(existing);
-        if (!existing.window) await this.createDetached(existing, surface, true);
-        else { existing.window.show(); existing.window.minimize(); existing.placement = 'minimized'; this.bootstrap(existing, surface); }
+      const reopening = existing.placement === 'closed';
+      if (!reopening) return this.openExisting(existing, input, false);
+      const inFlight = this.reopensInFlight.get(existing.instanceId);
+      if (inFlight) return inFlight;
+      const pending = this.openExisting(existing, input, true);
+      this.reopensInFlight.set(existing.instanceId, pending);
+      try {
+        return await pending;
+      } finally {
+        if (this.reopensInFlight.get(existing.instanceId) === pending) this.reopensInFlight.delete(existing.instanceId);
       }
-      return { instanceId: existing.instanceId, placement: existing.placement, attached: existing.placement !== 'docked' || existing.attached, reason: '' };
     }
     const surface = this.selectedSurface(input);
-    if (!surface) return { instanceId: input.instanceId, placement: 'closed', attached: false, reason: 'Feature context is no longer selected or authorized; reopen it from the registry.' };
+    if (!surface) return { instanceId: input.instanceId, placement: 'closed', attached: false, reason: 'Feature context is no longer selected or authorized; reopen it from the registry.', surfaceStateVersion: 0 };
     const state: SurfaceWindowState = {
       ...input,
       placement: input.placement,
@@ -403,7 +471,13 @@ export class SurfaceWindowManager {
       await this.createDocked(state, surface, input.bounds);
     }
     else await this.createDetached(state, surface, input.placement === 'minimized');
-    return { instanceId: state.instanceId, placement: state.placement, attached: state.placement !== 'docked' || state.attached, reason: '' };
+    return {
+      instanceId: state.instanceId,
+      placement: state.placement,
+      attached: state.placement !== 'docked' || state.attached,
+      reason: '',
+      surfaceStateVersion: surface.stateVersion
+    };
   }
 
   async focus(instanceId: string): Promise<FeatureSurfaceFocusResult> {

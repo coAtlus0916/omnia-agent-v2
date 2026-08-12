@@ -1,20 +1,18 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import type { FeaturePackageManager, FeatureInstallResult } from './package-manager.js';
-import { packageDigest, verifyOfficialPackage } from './official-package.js';
+import {
+  BUILTIN_FEATURE_RELEASE_PROJECTION,
+  verifyBuiltinFeatureReleaseFile
+} from './builtin-release-inventory.js';
 
-export const BUILTIN_FEATURES = Object.freeze([
-  { featureId: 'omnia.recording', version: '0.3.0', filename: 'recording-0.3.0.ofp', sourceDirectory: 'recording' },
-  { featureId: 'omnia.create-associate', version: '0.2.48', filename: 'create-associate-0.2.48.ofp', sourceDirectory: 'create-associate' },
-  { featureId: 'omnia.delete-elements', version: '0.2.1', filename: 'delete-elements-0.2.1.ofp', sourceDirectory: 'delete-elements' }
-]);
+export const BUILTIN_FEATURES = BUILTIN_FEATURE_RELEASE_PROJECTION.runtimeCatalog;
 
 export interface BuiltinFeatureBootstrapResult {
   featureId: string;
   targetVersion: string;
   activeVersion: string;
   packageDigest: string;
-  action: 'installed' | 'already-active' | 'preserved-rollback';
+  action: 'installed' | 'already-active' | 'preserved-rollback' | 'preserved-active';
   installResult: FeatureInstallResult | null;
 }
 
@@ -27,25 +25,42 @@ export function installBuiltinFeaturePackages(
     const filename = packaged
       ? path.join(applicationRoot, 'builtins', builtin.filename)
       : path.join(applicationRoot, 'feature-packages', builtin.sourceDirectory, 'candidates', builtin.filename);
-    if (!fs.existsSync(filename)) throw new Error(`Built-in Feature package is missing: ${filename}`);
+    const verified = verifyBuiltinFeatureReleaseFile(filename, builtin);
     const existing = manager.installedVersion(builtin.featureId, builtin.version);
     const active = manager.list().find((item) => item.featureId === builtin.featureId);
-    if (existing && active?.featureVersion !== builtin.version) {
-      const envelope = verifyOfficialPackage(JSON.parse(fs.readFileSync(filename, 'utf8')) as unknown, 'omnia-feature');
-      if (packageDigest(envelope) !== existing.packageDigest) {
+    if (active && active.featureVersion === builtin.version && existing) {
+      if (verified.packageDigest !== existing.packageDigest
+        || active.packageDigest !== existing.packageDigest) {
         throw new Error(`Built-in Feature immutable bytes mismatch: ${filename}`);
       }
       return {
         featureId: builtin.featureId,
         targetVersion: builtin.version,
-        activeVersion: active?.featureVersion || '',
+        activeVersion: active.featureVersion,
         packageDigest: existing.packageDigest,
-        action: 'preserved-rollback',
+        action: 'already-active',
+        installResult: null
+      };
+    }
+    if (active && active.featureVersion !== builtin.version) {
+      if (existing && verified.packageDigest !== existing.packageDigest) {
+        throw new Error(`Built-in Feature immutable bytes mismatch: ${filename}`);
+      }
+      return {
+        featureId: builtin.featureId,
+        targetVersion: builtin.version,
+        activeVersion: active.featureVersion,
+        packageDigest: existing?.packageDigest || active.packageDigest,
+        action: existing ? 'preserved-rollback' : 'preserved-active',
         installResult: null
       };
     }
     const result = manager.install(filename);
-    if (result.featureId !== builtin.featureId || result.featureVersion !== builtin.version) {
+    if (
+      result.featureId !== builtin.featureId
+      || result.featureVersion !== builtin.version
+      || result.packageDigest !== builtin.packageDigest
+    ) {
       throw new Error(`Built-in Feature identity mismatch: ${filename}`);
     }
     return {

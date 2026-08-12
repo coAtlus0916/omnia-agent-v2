@@ -5,4 +5,6 @@
 
 Offline conversion does not require or register Remote Operations. The first connector invocation lazily registers the exact nested package and caches by Feature version, Operation digest, and Connector session generation.
 
+Version 0.2.104 / sequence 106 is source-only and not installed. Freeze and signature checks must run from an isolated snapshot, must not overwrite immutable 0.2.103, and must leave live acceptance pending until same-version Core receipts and authoritative read-backs exist.
+
 On a commit-step response loss, mark the command and Run uncertain. Do not replay. Invoke only the corresponding read-only reconcile Operation, compare exact identity/value/multiset, and advance verified current only on authoritative evidence. Real canary and capability evidence are authority/tenant/Pack/engagement/Workspace scoped and revocable.

@@ -1,6 +1,16 @@
 'use strict';
 
-function fail(message) { throw new Error(message); }
+function fail(message) {
+  const error = new Error(message);
+  error.name = 'CreateAssociateOperationError';
+  throw error;
+}
+function failBeforeEffect(message) {
+  const error = new Error(message);
+  error.name = 'CreateAssociateOperationError';
+  error.effectState = 'not_started';
+  throw error;
+}
 function exact(value, keys, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`${label} is invalid.`);
   const actual = Object.keys(value).sort(); const expected = [...keys].sort();
@@ -12,6 +22,28 @@ function canonical(value) {
   return value === null || ['boolean','string','number'].includes(typeof value) ? JSON.stringify(value)
     : Array.isArray(value) ? `[${value.map(canonical).join(',')}]`
       : `{${Object.keys(value).sort().map((key)=>`${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
+}
+const SINGLE_FLIGHT_READ_STEPS = new Set([
+  'workitem-directory', 'gra-directory',
+  'risk-factor-directory', 'risk-catalog', 'control-catalog',
+  'risk-assessment-read', 'risk-detail', 'risk-control-detail'
+]);
+function singleFlightReadSdk(sdk, flights) {
+  const invokeStep = sdk.invokeStep.bind(sdk);
+  return {
+    ...sdk,
+    invokeStep(stepId, routeValues, body) {
+      if (!SINGLE_FLIGHT_READ_STEPS.has(stepId)) return invokeStep(stepId, routeValues, body);
+      const key = canonical({ binding: sdk.binding, stepId, routeValues: routeValues || {}, body: body === undefined ? null : body });
+      const existing = flights.get(key);
+      if (existing) return existing;
+      const pending = Promise.resolve().then(() => invokeStep(stepId, routeValues, body));
+      flights.set(key, pending);
+      const release = () => { if (flights.get(key) === pending) flights.delete(key); };
+      void pending.then(release, release);
+      return pending;
+    }
+  };
 }
 function editorDescription(value,label){
   let editor=value; if(typeof editor==='string'){try{editor=JSON.parse(editor);}catch{fail(`${label} editor JSON is invalid.`);}}
@@ -129,6 +161,7 @@ function normalizedSubtype(value) {
   const normalized = normalizedLabel(value).replace(/[\s_-]+/gu, '');
   if (['database', 'db', 'sql', 'sqlserver', 'oracle'].includes(normalized)) return 'Database';
   if (['operatingsystem', 'os', 'unix', 'linux', 'windows', 'win'].includes(normalized)) return 'OperatingSystem';
+  if (['network', 'networkinfrastructure', 'dcno', '网络'].includes(normalized)) return 'Network';
   if (['tool', 'ittool'].includes(normalized)) return 'Tool';
   return '';
 }
@@ -209,7 +242,7 @@ async function objectPreflight(request, sdk) {
   if (!mapping) fail('Unsupported IT Element type.');
   if (query.objectType !== 'Application') {
     const expectedSubtype = query.objectType === 'ITTool' ? 'Tool' : text(query.subtypeId);
-    if (!['Database','OperatingSystem','Tool'].includes(expectedSubtype) || text(query.subtypeId) !== expectedSubtype) fail('Object preflight subtype identity is invalid.');
+    if (!['Database','OperatingSystem','Network','Tool'].includes(expectedSubtype) || text(query.subtypeId) !== expectedSubtype) fail('Object preflight subtype identity is invalid.');
   }
   const search = await searchObjectIdentities(sdk, mapping[0], query, mapping[1], query.objectType === 'ITTool' ? { itElementType: 'ITTool' } : {});
   const merged = mergeObjectIdentityMatches(search.matches, query);
@@ -610,17 +643,23 @@ const GRA_KIND_CONTRACT = Object.freeze({
   OS: Object.freeze({ objectType: 'Infrastructure', objectSubtype: 'OperatingSystem', typeId: 4,
     categoryParent: 'Infrastructure type', categoryName: 'Infrastructure_Operating system' }),
   TOOL: Object.freeze({ objectType: 'ITTool', objectSubtype: 'Tool', typeId: 5,
-    categoryParent: 'Tool type', categoryName: 'Tool' })
+    categoryParent: 'Tool type', categoryName: 'Tool' }),
+  DCNO: Object.freeze({ objectType: 'Infrastructure', objectSubtype: 'Network', typeId: 4,
+    categoryParent: 'Infrastructure type', categoryName: 'Infrastructure_Network' })
 });
 function catalogName(value) {
   return normalizedLabel(value).replace(/^(?:standardizedaccount|commonaccount)_/u, '');
 }
 function requestedContentAliases(elementKind, contentName) {
   const input = catalogName(contentName);
+  if(elementKind==='APP'){
+    const base=input.replace(/application$/u,'').trim();
+    return new Set([contentName,base,`${base} Application`].map(catalogName).filter(Boolean));
+  }
   const aliases = {
-    APP: { generic: ['Generic', 'Generic Application'], 'sap ecc': ['SAP ECC'] },
     DB: { generic: ['Generic', 'Generic Database'], oracle: ['Oracle', 'Oracle Database'], sql: ['SQL', 'SQL Database'] },
     OS: { generic: ['Generic', 'Generic Operating System'], unix: ['UNIX', 'Unix'], win: ['WIN', 'Windows'] },
+    DCNO: { '网络': ['通用网络设备', 'Generic Network Device'], network: ['通用网络设备', 'Generic Network Device'] },
     TOOL: {
       generic: ['Generic', 'Generic Tool'],
       '工单工具': ['工单工具', 'Ticketing Tool'],
@@ -711,21 +750,54 @@ function catalogEntryId(item, names, label) {
   for (const name of names) if (item && item[name]) return guid(item[name], label);
   fail(`${label} is absent.`);
 }
-function catalogRows(payload, property, label) {
-  if (Array.isArray(payload)) return payload;
-  if (payload && typeof payload === 'object' && !Array.isArray(payload) && Array.isArray(payload[property])) return payload[property];
-  fail(`${label} did not return its recorded v4 top-level collection.`);
+function requireCreateCatalogCollection(payload, property, label) {
+  const collection = Array.isArray(payload)
+    ? payload
+    : payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? payload[property]
+      : undefined;
+  if (!Array.isArray(collection)) fail(`${label} did not return its recorded v4 top-level collection.`);
+  return collection;
 }
 function catalogNumber(item, names) {
   for (const name of names) { const value = text(item && item[name]); if (value) return value; }
   return '';
 }
-function recordedRiskNumber(value){const raw=text(value);return raw.match(/^(RAITCOR\d+)/iu)?.[1]||raw;}
-function recordedControlNumber(value){const raw=text(value);const number=raw.match(/^([A-Z][A-Z0-9]*\.\d+)/iu)?.[1]||raw;return number.replace(/^SAPECC\./iu,'SAP.');}
+function recordedRiskNumber(value){
+  const raw=text(value);
+  return raw.match(/^(RAIT(?:COR|TOOL)\d+)/iu)?.[1]||raw;
+}
+function recordedControlNumber(value){
+  const raw=text(value).normalize('NFKC');
+  // A live catalog can expose the governed number as a decorated label, and
+  // some deployments expose an unrelated display value in controlNumber.
+  // Publish only a structurally provable family prefix + ordinal. The
+  // Operation must not know product-family aliases: the Worker combines this
+  // structural identity with the governed description inside the exact GRA.
+  // Whitespace-only separators remain unprovable because values such as
+  // "Control 15" are display labels, not stable catalog numbers.
+  const match=/^([\p{L}][\p{L}\p{N} /_-]*?)([.．_-])(\d{1,4})(?=\s*(?:[|｜]|[-–—:：]|$))/u.exec(raw);
+  if(!match)return '';
+  const prefix=match[1].toLocaleUpperCase('en-US').replace(/[^\p{L}\p{N}]+/gu,'');
+  if(!prefix)return '';
+  const numericOrdinal=Number(match[3]);
+  if(!Number.isSafeInteger(numericOrdinal)||numericOrdinal<1)return '';
+  const ordinal=String(numericOrdinal).padStart(2,'0');
+  return `${prefix}.${ordinal}`;
+}
 function catalogDisplayName(number, value) {
   const name = text(value);
   if (!number || normalizedLabel(name).startsWith(normalizedLabel(number))) return name;
   return `${number}｜${name}`;
+}
+function boundedCatalogIdentitySample(controlNumber,name){
+  const bounded=(value)=>text(value).normalize('NFKC')
+    .replace(/[\u0000-\u001f\u007f]/gu,' ')
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/giu,'[redacted-id]')
+    .replace(/\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+/giu,'[redacted-credential]')
+    .replace(/\b(?:api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|password|secret)\s*[:=]\s*\S+/giu,'[redacted-credential]')
+    .replace(/\s+/gu,' ').slice(0,160);
+  return {controlNumber:bounded(controlNumber),name:bounded(name)};
 }
 function riskRiskScopeLookupId(item) {
   const direct = optionalGuid(item && item.riskRiskScopeId);
@@ -752,7 +824,7 @@ async function generatedRiskIdentityCatalog(request, sdk) {
   ]);
   if(guid(assessment.id||assessment.riskAssessmentId,'Generated Risk assessment id')!==riskAssessmentId
     ||assessmentWorkspace(assessment)!==frozen.workspaceId) fail('Generated Risk catalog assessment identity or Workspace mismatch.');
-  const riskRows = catalogRows(riskPayload, 'plannedResponses', 'Risk catalog');
+  const riskRows = requireCreateCatalogCollection(riskPayload, 'plannedResponses', 'Risk catalog');
   const risks=riskRows.filter((item)=>item&&(item.riskId||item.id)).map((item)=>{
     const riskNumber=recordedRiskNumber(catalogNumber(item,['riskNumber','inkRiskNumber']));
     return {riskId:catalogEntryId(item,['riskId','id'],'riskId'),riskNumber,
@@ -774,10 +846,10 @@ async function riskControlCatalog(request, sdk) {
   if(guid(assessment.id||assessment.riskAssessmentId,'Risk-Control assessment id')!==riskAssessmentId
     ||assessmentWorkspace(assessment)!==frozen.workspaceId)fail('Risk-Control catalog assessment identity or Workspace mismatch.');
   const assessmentUpdatedOn=text(assessment.updatedOn);if(!assessmentUpdatedOn)fail('Risk-Control catalog assessment has no live updatedOn value.');
-  const riskRows=catalogRows(riskPayload,'plannedResponses','Risk catalog');
+  const riskRows=requireCreateCatalogCollection(riskPayload,'plannedResponses','Risk catalog');
   const risks=(await Promise.all(riskRows.filter((item)=>item&&(item.riskId||item.id)).map(async(item)=>{
     const riskId=catalogEntryId(item,['riskId','id'],'riskId');const riskRiskScopeId=riskRiskScopeLookupId(item);
-    const detail=await sdk.invokeStep('risk-detail',{riskRiskScopeId});const detailRows=catalogRows(detail,'planResponseRisk','Risk detail');
+    const detail=await sdk.invokeStep('risk-detail',{riskRiskScopeId});const detailRows=requireCreateCatalogCollection(detail,'planResponseRisk','Risk detail');
     const detailMatches=detailRows.filter((candidate)=>optionalGuid(candidate&&(candidate.riskId||candidate.id))===riskId);
     if(detailMatches.length!==1)fail('Risk detail did not return one exact planned-response Risk.');
     const detailedRisk=detailMatches[0];const scopeMatches=rows(detailedRisk.riskRiskScopes).filter((scope)=>optionalGuid(scope&&scope.id)===riskRiskScopeId);
@@ -792,17 +864,22 @@ async function riskControlCatalog(request, sdk) {
       assertion:assertion.assertion,assertionType:assertion.assertionType,
       updatedOn:text(item.updatedOn||item.updatedAt||detailedRisk.updatedOn||detailedRisk.updatedAt||assessmentUpdatedOn)};
   }))).filter((item)=>(item.riskNumber||item.name)&&item.assertion&&item.assertionType&&item.updatedOn);
-  const controlRows = catalogRows(controlPayload, 'controls', 'Control catalog');
-  const controls = controlRows.filter((item) => item && (item.controlId || item.id)).map((item) => {
-    const controlNumber = recordedControlNumber(catalogNumber(item, ['controlNumber']));
+  const controlRows = requireCreateCatalogCollection(controlPayload, 'controls', 'Control catalog');
+  const controlRecords = controlRows.filter((item) => item && (item.controlId || item.id)).map((item) => {
+    const rawControlNumber = catalogNumber(item, ['controlNumber']);
+    const rawControlName = item.name || item.controlName || item.title || item.description;
+    const controlNumber = recordedControlNumber(rawControlNumber);
     return { controlId: catalogEntryId(item, ['controlId', 'id'], 'controlId'), controlNumber,
-      name: catalogDisplayName(controlNumber, item.name || item.controlName || item.title || item.description) };
+      name: catalogDisplayName(controlNumber, rawControlName),
+      diagnosticIdentitySample: boundedCatalogIdentitySample(rawControlNumber,rawControlName) };
   }).filter((item) => item.controlNumber || item.name);
+  const controls=controlRecords.map(({diagnosticIdentitySample,...item})=>item);
   return { riskAssessmentId, risks, controls, diagnostics: {
     riskRows:riskRows.length,acceptedRisks:risks.length,controlRows:controlRows.length,acceptedControls:controls.length,
     riskNumbers:risks.map((item)=>item.riskNumber).filter(Boolean).sort(),
     classifications:[...new Set(risks.map((item)=>item.classification).filter(Boolean))].sort(),
     controlNumbers: controls.map((item) => item.controlNumber).filter(Boolean).sort(),
+    controlIdentitySamples: controlRecords.slice(0,8).map((item)=>item.diagnosticIdentitySample),
   } };
 }
 function generatedRiskMatches(catalog, riskName) {
@@ -817,7 +894,7 @@ function exactGeneratedRisk(catalog, riskName, expectedRiskId='') {
   return matches[0];
 }
 function governedRiskClassification(value){
-  const classification=text(value);if(!['Higher','Lower'].includes(classification))fail('Risk classification must be exactly Higher or Lower.');
+  const classification=text(value);if(!['Higher','Lower','ClassificationNA'].includes(classification))fail('Risk classification must be exactly Higher, Lower, or ClassificationNA.');
   return classification;
 }
 async function graPreflight(request, sdk) {
@@ -864,11 +941,105 @@ async function graPreflight(request, sdk) {
   return { found: true, item: detail, evidence: { directoryMatches: 1, assessmentId: indexed.assessmentId } };
 }
 function riskFactors(payload) { return rows(payload && payload.riskFactors); }
-function riskFactorByIdentity(payload, itemId) {
-  const match = /^SAP_ECC\.RF\.DISPLAY_ORDER_(\d{2})$/u.exec(text(itemId));
-  if (!match) fail('Risk Factor governance item identity is invalid.');
+const APP_IT_RISK_FACTOR_CATEGORY_NAME = 'IT风险评估（如果测试运行有效性）';
+function explicitScopedGuid(value, names, label) {
+  const present = names.map((name) => value && value[name]).filter((item) => Boolean(text(item)));
+  const ids = [...new Set(present.map((item) => guid(item, label)))];
+  if (ids.length > 1) fail(`${label} has conflicting explicit values.`);
+  return ids[0] || '';
+}
+function exactAppRiskFactorCategory(payload, riskAssessmentId, workspaceId) {
+  const observations = [];
+  for (const factor of riskFactors(payload)) {
+    const factorAssessmentId = explicitScopedGuid(factor, ['riskAssessmentId', 'riskFactorEvaluationId'], 'Risk Factor directory assessment id');
+    if (factorAssessmentId && factorAssessmentId !== riskAssessmentId) fail('Risk Factor directory contains an entry from another Risk Assessment.');
+    const factorWorkspaceId = explicitScopedGuid(factor, ['workspaceId', 'workspaceFacetId', 'facetId'], 'Risk Factor directory Workspace id');
+    if (factorWorkspaceId && factorWorkspaceId !== workspaceId) fail('Risk Factor directory contains an entry from another Workspace.');
+    const category = factor && factor.riskFactorGrouping;
+    if (!category || typeof category !== 'object' || Array.isArray(category)) continue;
+    const categoryName = normalizedLabel(category.name);
+    const categoryId = optionalGuid(category.id);
+    if (categoryName === normalizedLabel(APP_IT_RISK_FACTOR_CATEGORY_NAME) && !categoryId) {
+      fail('APP IT Risk Factor category id is not a valid GUID.');
+    }
+    if (categoryId) observations.push({ categoryId, categoryName, category });
+  }
+  const categoryIds = [...new Set(observations
+    .filter((item) => item.categoryName === normalizedLabel(APP_IT_RISK_FACTOR_CATEGORY_NAME))
+    .map((item) => item.categoryId))];
+  if (categoryIds.length !== 1) fail('APP IT Risk Factor category is absent or ambiguous in the authoritative Risk Assessment directory.');
+  const categoryId = categoryIds[0];
+  const matches = observations.filter((item) => item.categoryId === categoryId);
+  const deletedStates = new Set();
+  const applicableStates = new Set();
+  for (const item of matches) {
+    if (item.categoryName !== normalizedLabel(APP_IT_RISK_FACTOR_CATEGORY_NAME)) {
+      fail('APP IT Risk Factor category identity drifted within the authoritative directory.');
+    }
+    const explicitAssessmentId = explicitScopedGuid(item.category, ['riskAssessmentId', 'riskFactorEvaluationId'], 'APP IT Risk Factor category assessment id');
+    if (explicitAssessmentId && explicitAssessmentId !== riskAssessmentId) fail('APP IT Risk Factor category belongs to another Risk Assessment.');
+    const explicitWorkspaceId = explicitScopedGuid(item.category, ['workspaceId', 'workspaceFacetId', 'facetId'], 'APP IT Risk Factor category Workspace id');
+    if (explicitWorkspaceId && explicitWorkspaceId !== workspaceId) fail('APP IT Risk Factor category belongs to another Workspace.');
+    deletedStates.add(deletedEntity(item.category));
+    if (Object.prototype.hasOwnProperty.call(item.category, 'applicable')) {
+      if (typeof item.category.applicable !== 'boolean') fail('APP IT Risk Factor category directory has an invalid explicit applicable state.');
+      applicableStates.add(item.category.applicable);
+    }
+  }
+  if (deletedStates.size !== 1 || applicableStates.size > 1) {
+    fail('APP IT Risk Factor category identity drifted within the authoritative directory.');
+  }
+  if (deletedStates.has(true)) fail('APP IT Risk Factor category is deleted in the authoritative directory.');
+  const applicable = applicableStates.size === 1 ? [...applicableStates][0] : undefined;
+  return { categoryId, category: { id: categoryId, name: APP_IT_RISK_FACTOR_CATEGORY_NAME,
+    riskAssessmentId, workspaceId, ...(typeof applicable === 'boolean' ? { applicable } : {}) } };
+}
+function exactAppRiskFactorCategoryDetail(value, expected) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || deletedEntity(value)) fail('APP IT Risk Factor category detail is invalid or deleted.');
+  const categoryId = guid(value.id, 'APP IT Risk Factor category detail id');
+  if (categoryId !== expected.categoryId || normalizedLabel(value.name) !== normalizedLabel(APP_IT_RISK_FACTOR_CATEGORY_NAME)) {
+    fail('APP IT Risk Factor category detail identity/name mismatch.');
+  }
+  const explicitAssessmentId = optionalGuid(value.riskAssessmentId || value.riskFactorEvaluationId);
+  if (explicitAssessmentId && explicitAssessmentId !== expected.riskAssessmentId) fail('APP IT Risk Factor category detail belongs to another Risk Assessment.');
+  const explicitWorkspaceId = optionalGuid(value.workspaceId || value.workspaceFacetId || value.facetId);
+  if (explicitWorkspaceId && explicitWorkspaceId !== expected.workspaceId) fail('APP IT Risk Factor category detail belongs to another Workspace.');
+  if (typeof value.applicable !== 'boolean') fail('APP IT Risk Factor category detail has no authoritative applicable boolean.');
+  return { categoryId, categoryName: APP_IT_RISK_FACTOR_CATEGORY_NAME, applicable: value.applicable, updatedOn: text(value.updatedOn), detail: value };
+}
+async function readAppRiskFactorCategory(request, sdk, steps) {
+  const frozen = target(request);
+  const query = exact(request.query, ['riskAssessmentId', 'categoryId', 'categoryName', 'objectType'], 'APP IT Risk Factor category query');
+  const riskAssessmentId = guid(query.riskAssessmentId, 'query.riskAssessmentId');
+  const expectedCategoryId = text(query.categoryId) ? guid(query.categoryId, 'query.categoryId') : '';
+  if (text(query.objectType) !== 'Application' || normalizedLabel(query.categoryName) !== normalizedLabel(APP_IT_RISK_FACTOR_CATEGORY_NAME)) {
+    fail('APP IT Risk Factor category query is outside the signed Application-only contract.');
+  }
+  const assessment = await sdk.invokeStep(steps.assessment, { riskAssessmentId });
+  if (guid(assessment.id || assessment.riskAssessmentId, 'APP GRA id') !== riskAssessmentId
+    || assessmentWorkspace(assessment) !== frozen.workspaceId
+    || normalizedObjectType(assessment.type || assessment.itElementType || assessment.entityType || assessment.riskAssessmentType) !== 'Application'
+    || deletedEntity(assessment)) fail('APP IT Risk Factor category GRA identity/type/Workspace mismatch.');
+  const directory = await sdk.invokeStep(steps.directory, { riskAssessmentId });
+  const resolved = exactAppRiskFactorCategory(directory, riskAssessmentId, frozen.workspaceId);
+  if (expectedCategoryId && resolved.categoryId !== expectedCategoryId) fail('APP IT Risk Factor category identity drifted from the frozen plan.');
+  const detail = await sdk.invokeStep(steps.detail, { categoryId: resolved.categoryId });
+  const category = exactAppRiskFactorCategoryDetail(detail, {
+    categoryId: resolved.categoryId, riskAssessmentId, workspaceId: frozen.workspaceId
+  });
+  if (normalizedLabel(resolved.category.name) !== normalizedLabel(category.categoryName)
+    || (typeof resolved.category.applicable === 'boolean' && resolved.category.applicable !== category.applicable)) {
+    fail('APP IT Risk Factor category directory/detail state drifted during the authoritative read.');
+  }
+  return { ...category, riskAssessmentId, workspaceId: frozen.workspaceId, objectType: 'Application' };
+}
+function riskFactorByIdentity(payload, itemId, itemLabel) {
+  const match = /^APP\.RF\.DISPLAY_ORDER_(\d{2})$/u.exec(text(itemId));
+  const expectedLabel=normalizedLabel(itemLabel);
+  if (!match || !expectedLabel) fail('APP-generic Risk Factor governance identity is invalid.');
   const displayOrder = Number(match[1]);
-  const matches = riskFactors(payload).filter((item) => Number(item.displayOrder ?? item.order ?? item.sequence) === displayOrder);
+  const matches = riskFactors(payload).filter((item) => Number(item.displayOrder ?? item.order ?? item.sequence) === displayOrder
+    && [item.name,item.label,item.title,item.description].some((value)=>normalizedLabel(value)===expectedLabel));
   if (matches.length !== 1) fail('Risk Factor identity is absent or ambiguous.');
   return matches[0];
 }
@@ -894,26 +1065,59 @@ function associationScopes(value, output = []) {
   }
   return output;
 }
+function riskControlAssertionValues(scope) {
+  const committed = rows(scope && scope.controlRiskScopeAssertions)
+    .map((item) => item && typeof item === 'object' ? item.assertion : item)
+    .map(text).filter(Boolean);
+  if (committed.length) return [...new Set(committed)];
+  const selected = text(scope && scope.selectedAssertion);
+  if (selected) return [selected];
+  // Pack also returns every assertion available for the Risk scope in
+  // `assertions`; it is not proof that each option was selected.  Use that
+  // legacy shape only when no committed/selected assertion field exists.
+  return [...new Set(rows(scope && scope.assertions)
+    .map((item) => item && typeof item === 'object' ? item.assertion : item)
+    .map(text).filter(Boolean))];
+}
+function riskControlScopeMatches(scope, expected, boundControlId = '', boundAssertionType = '') {
+  if (!scope || scope.isEnabled === false || scope.enabled === false || scope.isDeleted === true) return false;
+  const explicitControlId=optionalGuid(scope.controlId||scope.planResponseControlId||scope.control?.id);
+  if ((boundControlId && boundControlId !== expected.controlId)
+    || (explicitControlId && explicitControlId !== expected.controlId)
+    || (!boundControlId && !explicitControlId)) return false;
+  const explicitRiskId=optionalGuid(scope.riskId||scope.risk?.id);
+  if (explicitRiskId !== expected.riskId) return false;
+  const scopeIds=[scope.id,scope.riskScopeId,scope.riskScope?.id]
+    .map(optionalGuid).filter(Boolean);
+  if (!scopeIds.includes(expected.riskScopeId)) return false;
+  const explicitRiskRiskScopeId=optionalGuid(scope.riskRiskScopeId);
+  if(explicitRiskRiskScopeId&&explicitRiskRiskScopeId!==expected.riskRiskScopeId)return false;
+  const assertionType=text(scope.assertionType||boundAssertionType);
+  if (assertionType !== expected.assertionType) return false;
+  const assertions=riskControlAssertionValues(scope);
+  return assertions.length===1&&assertions[0]===expected.assertion;
+}
 function hasRiskControl(detail, expected) {
-  const assertion = text(expected.assertion);
   const controls=[...rows(detail&&detail.planResponseSelectedControl),...rows(detail&&detail.planResponseControl)];
-  const matches=[];
   for(const control of controls){
     const controlId=optionalGuid(control&&(control.controlId||control.id));
-    if(controlId!==expected.controlId||control.enabled===false)continue;
-    for(const scope of rows(control&&control.currentRiskScopes)){
-      const assertions=rows(scope&&scope.assertions).map((item)=>text(item&&typeof item==='object'?item.assertion:item)).filter(Boolean);
-      if(optionalGuid(scope&&scope.riskId)===expected.riskId&&optionalGuid(scope&&scope.riskScopeId)===expected.riskScopeId
-        &&text(scope&&scope.assertionType)===expected.assertionType&&scope.isEnabled!==false
-        &&assertions.length===1&&assertions[0]===assertion)matches.push({control,scope});
-    }
+    if(controlId!==expected.controlId||control.enabled===false||control.isDeleted===true)continue;
+    const nestedScopes=[...rows(control.currentRiskScopes),...rows(control.controlRiskScopes),...rows(control.riskScopes)];
+    if(nestedScopes.some((scope)=>riskControlScopeMatches(scope,expected,controlId,text(control.assertionType))))return true;
   }
-  return matches.length === 1;
+  const rootScopes=[...rows(detail&&detail.controlRiskScopes),...rows(detail&&detail.riskControlScopes)];
+  return rootScopes.some((scope)=>riskControlScopeMatches(scope,expected));
+}
+async function readRiskControlWithV4Settling(sdk,riskRiskScopeId,expected){
+  const detail=await sdk.invokeStep('risk-control-detail',{riskRiskScopeId});
+  return{verified:hasRiskControl(detail,expected),detail};
 }
 
 function createOperationHandler() {
+  const readFlights = new Map();
   return Object.freeze({
-    run: async (operationId, request, sdk) => {
+    run: async (operationId, request, rawSdk) => {
+      const sdk = singleFlightReadSdk(rawSdk, readFlights);
       if (operationId === 'omnia.create-associate.authority.resolve.v1') return resolveAuthority(request, sdk);
       if (operationId === 'omnia.create-associate.risk-control.catalog.v1') return riskControlCatalog(request, sdk);
       if (operationId === 'omnia.create-associate.object.preflight.v1') return objectPreflight(request, sdk);
@@ -936,7 +1140,7 @@ function createOperationHandler() {
         }
         else if (payload.itElementType === 'Infrastructure') {
           exact(payload, [...common, 'description', 'typeId'], 'Create Infrastructure payload');
-          if (!['Database','OperatingSystem'].includes(payload.typeId)) fail('Create Infrastructure typeId must match the recorded DB/OS contract.');
+          if (!['Database','OperatingSystem','Network'].includes(payload.typeId)) fail('Create Infrastructure typeId must match the recorded DB/OS/DCNO contract.');
         }
         else fail('Unsupported create object type.');
         assertScope(request, sdk, payload);
@@ -962,7 +1166,7 @@ function createOperationHandler() {
         const value=exactPatch(request,'patch_object_settings');
         const payload=exact(value,['engagementId','workspaceId','objectId','typeId','isRelevant','isDataAvailable','mode'],'IT Element settings payload');
         assertScope(request,sdk,payload); const objectId=guid(payload.objectId,'payload.objectId');
-        if(!text(payload.typeId)||payload.isRelevant!==false||typeof payload.isDataAvailable!=='boolean'||!['create_bootstrap','existing_with_token','recover_owned_create_bootstrap'].includes(payload.mode)) fail('IT Element settings do not match the frozen Application contract.');
+        if(!text(payload.typeId)||payload.isRelevant!==true||typeof payload.isDataAvailable!=='boolean'||!['create_bootstrap','existing_with_token','recover_owned_create_bootstrap'].includes(payload.mode)) fail('IT Element settings do not match the frozen Application contract.');
         const before=await readApplicationSettings(sdk,'object-settings-mutation-read','object-settings-mutation-workspace',objectId,target(request).workspaceId,'IT Element settings mutation pre-read');
         const previousToken=settingsConcurrencyToken(before,payload.mode==='existing_with_token','IT Element settings mutation pre-read');
         if(['create_bootstrap','recover_owned_create_bootstrap'].includes(payload.mode)&&previousToken) fail('Application settings bootstrap is only allowed before a concurrency token exists.');
@@ -971,13 +1175,21 @@ function createOperationHandler() {
           if(!empty(before.typeId)||!empty(before.isRelevant)||!empty(before.isDataAvailable)||!Array.isArray(before.concurrencyTabs)||before.concurrencyTabs.length!==0)fail('Owned-create Application settings recovery requires all settings and concurrency tabs to remain empty.');
         }
         const typePatch=[
-          {op:'replace',path:'/typeId',value:payload.typeId},{op:'replace',path:'/isRelevant',value:false},
+          {op:'replace',path:'/typeId',value:payload.typeId},{op:'replace',path:'/isRelevant',value:true},
           {op:'replace',path:'/concurrencyTabId',value:501},
           ...(['create_bootstrap','recover_owned_create_bootstrap'].includes(payload.mode)?[{op:'replace',path:'/concurrencyTabUpdatedOn'}]:[{op:'replace',path:'/concurrencyTabUpdatedOn',value:previousToken}])
         ];
-        await sdk.invokeStep('object-settings-type-patch',{objectId},typePatch);
-        const afterType=await readApplicationSettings(sdk,'object-settings-mutation-read','object-settings-mutation-workspace',objectId,target(request).workspaceId,'IT Element settings type/relevance read-back');
-        if(text(afterType.typeId)!==text(payload.typeId)||afterType.isRelevant!==false) fail('Application settings type/relevance read-back differs from the frozen plan.');
+        const typePatchResponse=await sdk.invokeStep('object-settings-type-patch',{objectId},typePatch);
+        const responseObjectId=optionalGuid(typePatchResponse&&(typePatchResponse.id||typePatchResponse.itElementId));
+        if(responseObjectId&&responseObjectId!==objectId)fail('IT Element settings type/relevance PATCH returned a different object identity.');
+        let afterType=null;
+        if(responseObjectId===objectId&&!deletedEntity(typePatchResponse)
+          &&text(typePatchResponse.itElementType||typePatchResponse.elementType||typePatchResponse.type)==='Application'
+          &&text(typePatchResponse.typeId)===text(payload.typeId)&&typePatchResponse.isRelevant===true){
+          try{settingsConcurrencyToken(typePatchResponse,true,'IT Element settings type/relevance PATCH response');afterType=typePatchResponse;}catch{}
+        }
+        if(!afterType)afterType=await readApplicationSettings(sdk,'object-settings-mutation-read','object-settings-mutation-workspace',objectId,target(request).workspaceId,'IT Element settings type/relevance read-back');
+        if(text(afterType.typeId)!==text(payload.typeId)||afterType.isRelevant!==true) fail('Application settings type/relevance read-back differs from the frozen plan.');
         const freshToken=settingsConcurrencyToken(afterType,true,'IT Element settings type/relevance read-back');
         if(previousToken&&freshToken===previousToken) fail('Application settings type/relevance PATCH did not produce a fresh concurrency token.');
         return sdk.invokeStep('object-settings-data-patch',{objectId},[
@@ -1027,7 +1239,7 @@ function createOperationHandler() {
         const expectedEntityId=guid(query.entityId,'query.entityId');
         const kindContracts=Object.values(GRA_KIND_CONTRACT).filter((item)=>item.objectType===text(query.itElementType));
         const expectedTypeIds=[...new Set(kindContracts.map((item)=>String(item.typeId)))];
-        if(!kindContracts.length||expectedTypeIds.length!==1||catalogId(query.typeId,'query.typeId')!==expectedTypeIds[0]) fail('GRA read-back query type does not match the governed APP/DB/OS/TOOL contract.');
+        if(!kindContracts.length||expectedTypeIds.length!==1||catalogId(query.typeId,'query.typeId')!==expectedTypeIds[0]) fail('GRA read-back query type does not match the governed APP/DB/OS/TOOL/DCNO contract.');
         const result = await sdk.invokeStep('gra-readback', { riskAssessmentId });
         const detailEntityCandidates=assessmentEntityCandidates(result,'GRA read-back',query.itElementType,query.inkContentId,expectedEntityId);
         let observedEntityId=detailEntityCandidates[0]||'';
@@ -1072,20 +1284,56 @@ function createOperationHandler() {
           : result.itElementRaitConclusionLevelId || result.itElementRaitConclusionLevelName;
         return { verified: text(observed) === text(query.value), observed, riskAssessmentId };
       }
+      if (operationId === 'omnia.create-associate.risk-factor-category.preflight.v1') {
+        return readAppRiskFactorCategory(request, sdk, {
+          assessment: 'risk-factor-category-assessment-read', directory: 'risk-factor-category-directory', detail: 'risk-factor-category-read'
+        });
+      }
+      if (operationId === 'omnia.create-associate.risk-factor-category.patch.v1') {
+        const value = exactPatch(request, 'enable_app_it_risk_assessment_category');
+        const payload = exact(value, ['engagementId', 'workspaceId', 'riskAssessmentId', 'categoryId', 'categoryName', 'objectType'], 'APP IT Risk Factor category payload');
+        assertScope(request, sdk, payload);
+        const riskAssessmentId = guid(payload.riskAssessmentId, 'payload.riskAssessmentId');
+        const categoryId = guid(payload.categoryId, 'payload.categoryId');
+        if (text(payload.objectType) !== 'Application' || normalizedLabel(payload.categoryName) !== normalizedLabel(APP_IT_RISK_FACTOR_CATEGORY_NAME)) {
+          fail('APP IT Risk Factor category payload is outside the signed Application-only contract.');
+        }
+        const current = await readAppRiskFactorCategory({ target: request.target, query: {
+          riskAssessmentId, categoryId, categoryName: payload.categoryName, objectType: payload.objectType
+        } }, sdk, {
+          assessment: 'risk-factor-category-mutation-assessment-read', directory: 'risk-factor-category-mutation-directory', detail: 'risk-factor-category-mutation-read'
+        });
+        if (!current.updatedOn) fail('APP IT Risk Factor category has no authoritative updatedOn concurrency token.');
+        const response = await sdk.invokeStep('risk-factor-category-patch', { categoryId }, [
+          { op: 'test', path: '/updatedOn', value: current.updatedOn },
+          { op: 'replace', path: '/applicable', value: true }
+        ]);
+        const applied = exactAppRiskFactorCategoryDetail(response, {
+          categoryId, riskAssessmentId, workspaceId: current.workspaceId
+        });
+        if (applied.applicable !== true) fail('APP IT Risk Factor category mutation response did not enable applicable.');
+        return { ...applied, riskAssessmentId, workspaceId: current.workspaceId, objectType: 'Application' };
+      }
+      if (operationId === 'omnia.create-associate.risk-factor-category.reconcile.v1') {
+        const observed = await readAppRiskFactorCategory(request, sdk, {
+          assessment: 'risk-factor-category-assessment-read', directory: 'risk-factor-category-directory', detail: 'risk-factor-category-read'
+        });
+        return { ...observed, verified: observed.applicable === true };
+      }
       if (operationId === 'omnia.create-associate.risk-factor.preflight.v1') {
-        target(request); const query = exact(request.query, ['riskAssessmentId', 'itemId', 'selectionMode'], 'Risk Factor query');
+        target(request); const query = exact(request.query, ['riskAssessmentId', 'itemId', 'itemLabel', 'selectionMode', 'contentName'], 'Risk Factor query');
         const riskAssessmentId = guid(query.riskAssessmentId, 'query.riskAssessmentId');
         const payload = await sdk.invokeStep('risk-factor-directory', { riskAssessmentId });
-        const factor = riskFactorByIdentity(payload, query.itemId); const factorId = guid(factor.id, 'resolved factor.id');
+        const factor = riskFactorByIdentity(payload, query.itemId, query.itemLabel); const factorId = guid(factor.id, 'resolved factor.id');
         const selected = spectrumLevel(factor, query.selectionMode);
         return { itemId: query.itemId, factorId, applicable: factor.applicable !== false, current: factor.riskLevel, selected, spectrum: factor.riskLevelSpectrum };
       }
       if (operationId === 'omnia.create-associate.risk-factor.patch.v1') {
         const value = exactPatch(request, 'patch_risk_factor');
-        const payload = exact(value, ['engagementId','workspaceId','riskAssessmentId','itemId','selectionMode','factorId','selectedValue','spectrumDigest'], 'Risk Factor payload');
+        const payload = exact(value, ['engagementId','workspaceId','riskAssessmentId','itemId','itemLabel','selectionMode','contentName','factorId','selectedValue','spectrumDigest'], 'Risk Factor payload');
         assertScope(request, sdk, payload); const riskAssessmentId = guid(payload.riskAssessmentId, 'payload.riskAssessmentId');
         const directory = await sdk.invokeStep('risk-factor-directory', { riskAssessmentId });
-        const factor = riskFactorByIdentity(directory, payload.itemId);
+        const factor = riskFactorByIdentity(directory, payload.itemId, payload.itemLabel);
         if (factor.applicable === false) fail('Risk Factor is not applicable and must not be written.');
         const factorId = guid(factor.id, 'resolved factor.id');
         const selected = spectrumLevel(factor, payload.selectionMode);
@@ -1093,9 +1341,9 @@ function createOperationHandler() {
         return sdk.invokeStep('risk-factor-patch', { factorId }, [{ op: 'replace', path: '/riskLevel', value: selected }]);
       }
       if (operationId === 'omnia.create-associate.risk-factor.reconcile.v1') {
-        target(request); const query = exact(request.query, ['riskAssessmentId', 'itemId', 'selectionMode'], 'Risk Factor readback query');
+        target(request); const query = exact(request.query, ['riskAssessmentId', 'itemId', 'itemLabel', 'selectionMode', 'contentName'], 'Risk Factor readback query');
         const riskAssessmentId = guid(query.riskAssessmentId, 'query.riskAssessmentId');
-        const factor = riskFactorByIdentity(await sdk.invokeStep('risk-factor-directory', { riskAssessmentId }), query.itemId);
+        const factor = riskFactorByIdentity(await sdk.invokeStep('risk-factor-directory', { riskAssessmentId }), query.itemId, query.itemLabel);
         const expected = spectrumLevel(factor, query.selectionMode);
         return { verified: factor.applicable !== false && Number(factor.riskLevel?.value ?? factor.riskLevel) === Number(expected.value), expected, factor };
       }
@@ -1199,32 +1447,55 @@ function createOperationHandler() {
       }
       if (operationId === 'omnia.create-associate.risk-control.associate.v1') {
         const value = exactPatch(request, 'associate_risk_control');
-        const payload = exact(value, ['engagementId','workspaceId','riskAssessmentId','riskName','controlName','riskClassification','riskId','updatedOn','isPurgeControlHiddenData','controlRiskScopes'], 'Risk-Control association payload');
+        const payload = exact(value, ['engagementId','workspaceId','riskAssessmentId','riskRiskScopeId','riskName','controlName','riskClassification','riskId','updatedOn','isPurgeControlHiddenData','controlRiskScopes'], 'Risk-Control association payload');
         assertScope(request, sdk, payload); const riskId = guid(payload.riskId, 'payload.riskId');
+        const riskAssessmentId=guid(payload.riskAssessmentId,'payload.riskAssessmentId');
+        const riskRiskScopeId=guid(payload.riskRiskScopeId,'payload.riskRiskScopeId');
         if (!Array.isArray(payload.controlRiskScopes) || payload.controlRiskScopes.length !== 1) fail('Risk-Control command must contain exactly one scope.');
         const scope = exact(payload.controlRiskScopes[0], ['controlId', 'riskScopeId', 'assertionType', 'riskId', 'assertions'], 'Risk-Control scope');
         if (guid(scope.riskId, 'scope.riskId') !== riskId || !Array.isArray(scope.assertions) || scope.assertions.length !== 1
           || !text(scope.assertionType) || !text(scope.assertions[0]?.assertion)) fail('Risk-Control scope identity or assertion is invalid.');
         const controlId=guid(scope.controlId,'scope.controlId'); const riskScopeId=guid(scope.riskScopeId,'scope.riskScopeId');
-        const catalog=await riskControlCatalog({target:request.target,riskAssessmentId:payload.riskAssessmentId},sdk);
-        const riskNumber=text(payload.riskName).split(/[｜|]/u,1)[0]; const controlNumber=text(payload.controlName).split(/[｜|]/u,1)[0];
-        const riskMatches=catalog.risks.filter((item)=>(item.riskNumber?normalizedLabel(item.riskNumber)===normalizedLabel(riskNumber):normalizedLabel(item.name)===normalizedLabel(payload.riskName))
-          &&normalizedLabel(item.classification)===normalizedLabel(payload.riskClassification));
-        const controlMatches=catalog.controls.filter((item)=>item.controlNumber?normalizedLabel(item.controlNumber)===normalizedLabel(controlNumber):normalizedLabel(item.name)===normalizedLabel(payload.controlName));
-        if(riskMatches.length!==1||controlMatches.length!==1||riskMatches[0].riskId!==riskId||riskMatches[0].riskScopeId!==riskScopeId
-          ||riskMatches[0].assertionType!==text(scope.assertionType)||riskMatches[0].assertion!==text(scope.assertions[0]?.assertion)
-          ||controlMatches[0].controlId!==controlId||riskMatches[0].updatedOn!==text(payload.updatedOn)) fail('Risk-Control mutation identity differs from the signed live catalog and logical frozen intent.');
+        const [riskPayload,detail,validation]=await Promise.all([
+          sdk.invokeStep('risk-catalog',{riskAssessmentId}),
+          sdk.invokeStep('risk-control-detail',{riskRiskScopeId}),
+          sdk.invokeStep('risk-control-validation',{riskId,riskClassification:text(payload.riskClassification)},
+            {riskId,operation:'AddAssociation',controlIds:[controlId]})
+        ]);
+        if(!Array.isArray(validation)||validation.some((item)=>!item||typeof item!=='object'||typeof item.showPopup!=='boolean'))failBeforeEffect('Risk-Control hidden-data validation response is not interpretable.');
+        if(rows(validation).some((item)=>item.showPopup===true)&&payload.isPurgeControlHiddenData!==true)failBeforeEffect('Risk-Control association requires hidden-data purge but the signed plan forbids it.');
+        const listedRows=requireCreateCatalogCollection(riskPayload,'plannedResponses','Risk catalog');
+        const listed=listedRows.filter((item)=>optionalGuid(item&&(item.riskId||item.id))===riskId);
+        const detailRows=requireCreateCatalogCollection(detail,'planResponseRisk','Risk detail');
+        const detailed=detailRows.filter((item)=>optionalGuid(item&&(item.riskId||item.id))===riskId);
+        if(listed.length!==1||detailed.length!==1||riskRiskScopeLookupId(listed[0])!==riskRiskScopeId)failBeforeEffect('Risk-Control action-time Risk identity is absent or ambiguous.');
+        const scopeMatches=rows(detailed[0].riskRiskScopes).filter((item)=>optionalGuid(item&&item.id)===riskRiskScopeId&&optionalGuid(item&&item.riskScopeId)===riskScopeId);
+        if(scopeMatches.length!==1)failBeforeEffect('Risk-Control action-time scope identity changed.');
+        const assertion=catalogAssertions({...detailed[0],riskRiskScopes:scopeMatches});
+        const riskNumber=text(payload.riskName).split(/[｜|]/u,1)[0];
+        const liveRiskNumber=recordedRiskNumber(catalogNumber(detailed[0],['riskNumber','inkRiskNumber'])||catalogNumber(listed[0],['riskNumber','inkRiskNumber']));
+        const liveClassification=text(detailed[0].classificationType||detailed[0].riskClassification||detailed[0].classification||detailed[0].classificationName
+          ||listed[0].classificationType||listed[0].riskClassification||listed[0].classification||listed[0].classificationName);
+        const currentUpdatedOn=text(listed[0].updatedOn||listed[0].updatedAt||detailed[0].updatedOn||detailed[0].updatedAt);
+        if(normalizedLabel(liveRiskNumber)!==normalizedLabel(riskNumber)||normalizedLabel(liveClassification)!==normalizedLabel(payload.riskClassification)
+          ||assertion.assertionType!==text(scope.assertionType)||assertion.assertion!==text(scope.assertions[0]?.assertion)||!currentUpdatedOn) {
+          failBeforeEffect('Risk-Control mutation identity differs from the signed live Risk and logical frozen intent.');
+        }
+        const expected={riskRiskScopeId,riskId,controlId,riskScopeId,assertionType:text(scope.assertionType),assertion:text(scope.assertions[0]?.assertion)};
+        if(hasRiskControl(detail,expected))return{alreadyAssociated:true,riskId,controlId,riskRiskScopeId};
         return sdk.invokeStep('risk-control-associate', {}, {
           controlRiskScopes: payload.controlRiskScopes, riskId: payload.riskId,
-          updatedOn: payload.updatedOn, isPurgeControlHiddenData: payload.isPurgeControlHiddenData
+          // Every successful association advances the Risk concurrency token.
+          // The signed logical identity remains frozen, while the action-time
+          // catalog supplies the only current token for this exact Risk.
+          updatedOn: currentUpdatedOn, isPurgeControlHiddenData: payload.isPurgeControlHiddenData
         });
       }
       if (operationId === 'omnia.create-associate.risk-control.reconcile.v1') {
         target(request); const query = exact(request.query, ['riskRiskScopeId', 'riskScopeId', 'riskId', 'controlId', 'assertionType', 'assertion'], 'Risk-Control readback query');
         const riskRiskScopeId=guid(query.riskRiskScopeId,'query.riskRiskScopeId');
-        const expected = { riskId: guid(query.riskId, 'query.riskId'), controlId: guid(query.controlId, 'query.controlId'), riskScopeId: guid(query.riskScopeId, 'query.riskScopeId'), assertionType:text(query.assertionType), assertion: text(query.assertion) };
-        const detail = await sdk.invokeStep('risk-control-detail', { riskRiskScopeId });
-        return { verified: hasRiskControl(detail, expected), detail };
+        const expected = { riskRiskScopeId, riskId: guid(query.riskId, 'query.riskId'), controlId: guid(query.controlId, 'query.controlId'), riskScopeId: guid(query.riskScopeId, 'query.riskScopeId'), assertionType:text(query.assertionType), assertion: text(query.assertion) };
+        return readRiskControlWithV4Settling(sdk,riskRiskScopeId,expected);
       }
       fail(`Unsupported signed Operation: ${operationId}`);
     }

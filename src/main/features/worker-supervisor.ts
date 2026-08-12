@@ -44,6 +44,7 @@ export interface FeatureWorkerManagedRuntime {
   pythonEntry: string;
   packageRoot: string;
   tempRoot: string;
+  storePath: string;
 }
 
 interface InvocationRecoveryContext {
@@ -87,7 +88,8 @@ export class FeatureWorkerSupervisor {
           OMNIA_MANAGED_PYTHON_EXECUTABLE: this.managedRuntime.pythonExecutable,
           OMNIA_MANAGED_PYTHON_ENTRY: this.managedRuntime.pythonEntry,
           OMNIA_FEATURE_PACKAGE_ROOT: this.managedRuntime.packageRoot,
-          OMNIA_FEATURE_TEMP_ROOT: this.managedRuntime.tempRoot
+          OMNIA_FEATURE_TEMP_ROOT: this.managedRuntime.tempRoot,
+          OMNIA_FEATURE_STORE_PATH: this.managedRuntime.storePath
         } : {})
       },
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
@@ -176,12 +178,20 @@ export class FeatureWorkerSupervisor {
   private async handleMessage(message: any): Promise<void> {
     if (!message || message.schemaVersion !== 'omnia.feature-worker-ipc/v1') return;
     if (message.type === 'port_call') {
+      const invocationId = String(message.invocationId || '');
+      if (!invocationId || !this.invocationMutation.has(invocationId)) {
+        this.child?.send({
+          schemaVersion: 'omnia.feature-worker-ipc/v1', type: 'port_result', id: message.id, ok: false,
+          error: { code: 'FEATURE.INVOCATION_CLOSED', message: 'The originating Feature invocation is no longer active.', retryable: false }
+        });
+        return;
+      }
       const context: FeatureWorkerPortContext = {
         featureId: this.featureId,
         featureVersion: this.featureVersion,
-        allowMutation: this.invocationMutation.get(String(message.invocationId)) === true,
-        ...(this.invocationContexts.get(String(message.invocationId))
-          ? { interactionContext: this.invocationContexts.get(String(message.invocationId))! }
+        allowMutation: this.invocationMutation.get(invocationId) === true,
+        ...(this.invocationContexts.get(invocationId)
+          ? { interactionContext: this.invocationContexts.get(invocationId)! }
           : {})
       };
       try {

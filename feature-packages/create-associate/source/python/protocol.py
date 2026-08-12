@@ -11,10 +11,21 @@ from typing import Any
 
 from canonical import canonical_bytes
 try:
-    from __main__ import parse_workbook
+    from __main__ import parse_workbook, validate_ir
 except ImportError:
-    from engine import parse_workbook
+    import importlib.util
+    from pathlib import Path
+
+    _engine_path = Path(__file__).with_name('create-associate-engine.py')
+    _engine_spec = importlib.util.spec_from_file_location('create_associate_feature_engine', _engine_path)
+    if _engine_spec is None or _engine_spec.loader is None:
+        raise ImportError('Create/associate Feature engine entry is unavailable.')
+    _engine_module = importlib.util.module_from_spec(_engine_spec)
+    _engine_spec.loader.exec_module(_engine_module)
+    parse_workbook = _engine_module.parse_workbook
+    validate_ir = _engine_module.validate_ir
 from errors import EngineError, require
+from plan_ir import build_plan_ir
 from security import AuditPolicy, MAX_ARTIFACT_BYTES
 from workbook_compile import compile_runtime_workbook
 
@@ -47,7 +58,7 @@ class Sidecar:
                 "protocol": SCHEMA, "pythonVersion": platform.python_version(),
                 "networkPolicy": "deny", "userSite": False, "maxFrameBytes": MAX_FRAME_BYTES,
                 "binaryTransfer": "managed_artifact_handle",
-                "capabilities": ["parse_workbook", "compile_workbook"],
+                "capabilities": ["parse_workbook", "validate_ir", "build_plan_ir", "compile_workbook"],
             }
         require(self.hello_received, "PROTOCOL.HELLO_REQUIRED", "hello must precede all other frames.")
         if frame_type == "heartbeat":
@@ -66,6 +77,12 @@ class Sidecar:
         if operation == "parse_workbook":
             workbook = self.policy.read(payload.get("workbookHandle"), max_bytes=64 * 1024 * 1024)
             result = parse_workbook(workbook, source_artifact_id=str(payload.get("sourceArtifactId") or ""), governance=_json_value(self.policy, payload, "governance"))
+            return self._deliver(request_id, result, payload.get("resultHandle"))
+        if operation == "validate_ir":
+            result = validate_ir(_json_value(self.policy, payload, "parsed"))
+            return self._deliver(request_id, result, payload.get("resultHandle"))
+        if operation == "build_plan_ir":
+            result = build_plan_ir(parsed=_json_value(self.policy, payload, "parsed"), governance=_json_value(self.policy, payload, "governance"))
             return self._deliver(request_id, result, payload.get("resultHandle"))
         if operation == "compile_workbook":
             base = self.policy.read(payload.get("baseWorkbookHandle"), max_bytes=64 * 1024 * 1024)

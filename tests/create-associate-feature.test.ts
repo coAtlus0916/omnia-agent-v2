@@ -261,6 +261,21 @@ test('processing persists source and planned inherited provenance while invalid 
   assert.equal(noUserData.issues.some((item:any)=>item.fieldKey.includes('P1.APP.IT.IS_DATA_AVAILABLE')),false);assert.ok(noUserData.candidates.some((item:any)=>item.canonicalFieldId==='P1.APP.IT.IS_DATA_AVAILABLE'&&item.valueKind==='rule_default'&&item.value===false));
 });
 
+test('live APP-edge validation preserves the inherited-field pre-Return verification gate',()=>{
+  const candidate:any={
+    value:'Lower',status:'accepted',valueKind:'inherited',revision:1,
+    provenance:{sourceArtifactId:'source-artifact-1',rowKey:'DB.1',derivationRule:'planned_infrastructure_rait_from_app_edges:v1;remote_verification_required_before_return'}
+  };
+  const sourceApps=[{sourceType:'external',rowKey:'',elementId:'APP-1',workspaceId:'workspace-1',objectId:'object-1',riskAssessmentId:'gra-1',rait:'Higher'}];
+  worker.applyLiveVerifiedInfrastructureInheritance(candidate,sourceApps,'Higher');
+  assert.equal(candidate.value,'Higher');
+  assert.equal(candidate.revision,2);
+  assert.deepEqual(candidate.provenance.sourceApps,sourceApps);
+  assert.match(candidate.provenance.derivationRule,/live_verified_app_edges/u);
+  assert.match(candidate.provenance.derivationRule,/remote_verification_required_before_return/u);
+  assert.equal(candidate.provenance.sourceArtifactId,'source-artifact-1','live read-back must not impersonate a Run evidence artifact');
+});
+
 test('Core Review commit atomically persists element ID, GRA name and APP description derived revisions',()=>{
   const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'omnia-derived-review-'));const paths=resolveProductPaths(temporary);const database=new CoreDatabase(paths.database,cipher);const manager=new FeaturePackageManager(database.db,paths);const store=new FeatureRuntimeStore(database.db,paths);const context={featureId:'omnia.create-associate',featureVersion:'0.2.0',allowMutation:false};
   try{

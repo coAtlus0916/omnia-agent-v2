@@ -407,6 +407,16 @@ function normalizeRait(value) {
   const normalized=String(value||'').normalize('NFKC').trim().toLocaleLowerCase('en-US');
   return normalized==='higher'?'Higher':normalized==='lower'?'Lower':String(value||'').normalize('NFKC').trim();
 }
+function applyLiveVerifiedInfrastructureInheritance(candidate,sourceApps,inheritedMode){
+  if(candidate.value!==inheritedMode||candidate.status!=='accepted')candidate.revision=Number(candidate.revision||0)+1;
+  candidate.value=inheritedMode;candidate.status='accepted';candidate.valueKind='inherited';
+  candidate.provenance={
+    ...(candidate.provenance||{}),
+    sourceApps,
+    derivationRule:'live_verified_app_edges:any_higher_else_all_lower:v1;remote_verification_required_before_return'
+  };
+  return candidate;
+}
 function applicationIdentityRequest(elementId,workspaceId,rait,targetIdentityKey='') {
   const externalId=String(elementId||'').normalize('NFC').trim();
   const normalizedRait=normalizeRait(rait);
@@ -1227,10 +1237,7 @@ function createFeatureWorker(dependencies) {
             row.inheritanceDecision={schemaVersion:'omnia.create-associate.infrastructure-rait-decision/v1',policy:'any_higher_else_all_lower',sourceModes:sourceApps.map((source)=>({rowKey:source.rowKey,elementId:source.elementId,rait:source.rait})),mixedSources:modes.length>1,result:inheritedMode,message:modes.length>1?'关联 APP 的 RAIT 不一致，已按 Higher 优先自动设为 Higher。':`已从精确关联 APP 继承 ${inheritedMode}。`};
             row.fields['Inherited System Risk Classification']=inheritedMode;delete row.pendingExternalInheritance;
             const inheritedCandidate=(checkpoint.parsed.candidates||[]).find((candidate)=>candidate.provenance?.rowKey===row.rowKey&&candidate.canonicalFieldId===`P1.${row.kind}.GRA.RAIT_CONCLUSION`);
-            if(inheritedCandidate){
-              if(inheritedCandidate.value!==inheritedMode||inheritedCandidate.status!=='accepted')inheritedCandidate.revision=Number(inheritedCandidate.revision||0)+1;
-              inheritedCandidate.value=inheritedMode;inheritedCandidate.status='accepted';inheritedCandidate.valueKind='inherited';inheritedCandidate.provenance={...(inheritedCandidate.provenance||{}),sourceApps,derivationRule:'live_verified_app_edges:any_higher_else_all_lower:v1'};
-            }
+            if(inheritedCandidate)applyLiveVerifiedInfrastructureInheritance(inheritedCandidate,sourceApps,inheritedMode);
           }
           if(modes.length>1){
             mixedRaitWarnings+=1;
@@ -2706,5 +2713,5 @@ function createFeatureWorker(dependencies) {
   });
 }
 
-module.exports = { createFeatureWorker, parseV8, zipEntries, V8_SHA256,AI_REVIEW_DISPLAY_LANGUAGE,AI_REVIEW_LANGUAGE_VERSION,isChineseAiReviewDisplayText,assertChineseAiReviewDisplayText,aiReviewItemUsesChineseDisplayText,assertAiReviewOutputUsesChineseDisplayText,deriveGraName,validationPresentation,reviewPresentation,reviewBlocked,freezeAppDataAvailability,resolveFrozenAppDataAvailability,workflowSurface,normalizeRait,applicationIdentityRequest,inspectApplicationIdentity,RETURN_OPERATIONS,
+module.exports = { createFeatureWorker, parseV8, zipEntries, V8_SHA256,AI_REVIEW_DISPLAY_LANGUAGE,AI_REVIEW_LANGUAGE_VERSION,isChineseAiReviewDisplayText,assertChineseAiReviewDisplayText,aiReviewItemUsesChineseDisplayText,assertAiReviewOutputUsesChineseDisplayText,deriveGraName,validationPresentation,reviewPresentation,reviewBlocked,freezeAppDataAvailability,resolveFrozenAppDataAvailability,workflowSurface,normalizeRait,applyLiveVerifiedInfrastructureInheritance,applicationIdentityRequest,inspectApplicationIdentity,RETURN_OPERATIONS,
   buildFrozenDependencyGraph,dependencyBlockedByFailure,returnExecutionPolicy,aiReviewEligibleRows,frozenStageNodes,freezePlanCapabilities,frozenReturnIntents,assertReturnPlanCapabilities,authorityContentNameFor,governedCatalogDescription,catalogIdentityEvidenceGaps,riskControlCatalogFingerprint,catalogControlMatches,unresolvedCatalogRelations,workflowNavigationActions,returnSurface,forceCancelReturnRun,closeRunForFreshStart };

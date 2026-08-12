@@ -1,4 +1,8 @@
-﻿# 0.2.137 / sequence 139
+﻿# 0.2.138 / sequence 140
+
+Version 0.2.138 preserves the explicit pre-Return remote-verification gate after live APP-edge validation updates an inherited infrastructure RAIT field. Live validation may refine the inherited Higher/Lower value, but it cannot relabel the source workbook as verified Run evidence or remove the mandatory Return read-back boundary.
+
+## 0.2.137 / sequence 139
 
 Version 0.2.137 gives every per-target relationship warning a deterministic distinct identity. It also safely projects distinct compatibility identities when reopening a pre-0.2.137 Run whose persisted warning records reused one issue ID, so an existing upload can be revalidated without deleting or replaying the Run.
 

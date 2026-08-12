@@ -5,8 +5,8 @@ import path from 'node:path';
 const root = path.resolve(import.meta.dirname, '..');
 const source = path.join(root, 'feature-packages', 'recording', 'source');
 const output = path.join(root, 'feature-packages', 'recording', 'candidates');
-const version = '0.4.20';
-const sequence = 33;
+const version = '0.4.21';
+const sequence = 34;
 const legacyOperationDigests = [
   'sha256:27218281da622b4bf3ec7ae64fa97e4f5cc3988a34abf659aff415bc71bb5d0f',
   'sha256:671ce107badb4d94600af7290c2b08c922088a2e8e2f56cd9d2d2f75869480db',
@@ -85,11 +85,12 @@ const manifest = {
   contractsPath: 'contracts/feature-runtime.json', implementationMapPath: 'contracts/implementation-map.json', testsManifestPath: 'tests/manifest.json',
   recoveryCompatibility: {
     schemaVersion: 'omnia.feature-recovery-compatibility/v1', mode: 'frozen_input_finalize',
-    sourceFeatureVersions: ['0.4.16', '0.4.17', '0.4.18', '0.4.19'], actionId: 'retry-finalization'
+    sourceFeatureVersions: ['0.4.16', '0.4.17', '0.4.18', '0.4.19', '0.4.20'], actionId: 'retry-finalization'
   },
   navigation: {
-    groups: [],
-    leaves: [{ id: 'recording', parentId: '', level: 2, label: '录制', order: 10, featureId: 'omnia.recording', featureVersion: version, route: 'feature:omnia.recording/workbench' }]
+    groups: [{ id: 'other', parentId: null, level: 1, label: '其他', order: 90 }],
+    leaves: [{ id: 'recording', parentId: 'other', level: 2, label: '录制', order: 10,
+      featureId: 'omnia.recording', featureVersion: version, route: 'feature:omnia.recording/workbench' }]
   }
 };
 const surface = {

@@ -106,8 +106,8 @@ test('0.4.19 to 0.4.20 Operation handoff is signed, fail-closed on old Connector
     'sha256:671ce107badb4d94600af7290c2b08c922088a2e8e2f56cd9d2d2f75869480db',
     'sha256:ec1ce1cfb3c33ce3b56257477fbb48866e790a158da570f4bbbe593e5abf01e9'
   ];
-  assert.match(packageScript, /const version = '0\.4\.20'/);
-  assert.match(packageScript, /const sequence = 33/);
+  assert.match(packageScript, /const version = '0\.4\.21'/);
+  assert.match(packageScript, /const sequence = 34/);
   assert.match(packageScript, /minimumShellVersion: '0\.4\.15'/,
     'resource-owner handoff must not install on a Shell without the durable handoff ledger');
   assert.match(packageScript, /ownerId: 'omnia\.page-observation\.current-pack'/);
@@ -116,7 +116,7 @@ test('0.4.19 to 0.4.20 Operation handoff is signed, fail-closed on old Connector
   for (const sourceDigest of legacyOperationDigests) {
     assert.match(packageScript, new RegExp(sourceDigest.replace(':', '\\:')));
   }
-  assert.match(packageScript, /sourceFeatureVersions: \['0\.4\.16', '0\.4\.17', '0\.4\.18', '0\.4\.19'\]/);
+  assert.match(packageScript, /sourceFeatureVersions: \['0\.4\.16', '0\.4\.17', '0\.4\.18', '0\.4\.19', '0\.4\.20'\]/);
   assert.match(packageScript, /bridgePath: 'middle\/recording-python-bridge\.cjs'/);
   assert.match(packageScript, /entryPath: 'python\/recording-engine\.py'/);
   assert.match(packageScript, /'appendEvidence'/);

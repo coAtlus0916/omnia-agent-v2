@@ -50,7 +50,7 @@ test('same-level ties are deterministic by localized label then stable id', () =
   assert.deepEqual(tree.map((entry) => entry.kind === 'leaf' ? entry.leaf.id : ''), ['alpha', 'beta']);
 });
 
-test('current immutable Delete and Workpaper candidates declare their intended toolbar groups', () => {
+test('current immutable Feature candidates declare the signed IT Elements, Workpaper, and Other hierarchy', () => {
   const repo = path.resolve(import.meta.dirname, '..');
   const readManifest = (candidate: string) => {
     const envelope = JSON.parse(fs.readFileSync(path.join(repo, candidate), 'utf8'));
@@ -59,8 +59,10 @@ test('current immutable Delete and Workpaper candidates declare their intended t
     return JSON.parse(Buffer.from(member.contentBase64, 'base64').toString('utf8'));
   };
   const manifests = [
-    readManifest('feature-packages/delete-elements/candidates/delete-elements-0.3.20.ofp'),
-    readManifest('feature-packages/workpaper-preparation/candidates/workpaper-preparation-0.1.3.ofp')
+    readManifest('feature-packages/create-associate/candidates/create-associate-0.2.135.ofp'),
+    readManifest('feature-packages/workpaper-preparation/candidates/workpaper-preparation-0.1.4.ofp'),
+    readManifest('feature-packages/recording/candidates/recording-0.4.21.ofp'),
+    readManifest('feature-packages/delete-elements/candidates/delete-elements-0.3.31.ofp')
   ];
   const mergedGroups = [...new Map(manifests.flatMap((manifest) => manifest.navigation.groups)
     .map((group) => [group.id, group])).values()] as FeatureNavigationGroup[];
@@ -68,7 +70,10 @@ test('current immutable Delete and Workpaper candidates declare their intended t
     ...item, availability: 'disabled' as const, reason: '待启动激活。'
   })));
   const tree = buildFeatureNavigationTree(mergedGroups, projectedLeaves);
-  assert.deepEqual(tree.map((entry) => entry.kind === 'group' ? entry.node.group.label : entry.leaf.label), ['底稿', '其他']);
-  assert.deepEqual(tree.map((entry) => entry.kind === 'group' ? entry.node.leaves[0]?.featureId : ''),
-    ['omnia.workpaper-preparation', 'omnia.delete-elements']);
+  assert.deepEqual(tree.map((entry) => entry.kind === 'group' ? entry.node.group.label : entry.leaf.label), ['IT元素', '底稿', '其他']);
+  assert.deepEqual(tree.map((entry) => entry.kind === 'group' ? entry.node.leaves.map((leaf) => leaf.featureId) : []), [
+    ['omnia.create-associate'],
+    ['omnia.workpaper-preparation'],
+    ['omnia.recording', 'omnia.delete-elements']
+  ]);
 });

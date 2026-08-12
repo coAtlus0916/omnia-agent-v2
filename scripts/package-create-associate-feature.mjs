@@ -359,7 +359,7 @@ for (const inputCell of ['C35','C36']) if (!userTemplate.validations.some((item)
 for (const inputCell of ['C46','C47']) if (!userTemplate.validations.some((item) => validationCovers(item.sqref, inputCell) && item.formula.includes('代码迁移工具'))) {
   throw new Error(`Phase1 user template V5 Tool type validation does not expose 代码迁移工具 at ${inputCell}.`);
 }
-const version = '0.2.134'; const sequence = 136;
+const version = '0.2.135'; const sequence = 137;
 const route = (stepId, method, routeTemplate, parameters, bodyMode = 'none', bodyParameter = '') => ({ stepId, method, routeTemplate, parameters, bodyMode, bodyParameter });
 const applicationIdentityRoutes = () => [
   route('workitem-directory', 'POST', '/work/v1/WorkQueries/getWorkitemDetails', [], 'signed_json'),
@@ -589,7 +589,11 @@ const featureManifest = {
     { path: 'backend/runtime-template-base.xlsx', sha256: sha256(runtimeBaseBytes), kind: 'runtime_template_base' }
     ,{ path: 'backend/Phase1-用户填写模板V5.xlsx', sha256: sha256(userTemplateBytes), kind: 'source_template' }
   ],
-  navigation: { groups: [], leaves: [{ id: 'create-associate', parentId: '', level: 2, label: '新建与关联', order: 20, featureId: 'omnia.create-associate', featureVersion: version, route: 'feature:omnia.create-associate/workbench' }] }
+  navigation: {
+    groups: [{ id: 'it-elements', parentId: null, level: 1, label: 'IT元素', order: 10 }],
+    leaves: [{ id: 'create-associate', parentId: 'it-elements', level: 2, label: '新建与关联', order: 10,
+      featureId: 'omnia.create-associate', featureVersion: version, route: 'feature:omnia.create-associate/workbench' }]
+  }
 };
 const surface = {
   schemaVersion: 'omnia.declarative-feature-surface/v1', featureId: 'omnia.create-associate', featureVersion: version, surfaceId: 'create-associate.workbench', stateVersion: 1,

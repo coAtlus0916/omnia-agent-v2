@@ -419,7 +419,9 @@ async function buildVersion(version, sequence) {
       }, null, 2))
     ]
   });
-  const versionNote = version === '0.3.30'
+  const versionNote = version === '0.3.31'
+    ? '0.3.31 将目录重新读取动作改为用户可理解的“刷新”，并将执行进度标题从内部术语“冻结删除图”改为“删除中”；删除合同、确认、mutation 与 readback 语义不变。'
+    : version === '0.3.30'
     ? '0.3.30 将 Tool/Application 搜索返回的 .NET 空 Workspace GUID 视为缺失身份，并在只读预检中通过精确 Application detail 与 facet mapping 补齐后才冻结关系图；不放宽端点、Work Item 或 Workspace 校验。'
     : version === '0.3.29'
     ? '0.3.29 将 uncertain mutation 的只读核验与剩余删除步骤严格拆成两个用户动作：只读核验只收敛已提交命令并进入 resume_required，绝不借只读 action 继续提交后续 mutation；只有显式“继续删除”才恢复冻结图。'
@@ -580,7 +582,7 @@ process.stdout.write('omnia.delete-elements package self-test passed\\n');
     version,
     sequence,
     displayName: '删除元素',
-    minimumShellVersion: ['0.3.16', '0.3.17', '0.3.18', '0.3.19', '0.3.20', '0.3.21', '0.3.22', '0.3.23', '0.3.24', '0.3.25', '0.3.26', '0.3.27', '0.3.28', '0.3.29', '0.3.30'].includes(version) ? '0.4.15' : ['0.3.0', '0.3.1', '0.3.2', '0.3.3', '0.3.4', '0.3.5', '0.3.6', '0.3.7', '0.3.8', '0.3.9', '0.3.10', '0.3.11', '0.3.12', '0.3.13', '0.3.14', '0.3.15'].includes(version) ? '0.4.14' : ['0.2.0','0.2.1'].includes(version) ? '0.4.12' : version === '0.1.5' ? '0.4.10' : '0.4.0',
+    minimumShellVersion: ['0.3.16', '0.3.17', '0.3.18', '0.3.19', '0.3.20', '0.3.21', '0.3.22', '0.3.23', '0.3.24', '0.3.25', '0.3.26', '0.3.27', '0.3.28', '0.3.29', '0.3.30', '0.3.31'].includes(version) ? '0.4.15' : ['0.3.0', '0.3.1', '0.3.2', '0.3.3', '0.3.4', '0.3.5', '0.3.6', '0.3.7', '0.3.8', '0.3.9', '0.3.10', '0.3.11', '0.3.12', '0.3.13', '0.3.14', '0.3.15'].includes(version) ? '0.4.14' : ['0.2.0','0.2.1'].includes(version) ? '0.4.12' : version === '0.1.5' ? '0.4.10' : '0.4.0',
     requiredIsolation: 'process',
     storeNamespace: 'delete_elements',
     migrationPath: 'backend/migrations/001.json',
@@ -600,7 +602,7 @@ process.stdout.write('omnia.delete-elements package self-test passed\\n');
           parentId: 'other',
           level: 2,
           label: '删除元素',
-          order: 10,
+          order: 20,
           featureId: 'omnia.delete-elements',
           featureVersion: version,
           route: 'feature:omnia.delete-elements/workbench'
@@ -807,5 +809,5 @@ process.stdout.write('omnia.delete-elements package self-test passed\\n');
 }
 
 const results = [];
-results.push(await buildVersion('0.3.30', 1786516800000));
+results.push(await buildVersion('0.3.31', 1786522815131));
 for (const result of results) console.log(`${path.relative(root, result.filename)} ${result.digest}`);

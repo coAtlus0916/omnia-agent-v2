@@ -65,9 +65,11 @@ test('0.2.110 declares the exact 34 Store ports called by its isolated Worker an
   assert.deepEqual(declaredStorePorts(), EXPECTED_STORE_PORTS);
 });
 
-test('0.2.110 navigation remains one real top-level Create leaf with no synthetic group', () => {
+test('current Create navigation is one real leaf under the signed IT Elements group', () => {
   assert.match(packageScript,
-    /navigation:\s*\{ groups: \[\], leaves: \[\{ id: 'create-associate', parentId: '', level: 2, label: '新建与关联', order: 20, featureId: 'omnia\.create-associate', featureVersion: version, route: 'feature:omnia\.create-associate\/workbench' \}\] \}/u);
+    /groups: \[\{ id: 'it-elements', parentId: null, level: 1, label: 'IT元素', order: 10 \}\]/u);
+  assert.match(packageScript,
+    /leaves: \[\{ id: 'create-associate', parentId: 'it-elements', level: 2, label: '新建与关联', order: 10,/u);
 });
 
 test('Oracle EBS source governance freezes exact 12/11/7 relations, OEBS.04 dual absence, and Lower NA risks', () => {

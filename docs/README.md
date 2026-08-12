@@ -49,6 +49,7 @@ Feature 的原装/内置/后装/Operation/额外部署边界以 [Feature 包总�
 - [Shell 实现映射](implementation/SHELL_IMPLEMENTATION_MAP.md)
 - [Feature 包总览](implementation/FEATURE_PACKAGE_CATALOG.md)
 - [Feature 快速开发、安装与测试](development/FEATURE_FAST_ITERATION_GUIDE.md)
+- [Git 分支、Remote 联调与便携发布流程](development/GIT_BRANCH_AND_RELEASE_WORKFLOW.md)
 - [Feature 随包文档模板](development/FEATURE_DOCUMENTATION_TEMPLATE.md)
 - [新建与关联 0.2.6 热更新](implementation/CREATE_ASSOCIATE_0_2_6_HOT_UPDATE.md)
 - [录制 Feature 实现](implementation/RECORDING_FEATURE.md)

@@ -139,6 +139,27 @@ function record(value: unknown, label: string): Record<string, any> {
 
 function loadHandler(source: string): Registered['run'] {
   const module = { exports: {} as any };
+  let nextTimerId = 1;
+  const timers = new Map<number, NodeJS.Timeout>();
+  const sandboxSetTimeout = (callback: unknown, delay: unknown, ...args: unknown[]): number => {
+    if (typeof callback !== 'function' || !Number.isFinite(Number(delay))) throw new Error('Signed Operation timer is invalid.');
+    if (timers.size >= 128) throw new Error('Signed Operation timer limit exceeded.');
+    const timerId = nextTimerId++;
+    const boundedDelay = Math.max(0, Math.min(30_000, Math.trunc(Number(delay))));
+    const timer = setTimeout(() => {
+      timers.delete(timerId);
+      callback(...args);
+    }, boundedDelay);
+    timers.set(timerId, timer);
+    return timerId;
+  };
+  const sandboxClearTimeout = (timerId: unknown): void => {
+    if (!Number.isSafeInteger(timerId)) return;
+    const timer = timers.get(Number(timerId));
+    if (!timer) return;
+    clearTimeout(timer);
+    timers.delete(Number(timerId));
+  };
   const context = vm.createContext({
     module,
     exports: module.exports,
@@ -151,7 +172,9 @@ function loadHandler(source: string): Registered['run'] {
     Promise,
     Map,
     Set,
-    structuredClone
+    structuredClone,
+    setTimeout: sandboxSetTimeout,
+    clearTimeout: sandboxClearTimeout
   });
   const script = new vm.Script(`'use strict';\n${source}`, { filename: 'signed-operation-handler.cjs' });
   script.runInContext(context, { timeout: 1_000 });

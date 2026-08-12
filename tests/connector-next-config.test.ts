@@ -41,4 +41,3 @@ test('Connector Next Core configuration round-trips exact target with encrypted 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
-

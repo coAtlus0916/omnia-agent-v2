@@ -1,13 +1,20 @@
 # Local environment and secrets
 .env
 .env.*
-*.env.example
+!.env.example
+
+# Local agent state, Python caches, uploaded source material and live evidence
+__pycache__/
+*.py[cod]
+.codex-status-*.txt
+/source_files/
+/feature-packages/*/acceptance-evidence/
 
 # Dependencies and build artifacts
-/node_modules/
-/dist/
-/build/
-/coverage/
+node_modules/
+dist/
+build/
+coverage/
 
 # Runtime data
 /data/
@@ -23,8 +30,8 @@ logs/
 .DS_Store
 Thumbs.db
 # Runtime and build outputs
-/node_modules/
-/dist/
+node_modules/
+dist/
 /data/
 /releases/
 /current
@@ -36,19 +43,10 @@ remote-connector/public/releases/
 /connector-next/secrets/
 /artifacts/
 /.codex-tmp/
-/source_files/
-/acceptance/
-**/acceptance-evidence/
-**/__pycache__/
-*.pyc
-.codex-status-*
+/acceptance/fresh-*/
+/acceptance/final-*/
+/acceptance/installer-*/
 *.log
-*.pem
-*.key
-*.p12
-*.pfx
-**/secrets/
-**/credentials/
 .env
 .env.*
-*.env.example
+!.env.example

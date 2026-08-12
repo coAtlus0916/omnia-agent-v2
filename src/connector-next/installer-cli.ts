@@ -23,7 +23,8 @@ const enrollmentCode = args.get('--enrollment-code') || '';
 const targetJson = args.get('--target-json') || '';
 const hasEnrollment = Boolean(serverUrl && enrollmentCode && targetJson);
 if ((serverUrl || enrollmentCode || targetJson) && !hasEnrollment) throw new Error('CONNECTOR_NEXT.ENROLLMENT_ARGUMENTS_INCOMPLETE');
-if ((registerStartup || start || enrollOnly) && !hasEnrollment) throw new Error('CONNECTOR_NEXT.ENROLLMENT_REQUIRED_BEFORE_START');
+const alreadyInstalled = fs.existsSync(paths.currentPointer);
+if (!alreadyInstalled && (registerStartup || start || enrollOnly) && !hasEnrollment) throw new Error('CONNECTOR_NEXT.ENROLLMENT_REQUIRED_BEFORE_START');
 
 let pointer;
 if (enrollOnly) {
@@ -45,7 +46,7 @@ if (enrollOnly) {
 }
 
 let enrolled = false;
-if (hasEnrollment) {
+if (hasEnrollment && (!alreadyInstalled || enrollOnly)) {
   const target = JSON.parse(targetJson) as ConnectorNextTarget;
   assertTarget(target);
   const enrollmentDescriptor = connectorNextDescriptor(target, pointer.version, pointer.sequence, pointer.generation);
@@ -64,10 +65,17 @@ if (hasEnrollment) {
   } catch { /* durable retry by bootstrap/updater */ }
   logs.close();
   enrolled = true;
+} else if (alreadyInstalled) {
+  const stateStore = new ConnectorNextAgentStateStore(paths.stateDatabase);
+  try {
+    stateStore.load();
+  } finally {
+    stateStore.close();
+  }
 }
 if (registerStartup) registerConnectorNextStartup(paths);
 const startup = start ? await startConnectorNext(paths) : null;
-process.stdout.write(`${JSON.stringify({ installed: true, enrolled, started: start, bootstrapPid: startup?.bootstrapPid || 0, pointer, installRoot: paths.installRoot, dataRoot: paths.dataRoot, startupRegistered: registerStartup })}\n`);
+process.stdout.write(`${JSON.stringify({ installed: true, alreadyInstalled, enrolled, started: start, alreadyRunning: startup?.alreadyRunning || false, bootstrapPid: startup?.bootstrapPid || 0, pointer, installRoot: paths.installRoot, dataRoot: paths.dataRoot, startupRegistered: registerStartup })}\n`);
 }
 
 void main().catch((error) => {

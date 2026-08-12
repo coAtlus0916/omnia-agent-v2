@@ -794,11 +794,8 @@ export class FeatureRuntimeStore {
         WHERE s.run_id=? AND s.feature_id=? AND c.state='uncertain'
           AND json_valid(s.spec_json) AND json_extract(s.spec_json,'$.commandId')=s.command_id
           AND (?='' OR s.command_id=?)
-        ORDER BY s.created_at DESC,s.command_id DESC LIMIT 2
+        ORDER BY s.created_at DESC,s.command_id DESC LIMIT 1
       `).all(runId,context.featureId,commandId,commandId) as Array<{command_id:string;spec_json:string}>;
-      if(!commandId&&rows.length>1) {
-        throw new AppError('FEATURE.RECONCILE_SPEC_AMBIGUOUS','Historical reconcile lookup found more than one owned uncertain command specification.');
-      }
       return rows[0]?JSON.parse(rows[0].spec_json):null;
     }
     const store = this.open(context.featureId);
@@ -3561,7 +3558,7 @@ export class FeatureRuntimeStore {
       if(claimedIntent.changes!==1) throw new Error('Return intent was already claimed by another command.');
       if(String(intended.kind)==='object'&&String(intended.disposition)==='create'){
         const leaseExpiresAt=new Date(Date.parse(createdAt)+15*60_000).toISOString();
-        const reservation=this.core.prepare(`INSERT INTO feature_mutation_reservations(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,logical_identity_key,owner_run_id,owner_intent_id,owner_command_id,lifecycle,acquired_at,lease_expires_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,'active',?,?,?) ON CONFLICT(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,logical_identity_key) DO UPDATE SET owner_run_id=excluded.owner_run_id,owner_intent_id=excluded.owner_intent_id,owner_command_id=excluded.owner_command_id,lifecycle='active',acquired_at=excluded.acquired_at,lease_expires_at=excluded.lease_expires_at,updated_at=excluded.updated_at WHERE feature_mutation_reservations.lifecycle='released' OR (feature_mutation_reservations.lifecycle='active' AND feature_mutation_reservations.lease_expires_at<excluded.acquired_at AND EXISTS(SELECT 1 FROM feature_commands prior WHERE prior.command_id=feature_mutation_reservations.owner_command_id AND prior.state='prepared' AND prior.submitted_at='' AND prior.commit_point_at=''))`).run(
+        const reservation=this.core.prepare(`INSERT INTO feature_mutation_reservations(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,logical_identity_key,owner_run_id,owner_intent_id,owner_command_id,lifecycle,acquired_at,lease_expires_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,'active',?,?,?) ON CONFLICT(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,logical_identity_key) DO UPDATE SET owner_run_id=excluded.owner_run_id,owner_intent_id=excluded.owner_intent_id,owner_command_id=excluded.owner_command_id,lifecycle='active',acquired_at=excluded.acquired_at,lease_expires_at=excluded.lease_expires_at,updated_at=excluded.updated_at WHERE feature_mutation_reservations.lifecycle='released' OR (feature_mutation_reservations.lifecycle='active' AND feature_mutation_reservations.lease_expires_at<excluded.acquired_at AND EXISTS(SELECT 1 FROM feature_commands prior WHERE prior.command_id=feature_mutation_reservations.owner_command_id AND ((prior.state='prepared' AND prior.submitted_at='' AND prior.commit_point_at='') OR (prior.state='failed' AND prior.last_error='CONNECTOR_NEXT.ADMISSION_CLOSED' AND prior.commit_point_at='' AND prior.completed_at<>'' AND EXISTS(SELECT 1 FROM connector_delivery_requests delivery WHERE delivery.command_id=prior.command_id AND delivery.request_id=prior.connector_request_id AND delivery.purpose='mutation' AND delivery.state='prepared' AND delivery.wire_result_digest='' AND delivery.execution_generation='' AND delivery.abandoned_at='')))))`).run(
           String(binding.authorityInstanceId||''),String(binding.tenantOrOrgId||''),String(binding.packId||''),String(binding.engagementId||''),String(intended.workspace||''),intendedTargetIdentityKey,runId,intent.intent_id,commandId,createdAt,leaseExpiresAt,createdAt);
         if(reservation.changes!==1) throw new Error('Another Run owns the durable mutation reservation for this exact authority and logical identity.');
       }
@@ -3762,6 +3759,12 @@ export class FeatureRuntimeStore {
           c.connector_session_generation AS source_connector_session_generation,
           c.connector_id AS source_connector_id,c.connector_operation_package_digest AS source_operation_package_digest,
           c.connector_feature_version AS source_feature_version,c.operation_id AS source_operation_id,
+          EXISTS(
+            SELECT 1 FROM connector_delivery_requests source_delivery
+            WHERE source_delivery.request_id=c.connector_request_id
+              AND source_delivery.purpose='mutation' AND source_delivery.state='prepared'
+              AND source_delivery.execution_generation='' AND source_delivery.wire_result_digest=''
+          ) AS source_mutation_without_execution,
           f.credential_digest,f.connector_id AS confirmation_connector_id,
           f.session_generation AS confirmation_session_generation,f.engagement_id AS confirmation_engagement_id,
           f.authority_instance_id AS confirmation_authority_instance_id,
@@ -3813,7 +3816,7 @@ export class FeatureRuntimeStore {
         // submitted.  Its read-back receipt is terminal and there is no source
         // mutation ledger entry to resolve.  Only commands carrying a durable
         // source delivery identity are allowed to mint the second-phase ack.
-        if (sourceRequestId) {
+        if (sourceRequestId && Number(receipt.source_mutation_without_execution) !== 1) {
           if (!/^[0-9a-f-]{36}$/iu.test(sourceRequestId)
             || !/^[a-f0-9]{48}$/u.test(String(receipt.source_connector_execution_generation || ''))
             || !/^[0-9a-f-]{36}$/iu.test(String(receipt.connector_request_id || ''))
@@ -3848,6 +3851,12 @@ export class FeatureRuntimeStore {
           `).run(ackId, String(receipt.connector_request_id), canonical(ack), occurredAt, occurredAt);
           this.core.prepare(`UPDATE connector_delivery_requests SET state='effect_resolved',updated_at=? WHERE request_id=? AND state='receipt_committed'`)
             .run(occurredAt, String(receipt.connector_request_id));
+        } else if (sourceRequestId && Number(receipt.source_mutation_without_execution) === 1) {
+          // The source mutation has no execution generation, so a second-phase
+          // ack would be fabricated. The exact authoritative read-back still
+          // closes Core's uncertainty while the source audit identity remains.
+          this.core.prepare(`UPDATE connector_delivery_requests SET state='effect_resolved',updated_at=? WHERE request_id=? AND state='prepared' AND execution_generation='' AND wire_result_digest=''`)
+            .run(occurredAt, sourceRequestId);
         }
       }
       this.core.exec('COMMIT;');

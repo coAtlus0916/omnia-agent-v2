@@ -242,6 +242,46 @@ export class ConnectorNextServerStore {
       WHERE delivery_request_id IS NOT NULL;
       INSERT OR IGNORE INTO connector_next_schema(version,applied_at) VALUES(3,datetime('now'));
     `);
+    const ackColumns = this.db.prepare(`PRAGMA table_info(connector_next_delivery_acks)`).all() as Array<{ name: string }>;
+    if (!ackColumns.some((column) => column.name === 'payload_json')) {
+      this.db.exec(`ALTER TABLE connector_next_delivery_acks ADD COLUMN payload_json TEXT;`);
+    }
+    if (!ackColumns.some((column) => column.name === 'reconciles_request_id')) {
+      this.db.exec(`ALTER TABLE connector_next_delivery_acks ADD COLUMN reconciles_request_id TEXT;`);
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS connector_next_delivery_ack_reconciles
+      ON connector_next_delivery_acks(reconciles_request_id)
+      WHERE reconciles_request_id IS NOT NULL;
+      INSERT OR IGNORE INTO connector_next_schema(version,applied_at) VALUES(4,datetime('now'));
+      CREATE TABLE IF NOT EXISTS connector_next_gate_closures(
+        job_id TEXT PRIMARY KEY REFERENCES connector_next_jobs(job_id),
+        agent_id TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
+        proof_kind TEXT NOT NULL CHECK(proof_kind IN ('not_started','final_ack')),
+        created_at TEXT NOT NULL,
+        consumed_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS connector_next_gate_closure_target
+      ON connector_next_gate_closures(agent_id,device_id,connector_instance_id,consumed_at,created_at);
+      INSERT OR IGNORE INTO connector_next_schema(version,applied_at) VALUES(5,datetime('now'));
+      CREATE TABLE IF NOT EXISTS connector_next_authoritative_closures(
+        job_id TEXT PRIMARY KEY REFERENCES connector_next_jobs(job_id),
+        delivery_request_id TEXT NOT NULL UNIQUE,
+        agent_id TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK(outcome IN ('closed_not_applied','readback_verified')),
+        proof_digest TEXT NOT NULL,
+        proof_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        consumed_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS connector_next_authoritative_closure_target
+      ON connector_next_authoritative_closures(agent_id,device_id,connector_instance_id,consumed_at,created_at);
+      INSERT OR IGNORE INTO connector_next_schema(version,applied_at) VALUES(6,datetime('now'));
+    `);
   }
 
   close(): void {
@@ -619,10 +659,17 @@ export class ConnectorNextServerStore {
   acknowledgeDelivery(ack: ConnectorDeliveryAck): { acknowledged: true; clearedMutationCount: number } {
     assertConnectorDeliveryAck(ack);
     const ackDigest = sha256(canonicalJson(ack));
+    const payloadJson = json(ack);
+    const reconcilesRequestId = ack.reconciles?.requestId || null;
     const existing = this.db.prepare(`SELECT ack_digest,cleared_mutation_count FROM connector_next_delivery_acks WHERE ack_id=?`)
       .get(ack.ackId) as { ack_digest: string; cleared_mutation_count: number } | undefined;
     if (existing) {
       if (existing.ack_digest !== ackDigest) throw new Error('CONNECTOR_NEXT.DELIVERY_ACK_IMMUTABILITY_CONFLICT');
+      // Releases before server schema v4 retained only the acknowledgement
+      // digest. An exact idempotent replay may safely hydrate the canonical
+      // payload because the digest above proves it is the original Core ack.
+      this.db.prepare(`UPDATE connector_next_delivery_acks SET payload_json=?,reconciles_request_id=? WHERE ack_id=? AND ack_digest=?`)
+        .run(payloadJson, reconcilesRequestId, ack.ackId, ackDigest);
       return { acknowledged: true, clearedMutationCount: existing.cleared_mutation_count };
     }
     const delivered = this.deliveryStatus({
@@ -635,9 +682,124 @@ export class ConnectorNextServerStore {
       || delivered.executionGeneration !== ack.executionGeneration) throw new Error('CONNECTOR_NEXT.DELIVERY_ACK_IDENTITY_MISMATCH');
     const clearedMutationCount = ack.resolution === 'receipt_committed' ? 0 : 1;
     if (clearedMutationCount === 1 && !ack.reconciles) throw new Error('CONNECTOR_NEXT.DELIVERY_ACK_RECONCILE_REQUIRED');
-    this.db.prepare(`INSERT INTO connector_next_delivery_acks(ack_id,ack_digest,request_id,resolution,cleared_mutation_count,created_at) VALUES(?,?,?,?,?,?)`)
-      .run(ack.ackId, ackDigest, ack.deliveredRequestId, ack.resolution, clearedMutationCount, now());
+    this.db.prepare(`INSERT INTO connector_next_delivery_acks(ack_id,ack_digest,request_id,resolution,cleared_mutation_count,created_at,payload_json,reconciles_request_id) VALUES(?,?,?,?,?,?,?,?)`)
+      .run(ack.ackId, ackDigest, ack.deliveredRequestId, ack.resolution, clearedMutationCount, now(), payloadJson, reconcilesRequestId);
     return { acknowledged: true, clearedMutationCount };
+  }
+
+  recordAuthoritativeClosure(value: unknown): { accepted: true; jobId: string; deliveryRequestId: string } {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('CONNECTOR_NEXT.AUTHORITATIVE_CLOSURE_INVALID');
+    const proof = value as Record<string, unknown>;
+    if (proof.schemaVersion !== 'omnia.connector-next-authoritative-closure/v1') throw new Error('CONNECTOR_NEXT.AUTHORITATIVE_CLOSURE_INVALID');
+    assertTarget(proof.target);
+    const target = proof.target;
+    const text = (key: string, pattern: RegExp) => {
+      const field = proof[key];
+      if (typeof field !== 'string' || !pattern.test(field)) throw new Error('CONNECTOR_NEXT.AUTHORITATIVE_CLOSURE_INVALID');
+      return field;
+    };
+    const requestId = text('requestId', /^[0-9a-f-]{36}$/u);
+    const featureId = text('featureId', /^[A-Za-z0-9][A-Za-z0-9_.:-]{2,127}$/u);
+    const featureVersion = text('featureVersion', /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u);
+    const operationId = text('operationId', /^[A-Za-z0-9][A-Za-z0-9_.:-]{2,127}$/u);
+    const operationPackageDigest = text('operationPackageDigest', /^sha256:[0-9a-f]{64}$/u);
+    const runId = text('runId', /^[0-9a-f-]{36}$/u);
+    const commandId = text('commandId', /^[0-9a-f-]{36}$/u);
+    const connectorId = text('connectorId', /^[A-Za-z0-9][A-Za-z0-9_.:-]{2,127}$/u);
+    const receiptId = text('receiptId', /^[0-9a-f-]{36}$/u);
+    const receiptRequestDigest = text('receiptRequestDigest', /^[0-9a-f]{64}$/u);
+    const receiptResponseDigest = text('receiptResponseDigest', /^[0-9a-f]{64}$/u);
+    const completedAt = text('completedAt', /^\d{4}-\d{2}-\d{2}T/u);
+    const outcome = proof.outcome === 'closed_not_applied' || proof.outcome === 'readback_verified'
+      ? proof.outcome : null;
+    const sessionGeneration = proof.sessionGeneration;
+    const proofDigest = proof.proofDigest;
+    if (outcome === null
+      || !Number.isSafeInteger(sessionGeneration) || Number(sessionGeneration) < 1
+      || typeof proofDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(proofDigest)) {
+      throw new Error('CONNECTOR_NEXT.AUTHORITATIVE_CLOSURE_INVALID');
+    }
+    const unsigned = { ...proof };
+    delete unsigned.proofDigest;
+    if (sha256(canonicalJson(unsigned)) !== proofDigest) throw new Error('CONNECTOR_NEXT.AUTHORITATIVE_CLOSURE_DIGEST_INVALID');
+    const source = this.db.prepare(`
+      SELECT j.job_id,j.status,j.payload_json,j.result_json,o.delivery_request_id
+      FROM connector_next_operation_requests o JOIN connector_next_jobs j ON j.job_id=o.job_id
+      WHERE o.delivery_request_id=? AND j.agent_id=? AND j.device_id=? AND j.connector_instance_id=?
+        AND j.execution_effect='mutation'
+    `).get(requestId, target.agentId, target.deviceId, target.connectorInstanceId) as {
+      job_id: string; status: string; payload_json: string; result_json: string | null; delivery_request_id: string;
+    } | undefined;
+    if (!source || source.result_json) throw new Error('CONNECTOR_NEXT.AUTHORITATIVE_CLOSURE_SOURCE_INVALID');
+    const envelope = parse<ConnectorNextOperationEnvelope>(source.payload_json);
+    assertOperationEnvelope(envelope);
+    if (envelope.command !== 'operation.invoke' || !sameTarget(envelope.target, target)) throw new Error('CONNECTOR_NEXT.AUTHORITATIVE_CLOSURE_SOURCE_INVALID');
+    const context = envelope.input.deliveryContext;
+    assertConnectorDeliveryContext(context);
+    if (context.purpose !== 'mutation' || context.requestId !== requestId || context.featureId !== featureId
+      || context.featureVersion !== featureVersion || context.operationId !== operationId
+      || context.operationPackageDigest !== operationPackageDigest || context.runId !== runId
+      || context.commandId !== commandId || context.connectorId !== connectorId
+      || context.sessionGeneration !== sessionGeneration) throw new Error('CONNECTOR_NEXT.AUTHORITATIVE_CLOSURE_IDENTITY_MISMATCH');
+    this.transaction(() => {
+      const prior = this.db.prepare(`SELECT proof_digest FROM connector_next_authoritative_closures WHERE job_id=?`).get(source.job_id) as { proof_digest: string } | undefined;
+      if (prior && prior.proof_digest !== proofDigest) throw new Error('CONNECTOR_NEXT.AUTHORITATIVE_CLOSURE_IMMUTABILITY_CONFLICT');
+      this.db.prepare(`INSERT OR IGNORE INTO connector_next_authoritative_closures(job_id,delivery_request_id,agent_id,device_id,connector_instance_id,outcome,proof_digest,proof_json,created_at,consumed_at) VALUES(?,?,?,?,?,?,?,?,?,NULL)`)
+        .run(source.job_id, requestId, target.agentId, target.deviceId, target.connectorInstanceId, outcome, proofDigest, json(proof), now());
+      this.db.prepare(`UPDATE connector_next_jobs SET status='failed',error_json=?,completed_at=? WHERE job_id=? AND status='claimed' AND result_json IS NULL`)
+        .run(json({ code: 'CONNECTOR_NEXT.MUTATION_AUTHORITATIVELY_CLOSED', effectState: outcome, receiptId, receiptRequestDigest, receiptResponseDigest, completedAt }), now(), source.job_id);
+      this.audit('job', source.job_id, 'job.mutation_authoritatively_closed', { requestId, outcome, receiptId, proofDigest });
+    });
+    return { accepted: true, jobId: source.job_id, deliveryRequestId: requestId };
+  }
+
+  private finalAckResolvesMutationJob(jobId: string, target: ConnectorNextTarget): boolean {
+    const source = this.db.prepare(`
+      SELECT j.status,j.payload_json,j.result_json,o.delivery_request_id
+      FROM connector_next_jobs j
+      JOIN connector_next_operation_requests o ON o.job_id=j.job_id
+      WHERE j.job_id=? AND j.agent_id=? AND j.device_id=? AND j.connector_instance_id=?
+        AND j.execution_effect='mutation'
+    `).get(jobId, target.agentId, target.deviceId, target.connectorInstanceId) as {
+      status: string; payload_json: string; result_json: string | null; delivery_request_id: string | null;
+    } | undefined;
+    if (!source || source.status !== 'succeeded' || !source.result_json || !source.delivery_request_id) return false;
+
+    const envelope = parse<ConnectorNextOperationEnvelope>(source.payload_json);
+    assertOperationEnvelope(envelope);
+    if (envelope.command !== 'operation.invoke' || !sameTarget(envelope.target, target)) return false;
+    const invocation = envelope.input as Record<string, unknown>;
+    const context = invocation.deliveryContext;
+    assertConnectorDeliveryContext(context);
+    if (context.purpose !== 'mutation' || context.requestId !== source.delivery_request_id) return false;
+
+    const operationResult = parse<Record<string, unknown>>(source.result_json);
+    const durable = operationResult.value as Record<string, unknown> | undefined;
+    const witness = durable?.witness as Record<string, unknown> | undefined;
+    const wireResponse = durable?.wireResponse;
+    if (durable?.schemaVersion !== 'omnia.connector-next-durable-delivery/v1' || !witness
+      || witness.requestId !== context.requestId || witness.sessionGeneration !== context.sessionGeneration
+      || typeof witness.executionGeneration !== 'string' || !/^[a-f0-9]{48}$/u.test(witness.executionGeneration)
+      || typeof witness.resultDigest !== 'string' || connectorResultDigest(wireResponse) !== witness.resultDigest) return false;
+
+    const rows = this.db.prepare(`
+      SELECT ack_digest,payload_json,cleared_mutation_count
+      FROM connector_next_delivery_acks
+      WHERE reconciles_request_id=? AND cleared_mutation_count=1 AND payload_json IS NOT NULL
+      ORDER BY created_at
+    `).all(context.requestId) as Array<{ ack_digest: string; payload_json: string; cleared_mutation_count: number }>;
+    return rows.some((row) => {
+      const ack = parse<ConnectorDeliveryAck>(row.payload_json);
+      assertConnectorDeliveryAck(ack);
+      const reconciles = ack.reconciles;
+      return row.ack_digest === sha256(canonicalJson(ack)) && row.cleared_mutation_count === 1
+        && ack.resolution !== 'receipt_committed' && reconciles !== null
+        && reconciles.requestId === context.requestId
+        && reconciles.featureId === context.featureId && reconciles.featureVersion === context.featureVersion
+        && reconciles.operationId === context.operationId && reconciles.operationPackageDigest === context.operationPackageDigest
+        && reconciles.connectorId === context.connectorId && reconciles.sessionGeneration === context.sessionGeneration
+        && reconciles.executionGeneration === witness.executionGeneration;
+    });
   }
 
   ingestLogs(descriptor: ConnectorNextDescriptor, records: ConnectorNextLogInput[]): number[] {
@@ -699,11 +861,20 @@ export class ConnectorNextServerStore {
     return row ? { offerId: row.offer_id, manifest: parse(row.manifest_json), status: row.status } : null;
   }
 
-  confirmCandidateHeartbeat(token: string, descriptor: ConnectorNextDescriptor, offerId: string, phase: 'candidate' | 'probation', uncertainJobIds: unknown[] = []): { accepted: true; offerId: string; phase: string; generation: number; notStartedJobIds: string[] } {
+  confirmCandidateHeartbeat(token: string, descriptor: ConnectorNextDescriptor, offerId: string, phase: 'candidate' | 'probation', uncertainJobIds: unknown[] = [], gateDiagnostics: unknown[] = []): { accepted: true; offerId: string; phase: string; generation: number; notStartedJobIds: string[]; resolvedUncertainJobIds: string[] } {
     if (!token.startsWith('ocn3_') || !['candidate', 'probation'].includes(phase)) throw new Error('CONNECTOR_NEXT.AUTHENTICATION_FAILED');
     if (uncertainJobIds.length > 128 || uncertainJobIds.some((jobId) => typeof jobId !== 'string' || !/^ocn3\.job\.[0-9a-f-]{36}$/.test(jobId))) {
       throw new Error('CONNECTOR_NEXT.INVALID_UNCERTAIN_JOB_IDS');
     }
+    if (gateDiagnostics.length > 8 || gateDiagnostics.some((entry) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return true;
+      const value = entry as Record<string, unknown>;
+      return typeof value.source !== 'string' || !/^[a-z_]{1,32}$/u.test(value.source)
+        || typeof value.pathHash !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(value.pathHash)
+        || typeof value.existed !== 'boolean' || !Array.isArray(value.uncertainJobIds)
+        || value.uncertainJobIds.length > 128
+        || value.uncertainJobIds.some((jobId) => typeof jobId !== 'string' || !/^ocn3\.job\.[0-9a-f-]{36}$/u.test(jobId));
+    })) throw new Error('CONNECTOR_NEXT.INVALID_GATE_DIAGNOSTICS');
     return this.transaction(() => {
       const connector = this.db.prepare(`SELECT * FROM connector_next_connectors WHERE token_hash=?`).get(opaqueHash(token)) as ConnectorRow | undefined;
       if (!connector || connector.lifecycle !== 'active') throw new Error('CONNECTOR_NEXT.AUTHENTICATION_FAILED');
@@ -726,17 +897,47 @@ export class ConnectorNextServerStore {
         const error = parse<Record<string, unknown>>(job.error_json);
         return error.effectState === 'not_started';
       });
+      const resolvedUncertainJobIds = [...new Set(uncertainJobIds as string[])].filter((jobId) =>
+        notStartedJobIds.includes(jobId) || this.finalAckResolvesMutationJob(jobId, target));
+      const rememberClosure = this.db.prepare(`INSERT OR IGNORE INTO connector_next_gate_closures(job_id,agent_id,device_id,connector_instance_id,proof_kind,created_at,consumed_at) VALUES(?,?,?,?,?,?,NULL)`);
+      for (const jobId of resolvedUncertainJobIds) {
+        rememberClosure.run(jobId, target.agentId, target.deviceId, target.connectorInstanceId,
+          notStartedJobIds.includes(jobId) ? 'not_started' : 'final_ack', now());
+      }
+      const pendingClosures = this.db.prepare(`SELECT job_id,proof_kind FROM connector_next_gate_closures WHERE agent_id=? AND device_id=? AND connector_instance_id=? AND consumed_at IS NULL ORDER BY created_at LIMIT 128`)
+        .all(target.agentId, target.deviceId, target.connectorInstanceId) as Array<{ job_id: string; proof_kind: 'not_started' | 'final_ack' }>;
+      const pendingResolvedJobIds = pendingClosures.filter((closure) => closure.proof_kind === 'final_ack'
+        ? this.finalAckResolvesMutationJob(closure.job_id, target)
+        : (() => {
+            const job = this.db.prepare(`SELECT status,execution_effect,error_json FROM connector_next_jobs WHERE job_id=? AND agent_id=? AND device_id=? AND connector_instance_id=?`)
+              .get(closure.job_id, target.agentId, target.deviceId, target.connectorInstanceId) as { status: string; execution_effect: string; error_json: string | null } | undefined;
+            return Boolean(job && job.status === 'failed' && job.execution_effect === 'mutation' && job.error_json
+              && parse<Record<string, unknown>>(job.error_json).effectState === 'not_started');
+          })()).map((closure) => closure.job_id);
+      const authoritativeClosures = this.db.prepare(`SELECT job_id,proof_json FROM connector_next_authoritative_closures WHERE agent_id=? AND device_id=? AND connector_instance_id=? AND consumed_at IS NULL ORDER BY created_at LIMIT 128`)
+        .all(target.agentId, target.deviceId, target.connectorInstanceId) as Array<{ job_id: string; proof_json: string }>;
+      const pendingAuthoritativeJobIds = authoritativeClosures.filter((closure) => {
+        try {
+          const proof = parse<Record<string, unknown>>(closure.proof_json);
+          const unsigned = { ...proof };
+          const digest = unsigned.proofDigest;
+          delete unsigned.proofDigest;
+          return typeof digest === 'string' && digest === sha256(canonicalJson(unsigned));
+        } catch { return false; }
+      }).map((closure) => closure.job_id);
+      const allResolvedJobIds = [...new Set([...resolvedUncertainJobIds, ...pendingResolvedJobIds, ...pendingAuthoritativeJobIds])];
       const details = { ...parse<Record<string, unknown>>(offer.details_json), [`${phase}Heartbeat`]: {
         version: descriptor.version,
         sequence: descriptor.sequence,
         generation: descriptor.generation,
         capabilities: descriptor.capabilities,
         executionPrincipal: descriptor.executionPrincipal,
-        at: now()
+        at: now(),
+        gateDiagnostics
       } };
       this.db.prepare(`UPDATE connector_next_update_offers SET details_json=?,updated_at=? WHERE offer_id=?`).run(json(details), now(), offerId);
-      this.audit('update_offer', offerId, `update.${phase}_heartbeat`, { version: descriptor.version, sequence: descriptor.sequence, generation: descriptor.generation, reconciledNotStarted: notStartedJobIds.length });
-      return { accepted: true, offerId, phase, generation: descriptor.generation, notStartedJobIds };
+      this.audit('update_offer', offerId, `update.${phase}_heartbeat`, { version: descriptor.version, sequence: descriptor.sequence, generation: descriptor.generation, reconciledNotStarted: notStartedJobIds.length, reconciledAuthoritative: allResolvedJobIds.length - notStartedJobIds.length });
+      return { accepted: true, offerId, phase, generation: descriptor.generation, notStartedJobIds, resolvedUncertainJobIds: allResolvedJobIds };
     });
   }
 
@@ -781,6 +982,10 @@ export class ConnectorNextServerStore {
         const promoted = this.db.prepare(`UPDATE connector_next_connectors SET version=?,sequence=?,generation=generation+1,capabilities_json=?,execution_principal_json=?,last_seen_at=? WHERE agent_id=? AND device_id=? AND connector_instance_id=? AND generation=?`)
           .run(manifest.version, manifest.sequence, json(probation.capabilities), json(probation.executionPrincipal), now(), descriptor.agentId, descriptor.deviceId, descriptor.connectorInstanceId, descriptor.generation);
         if (promoted.changes !== 1) throw new Error('CONNECTOR_NEXT.UPDATE_GENERATION_CAS_FAILED');
+        this.db.prepare(`UPDATE connector_next_gate_closures SET consumed_at=? WHERE agent_id=? AND device_id=? AND connector_instance_id=? AND consumed_at IS NULL`)
+          .run(now(), descriptor.agentId, descriptor.deviceId, descriptor.connectorInstanceId);
+        this.db.prepare(`UPDATE connector_next_authoritative_closures SET consumed_at=? WHERE agent_id=? AND device_id=? AND connector_instance_id=? AND consumed_at IS NULL`)
+          .run(now(), descriptor.agentId, descriptor.deviceId, descriptor.connectorInstanceId);
       }
       this.audit('update_offer', offerId, `update.${status}`, details);
     });

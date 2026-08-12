@@ -4196,6 +4196,7 @@ export class FeaturePackageManager {
             let deliveryRequestId = '';
             let deliveryAlreadyPrepared = false;
             let abandonReadOnlyRequestId = '';
+            let sourceMutationRequiresReadbackWithoutAck = false;
             let recoveredDelivery: import('../connector/connector-transport.js').ConnectorInvocationDelivery | null = null;
             let deliveryPurpose: 'mutation' | 'readback' | 'reconcile' | 'recovery' = declaresDurableMutationProtocol
               ? 'mutation' : recoveryContext !== undefined ? 'recovery' : 'readback';
@@ -4258,6 +4259,15 @@ export class FeaturePackageManager {
                 if (wireResponse.id !== recovered.requestId || connectorResultDigest(wireResponse) !== recovered.resultDigest) {
                   throw new AppError('REMOTE.DELIVERY_RECOVERY_INVALID', 'Recovered Connector response differs from its durable wire digest.');
                 }
+                if (wireResponse.ok === false && String(existing.purpose) !== 'mutation') {
+                  // Read-only calls have no external effect. A durable error from
+                  // an earlier invocation may be superseded by a new user retry
+                  // after the local validation/runtime defect has been fixed.
+                  abandonReadOnlyRequestId = String(existing.request_id);
+                  recoveredDelivery = null;
+                  deliveryRequestId = randomUUID();
+                  return false;
+                }
                 recoveredDelivery = {
                   ok: wireResponse.ok === true,
                   value: wireResponse.value,
@@ -4298,7 +4308,7 @@ export class FeaturePackageManager {
                 const source = this.database.prepare(`
                   SELECT c.connector_request_id,c.connector_execution_generation,c.connector_session_generation,
                     c.connector_id,c.connector_operation_package_digest,c.connector_feature_version,c.operation_id,
-                    r.feature_id
+                    c.submitted_at,r.feature_id
                   FROM feature_commands c JOIN feature_runs r ON r.run_id=c.run_id
                   WHERE c.run_id=? AND c.command_id=?
                 `).get(deliveryRunId, deliveryCommandId) as Record<string, unknown> | undefined;
@@ -4320,23 +4330,55 @@ export class FeaturePackageManager {
                       connectorId: String(source.connector_id),
                       sessionGeneration: Number(source.connector_session_generation)
                     });
-                    sourceExecutionGeneration = deliveryStatus.executionGeneration;
-                    this.database.prepare(`UPDATE feature_commands SET connector_execution_generation=? WHERE run_id=? AND command_id=? AND connector_execution_generation=''`)
-                      .run(sourceExecutionGeneration, deliveryRunId, deliveryCommandId);
+                    if (deliveryStatus.state === 'not_found'
+                      || (deliveryStatus.state === 'effect_uncertain' && !deliveryStatus.executionGeneration)) {
+                      // No execution identity exists to acknowledge. Preserve
+                      // the source request and perform an independent
+                      // authoritative read-back without inventing reconcileOf
+                      // fields or replaying the mutation.
+                      sourceMutationRequiresReadbackWithoutAck = true;
+                    } else if (deliveryStatus.state === 'running') {
+                      const currentSessionGeneration = Number(deliveryBinding.sessionGeneration || 0);
+                      const sourceSessionGeneration = Number(source.connector_session_generation || 0);
+                      const submittedAt = Date.parse(String(source.submitted_at || ''));
+                      const sourceDeadlineElapsed = Number.isFinite(submittedAt) && Date.now() - submittedAt > 150_000;
+                      if (currentSessionGeneration > 0
+                        && sourceSessionGeneration > 0
+                        && currentSessionGeneration !== sourceSessionGeneration
+                        && sourceDeadlineElapsed) {
+                        // A claimed mutation from an expired Pack binding can no
+                        // longer be treated as actively executable in the current
+                        // session. Its effect is still unknown, so close it only
+                        // through the independent authoritative read-back below;
+                        // never replay or fabricate an execution identity/ack.
+                        sourceMutationRequiresReadbackWithoutAck = true;
+                      } else {
+                        throw new AppError('REMOTE.MUTATION_UNCERTAIN', 'Original mutation is still running; wait for a durable terminal result before read-back.');
+                      }
+                    } else {
+                      sourceExecutionGeneration = deliveryStatus.executionGeneration;
+                      if (!/^[a-f0-9]{48}$/u.test(sourceExecutionGeneration)) {
+                        throw new AppError('REMOTE.MUTATION_UNCERTAIN', 'Original mutation execution generation is unavailable; only authoritative recovery is allowed.');
+                      }
+                      this.database.prepare(`UPDATE feature_commands SET connector_execution_generation=? WHERE run_id=? AND command_id=? AND connector_execution_generation=''`)
+                        .run(sourceExecutionGeneration, deliveryRunId, deliveryCommandId);
+                    }
                   }
-                  deliveryPurpose = recoveryContext !== undefined ? 'recovery' : 'reconcile';
-                  reconcileOf = {
-                    requestId: String(source.connector_request_id),
-                    featureId: String(source.feature_id),
-                    featureVersion: String(source.connector_feature_version),
-                    runId: deliveryRunId,
-                    commandId: deliveryCommandId,
-                    operationId: String(source.operation_id),
-                    operationPackageDigest: String(source.connector_operation_package_digest),
-                    connectorId: String(source.connector_id),
-                    sessionGeneration: Number(source.connector_session_generation),
-                    executionGeneration: sourceExecutionGeneration
-                  };
+                  if (!sourceMutationRequiresReadbackWithoutAck) {
+                    deliveryPurpose = recoveryContext !== undefined ? 'recovery' : 'reconcile';
+                    reconcileOf = {
+                      requestId: String(source.connector_request_id),
+                      featureId: String(source.feature_id),
+                      featureVersion: String(source.connector_feature_version),
+                      runId: deliveryRunId,
+                      commandId: deliveryCommandId,
+                      operationId: String(source.operation_id),
+                      operationPackageDigest: String(source.connector_operation_package_digest),
+                      connectorId: String(source.connector_id),
+                      sessionGeneration: Number(source.connector_session_generation),
+                      executionGeneration: sourceExecutionGeneration
+                    };
+                  }
                 }
               }
               const now = utcNow();

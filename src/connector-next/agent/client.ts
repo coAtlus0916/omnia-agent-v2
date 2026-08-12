@@ -84,8 +84,13 @@ export class ConnectorNextAgentClient {
     return this.json('agent/identity', { descriptor: this.options.descriptor });
   }
 
-  candidateHeartbeat(offerId: string, phase: 'candidate' | 'probation', uncertainJobIds: string[] = []): Promise<{ accepted: true; offerId: string; phase: string; generation: number; notStartedJobIds: string[] }> {
-    return this.json(`agent/updates/${encodeURIComponent(offerId)}/candidate-heartbeat`, { descriptor: this.options.descriptor, phase, uncertainJobIds });
+  candidateHeartbeat(offerId: string, phase: 'candidate' | 'probation', uncertainJobIds: string[] = [], gateDiagnostics: Array<{
+    source: string;
+    pathHash: string;
+    existed: boolean;
+    uncertainJobIds: string[];
+  }> = []): Promise<{ accepted: true; offerId: string; phase: string; generation: number; notStartedJobIds: string[]; resolvedUncertainJobIds?: string[] }> {
+    return this.json(`agent/updates/${encodeURIComponent(offerId)}/candidate-heartbeat`, { descriptor: this.options.descriptor, phase, uncertainJobIds, gateDiagnostics });
   }
 
   async downloadUpdate(offerId: string, artifactId: string): Promise<Buffer> {

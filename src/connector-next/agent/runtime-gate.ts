@@ -45,6 +45,17 @@ export class ConnectorNextRuntimeGate {
     this.db.prepare(`UPDATE runtime_leases SET status='uncertain',updated_at=? WHERE status='active' AND effect='mutation'`).run(new Date().toISOString());
   }
 
+  completeExpiredReadOnlyLeases(maximumAgeMs: number): number {
+    if (!Number.isSafeInteger(maximumAgeMs) || maximumAgeMs < 1) throw new Error('CONNECTOR_NEXT.READ_ONLY_LEASE_AGE_INVALID');
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - maximumAgeMs).toISOString();
+    return Number(this.db.prepare(`
+      UPDATE runtime_leases
+      SET status='completed',updated_at=?
+      WHERE status='active' AND effect='read_only' AND created_at<=?
+    `).run(now.toISOString(), cutoff).changes);
+  }
+
   setAdmission(admitting: boolean): void {
     this.setAdmissionMode(admitting ? 'open' : 'closed');
   }
@@ -86,9 +97,14 @@ export class ConnectorNextRuntimeGate {
     return rows.map((row) => row.job_id);
   }
 
-  resolveMutationNotStarted(jobId: string): number {
+  resolveMutationAuthoritatively(jobId: string): number {
     return Number(this.db.prepare(`UPDATE runtime_leases SET status='completed',updated_at=? WHERE job_id=? AND effect='mutation' AND status='uncertain'`)
       .run(new Date().toISOString(), jobId).changes);
+  }
+
+  /** Compatibility name for pre-v4 control planes. */
+  resolveMutationNotStarted(jobId: string): number {
+    return this.resolveMutationAuthoritatively(jobId);
   }
 
   snapshot(): RuntimeGateSnapshot {

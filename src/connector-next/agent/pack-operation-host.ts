@@ -52,7 +52,7 @@ export class ConnectorNextPackOperationHost implements ConnectorNextPackOperatio
       id: descriptor.connectorInstanceId,
       name: 'Omnia Agent Connector Next',
       version: descriptor.version
-    });
+    }, audit);
   }
 
   async close(): Promise<void> {

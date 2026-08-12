@@ -19,6 +19,7 @@
     "package:connector-next-candidate": "npm run build && node scripts/package-connector-next.mjs",
     "package:connector-next-server": "npm run build && node scripts/package-connector-next-server.mjs",
     "package:create-associate-next-portable": "node scripts/package-create-associate-next-portable.mjs",
+    "package:company-next-loopback-portable": "node scripts/package-create-associate-next-portable.mjs --company-current",
     "package:delete-feature": "npm run build && node scripts/package-delete-feature.mjs",
     "package:recording-feature": "npm run build && node scripts/package-recording-feature.mjs",
     "package:create-associate-feature": "npm run build && node scripts/package-create-associate-feature.mjs",

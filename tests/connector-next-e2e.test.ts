@@ -35,6 +35,7 @@ import { ConnectorNextAgentProcessHost } from '../src/connector-next/updater/pro
 import { ConnectorNextControlClient } from '../src/main/connector/connector-next-control-client.js';
 import { ConnectorNextShellBindingStore } from '../src/main/connector/connector-next-binding-store.js';
 import { ConnectorNextTransport } from '../src/main/connector/connector-next-transport.js';
+import { connectorResultDigest, type ConnectorDeliveryAck } from '../src/shared/connector-delivery.js';
 
 const target: ConnectorNextTarget = {
   agentId: 'omnia.agent.integration-01',
@@ -57,6 +58,70 @@ test('Connector Next server refuses a non-loopback listener without TLS', () => 
       () => createConnectorNextServer({ store, controlToken: 'control-token-longer-than-24-characters', publisherKeys: {}, host: '0.0.0.0' }),
       /CONNECTOR_NEXT\.SERVER_TLS_REQUIRED/
     );
+  } finally {
+    store.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Connector Next closes a mutation uncertainty only from an exact durable final Core acknowledgement', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'connector-next-final-ack-'));
+  const store = new ConnectorNextServerStore(path.join(root, 'server.sqlite'));
+  try {
+    const jobId = 'ocn3.job.11111111-1111-4111-8111-111111111111';
+    const envelopeRequestId = 'ocn3.request.final-ack-proof';
+    const deliveryRequestId = '22222222-2222-4222-8222-222222222222';
+    const executionGeneration = 'a'.repeat(48);
+    const operationDigest = `sha256:${'b'.repeat(64)}`;
+    const context = {
+      schemaVersion: 'omnia.connector-delivery-context/v1' as const,
+      requestId: deliveryRequestId,
+      featureId: 'omnia.create-associate', featureVersion: '0.2.131',
+      operationId: 'omnia.create-associate.synthetic.mutation.v1', operationPackageDigest: operationDigest,
+      runId: 'run-final-ack', commandId: 'command-final-ack', connectorId: target.connectorInstanceId,
+      sessionGeneration: 77, purpose: 'mutation' as const
+    };
+    const envelope: ConnectorNextOperationEnvelope = {
+      schemaVersion: 'omnia.connector-next-operation-envelope/v1', requestId: envelopeRequestId, target,
+      command: 'operation.invoke', effect: 'mutation',
+      packBinding: { connectorId: target.connectorInstanceId, sessionGeneration: 77, engagementId: 'engagement', authorityInstanceId: 'authority', tenantOrOrgId: 'tenant', packId: 'pack' },
+      input: { schemaVersion: 'omnia.operation-invocation/v1', featureId: context.featureId, featureVersion: context.featureVersion,
+        operationId: context.operationId, request: {}, operationPackageDigest: operationDigest, mutationAuthorized: true, deliveryContext: context }
+    };
+    const wireResponse = { schemaVersion: 'omnia.connector-ipc/v1', id: deliveryRequestId, ok: false,
+      error: { code: 'CONNECTOR_NEXT.OPERATION_JOB_FAILED', message: 'synthetic pre-closure failure', retryable: false } };
+    const result = { schemaVersion: 'omnia.connector-next-operation-result/v1', requestId: envelopeRequestId,
+      command: envelope.command, target, descriptor: {}, completedAt: new Date().toISOString(), value: {
+        schemaVersion: 'omnia.connector-next-durable-delivery/v1', ok: false, error: wireResponse.error, wireResponse,
+        witness: { schemaVersion: 'omnia.connector-delivery-witness/v1', requestId: deliveryRequestId,
+          resultDigest: connectorResultDigest(wireResponse), sessionGeneration: 77, executionGeneration }
+      } };
+    store.db.prepare(`INSERT INTO connector_next_jobs(job_id,agent_id,device_id,connector_instance_id,operation,effect,payload_json,status,result_json,created_at,deadline_at,completed_at,execution_effect) VALUES(?,?,?,?,?,'read_only',?,'succeeded',?,?,?,?, 'mutation')`)
+      .run(jobId, target.agentId, target.deviceId, target.connectorInstanceId, CONNECTOR_NEXT_OPERATION_EXECUTE,
+        JSON.stringify(envelope), JSON.stringify(result), new Date().toISOString(), new Date(Date.now() + 60_000).toISOString(), new Date().toISOString());
+    store.db.prepare(`INSERT INTO connector_next_operation_requests(request_id,delivery_request_id,agent_id,device_id,connector_instance_id,envelope_digest,job_id,created_at) VALUES(?,?,?,?,?,?,?,?)`)
+      .run(envelopeRequestId, deliveryRequestId, target.agentId, target.deviceId, target.connectorInstanceId,
+        sha256(canonicalJson(envelope)), jobId, new Date().toISOString());
+
+    const ack: ConnectorDeliveryAck = {
+      schemaVersion: 'omnia.connector-delivery-ack/v1', ackId: '33333333-3333-4333-8333-333333333333',
+      deliveredRequestId: '44444444-4444-4444-8444-444444444444', resultDigest: 'c'.repeat(64),
+      connectorId: target.connectorInstanceId, sessionGeneration: 77, executionGeneration: 'd'.repeat(48),
+      featureId: context.featureId, featureVersion: context.featureVersion, operationId: context.operationId,
+      operationPackageDigest: operationDigest, runId: context.runId, commandId: context.commandId,
+      receiptId: '55555555-5555-4555-8555-555555555555', receiptResponseDigest: 'e'.repeat(64),
+      resolution: 'closed_not_applied', effectOutcome: 'not_applied',
+      reconciles: { requestId: deliveryRequestId, featureId: context.featureId, featureVersion: context.featureVersion,
+        operationId: context.operationId, operationPackageDigest: operationDigest, connectorId: target.connectorInstanceId,
+        sessionGeneration: 77, executionGeneration }
+    };
+    store.db.prepare(`INSERT INTO connector_next_delivery_acks(ack_id,ack_digest,request_id,resolution,cleared_mutation_count,created_at,payload_json,reconciles_request_id) VALUES(?,?,?,?,1,?,?,?)`)
+      .run(ack.ackId, sha256(canonicalJson(ack)), ack.deliveredRequestId, ack.resolution, new Date().toISOString(), JSON.stringify(ack), deliveryRequestId);
+    const checker = store as unknown as { finalAckResolvesMutationJob(jobId: string, exactTarget: ConnectorNextTarget): boolean };
+    assert.equal(checker.finalAckResolvesMutationJob(jobId, target), true);
+    store.db.prepare(`UPDATE connector_next_delivery_acks SET payload_json=json_set(payload_json,'$.reconciles.executionGeneration',?) WHERE ack_id=?`)
+      .run('f'.repeat(48), ack.ackId);
+    assert.equal(checker.finalAckResolvesMutationJob(jobId, target), false, 'a mismatched source execution generation cannot clear the gate');
   } finally {
     store.close();
     fs.rmSync(root, { recursive: true, force: true });

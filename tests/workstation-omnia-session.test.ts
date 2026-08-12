@@ -58,6 +58,21 @@ test('live hierarchy snapshot exposes only explicit canonical authority identiti
   }finally{await connector.close();rmSync(root,{recursive:true,force:true});}
 });
 
+test('signed Operation hierarchy proof is reused only for the exact Page, Pack, API origin and bearer', async()=>{
+  const root=mkdtempSync(path.join(os.tmpdir(),'omnia-v5-operation-identity-cache-'));const connector=new WorkstationOmniaSession(root,fetch);
+  const page={url:()=>`https://deloitteomnia.deloitte.com.cn/engagement/${engagementId}/home`};
+  let reads=0;
+  try{
+    (connector as any).api=async()=>{reads+=1;return[{engagementId,name:'Live Pack',clientName:'Client'}];};
+    const base={page,targetUrl:new URL(page.url()),apiOrigin:'https://api.deloitteomnia.deloitte.com.cn',engagementId,headers:{authorization:'Bearer one'}};
+    const first=await (connector as any).operationPackIdentity(base);
+    const second=await (connector as any).operationPackIdentity(base);
+    assert.deepEqual(second,first);assert.equal(reads,1,'unchanged exact binding must not re-read hierarchy per Operation');
+    await (connector as any).operationPackIdentity({...base,headers:{authorization:'Bearer two'}});
+    assert.equal(reads,2,'a bearer change must force a new authoritative hierarchy read');
+  }finally{await connector.close();rmSync(root,{recursive:true,force:true});}
+});
+
 test('authority extraction uses the explicit hierarchy Engagement ID as the Pack identity and never display names',()=>{
   assert.deepEqual(_test.canonicalAuthorityIdentity('https://api.deloitteomnia.deloitte.com.cn',{engagementId,name:'Display Pack',clientName:'Display Client'}),{
     authorityInstanceId:'https://api.deloitteomnia.deloitte.com.cn',tenantOrOrgId:'',packId:engagementId
@@ -144,7 +159,7 @@ test('Workstation Session Core health is self-contained and does not start a bro
   const root = mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-connector-'));
   const connector = new WorkstationOmniaSession(root, fetch);
   try {
-    assert.deepEqual(connector.health(), { ready: true, connectorVersion: '0.3.35' });
+    assert.deepEqual(connector.health(), { ready: true, connectorVersion: '0.3.36' });
   } finally {
     void connector.close();
     rmSync(root, { recursive: true, force: true });

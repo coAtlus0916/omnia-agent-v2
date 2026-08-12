@@ -1,5 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { connectorNextPaths } from '../paths.js';
+import { assertConnectorNextPathIsolation, connectorNextPaths } from '../paths.js';
 import { CONNECTOR_NEXT_AGENT_PROCESS, CONNECTOR_NEXT_PRODUCT_ID, CONNECTOR_NEXT_PROTOCOL_ID, assertTarget } from '../protocol.js';
 import { ConnectorNextAgentClient } from './client.js';
 import { connectorNextDescriptor } from './identity.js';
@@ -11,7 +11,53 @@ import { ConnectorNextPackOperationHost } from './pack-operation-host.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { acquireConnectorNextProcessLock, releaseConnectorNextProcessLock } from '../process-lock.js';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { readCurrentPointer, verifyCurrentSlot } from '../updater/package.js';
+
+function exactUpdaterParentPid(paths: ReturnType<typeof connectorNextPaths>): number | null {
+  if (process.platform !== 'win32' || !Number.isSafeInteger(process.ppid) || process.ppid < 1) return null;
+  try {
+    const current = readCurrentPointer(paths.currentPointer);
+    const verified = verifyCurrentSlot(paths, current);
+    const expectedRuntime = path.resolve(verified.root, ...verified.identity.runtimeEntrypoint.split('/')).toLowerCase();
+    const expectedUpdater = path.resolve(verified.root, ...verified.identity.updaterEntrypoint.split('/')).toLowerCase();
+    const script = `$item=Get-CimInstance Win32_Process -Filter "ProcessId=${process.ppid}" -ErrorAction Stop; if(-not $item){exit 3}; [pscustomobject]@{processId=[int]$item.ProcessId;executablePath=[string]$item.ExecutablePath;commandLine=[string]$item.CommandLine}|ConvertTo-Json -Compress`;
+    const observed = JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', timeout: 5_000 })) as {
+      processId?: unknown; executablePath?: unknown; commandLine?: unknown;
+    };
+    const executablePath = path.resolve(String(observed.executablePath || '')).toLowerCase();
+    const commandLine = String(observed.commandLine || '').toLowerCase();
+    return observed.processId === process.ppid && executablePath === expectedRuntime && commandLine.includes(expectedUpdater)
+      ? process.ppid : null;
+  } catch {
+    return null;
+  }
+}
+
+function candidateRuntimeGateFiles(paths: ReturnType<typeof connectorNextPaths>): Array<{ source: string; filename: string; existed: boolean }> {
+  const files = new Map<string, { source: string; filename: string; existed: boolean }>();
+  const add = (source: string, filename: string) => {
+    const resolved = path.resolve(filename);
+    const key = resolved.toLowerCase();
+    const existed = fs.existsSync(resolved);
+    const previous = files.get(key);
+    files.set(key, { source: previous ? `${previous.source}_${source}`.slice(0, 32) : source, filename: resolved, existed: previous?.existed || existed });
+  };
+  add('explicit', paths.runtimeDatabase);
+  const defaultGate = connectorNextPaths().runtimeDatabase;
+  if (fs.existsSync(defaultGate)) add('default', defaultGate);
+  try {
+    const launcher = fs.readFileSync(path.join(paths.installRoot, 'start-connector-next-v3.cmd'), 'utf8');
+    const match = launcher.match(/^set "OMNIA_CONNECTOR_NEXT_DATA_ROOT=([^"\r\n]+)"\s*$/imu);
+    if (match?.[1]) {
+      const installed = connectorNextPaths({ installRoot: paths.installRoot, dataRoot: match[1] });
+      assertConnectorNextPathIsolation(installed);
+      add('launcher', installed.runtimeDatabase);
+    }
+  } catch { /* the exact explicit gate remains authoritative */ }
+  return [...files.values()];
+}
 
 async function main(): Promise<void> {
 process.title = CONNECTOR_NEXT_AGENT_PROCESS;
@@ -31,13 +77,39 @@ if (args.includes('--connector-next-candidate-health') || args.includes('--conne
   const descriptor = connectorNextDescriptor(state, version, sequence, generation);
   const candidateClient = new ConnectorNextAgentClient({ serverUrl: state.serverUrl, token: state.token, descriptor });
   const phase = args.includes('--connector-next-probation-health') ? 'probation' : 'candidate';
-  const candidateGate = new ConnectorNextRuntimeGate(paths.runtimeDatabase);
-  const uncertainJobIds = candidateGate.uncertainMutationJobIds();
-  const confirmed = await candidateClient.candidateHeartbeat(offerId, phase, uncertainJobIds);
-  const reconciledNotStarted = confirmed.notStartedJobIds.reduce((count, jobId) => count + candidateGate.resolveMutationNotStarted(jobId), 0);
-  candidateGate.close();
-  process.stdout.write(`${JSON.stringify({ healthy: confirmed.accepted, admission: 'health_only', productId: CONNECTOR_NEXT_PRODUCT_ID, protocolId: CONNECTOR_NEXT_PROTOCOL_ID, version, sequence, generation, offerId, phase, reconciledNotStarted })}\n`);
+  const candidateGates = candidateRuntimeGateFiles(paths).map((entry) => ({ ...entry, gate: new ConnectorNextRuntimeGate(entry.filename) }));
+  let forwardedUncertainJobIds: string[] = [];
+  if (process.env.OMNIA_CONNECTOR_NEXT_CANDIDATE_UNCERTAIN_JOB_IDS) {
+    const parsed = JSON.parse(process.env.OMNIA_CONNECTOR_NEXT_CANDIDATE_UNCERTAIN_JOB_IDS) as unknown;
+    if (!Array.isArray(parsed) || parsed.length > 128
+      || parsed.some((jobId) => typeof jobId !== 'string' || !/^ocn3\.job\.[0-9a-f-]{36}$/u.test(jobId))) {
+      throw new Error('CONNECTOR_NEXT.CANDIDATE_UNCERTAIN_JOB_IDS_INVALID');
+    }
+    forwardedUncertainJobIds = parsed as string[];
+  }
+  // The server never admits a read-only job with a deadline above ten minutes.
+  // Candidate health may therefore close only leases older than that hard
+  // protocol ceiling. Mutation leases remain untouched and fail closed.
+  const expiredReadOnlyLeases = candidateGates.reduce(
+    (count, entry) => count + entry.gate.completeExpiredReadOnlyLeases(10 * 60 * 1_000),
+    0
+  );
+  const gateDiagnostics = candidateGates.map((entry) => ({
+    source: entry.source,
+    pathHash: `sha256:${createHash('sha256').update(entry.filename.toLowerCase()).digest('hex')}`,
+    existed: entry.existed,
+    uncertainJobIds: entry.gate.uncertainMutationJobIds()
+  }));
+  const uncertainJobIds = [...new Set([...gateDiagnostics.flatMap((entry) => entry.uncertainJobIds), ...forwardedUncertainJobIds])];
+  const confirmed = await candidateClient.candidateHeartbeat(offerId, phase, uncertainJobIds, gateDiagnostics);
+  const resolvedJobIds = confirmed.resolvedUncertainJobIds || confirmed.notStartedJobIds;
+  const reconciledUncertain = resolvedJobIds.reduce((count, jobId) => count
+    + candidateGates.reduce((gateCount, entry) => gateCount + entry.gate.resolveMutationAuthoritatively(jobId), 0), 0);
+  const updaterParentPid = phase === 'candidate' && resolvedJobIds.length > 0 ? exactUpdaterParentPid(paths) : null;
+  for (const entry of candidateGates) entry.gate.close();
   stateStore.close();
+  fs.writeSync(process.stdout.fd, `${JSON.stringify({ healthy: confirmed.accepted, admission: 'health_only', productId: CONNECTOR_NEXT_PRODUCT_ID, protocolId: CONNECTOR_NEXT_PROTOCOL_ID, version, sequence, generation, offerId, phase, expiredReadOnlyLeases, reconciledUncertain, resolvedUncertainJobIds: resolvedJobIds, updaterRefreshRequested: updaterParentPid !== null })}\n`);
+  if (updaterParentPid !== null) process.kill(updaterParentPid, 'SIGTERM');
   process.exit(0);
 }
 

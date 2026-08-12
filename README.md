@@ -2,27 +2,9 @@
 
 Omnia Agent v5 是 Windows Shell、独立 Feature 包和 Connector Next 的工作区。旧 Remote Connector/Bridge 已退出构建与发布链。开发前先读 [AGENTS.md](AGENTS.md) 与 [Agent 开发入口](docs/development/AGENT_START_HERE.md)。
 
-## 下载便携版
+## 公司电脑本地便携版
 
-只想使用应用、不需要源码的用户，请前往 [`v0.4.15` 便携候选版](https://github.com/coAtlus0916/omnia-agent-v2/releases/tag/v0.4.15) 下载名称包含 `Portable` 的 ZIP；其他版本见 [全部 Releases](https://github.com/coAtlus0916/omnia-agent-v2/releases)。当前源码文档仍将 live acceptance 标记为 `pending`，因此该包以预发布候选版提供，不标记为稳定版。
-
-1. 下载并完整解压 ZIP，不要直接在压缩包内运行。
-2. 将目录放在当前用户可写的位置。
-3. 双击 `Start Omnia Agent v5.cmd` 启动。
-
-便携包自带 Electron、Connector Next 与 Python 运行时。仓库和发布包均不包含 API 密钥、本机日志、SQLite 运行数据或 Chromium 用户状态；首次启动会在便携目录中创建本机数据。
-
-使用 GitHub CLI 下载最新版：
-
-```powershell
-gh release download v0.4.15 --repo coAtlus0916/omnia-agent-v2 --pattern "*Portable*.zip"
-```
-
-需要阅读、修改或自行构建时，再克隆源码：
-
-```powershell
-git clone https://github.com/coAtlus0916/omnia-agent-v2.git
-```
+最新自包含候选包见 [v0.4.15-company-loopback-r1](https://github.com/coAtlus0916/omnia-agent-v2/releases/tag/v0.4.15-company-loopback-r1)。完整解压后双击 `Start Omnia Agent v5.cmd`；Shell 会自动在本机启动 Connector Next Server 与 Agent 并连接 `127.0.0.1`，不经过远程 Connector 服务器。
 
 ## 当前源码状态
 
@@ -30,14 +12,14 @@ Shell 源码版本是 `0.4.15`。四个官方 Feature 的构建脚本当前指�
 
 | Feature | 源码候选 | sequence | 当前验收状态 |
 |---|---:|---:|---|
-| `omnia.create-associate` | `0.2.103` | 105 | 当前版本 live acceptance pending |
-| `omnia.delete-elements` | `0.3.20` | 29 | 当前版本 live acceptance pending |
-| `omnia.recording` | `0.4.19` | 32 | 当前版本 live acceptance pending |
-| `omnia.workpaper-preparation` | `0.1.3` | 4 | npm 发布入口与当前版本 live acceptance pending |
+| `omnia.create-associate` | `0.2.134` | 136 | 当前公司便携包已内置；完整 live acceptance 仍 pending |
+| `omnia.delete-elements` | `0.3.21` | 30 | 源码候选；公司便携包保留已接受基线 `0.2.1` |
+| `omnia.recording` | `0.4.20` | 33 | 当前公司便携包已内置；现场录制链已完成 |
+| `omnia.workpaper-preparation` | `0.1.4` | 5 | 源码候选；当前公司便携包不内置 |
 
 这些是源码候选，不表示已安装、已推广或已在授权 Omnia Pack 通过。历史版本的候选、hash 和 canary 只证明对应历史产物。
 
-四 Feature 独立性当前**未通过发布门禁**：Core 仍含 Feature ID/版本业务特判且未执行 Runtime Store allowlist，Operation 升级/回滚协议未闭环，Windows Builtin catalog 要求 Create `0.2.48` 而打包脚本复制 `0.2.43`。证据、影响与关闭条件见 [四 Feature 独立性审计](docs/architecture/FEATURE_INDEPENDENCE.md)。
+四 Feature 的独立性不变量、历史审计问题和当前关闭证据见 [四 Feature 独立性审计](docs/architecture/FEATURE_INDEPENDENCE.md)。自动化通过不替代未完成的当前版本 live acceptance。
 
 ## 安装与运行
 
@@ -74,7 +56,10 @@ npm run package:windows
 npm run package:connector-next-candidate
 npm run package:connector-next-server
 npm run package:create-associate-next-portable
+npm run package:company-next-loopback-portable
 ```
+
+公司电脑自包含版使用最后一条命令。该包在本机启动 Connector Next Server 与 Agent，Shell 自动连接 `127.0.0.1`，不经过远程 Connector 服务器。重复构建、核验与 GitHub Release 发布步骤见 [公司本地 Connector Next 便携包发布指南](docs/development/COMPANY_LOOPBACK_PORTABLE_RELEASE.md)。
 
 正式发布只接受官方签名包。Feature/Operation 的签名、成员 digest、安装验签和 sequence 由工具验证；同一版本不得重签为另一 digest。
 

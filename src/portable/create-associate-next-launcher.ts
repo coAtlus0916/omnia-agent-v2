@@ -18,7 +18,10 @@ import { connectorNextProcessLockIsLive } from '../connector-next/process-lock.j
 import { protectConnectorNextCredential, unprotectConnectorNextCredential } from '../connector-next/agent/credential-protection.js';
 
 const PORTABLE_CONFIG_SCHEMA = 'omnia.connector-next-portable-config/v1' as const;
-const PORTABLE_PROFILE = 'create-associate-only';
+const SUPPORTED_PORTABLE_PROFILES = new Set([
+  'create-associate-only',
+  'company-loopback-current'
+]);
 const CONNECTOR_VERSION = '0.1.23';
 const CONNECTOR_SEQUENCE = 24;
 
@@ -30,15 +33,17 @@ interface PortableConfig {
   createdAt: string;
 }
 
-function assertPortableRoot(root: string): void {
+function readPortableProfile(root: string): string {
   const marker = JSON.parse(fs.readFileSync(path.join(root, 'portable-root.json'), 'utf8')) as Record<string, unknown>;
+  const builtinProfile = String(marker.builtinProfile || '');
   if (marker.schemaVersion !== 'omnia.portable-product-root/v1'
     || marker.product !== 'omnia-agent-v5'
     || marker.formatVersion !== 1
-    || marker.builtinProfile !== PORTABLE_PROFILE
+    || !SUPPORTED_PORTABLE_PROFILES.has(builtinProfile)
     || marker.connectorTransport !== 'connector-next-loopback') {
     throw new Error('CONNECTOR_NEXT.PORTABLE_ROOT_IDENTITY_INVALID');
   }
+  return builtinProfile;
 }
 
 function sanitizeHost(value: string): string {
@@ -92,24 +97,24 @@ function readOrCreateConfig(dataRoot: string, filename: string): Promise<{ confi
   });
 }
 
-function serviceEnvironment(root: string): NodeJS.ProcessEnv {
+function serviceEnvironment(root: string, profile: string): NodeJS.ProcessEnv {
   return {
     ...process.env,
     ELECTRON_RUN_AS_NODE: '1',
     OMNIA_AGENT_HOT_ROOT: '',
     OMNIA_AGENT_PRODUCT_ROOT: root,
-    OMNIA_AGENT_BUILTIN_PROFILE: PORTABLE_PROFILE
+    OMNIA_AGENT_BUILTIN_PROFILE: profile
   };
 }
 
-function shellEnvironment(root: string): NodeJS.ProcessEnv {
+function shellEnvironment(root: string, profile: string): NodeJS.ProcessEnv {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.OMNIA_AGENT_HOT_ROOT;
   delete env.OMNIA_AGENT_REPAIR_VERIFIED_REMOTE_BINDING;
   delete env.OMNIA_AGENT_REPAIR_VERIFIED_REMOTE_BINDING_REPORT;
   env.OMNIA_AGENT_PRODUCT_ROOT = root;
-  env.OMNIA_AGENT_BUILTIN_PROFILE = PORTABLE_PROFILE;
+  env.OMNIA_AGENT_BUILTIN_PROFILE = profile;
   return env;
 }
 
@@ -227,7 +232,7 @@ async function withLauncherLock<T>(filename: string, work: () => Promise<T>): Pr
 async function main(): Promise<void> {
   const connectorRoot = path.resolve(__dirname);
   const root = path.resolve(connectorRoot, '..');
-  assertPortableRoot(root);
+  const portableProfile = readPortableProfile(root);
   const dataRoot = path.join(root, 'connector-next-data-v3');
   const logRoot = path.join(dataRoot, 'logs');
   fs.mkdirSync(logRoot, { recursive: true });
@@ -250,7 +255,7 @@ async function main(): Promise<void> {
       if (!fs.existsSync(required)) throw new Error(`CONNECTOR_NEXT.PORTABLE_MEMBER_MISSING: ${required}`);
     }
 
-    const common = serviceEnvironment(root);
+    const common = serviceEnvironment(root, portableProfile);
     const serverDataRoot = path.join(dataRoot, 'server');
     if (!await serverIsHealthy(serverUrl)) {
       const pid = spawnLogged(executable, [path.join(connectorRoot, 'server.cjs')], path.join(logRoot, 'server.log'), {
@@ -320,7 +325,7 @@ async function main(): Promise<void> {
     }, 30_000, 'CONNECTOR_NEXT.PORTABLE_AGENT_NOT_READY');
 
     const shellEnv = {
-      ...shellEnvironment(root),
+      ...shellEnvironment(root, portableProfile),
       OMNIA_CONNECTOR_NEXT_ENABLED: '1',
       OMNIA_CONNECTOR_NEXT_SERVER_URL: serverUrl,
       OMNIA_CONNECTOR_NEXT_CONTROL_TOKEN: controlToken,
@@ -346,9 +351,9 @@ async function main(): Promise<void> {
       cwd: root,
       detached: true,
       windowsHide: false,
-      env: shellEnvironment(root)
+      env: shellEnvironment(root, portableProfile)
     });
-    append('shell.spawned', { pid, version: current.version, profile: PORTABLE_PROFILE });
+    append('shell.spawned', { pid, version: current.version, profile: portableProfile });
   });
 }
 

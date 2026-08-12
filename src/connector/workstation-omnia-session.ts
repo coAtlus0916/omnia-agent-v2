@@ -211,6 +211,7 @@ type PageAuthorization = {
 type VerifiedPackIdentity = {
   engagementId: string;
   apiOrigin: string;
+  authorization: string;
   pack: {
     name: string;
     clientName: string;
@@ -249,7 +250,8 @@ export class WorkstationOmniaSession {
       id: 'v5-workstation-omnia-session',
       name: 'Omnia Agent v5 Workstation Omnia Session',
       version: CONNECTOR_VERSION
-    }
+    },
+    private readonly lifecycleAudit: (event: string, details: Record<string, unknown>) => void = () => undefined
   ) {
     this.connectorIdentity = connectorIdentity;
     this.dataRootPath = path.resolve(dataRoot);
@@ -386,6 +388,8 @@ export class WorkstationOmniaSession {
       this.port = savedPort;
       this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${this.port}`);
       await this.verifyBrowserIdentity(this.browser);
+      this.observeBrowserDisconnect(this.browser);
+      this.lifecycleAudit('pack.browser.reattached', { port: this.port });
     } else {
       this.port = await this.chooseFreePort();
       this.savePort(this.port);
@@ -397,8 +401,13 @@ export class WorkstationOmniaSession {
         '--no-first-run',
         '--no-default-browser-check',
         DEFAULT_HOME
-      ], { windowsHide: false, detached: false, stdio: 'ignore' });
+      ], { windowsHide: false, detached: true, stdio: 'ignore' });
       edgeProcess.once('error', () => { /* readiness check returns the user-visible failure */ });
+      edgeProcess.once('exit', (code, signal) => {
+        this.lifecycleAudit('pack.browser.process_exited', { pid: edgeProcess.pid || 0, code: code ?? -1, signal: signal || '' });
+      });
+      edgeProcess.unref();
+      this.lifecycleAudit('pack.browser.process_started', { pid: edgeProcess.pid || 0, port: this.port });
       const deadline = Date.now() + 15_000;
       while (Date.now() < deadline && !await this.cdpReady()) {
         await new Promise((resolve) => setTimeout(resolve, 250));
@@ -406,12 +415,23 @@ export class WorkstationOmniaSession {
       if (!await this.cdpReady()) throw new Error('Edge 已启动，但 Connector 无法建立受控 CDP 会话。');
       this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${this.port}`);
       await this.verifyBrowserIdentity(this.browser);
+      this.observeBrowserDisconnect(this.browser);
     }
     for (const context of this.browser.contexts()) {
       context.on('page', (page) => this.observePage(page));
       for (const page of context.pages()) this.observePage(page);
     }
     return this.browser;
+  }
+
+  private observeBrowserDisconnect(browser: Browser): void {
+    browser.once('disconnected', () => {
+      if (this.browser === browser) {
+        this.browser = null;
+        this.boundPage = null;
+      }
+      this.lifecycleAudit('pack.browser.cdp_disconnected', { port: this.port });
+    });
   }
 
   private async verifyBrowserIdentity(browser: Browser): Promise<void> {
@@ -757,6 +777,32 @@ export class WorkstationOmniaSession {
     };
   }
 
+  /**
+   * Core already freezes every signed Operation to the exact Connector
+   * binding returned by a live hierarchy read. Re-reading that hierarchy for
+   * every individual preflight, mutation and read-back adds a full Omnia API
+   * request without strengthening an unchanged binding. This process-local
+   * proof is reusable only while the exact Page, API origin, engagement and
+   * bearer remain unchanged. A navigation, Pack switch, token refresh,
+   * revocation, or Connector restart necessarily misses the cache.
+   */
+  private async operationPackIdentity(session: Session): Promise<VerifiedPackIdentity['pack']> {
+    const authorization = session.headers.authorization || '';
+    const verified = this.verifiedPackByPage.get(session.page);
+    if (verified
+      && verified.engagementId === session.engagementId
+      && verified.apiOrigin === session.apiOrigin
+      && verified.authorization === authorization) return verified.pack;
+    const pack = await this.identify(session);
+    this.verifiedPackByPage.set(session.page, {
+      engagementId: session.engagementId,
+      apiOrigin: session.apiOrigin,
+      authorization,
+      pack
+    });
+    return pack;
+  }
+
   async status(): Promise<ConnectorConnection> {
     try {
       const knownPort = this.port || this.readSavedPort();
@@ -793,6 +839,7 @@ export class WorkstationOmniaSession {
         this.verifiedPackByPage.set(page, {
           engagementId,
           apiOrigin: auth.apiOrigin,
+          authorization: auth.headers.authorization || '',
           pack
         });
         return this.snapshot('connected', `当前 Pack 已连接：${pack.name}`, session, pack);
@@ -898,6 +945,12 @@ export class WorkstationOmniaSession {
       this.identify(session),
       this.workspaceAuthorityDirectory(session)
     ]);
+    this.verifiedPackByPage.set(session.page, {
+      engagementId: session.engagementId,
+      apiOrigin: session.apiOrigin,
+      authorization: session.headers.authorization || '',
+      pack
+    });
     const result: ConnectorWorkspaceAuthorityRead = {
       schemaVersion: 'omnia.workspace-authority-read/v2',
       profile: 'workspace_authority_read',
@@ -919,7 +972,7 @@ export class WorkstationOmniaSession {
 
   async registerOperation(input: OperationRegistrationCommand): Promise<unknown> {
     const session = await this.session(true);
-    const pack = await this.identify(session);
+    const pack = await this.operationPackIdentity(session);
     return this.operationHost.register(input, {
       connectorId: this.connectorIdentity.id,
       sessionGeneration: this.sessionGeneration,
@@ -932,7 +985,7 @@ export class WorkstationOmniaSession {
 
   async invokeOperation(input: OperationInvocationRequest): Promise<unknown> {
     const session = await this.session(true);
-    const pack = await this.identify(session);
+    const pack = await this.operationPackIdentity(session);
     const binding = {
       connectorId: this.connectorIdentity.id,
       sessionGeneration: this.sessionGeneration,

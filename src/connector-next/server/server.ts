@@ -169,6 +169,11 @@ export function createConnectorNextServer(options: ConnectorNextServerOptions) {
         sendJson(res, 200, options.store.acknowledgeDelivery(await body(req) as never));
         return;
       }
+      if (req.method === 'POST' && url.pathname === `${BASE}/deliveries/authoritative-closure`) {
+        control();
+        sendJson(res, 200, options.store.recordAuthoritativeClosure(await body(req)));
+        return;
+      }
       const jobMatch = url.pathname.match(/^\/connector-next\/v3\/jobs\/([^/]+)$/);
       if (req.method === 'GET' && jobMatch?.[1]) {
         control();
@@ -291,7 +296,8 @@ export function createConnectorNextServer(options: ConnectorNextServerOptions) {
           descriptor,
           decodeURIComponent(candidateHeartbeatMatch[1]),
           payload.phase === 'probation' ? 'probation' : 'candidate',
-          Array.isArray(payload.uncertainJobIds) ? payload.uncertainJobIds : []
+          Array.isArray(payload.uncertainJobIds) ? payload.uncertainJobIds : [],
+          Array.isArray(payload.gateDiagnostics) ? payload.gateDiagnostics : []
         ));
         return;
       }

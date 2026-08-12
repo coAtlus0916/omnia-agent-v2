@@ -90,6 +90,7 @@ export const BUILTIN_FEATURE_RELEASE_INVENTORY: BuiltinFeatureReleaseInventory =
 });
 
 export const CREATE_ASSOCIATE_ONLY_BUILTIN_PROFILE = 'create-associate-only' as const;
+export const COMPANY_LOOPBACK_CURRENT_BUILTIN_PROFILE = 'company-loopback-current' as const;
 
 /**
  * Dedicated portable profile used by the self-contained Connector Next build.
@@ -134,11 +135,65 @@ export const CREATE_ASSOCIATE_ONLY_FEATURE_RELEASE_INVENTORY: BuiltinFeatureRele
   ])
 });
 
+/**
+ * Self-contained company portable profile. It freezes the three Feature
+ * releases currently accepted by the product while Connector Next remains a
+ * generic loopback transport with no Feature-specific code.
+ */
+export const COMPANY_LOOPBACK_CURRENT_FEATURE_RELEASE_INVENTORY: BuiltinFeatureReleaseInventory = Object.freeze({
+  schemaVersion: BUILTIN_RELEASE_INVENTORY_SCHEMA,
+  baselinePolicy: 'fixed-shell-baseline',
+  builtins: Object.freeze([
+    Object.freeze({
+      delivery: 'shell-builtin-baseline',
+      featureId: 'omnia.create-associate',
+      version: '0.2.134',
+      sequence: 136,
+      sourceDirectory: 'create-associate',
+      filename: 'create-associate-0.2.134.ofp',
+      sourceRelativePath: 'feature-packages/create-associate/candidates/create-associate-0.2.134.ofp',
+      fileSha256: 'sha256:f765e30c42945267945a3f4d25b956c31e688b41a4db31b2e3bf3086fad2bd3a',
+      packageDigest: 'sha256:304346541a28e2775cc00c2c5cee7ae2c3da8a982704e8564f9d8e9beab2bb3e'
+    }),
+    Object.freeze({
+      delivery: 'shell-builtin-baseline',
+      featureId: 'omnia.recording',
+      version: '0.4.20',
+      sequence: 33,
+      sourceDirectory: 'recording',
+      filename: 'recording-0.4.20.ofp',
+      sourceRelativePath: 'feature-packages/recording/candidates/recording-0.4.20.ofp',
+      fileSha256: 'sha256:6fd9294e95d165f3c1163a99b80b82d98b7b1236f559aec7b06393f879db27fe',
+      packageDigest: 'sha256:2af2eefee4bee989ddb9b75e3c460d52ce2c7ce979b4a110ad212008167d6359'
+    }),
+    Object.freeze({
+      delivery: 'shell-builtin-baseline',
+      featureId: 'omnia.delete-elements',
+      version: '0.2.1',
+      sequence: 8,
+      sourceDirectory: 'delete-elements',
+      filename: 'delete-elements-0.2.1.ofp',
+      sourceRelativePath: 'feature-packages/delete-elements/candidates/delete-elements-0.2.1.ofp',
+      fileSha256: 'sha256:c85c3c4cdabbf2ffd4d72af5c1498637409be089f831b1b78288728b6f54a3b6',
+      packageDigest: 'sha256:be02dcf583b7d50503cc2bfe23f2244c12ad626a66cee78a82f79c006eeceb7f'
+    })
+  ]),
+  postInstallFeatures: Object.freeze([
+    Object.freeze({
+      featureId: 'omnia.workpaper-preparation',
+      delivery: 'post-install',
+      bundled: false,
+      reason: 'Workpaper Preparation is not part of the currently accepted company portable Feature set.'
+    })
+  ])
+});
+
 export function builtinFeatureReleaseInventoryForProfile(
   profile = String(process.env.OMNIA_AGENT_BUILTIN_PROFILE || '').trim()
 ): BuiltinFeatureReleaseInventory {
   if (!profile || profile === 'standard') return BUILTIN_FEATURE_RELEASE_INVENTORY;
   if (profile === CREATE_ASSOCIATE_ONLY_BUILTIN_PROFILE) return CREATE_ASSOCIATE_ONLY_FEATURE_RELEASE_INVENTORY;
+  if (profile === COMPANY_LOOPBACK_CURRENT_BUILTIN_PROFILE) return COMPANY_LOOPBACK_CURRENT_FEATURE_RELEASE_INVENTORY;
   throw new Error(`Unknown Omnia builtin Feature profile: ${profile}`);
 }
 

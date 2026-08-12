@@ -4,13 +4,20 @@ import { createReadStream, existsSync } from 'node:fs';
 import { cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-if (process.platform !== 'win32') throw new Error('The Create-and-Associate Connector Next portable is Windows-only.');
+if (process.platform !== 'win32') throw new Error('The Connector Next loopback portable is Windows-only.');
 
 const root = path.resolve(import.meta.dirname, '..');
-const profile = 'create-associate-only';
+const companyCurrent = process.argv.includes('--company-current');
+const profile = companyCurrent ? 'company-loopback-current' : 'create-associate-only';
 const shellVersion = String(JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version);
-const featureVersion = '0.2.123';
-const artifactName = `Omnia-Agent-v5-${shellVersion}-Create-Associate-${featureVersion}-Connector-Next-Portable`;
+const expectedFeatures = companyCurrent ? [
+  ['omnia.create-associate', '0.2.134'],
+  ['omnia.recording', '0.4.20'],
+  ['omnia.delete-elements', '0.2.1']
+] : [['omnia.create-associate', '0.2.123']];
+const artifactName = companyCurrent
+  ? `Omnia-Agent-v5-${shellVersion}-Company-Loopback-Portable-20260812-r1`
+  : `Omnia-Agent-v5-${shellVersion}-Create-Associate-0.2.123-Connector-Next-Portable`;
 const artifactsRoot = path.join(root, 'artifacts');
 const target = path.join(artifactsRoot, artifactName);
 const zipTarget = path.join(artifactsRoot, `${artifactName}.zip`);
@@ -25,7 +32,12 @@ if (existsSync(target) || existsSync(zipTarget)) throw new Error(`Immutable port
 for (const required of [
   path.join(pythonSource, 'python.exe'),
   path.join(pythonSource, 'runtime-manifest.json'),
-  path.join(root, 'feature-packages', 'create-associate', 'candidates', `create-associate-${featureVersion}.ofp`),
+  ...expectedFeatures.map(([featureId, version]) => {
+    const directory = featureId === 'omnia.create-associate' ? 'create-associate'
+      : featureId === 'omnia.recording' ? 'recording'
+        : 'delete-elements';
+    return path.join(root, 'feature-packages', directory, 'candidates', `${directory}-${version}.ofp`);
+  }),
   path.join(root, 'node_modules', 'electron', 'dist', 'electron.exe'),
   path.join(root, 'node_modules', 'playwright-core', 'package.json')
 ]) if (!existsSync(required)) throw new Error(`Portable input is missing: ${required}`);
@@ -45,8 +57,9 @@ const inventory = inventoryModule.ACTIVE_BUILTIN_FEATURE_RELEASE_INVENTORY;
 const projection = inventoryModule.BUILTIN_FEATURE_RELEASE_PROJECTION;
 inventoryModule.assertBuiltinFeatureReleaseProjection(projection, inventory);
 const verifiedBuiltins = inventoryModule.validateBuiltinFeatureReleaseInventory(root, inventory);
-if (verifiedBuiltins.length !== 1 || verifiedBuiltins[0].entry.featureId !== 'omnia.create-associate' || verifiedBuiltins[0].entry.version !== featureVersion) {
-  throw new Error('The portable Feature inventory is not exactly Create-and-Associate 0.2.123.');
+const verifiedIdentity = verifiedBuiltins.map(({ entry }) => [entry.featureId, entry.version]);
+if (JSON.stringify(verifiedIdentity) !== JSON.stringify(expectedFeatures)) {
+  throw new Error(`The portable Feature inventory is not the requested exact set: ${JSON.stringify(expectedFeatures)}.`);
 }
 
 async function digest(filename) {
@@ -75,17 +88,18 @@ try {
   }
   await cp(path.join(root, 'scripts', 'hot-shell-bootstrap.cjs'), path.join(appRoot, 'hot-shell-bootstrap.cjs'));
   await writeFile(path.join(appRoot, 'package.json'), `${JSON.stringify({
-    name: 'omnia-agent-v5-create-associate-next-portable',
+    name: companyCurrent ? 'omnia-agent-v5-company-loopback-portable' : 'omnia-agent-v5-create-associate-next-portable',
     version: shellVersion,
     private: true,
     main: 'hot-shell-bootstrap.cjs'
   }, null, 2)}\n`);
 
   await mkdir(path.join(appRoot, 'builtins'), { recursive: true });
-  const builtin = verifiedBuiltins[0];
-  const builtinTarget = path.join(appRoot, 'builtins', builtin.entry.filename);
-  await cp(builtin.absoluteFilename, builtinTarget);
-  inventoryModule.verifyBuiltinFeatureReleaseFile(builtinTarget, builtin.entry);
+  for (const builtin of verifiedBuiltins) {
+    const builtinTarget = path.join(appRoot, 'builtins', builtin.entry.filename);
+    await cp(builtin.absoluteFilename, builtinTarget);
+    inventoryModule.verifyBuiltinFeatureReleaseFile(builtinTarget, builtin.entry);
+  }
 
   const connectorRoot = path.join(staging, 'connector-next');
   await mkdir(connectorRoot, { recursive: true });
@@ -106,7 +120,7 @@ try {
     'resources/app/dist/main/preload.cjs',
     'resources/app/dist/main/feature-preload.cjs',
     'resources/app/dist/main/feature-worker-host.cjs',
-    `resources/app/builtins/${builtin.entry.filename}`,
+    ...verifiedBuiltins.map(({ entry }) => `resources/app/builtins/${entry.filename}`),
     'resources/app/dist/renderer/app.js',
     'resources/app/dist/renderer/index.html',
     'resources/app/dist/renderer/feature-window.js',
@@ -117,7 +131,7 @@ try {
   await writeFile(path.join(releaseRoot, 'release-manifest.json'), `${JSON.stringify({
     schemaVersion: 'omnia.shell-release/v1',
     product: 'omnia-agent-v5-shell',
-    edition: 'create-associate-connector-next-loopback-portable',
+    edition: companyCurrent ? 'company-connector-next-loopback-portable' : 'create-associate-connector-next-loopback-portable',
     version: shellVersion,
     platform: 'win32-x64',
     signed: false,
@@ -175,20 +189,27 @@ try {
     'endlocal',
     ''
   ].join('\r\n'), 'utf8');
-  await writeFile(path.join(staging, '使用说明.txt'), [
-    'Omnia Agent v5 — 新建与关联 + Connector Next 本地便携版',
+  const featureSummary = companyCurrent
+    ? '内置 Feature：新建与关联 0.2.134、录制 0.4.20、删除 0.2.1。'
+    : '内置 Feature：新建与关联 0.2.123。';
+  const instructions = [
+    'Omnia Agent v5 + Connector Next 本地便携版',
     '',
-    '1. 将整个目录解压到公司电脑的本地磁盘。',
-    '2. 双击“Start Omnia Agent v5.cmd”。首次启动会在本目录生成受当前 Windows 用户保护的本地身份。',
-    '3. Shell 会自动启动 Connector Next 本地控制面和 Agent，并通过 127.0.0.1 自动绑定。无需旧 Connector、配对码或远端 Connector 服务器。',
-    '4. 本包只内置“新建与关联”0.2.123；不会安装录制、删除或底稿编制。',
-    '5. 不要单独运行版本目录中的 Omnia Agent v5.exe，也不要移动单个文件。',
+    '1. 将整个 ZIP 解压到公司电脑本地磁盘；不要直接在 ZIP 内运行。',
+    '2. 双击“Start Omnia Agent v5.cmd”。',
+    '3. 启动器会自动在本机 127.0.0.1 启动 Connector Next Server 与 Agent，然后启动 Shell 并完成本地绑定。',
+    '4. 本包不连接远程 Connector 服务器，不使用旧 Connector，也不需要配对码。',
+    `5. ${featureSummary}`,
+    '6. 不要单独运行版本目录中的 Omnia Agent v5.exe，也不要移动包内单个文件。',
     '',
-    '边界：Connector Next 只承载通用 Pack 连接和 Operation；新建与关联业务逻辑仍在签名 Feature 包中。',
+    '边界：Connector Next 只承载通用 Pack 会话和签名 Operation；Feature 业务逻辑仍只存在于各自签名 Feature 包。',
     '日志：connector-next-data-v3\\logs；业务数据：data。',
-    '本地模式不连接远端 Connector 控制服务器，因此更新本便携包需要替换为后续发布的新 ZIP。',
     ''
-  ].join('\r\n'), 'utf8');
+  ].join('\r\n');
+  await writeFile(path.join(staging, '使用说明.txt'), Buffer.concat([
+    Buffer.from([0xef, 0xbb, 0xbf]),
+    Buffer.from(instructions, 'utf8')
+  ]));
 
   await rename(staging, target);
   const zipped = spawnSync(path.join(pythonSource, 'python.exe'), [

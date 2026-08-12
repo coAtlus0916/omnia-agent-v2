@@ -23,6 +23,28 @@ function canonical(value) {
     : Array.isArray(value) ? `[${value.map(canonical).join(',')}]`
       : `{${Object.keys(value).sort().map((key)=>`${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
 }
+const SINGLE_FLIGHT_READ_STEPS = new Set([
+  'workitem-directory', 'gra-directory',
+  'risk-factor-directory', 'risk-catalog', 'control-catalog',
+  'risk-assessment-read', 'risk-detail', 'risk-control-detail'
+]);
+function singleFlightReadSdk(sdk, flights) {
+  const invokeStep = sdk.invokeStep.bind(sdk);
+  return {
+    ...sdk,
+    invokeStep(stepId, routeValues, body) {
+      if (!SINGLE_FLIGHT_READ_STEPS.has(stepId)) return invokeStep(stepId, routeValues, body);
+      const key = canonical({ binding: sdk.binding, stepId, routeValues: routeValues || {}, body: body === undefined ? null : body });
+      const existing = flights.get(key);
+      if (existing) return existing;
+      const pending = Promise.resolve().then(() => invokeStep(stepId, routeValues, body));
+      flights.set(key, pending);
+      const release = () => { if (flights.get(key) === pending) flights.delete(key); };
+      void pending.then(release, release);
+      return pending;
+    }
+  };
+}
 function editorDescription(value,label){
   let editor=value; if(typeof editor==='string'){try{editor=JSON.parse(editor);}catch{fail(`${label} editor JSON is invalid.`);}}
   exact(editor,['editorData','suggestionsData','trackChangesEnableFlagInEditor','plainText'],label);
@@ -1044,11 +1066,18 @@ function associationScopes(value, output = []) {
   return output;
 }
 function riskControlAssertionValues(scope) {
-  return [...new Set([
-    scope && scope.selectedAssertion,
-    ...rows(scope && scope.assertions).map((item) => item && typeof item === 'object' ? item.assertion : item),
-    ...rows(scope && scope.controlRiskScopeAssertions).map((item) => item && typeof item === 'object' ? item.assertion : item)
-  ].map(text).filter(Boolean))];
+  const committed = rows(scope && scope.controlRiskScopeAssertions)
+    .map((item) => item && typeof item === 'object' ? item.assertion : item)
+    .map(text).filter(Boolean);
+  if (committed.length) return [...new Set(committed)];
+  const selected = text(scope && scope.selectedAssertion);
+  if (selected) return [selected];
+  // Pack also returns every assertion available for the Risk scope in
+  // `assertions`; it is not proof that each option was selected.  Use that
+  // legacy shape only when no committed/selected assertion field exists.
+  return [...new Set(rows(scope && scope.assertions)
+    .map((item) => item && typeof item === 'object' ? item.assertion : item)
+    .map(text).filter(Boolean))];
 }
 function riskControlScopeMatches(scope, expected, boundControlId = '', boundAssertionType = '') {
   if (!scope || scope.isEnabled === false || scope.enabled === false || scope.isDeleted === true) return false;
@@ -1085,8 +1114,10 @@ async function readRiskControlWithV4Settling(sdk,riskRiskScopeId,expected){
 }
 
 function createOperationHandler() {
+  const readFlights = new Map();
   return Object.freeze({
-    run: async (operationId, request, sdk) => {
+    run: async (operationId, request, rawSdk) => {
+      const sdk = singleFlightReadSdk(rawSdk, readFlights);
       if (operationId === 'omnia.create-associate.authority.resolve.v1') return resolveAuthority(request, sdk);
       if (operationId === 'omnia.create-associate.risk-control.catalog.v1') return riskControlCatalog(request, sdk);
       if (operationId === 'omnia.create-associate.object.preflight.v1') return objectPreflight(request, sdk);

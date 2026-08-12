@@ -88,6 +88,34 @@ function durableFailureResult(
 export class ConnectorNextAgentRuntime {
   constructor(private readonly options: ConnectorNextAgentRuntimeOptions) {}
 
+  private async executeWithDeadline(
+    job: NonNullable<Awaited<ReturnType<ConnectorNextAgentClient['pollJob']>>['job']>,
+    effective: 'read_only' | 'mutation'
+  ): Promise<unknown> {
+    const execution = executeConnectorNextReadOnlyJob(
+      job,
+      this.options.descriptor,
+      this.options.packOperations,
+      this.options.executionGeneration || ''
+    );
+    // A mutation must retain the existing end-to-end uncertainty semantics;
+    // racing it would let work continue after Core had observed a timeout.
+    if (effective === 'mutation') return execution;
+    const deadlineAt = Date.parse(job.deadlineAt);
+    const remainingMs = Number.isFinite(deadlineAt) ? Math.max(1, deadlineAt - Date.now()) : 1;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        execution,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('CONNECTOR_NEXT.READ_ONLY_JOB_DEADLINE_EXCEEDED')), remainingMs);
+        })
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   private async executeJob(job: Awaited<ReturnType<ConnectorNextAgentClient['pollJob']>>['job']): Promise<string | undefined> {
     if (!job) return undefined;
     const effective = job.operation === 'connector.next.operation.execute/v1'
@@ -105,7 +133,7 @@ export class ConnectorNextAgentRuntime {
     }
     this.options.logs.append('task', 'info', 'job.started', { jobId: job.jobId, operation: job.operation, version: this.options.descriptor.version, generation: this.options.descriptor.generation });
     try {
-      const result = await executeConnectorNextReadOnlyJob(job, this.options.descriptor, this.options.packOperations, this.options.executionGeneration || '');
+      const result = await this.executeWithDeadline(job, effective);
       await this.options.client.completeJob(job, { ok: true, result });
       this.options.gate.complete(jobLeaseId);
       this.options.logs.append('task', 'info', 'job.succeeded', { jobId: job.jobId, operation: job.operation });

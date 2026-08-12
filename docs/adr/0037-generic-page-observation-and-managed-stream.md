@@ -1,7 +1,7 @@
 # ADR-0037：通用 Page Observation 与 Managed Stream 原语
 
-状态：Accepted；持久冻结证据源码已实现，尚未打包、安装或完成真实 Remote canary  
-日期：2026-08-06  
+状态：Accepted；持久冻结证据源码已实现，尚未打包、安装或完成真实 Remote canary
+日期：2026-08-06
 决策来源：用户确认 Connector 只负责传输、Session、Gate 与 Operation host，录制等 Feature 业务不得进入 Connector
 
 ## Context

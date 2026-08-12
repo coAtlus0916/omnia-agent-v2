@@ -44,8 +44,8 @@ function versionAtLeast(current: string, minimum: string): boolean {
   return true;
 }
 
-async function defaultProbe(runtimeExecutable: string, entrypoint: string, manifest: ConnectorNextUpdateManifest, mode: 'candidate' | 'probation', context: { offerId: string; generation: number; paths: ConnectorNextPaths }): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
+async function defaultProbe(runtimeExecutable: string, entrypoint: string, manifest: ConnectorNextUpdateManifest, mode: 'candidate' | 'probation', context: { offerId: string; generation: number; paths: ConnectorNextPaths; uncertainJobIds: string[] }): Promise<string[]> {
+  return new Promise<string[]>((resolve, reject) => {
     const child = spawn(runtimeExecutable, [entrypoint, mode === 'candidate' ? '--connector-next-candidate-health' : '--connector-next-probation-health'], {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
@@ -57,6 +57,7 @@ async function defaultProbe(runtimeExecutable: string, entrypoint: string, manif
         OMNIA_CONNECTOR_NEXT_ADMISSION: 'health_only',
         OMNIA_CONNECTOR_NEXT_CANDIDATE_OFFER_ID: context.offerId,
         OMNIA_CONNECTOR_NEXT_CANDIDATE_GENERATION: String(context.generation),
+        OMNIA_CONNECTOR_NEXT_CANDIDATE_UNCERTAIN_JOB_IDS: JSON.stringify(context.uncertainJobIds),
         OMNIA_CONNECTOR_NEXT_INSTALL_ROOT: context.paths.installRoot,
         OMNIA_CONNECTOR_NEXT_DATA_ROOT: context.paths.dataRoot
       }
@@ -75,7 +76,12 @@ async function defaultProbe(runtimeExecutable: string, entrypoint: string, manif
         if (report.healthy !== true || report.admission !== 'health_only' || report.productId !== manifest.productId || report.protocolId !== manifest.protocolId || report.version !== manifest.version || report.sequence !== manifest.sequence) {
           throw new Error('CONNECTOR_NEXT.CANDIDATE_HEALTH_IDENTITY_MISMATCH');
         }
-        resolve();
+        const resolved = report.resolvedUncertainJobIds === undefined ? [] : report.resolvedUncertainJobIds;
+        if (!Array.isArray(resolved) || resolved.length > 128
+          || resolved.some((jobId) => typeof jobId !== 'string' || !/^ocn3\.job\.[0-9a-f-]{36}$/u.test(jobId))) {
+          throw new Error('CONNECTOR_NEXT.CANDIDATE_CLOSURE_INVALID');
+        }
+        resolve([...new Set(resolved as string[])]);
       } catch (error) { reject(error); }
     });
   });
@@ -134,8 +140,12 @@ export class ConnectorNextGuardian {
       if (['offered', 'downloading', 'verified'].includes(polled.offer.status)) await this.options.client.updateStatus(offerId, 'staged', { slot: targetSlot, relativeRoot: path.relative(this.options.paths.slotsRoot, candidateRoot), manifestDigest: digest });
       const probe = this.options.probeCandidate
         ? (mode: 'candidate' | 'probation') => this.options.probeCandidate!(entrypoint, manifest, mode)
-        : (mode: 'candidate' | 'probation') => defaultProbe(this.options.runtimeExecutableOverride || runtimeExecutable, entrypoint, manifest, mode, { offerId, generation: current.generation + 1, paths: this.options.paths });
-      await probe('candidate');
+        : (mode: 'candidate' | 'probation') => defaultProbe(this.options.runtimeExecutableOverride || runtimeExecutable, entrypoint, manifest, mode, {
+          offerId, generation: current.generation + 1, paths: this.options.paths,
+          uncertainJobIds: this.options.gate.uncertainMutationJobIds()
+        });
+      const resolvedByCandidate = await probe('candidate') || [];
+      for (const jobId of resolvedByCandidate) this.options.gate.resolveMutationAuthoritatively(jobId);
       this.options.logs.append('updater', 'info', 'update.candidate_healthy', { offerId, targetVersion: manifest.version, targetSequence: manifest.sequence });
 
       let snapshot = this.options.gate.snapshot();

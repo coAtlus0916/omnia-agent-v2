@@ -53,6 +53,7 @@ Feature 的原装/内置/后装/Operation/额外部署边界以 [Feature 包总�
 - [新建与关联 0.2.6 热更新](implementation/CREATE_ASSOCIATE_0_2_6_HOT_UPDATE.md)
 - [录制 Feature 实现](implementation/RECORDING_FEATURE.md)
 - [Connector Next 架构与运行边界](architecture/CONNECTOR_NEXT.md)
+- [公司本地 Connector Next 便携包发布指南](development/COMPANY_LOOPBACK_PORTABLE_RELEASE.md)
 - [Remote-only 迁移说明](implementation/REMOTE_ONLY_MIGRATION.md)
 - [Shell 0.4.2 Remote-only UI/Connector 验收](reviews/SHELL_0_4_2_REMOTE_ONLY_ACCEPTANCE.md)
 - [Shell 0.4.3 新建与关联便携验收](reviews/SHELL_0_4_3_CREATE_ASSOCIATE_PORTABLE_ACCEPTANCE.md)

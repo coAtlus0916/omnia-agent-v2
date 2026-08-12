@@ -1517,7 +1517,14 @@ function createFeatureWorker(dependencies) {
           artifacts:(latest.artifacts||[]).filter((item)=>String(item.kind)!=='source').map((item)=>({artifactId:String(item.artifact_id),kind:String(item.kind),name:String(item.original_name),sha256:String(item.sha256),sizeBytes:Number(item.size_bytes),available:true,reason:''})),editors:[],actions:[
             {actionId:'stage-source-workbook',enabled:true,reason:''},...workflowNavigationActions(latest,'upload'),{actionId:'apply-revisions',enabled:false,reason:'中断 Run 不允许原地修订。'},{actionId:'prepare-return',enabled:false,reason:'离线处理未完成；必须重新导入并生成新 Run。'}]};
       }
-      if(run&&['waiting_confirmation','returning','verifying','uncertain','reconciling'].includes(String(run.state))){
+      const healthEvents=Array.isArray(latest?.events)?latest.events:[];
+      const healthLastEvent=healthEvents[healthEvents.length-1];
+      const restartAlreadyAudited=Boolean(run)
+        && String(healthLastEvent?.event_type||'')==='run.restart_requested'
+        && Number(healthLastEvent?.revision||0)===Number(run.state_revision);
+      if(restartAlreadyAudited){
+        recoveredSurfacePatch=uploadSurface(latest,'旧流程审计已保留；请上传新文件建立全新 Run。',true);
+      }else if(run&&['waiting_confirmation','returning','verifying','uncertain','reconciling'].includes(String(run.state))){
         const checkpoint=await store.call('loadPlan',String(run.run_id));
         recoveredSurfacePatch=returnSurface(latest,'',checkpoint?.execution||{});
       }else if(run&&['succeeded','failed'].includes(String(run.state))&&Array.isArray(latest.returnProgress)&&latest.returnProgress.length){
@@ -1756,7 +1763,10 @@ function createFeatureWorker(dependencies) {
         assertReturnPlanCapabilities(checkpoint.planIr?.rows,checkpoint.returnPlan.rows);
         if(input.actionId==='continue-return'){
           const completionProgress=await store.call('loadReturnProgress',{runId});
-          const allVerified=completionProgress.length>0&&completionProgress.every((item)=>String(item.command_state||'')==='readback_verified');
+          const terminalNoopTargets=new Set(Array.isArray(checkpoint.execution?.terminalNoopTargets)
+            ?checkpoint.execution.terminalNoopTargets.map(String):[]);
+          const allVerified=completionProgress.length>0&&completionProgress.every((item)=>
+            String(item.command_state||'')==='readback_verified'||terminalNoopTargets.has(String(item.target_key||'')));
           if(allVerified){
             await store.call('validateReturnAuthority',{runId,connectorBinding:input.context.connectorBinding,safetyLock:input.context.safetyLock});
             await store.call('recordBootstrapCapabilityEvidence',{
@@ -1784,7 +1794,19 @@ function createFeatureWorker(dependencies) {
         const plan = checkpoint.returnPlan; const planDigest = approved.planDigest; const binding = input.context.connectorBinding;
         const targetByKey = new Map(plan.targets.map((item) => [item.key, item]));
         const progressRows = new Map((await store.call('loadReturnProgress', { runId })).map((item) => [item.target_key, item]));
-        const progress = new Map([...progressRows].map(([key,item]) => [key,item.command_state==='readback_verified'?'verified':item.state]));
+        const terminalNoopTargets=new Set(Array.isArray(checkpoint.execution?.terminalNoopTargets)
+          ?checkpoint.execution.terminalNoopTargets.map(String):[]);
+        // A verified intent only proves that the immutable desired state was
+        // frozen and audited.  It does not prove that a closed-not-applied
+        // command reached Omnia.  Keep the command state authoritative here
+        // so an explicit Continue can safely retry only after reconcile has
+        // proved the prior attempt was not applied.
+        const progress = new Map([...progressRows].map(([key,item]) => [
+          key,
+          item.command_state==='readback_verified'||terminalNoopTargets.has(String(key))
+            ? 'verified'
+            : String(item.command_state||item.state||'')
+        ]));
         // `persistVerifiedTarget` advances this live map after every exact
         // authoritative read-back.  Looking only at the invocation-start
         // `progressRows` snapshot made later stages falsely treat a command
@@ -1947,7 +1969,16 @@ function createFeatureWorker(dependencies) {
           const command = await commandFor(spec.targetKey,spec.mutationOperation,spec.mutationPayload,spec.target.targetIdentityKey);
           let before;
           try {
-            before = await invoke(spec.preflightOperation, binding, { ...spec.preflightRequest, planDigest });
+            // Several execution branches must read the current value to decide
+            // whether a write is needed. When that exact read already carried
+            // this planDigest it also granted the in-process, target-bound
+            // mutation permit. Reuse its result as the command's durable
+            // preflight evidence instead of issuing the identical remote read
+            // a second time. The signed mutation handler's action-time checks
+            // and the post-effect authoritative read-back remain unchanged.
+            before = spec.preflightResult === undefined
+              ? await invoke(spec.preflightOperation, binding, { ...spec.preflightRequest, planDigest })
+              : spec.preflightResult;
             if (spec.acceptPreflight && !spec.acceptPreflight(before)) fail('RETURN.PREFLIGHT_BLOCKED', `Preflight blocked ${spec.targetKey}.`);
             await evidence(command.commandId, 'preflight', 'prepared', before, true);
           } catch (error) {
@@ -2113,7 +2144,7 @@ function createFeatureWorker(dependencies) {
             if(hasFrozenStage(row,'settings')&&!done(`object-settings|${row.rowKey}`)){
               const settingsKey=`object-settings|${row.rowKey}`; const settingsTarget={targetIdentityKey:targetByKey.get(settingsKey).operationTargetIdentityKey,workspaceId:row.workspaceId};
               const settingsIntent=targetByKey.get(settingsKey);if(!settingsIntent)fail('RETURN.INTENT_MISSING',`Frozen APP settings target is missing: ${settingsKey}`);
-              const before=await invoke(RETURN_OPERATIONS.objectSettingsPreflight,binding,{target:settingsTarget,objectId});
+              const before=await invoke(RETURN_OPERATIONS.objectSettingsPreflight,binding,{target:settingsTarget,objectId,planDigest});
               const settingsIdentityDisposition=row.identityDisposition==='resume'&&settingsIntent.mode==='create_bootstrap'?'create':row.identityDisposition;
               const allowedSettingsModes=settingsIdentityDisposition==='create'?['create_bootstrap']:settingsIdentityDisposition==='reuse'?['existing_with_token']:settingsIdentityDisposition==='resume'?['existing_with_token','recover_owned_create_bootstrap']:[];
               if(!allowedSettingsModes.includes(settingsIntent.mode))fail('RETURN.OBJECT_SETTINGS_MODE_DRIFT',`APP ${row.elementId} settings mode differs from the frozen identity disposition.`);
@@ -2129,7 +2160,7 @@ function createFeatureWorker(dependencies) {
               const query={objectId,typeId:row.content.itElementTypeId,isRelevant:row.isRelevant,isDataAvailable:desiredData,number:row.elementId,mode:settingsIntent.mode};
               const settingsResult=settingsIntent.mode==='existing_with_token'&&String(before.typeId)===String(query.typeId)&&before.isRelevant===row.isRelevant&&before.isDataAvailable===desiredData&&String(before.number||before.referenceNumber)===row.elementId
                 ? await closeVerified(settingsKey,RETURN_OPERATIONS.objectSettingsWrite,RETURN_OPERATIONS.objectSettingsRead,{target:settingsTarget,query},(observed)=>observed.verified===true)
-                : await verifiedMutation({targetKey:settingsKey,target:settingsTarget,preflightOperation:RETURN_OPERATIONS.objectSettingsPreflight,preflightRequest:{target:settingsTarget,objectId},mutationOperation:RETURN_OPERATIONS.objectSettingsWrite,commandKind:'patch_object_settings',mutationPayload:{engagementId:binding.engagementId,workspaceId:row.workspaceId,objectId,typeId:row.content.itElementTypeId,isRelevant:row.isRelevant,isDataAvailable:desiredData,mode:settingsIntent.mode},readOperation:RETURN_OPERATIONS.objectSettingsRead,readRequest:{target:settingsTarget,query},verify:(observed)=>observed.verified===true});
+                : await verifiedMutation({targetKey:settingsKey,target:settingsTarget,preflightOperation:RETURN_OPERATIONS.objectSettingsPreflight,preflightRequest:{target:settingsTarget,objectId},preflightResult:before,mutationOperation:RETURN_OPERATIONS.objectSettingsWrite,commandKind:'patch_object_settings',mutationPayload:{engagementId:binding.engagementId,workspaceId:row.workspaceId,objectId,typeId:row.content.itElementTypeId,isRelevant:row.isRelevant,isDataAvailable:desiredData,mode:settingsIntent.mode},readOperation:RETURN_OPERATIONS.objectSettingsRead,readRequest:{target:settingsTarget,query},verify:(observed)=>observed.verified===true});
               await projectObject(settingsResult,row,settingsKey,row.objectType,objectId);
             }
             // v4 ordering is intentional: an Infrastructure must be linked to its
@@ -2149,10 +2180,10 @@ function createFeatureWorker(dependencies) {
                 if(done(targetKey)) continue;
                 const target={targetIdentityKey:`relation|${row.workspaceId}|${objectId}|${appId}|${relationType}`,workspaceId:row.workspaceId};
                 const query={associationType:relationType,itElementId:objectId,associatingEntityId:appId,workspaceId:row.workspaceId};
-                const before=await invoke(RETURN_OPERATIONS.relationPreflight,binding,{target,query});
+                const before=await invoke(RETURN_OPERATIONS.relationPreflight,binding,{target,query,planDigest});
                 const relationResult=before.associated===true&&before.inconsistent===false
                   ?await closeVerified(targetKey,RETURN_OPERATIONS.relationWrite,RETURN_OPERATIONS.relationRead,{target,query},(observed)=>observed.associated===true&&observed.inconsistent===false)
-                  :await verifiedMutation({targetKey,target,preflightOperation:RETURN_OPERATIONS.relationPreflight,preflightRequest:{target,query},mutationOperation:RETURN_OPERATIONS.relationWrite,commandKind:'associate_relation',acceptPreflight:(observed)=>observed.associated===false&&observed.inconsistent===false,mutationPayload:{ItElementId:objectId,AssociatingEntityIds:[appId],associationType:relationType,ConcurrencyTabId:relationConcurrencyTabId,workspaceId:row.workspaceId,engagementId:binding.engagementId},readOperation:RETURN_OPERATIONS.relationRead,readRequest:{target,query},verify:(observed)=>observed.associated===true&&observed.inconsistent===false});
+                  :await verifiedMutation({targetKey,target,preflightOperation:RETURN_OPERATIONS.relationPreflight,preflightRequest:{target,query},preflightResult:before,mutationOperation:RETURN_OPERATIONS.relationWrite,commandKind:'associate_relation',acceptPreflight:(observed)=>observed.associated===false&&observed.inconsistent===false,mutationPayload:{ItElementId:objectId,AssociatingEntityIds:[appId],associationType:relationType,ConcurrencyTabId:relationConcurrencyTabId,workspaceId:row.workspaceId,engagementId:binding.engagementId},readOperation:RETURN_OPERATIONS.relationRead,readRequest:{target,query},verify:(observed)=>observed.associated===true&&observed.inconsistent===false});
                 await store.call('projectVerifiedReturn',{runId,commandId:relationResult.command.commandId,binding,workspaceId:row.workspaceId,projectionKind:'relation',relationType,relationKey:targetKey,sourceObjectId:objectId,targetObjectId:appId,payload:relationResult.observed});
               }
             }
@@ -2184,11 +2215,11 @@ function createFeatureWorker(dependencies) {
               const targetKey = `gra-${patchKind === 'status' ? 'status' : 'rait'}|${row.rowKey}`;
               if (done(targetKey)) continue;
               const target = { targetIdentityKey: targetByKey.get(targetKey).operationTargetIdentityKey, workspaceId: row.workspaceId };
-              const before = await invoke(RETURN_OPERATIONS.graStatePreflight, binding, { target, riskAssessmentId: graId });
+              const before = await invoke(RETURN_OPERATIONS.graStatePreflight, binding, { target, riskAssessmentId: graId, planDigest });
               const currentValue = patchKind === 'status' ? before.status : before.itElementRaitConclusionLevelId || before.itElementRaitConclusionLevelName;
               const stateResult = String(currentValue) === String(value)
                 ? await closeVerified(targetKey,RETURN_OPERATIONS.graStateWrite,RETURN_OPERATIONS.graStateRead,{target,query:{riskAssessmentId:graId,patchKind,value}},(observed)=>observed.verified===true)
-                : await verifiedMutation({ targetKey, target, preflightOperation: RETURN_OPERATIONS.graStatePreflight,
+                : await verifiedMutation({ targetKey, target, preflightOperation: RETURN_OPERATIONS.graStatePreflight, preflightResult: before,
                   preflightRequest: { target, riskAssessmentId: graId }, mutationOperation: RETURN_OPERATIONS.graStateWrite,
                   commandKind: 'patch_gra_state', mutationPayload: { engagementId: binding.engagementId, workspaceId: row.workspaceId, riskAssessmentId: graId, patchKind, value },
                   readOperation: RETURN_OPERATIONS.graStateRead, readRequest: { target, query: { riskAssessmentId: graId, patchKind, value } }, verify: (observed) => observed.verified === true });
@@ -2206,10 +2237,10 @@ function createFeatureWorker(dependencies) {
               if (done(targetKey)) continue;
               const target = { targetIdentityKey:`relation|${row.workspaceId}|${objectId}|${appId}|${relationType}`, workspaceId: row.workspaceId };
               const query = { associationType: relationType, itElementId: objectId, associatingEntityId: appId, workspaceId: row.workspaceId };
-              const relationBefore = await invoke(RETURN_OPERATIONS.relationPreflight, binding, { target, query });
+              const relationBefore = await invoke(RETURN_OPERATIONS.relationPreflight, binding, { target, query, planDigest });
               const result = relationBefore.associated === true && relationBefore.inconsistent === false
                 ? await closeVerified(targetKey,RETURN_OPERATIONS.relationWrite,RETURN_OPERATIONS.relationRead,{target,query},(observed)=>observed.associated===true&&observed.inconsistent===false)
-                : await verifiedMutation({ targetKey, target, preflightOperation: RETURN_OPERATIONS.relationPreflight,
+                : await verifiedMutation({ targetKey, target, preflightOperation: RETURN_OPERATIONS.relationPreflight, preflightResult: relationBefore,
                 preflightRequest: { target, query }, mutationOperation: RETURN_OPERATIONS.relationWrite, commandKind: 'associate_relation',
                 acceptPreflight:(observed)=>observed.associated===false&&observed.inconsistent===false,
                 mutationPayload: { ItElementId: objectId, AssociatingEntityIds: [appId], associationType: relationType, ConcurrencyTabId: relationConcurrencyTabId, workspaceId: row.workspaceId, engagementId: binding.engagementId },
@@ -2233,8 +2264,8 @@ function createFeatureWorker(dependencies) {
               mode=row.mode;
               const targetKey=`gra-rait|${row.rowKey}`;
               if(!done(targetKey)){
-                const target={targetIdentityKey:targetByKey.get(targetKey).operationTargetIdentityKey,workspaceId:row.workspaceId}; const before=await invoke(RETURN_OPERATIONS.graStatePreflight,binding,{target,riskAssessmentId:graId}); const currentValue=before.itElementRaitConclusionLevelId||before.itElementRaitConclusionLevelName;
-                const stateResult=String(currentValue)===String(mode)?await closeVerified(targetKey,RETURN_OPERATIONS.graStateWrite,RETURN_OPERATIONS.graStateRead,{target,query:{riskAssessmentId:graId,patchKind:'rait',value:mode}},(observed)=>observed.verified===true):await verifiedMutation({targetKey,target,preflightOperation:RETURN_OPERATIONS.graStatePreflight,preflightRequest:{target,riskAssessmentId:graId},mutationOperation:RETURN_OPERATIONS.graStateWrite,commandKind:'patch_gra_state',mutationPayload:{engagementId:binding.engagementId,workspaceId:row.workspaceId,riskAssessmentId:graId,patchKind:'rait',value:mode},readOperation:RETURN_OPERATIONS.graStateRead,readRequest:{target,query:{riskAssessmentId:graId,patchKind:'rait',value:mode}},verify:(observed)=>observed.verified===true});
+                const target={targetIdentityKey:targetByKey.get(targetKey).operationTargetIdentityKey,workspaceId:row.workspaceId}; const before=await invoke(RETURN_OPERATIONS.graStatePreflight,binding,{target,riskAssessmentId:graId,planDigest}); const currentValue=before.itElementRaitConclusionLevelId||before.itElementRaitConclusionLevelName;
+                const stateResult=String(currentValue)===String(mode)?await closeVerified(targetKey,RETURN_OPERATIONS.graStateWrite,RETURN_OPERATIONS.graStateRead,{target,query:{riskAssessmentId:graId,patchKind:'rait',value:mode}},(observed)=>observed.verified===true):await verifiedMutation({targetKey,target,preflightOperation:RETURN_OPERATIONS.graStatePreflight,preflightRequest:{target,riskAssessmentId:graId},preflightResult:before,mutationOperation:RETURN_OPERATIONS.graStateWrite,commandKind:'patch_gra_state',mutationPayload:{engagementId:binding.engagementId,workspaceId:row.workspaceId,riskAssessmentId:graId,patchKind:'rait',value:mode},readOperation:RETURN_OPERATIONS.graStateRead,readRequest:{target,query:{riskAssessmentId:graId,patchKind:'rait',value:mode}},verify:(observed)=>observed.verified===true});
                 await projectGraRevision(stateResult,row,targetKey,graId);
               }
               }
@@ -2245,13 +2276,13 @@ function createFeatureWorker(dependencies) {
                 const categoryIntent=targetByKey.get(categoryKey);
                 const target={targetIdentityKey:categoryIntent.operationTargetIdentityKey,workspaceId:row.workspaceId};
                 const preflightRequest={target,query:{riskAssessmentId:graId,categoryId:categoryIntent.resolvedCategory?.categoryId||'',categoryName:categoryIntent.categoryName,objectType:'Application'}};
-                const before=await invoke(RETURN_OPERATIONS.riskFactorCategoryPreflight,binding,preflightRequest);
+                const before=await invoke(RETURN_OPERATIONS.riskFactorCategoryPreflight,binding,{...preflightRequest,planDigest});
                 const categoryId=String(categoryIntent.resolvedCategory?.categoryId||before.categoryId||'');
                 if(!categoryId||categoryId!==String(before.categoryId||''))fail('RETURN.RISK_FACTOR_CATEGORY_IDENTITY_DRIFT',`APP ${row.elementId} IT Risk Factor category identity changed after confirmation.`);
                 const readRequest={target,query:{riskAssessmentId:graId,categoryId,categoryName:categoryIntent.categoryName,objectType:'Application'}};
                 const categoryResult=before.applicable===true
                   ?await closeVerified(categoryKey,RETURN_OPERATIONS.riskFactorCategoryWrite,RETURN_OPERATIONS.riskFactorCategoryRead,readRequest,(observed)=>observed.verified===true)
-                  :await verifiedMutation({targetKey:categoryKey,target,preflightOperation:RETURN_OPERATIONS.riskFactorCategoryPreflight,preflightRequest,
+                  :await verifiedMutation({targetKey:categoryKey,target,preflightOperation:RETURN_OPERATIONS.riskFactorCategoryPreflight,preflightRequest,preflightResult:before,
                     mutationOperation:RETURN_OPERATIONS.riskFactorCategoryWrite,commandKind:'enable_app_it_risk_assessment_category',
                     mutationPayload:{engagementId:binding.engagementId,workspaceId:row.workspaceId,riskAssessmentId:graId,categoryId,categoryName:categoryIntent.categoryName,objectType:'Application'},
                     readOperation:RETURN_OPERATIONS.riskFactorCategoryRead,readRequest,verify:(observed)=>observed.verified===true});
@@ -2275,7 +2306,7 @@ function createFeatureWorker(dependencies) {
               if(readinessIntent){
                 const readinessTarget={targetIdentityKey:readinessIntent.operationTargetIdentityKey,workspaceId:row.workspaceId};
                 const readinessQuery={riskAssessmentId:graId,itemId:readinessIntent.fieldId,itemLabel:readinessIntent.itemLabel,selectionMode:mode,contentName:readinessIntent.contentName};
-                readinessPreflight=await waitForReadOnly(RETURN_OPERATIONS.factorPreflight,{target:readinessTarget,query:readinessQuery},`APP ${row.elementId} scoring interface`);
+                readinessPreflight=await waitForReadOnly(RETURN_OPERATIONS.factorPreflight,{target:readinessTarget,query:readinessQuery,planDigest},`APP ${row.elementId} scoring interface`);
               }
               await runBoundedIndependent(factorIntents, RETURN_WITHIN_GRA_CONCURRENCY, async (factorIntent) => {
                 const targetKey = factorIntent.key;
@@ -2284,14 +2315,22 @@ function createFeatureWorker(dependencies) {
                 const factorQuery={riskAssessmentId:graId,itemId:factorIntent.fieldId,itemLabel:factorIntent.itemLabel,selectionMode:mode,contentName:factorIntent.contentName};
                 const factorPreflight = readinessIntent?.key===factorIntent.key&&readinessPreflight
                   ?readinessPreflight
-                  :await invoke(RETURN_OPERATIONS.factorPreflight, binding, { target, query: factorQuery });
+                  :await invoke(RETURN_OPERATIONS.factorPreflight, binding, { target, query: factorQuery, planDigest });
                 if (factorPreflight.applicable === false) {
                   const preflightRequest={target,query:factorQuery};
                   const command = await commandFor(targetKey,RETURN_OPERATIONS.factorWrite,preflightRequest,target.targetIdentityKey);
                   await freezeRead(command.commandId,RETURN_OPERATIONS.factorPreflight,preflightRequest);
                   const observed=await invoke(RETURN_OPERATIONS.factorPreflight,binding,{...preflightRequest,receiptContext:{runId,commandId:command.commandId}});
                   if(observed.applicable!==false) fail('RETURN.FACTOR_APPLICABILITY_DRIFT',`Risk Factor ${factorIntent.fieldId} applicability changed during authoritative closure.`);
-                  await evidence(command.commandId,'reconcile','closed_not_applied',observed,true); return;
+                  await evidence(command.commandId,'reconcile','closed_not_applied',observed,true);
+                  // A Pack-authoritative `applicable:false` is a terminal no-op,
+                  // not a failed mutation. Persist that Feature-owned business
+                  // conclusion so Continue can finish without reissuing the
+                  // same closure. Connector remains a generic envelope host.
+                  terminalNoopTargets.add(targetKey);
+                  progress.set(targetKey,'verified');
+                  await saveExecution({terminalNoopTargets:[...terminalNoopTargets].sort()});
+                  return;
                 }
                 const selectedValue = Number(factorPreflight.selected?.value); const currentValue = Number(factorPreflight.current?.value ?? factorPreflight.current);
                 const factorReadRequest={target,query:factorQuery};
@@ -2299,7 +2338,7 @@ function createFeatureWorker(dependencies) {
                 const liveFactor={factorId:factorPreflight.factorId,selectedValue:factorPreflight.selected?.value,spectrumDigest:digest(Buffer.from(canonical(factorPreflight.spectrum||[])))};
                 if(frozenFactor&&(String(frozenFactor.factorId)!==String(liveFactor.factorId)||Number(frozenFactor.selectedValue)!==Number(liveFactor.selectedValue)||String(frozenFactor.spectrumDigest)!==String(liveFactor.spectrumDigest))) fail('RETURN.FACTOR_SPECTRUM_DRIFT',`Risk Factor ${factorIntent.fieldId} live spectrum changed after confirmation.`);
                 const exactFactor=frozenFactor||liveFactor;
-                const factorResult = selectedValue === currentValue ? await closeVerified(targetKey,RETURN_OPERATIONS.factorWrite,RETURN_OPERATIONS.factorRead,factorReadRequest,(observed)=>observed.verified===true) : await verifiedMutation({ targetKey, target, preflightOperation: RETURN_OPERATIONS.factorPreflight,
+                const factorResult = selectedValue === currentValue ? await closeVerified(targetKey,RETURN_OPERATIONS.factorWrite,RETURN_OPERATIONS.factorRead,factorReadRequest,(observed)=>observed.verified===true) : await verifiedMutation({ targetKey, target, preflightOperation: RETURN_OPERATIONS.factorPreflight, preflightResult: factorPreflight,
                   preflightRequest: { target, query: factorQuery },
                   mutationOperation:RETURN_OPERATIONS.factorWrite,commandKind:'patch_risk_factor',mutationPayload:{engagementId:binding.engagementId,workspaceId:row.workspaceId,riskAssessmentId:graId,itemId:factorIntent.fieldId,itemLabel:factorIntent.itemLabel,selectionMode:mode,contentName:factorIntent.contentName,
                     factorId:exactFactor.factorId,selectedValue:exactFactor.selectedValue,spectrumDigest:exactFactor.spectrumDigest},
@@ -2310,11 +2349,11 @@ function createFeatureWorker(dependencies) {
               if (docIntent && !done(docKey)) {
                 const target = { targetIdentityKey: docIntent.operationTargetIdentityKey, workspaceId: row.workspaceId };
                 const plainText = docIntent.plainText; const editorData = `<p>${plainText.replace(/[&<>]/gu, (char) => ({ '&':'&amp;','<':'&lt;','>':'&gt;' }[char]))}</p>`;
-                const currentDoc = await invoke(RETURN_OPERATIONS.documentationPreflight, binding, { target, riskAssessmentId: graId });
+                const currentDoc = await invoke(RETURN_OPERATIONS.documentationPreflight, binding, { target, riskAssessmentId: graId, planDigest });
                 const observedDoc = observedDocumentation(currentDoc);
                 const docResult = String(observedDoc?.editorData || '') === editorData && String(observedDoc?.plainText || '') === plainText
                   ? await closeVerified(docKey,RETURN_OPERATIONS.documentationWrite,RETURN_OPERATIONS.documentationRead,{target,query:{riskAssessmentId:graId,editorData,plainText}},(observed)=>observed.verified===true)
-                  : await verifiedMutation({ targetKey: docKey, target, preflightOperation: RETURN_OPERATIONS.documentationPreflight,
+                  : await verifiedMutation({ targetKey: docKey, target, preflightOperation: RETURN_OPERATIONS.documentationPreflight, preflightResult: currentDoc,
                   preflightRequest: { target, riskAssessmentId: graId }, mutationOperation: RETURN_OPERATIONS.documentationWrite, commandKind: 'patch_documentation',
                   mutationPayload: { engagementId: binding.engagementId, workspaceId: row.workspaceId, riskAssessmentId: graId, editorData, plainText },
                   readOperation: RETURN_OPERATIONS.documentationRead, readRequest: { target, query: { riskAssessmentId: graId, editorData, plainText } }, verify: (observed) => observed.verified === true });
@@ -2331,10 +2370,10 @@ function createFeatureWorker(dependencies) {
             if (hasFrozenStage(row,'evaluation')&&!evaluationIntent)fail('RETURN.INTENT_MISSING',`Frozen evaluation target is missing: ${evaluationKey}`);
             const evaluationTarget = evaluationIntent?{ targetIdentityKey: evaluationIntent.operationTargetIdentityKey, workspaceId: row.workspaceId }:null;
             if (evaluationIntent&&!done(evaluationKey)) {
-              const currentEvaluation = await invoke(RETURN_OPERATIONS.evaluationPreflight, binding, { target: evaluationTarget, riskAssessmentId: graId });
+              const currentEvaluation = await invoke(RETURN_OPERATIONS.evaluationPreflight, binding, { target: evaluationTarget, riskAssessmentId: graId, planDigest });
               const evaluationResult = currentEvaluation.status === 'EvaluationComplete'
                 ? await closeVerified(evaluationKey,RETURN_OPERATIONS.evaluationWrite,RETURN_OPERATIONS.evaluationRead,{target:evaluationTarget,riskAssessmentId:graId},(observed)=>observed.verified===true)
-                : await verifiedMutation({ targetKey: evaluationKey, target: evaluationTarget, preflightOperation: RETURN_OPERATIONS.evaluationPreflight,
+                : await verifiedMutation({ targetKey: evaluationKey, target: evaluationTarget, preflightOperation: RETURN_OPERATIONS.evaluationPreflight, preflightResult: currentEvaluation,
                 preflightRequest: { target: evaluationTarget, riskAssessmentId: graId }, mutationOperation: RETURN_OPERATIONS.evaluationWrite, commandKind: 'submit_evaluation',
                 mutationPayload: { engagementId: binding.engagementId, workspaceId: row.workspaceId, riskAssessmentId: graId },
                 readOperation: RETURN_OPERATIONS.evaluationRead, readRequest: { target: evaluationTarget, riskAssessmentId: graId },
@@ -2429,7 +2468,8 @@ function createFeatureWorker(dependencies) {
           // and still-frozen intents; the in-memory row result alone is not a
           // valid terminal signal for the whole Run.
           const finalProgress=await store.call('loadReturnProgress',{runId});
-          const unresolved=finalProgress.filter((item)=>String(item.command_state||'')!=='readback_verified');
+          const unresolved=finalProgress.filter((item)=>String(item.command_state||'')!=='readback_verified'
+            &&!terminalNoopTargets.has(String(item.target_key||'')));
           const uncertain=unresolved.filter((item)=>String(item.state||'')==='uncertain'||String(item.command_state||'')==='uncertain');
           const resumable=unresolved.filter((item)=>!uncertain.includes(item));
           const itemFailures=[...isolatedRows.values()];

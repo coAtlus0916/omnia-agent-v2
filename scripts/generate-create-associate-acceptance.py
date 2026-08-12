@@ -134,6 +134,16 @@ def oracle_ebs_cells(prefix: str, workspace: str) -> tuple[dict[str, str], dict[
     return cells, expected
 
 
+def oracle_ebs_higher_cells(prefix: str, workspace: str) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
+    element = f"{prefix}-OEBS-H"
+    return ({
+        "B23": element, "C23": "Oracle EBS", "D23": "Higher",
+        "E23": "Processes explicitly identified key financial data.", "F23": workspace,
+    }, {
+        element: {"kind": "APP", "rait": "Higher", "dependencies": [], "catalog": 12, "required": 11},
+    })
+
+
 def recorded_new_elements_cells(
     prefix: str, workspace: str, mode: str
 ) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
@@ -163,6 +173,56 @@ def recorded_new_elements_cells(
         ad: {"kind": "OS", "rait": mode, "dependencies": [hana], "catalog": 4, "required": 4},
         network: {"kind": "DCNO", "rait": mode, "dependencies": [hana]},
         migration: {"kind": "TOOL", "rait": mode, "dependencies": [ebs], "catalog": 3, "required": 3},
+    }
+    return cells, expected
+
+
+def complex_association_cells(
+    prefix: str, workspace: str
+) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
+    """Exercise real multi-target and shared-target dependency shapes.
+
+    The managed V5 template already exposes three APP, DB and OS rows plus two
+    DCNO and Tool rows.  This profile fills those declared cells only: no mock
+    rows and no Connector-side Feature rules.
+    """
+    app_generic = f"{prefix}-GEN-H"
+    app_ebs = f"{prefix}-EBS-L"
+    app_ecc = f"{prefix}-ECC-H"
+    description_higher = "Processes explicitly identified key financial data."
+    description_lower = "Contains no key data according to the supplied assessment text."
+    cells = {
+        "B23": app_generic, "C23": "Generic", "D23": "Higher", "E23": description_higher, "F23": workspace,
+        "B24": app_ebs, "C24": "Oracle EBS", "D24": "Lower", "E24": description_lower, "F24": workspace,
+        "B25": app_ecc, "C25": "SAP ECC", "D25": "Higher", "E25": description_higher, "F25": workspace,
+        # One DB -> two APPs; two DBs -> the same APP; and one DB -> three APPs.
+        "B30": f"{prefix}-DB-GEN", "C30": "Generic", "D30": workspace, "E30": f"{app_generic}、{app_ebs}",
+        "B31": f"{prefix}-DB-SQL", "C31": "SQL", "D31": workspace, "E31": app_generic,
+        "B32": f"{prefix}-DB-ORA", "C32": "Oracle", "D32": workspace, "E32": f"{app_generic}、{app_ebs}、{app_ecc}",
+        # Mixed inheritance, shared APP target and distinct APP target.
+        "B35": f"{prefix}-OS-GEN", "C35": "Generic", "D35": workspace, "E35": f"{app_generic}、{app_ebs}、{app_ecc}",
+        "B36": f"{prefix}-OS-AD", "C36": "AD", "D36": workspace, "E36": app_ebs,
+        "B37": f"{prefix}-OS-UNIX", "C37": "UNIX", "D37": workspace, "E37": app_ecc,
+        "B40": f"{prefix}-NET-MIX", "C40": "网络", "D40": workspace, "E40": f"{app_generic}、{app_ebs}",
+        "B41": f"{prefix}-NET-LOW", "C41": "网络", "D41": workspace, "E41": app_ebs,
+        # Tool governance remains exactly one APP relation per row.
+        "B46": f"{prefix}-TOOL-TICKET", "C46": "工单工具", "D46": "Higher", "E46": workspace, "F46": app_generic,
+        "B47": f"{prefix}-TOOL-MIG", "C47": "代码迁移工具", "D47": "Lower", "E47": workspace, "F47": app_ebs,
+    }
+    expected = {
+        app_generic: {"kind": "APP", "rait": "Higher", "dependencies": []},
+        app_ebs: {"kind": "APP", "rait": "Lower", "dependencies": []},
+        app_ecc: {"kind": "APP", "rait": "Higher", "dependencies": []},
+        f"{prefix}-DB-GEN": {"kind": "DB", "rait": "Higher", "dependencies": [app_generic, app_ebs]},
+        f"{prefix}-DB-SQL": {"kind": "DB", "rait": "Higher", "dependencies": [app_generic]},
+        f"{prefix}-DB-ORA": {"kind": "DB", "rait": "Higher", "dependencies": [app_generic, app_ebs, app_ecc]},
+        f"{prefix}-OS-GEN": {"kind": "OS", "rait": "Higher", "dependencies": [app_generic, app_ebs, app_ecc]},
+        f"{prefix}-OS-AD": {"kind": "OS", "rait": "Lower", "dependencies": [app_ebs]},
+        f"{prefix}-OS-UNIX": {"kind": "OS", "rait": "Higher", "dependencies": [app_ecc]},
+        f"{prefix}-NET-MIX": {"kind": "DCNO", "rait": "Higher", "dependencies": [app_generic, app_ebs]},
+        f"{prefix}-NET-LOW": {"kind": "DCNO", "rait": "Lower", "dependencies": [app_ebs]},
+        f"{prefix}-TOOL-TICKET": {"kind": "TOOL", "rait": "Higher", "dependencies": [app_generic]},
+        f"{prefix}-TOOL-MIG": {"kind": "TOOL", "rait": "Lower", "dependencies": [app_ebs]},
     }
     return cells, expected
 
@@ -312,7 +372,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--package-root", type=Path, required=True)
     parser.add_argument(
         "--profile",
-        choices=("core-higher", "core-lower", "oracle-ebs", "subtype-batch", "recorded-new-elements"),
+        choices=("core-higher", "core-lower", "oracle-ebs", "oracle-ebs-higher", "subtype-batch", "recorded-new-elements", "complex-associations"),
         required=True,
     )
     parser.add_argument("--workspace", required=True)
@@ -344,9 +404,13 @@ def main() -> None:
         cells, expected = core_mode_cells(prefix, workspace, "Lower")
     elif args.profile == "oracle-ebs":
         cells, expected = oracle_ebs_cells(prefix, workspace)
+    elif args.profile == "oracle-ebs-higher":
+        cells, expected = oracle_ebs_higher_cells(prefix, workspace)
     elif args.profile == "recorded-new-elements":
         require(args.mode is not None, "--mode is required for recorded-new-elements")
         cells, expected = recorded_new_elements_cells(prefix, workspace, args.mode)
+    elif args.profile == "complex-associations":
+        cells, expected = complex_association_cells(prefix, workspace)
     else:
         require(args.mode is not None, "--mode is required for subtype-batch")
         require(args.app_type is not None and args.app_type.strip(), "--app-type is required for subtype-batch")

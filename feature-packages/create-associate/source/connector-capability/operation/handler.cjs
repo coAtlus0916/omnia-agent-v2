@@ -567,18 +567,19 @@ async function relationshipObjectAuthority(sdk, detailStep, workspaceStep, objec
   return { objectId, objectType: expectedType, workItemId: authority.workItemId, workspaceId: authority.workspaceId };
 }
 async function relationshipRead(request, sdk) {
-  const query = exact(request.query, ['associationType', 'itElementId', 'associatingEntityId', 'workspaceId'], 'Relationship query');
+  const query = exact(request.query, ['associationType', 'itElementId', 'associatingEntityId', 'sourceWorkspaceId', 'targetWorkspaceId'], 'Relationship query');
   const itElementId = guid(query.itElementId, 'query.itElementId');
   const associatingId = guid(query.associatingEntityId, 'query.associatingEntityId');
-  const workspaceId = guid(query.workspaceId, 'query.workspaceId');
+  const sourceWorkspaceId = guid(query.sourceWorkspaceId, 'query.sourceWorkspaceId');
+  const targetWorkspaceId = guid(query.targetWorkspaceId, 'query.targetWorkspaceId');
   const targetType = query.associationType === 'InfrastructureApplication' || query.associationType === 'ItToolApplication' ? 'Application'
     : query.associationType === 'ItToolInfrastructure' ? 'Infrastructure' : '';
   const sourceType = query.associationType === 'InfrastructureApplication' ? 'Infrastructure'
     : targetType ? 'ITTool' : '';
   if (!sourceType || !targetType) fail('Unsupported signed relationship type.');
   const [sourceAuthority, targetAuthority] = await Promise.all([
-    relationshipObjectAuthority(sdk, 'relation-source-detail', 'relation-source-workspace', itElementId, sourceType, workspaceId, 'Relationship source'),
-    relationshipObjectAuthority(sdk, 'relation-target-detail', 'relation-target-workspace', associatingId, targetType, workspaceId, 'Relationship target')
+    relationshipObjectAuthority(sdk, 'relation-source-detail', 'relation-source-workspace', itElementId, sourceType, sourceWorkspaceId, 'Relationship source'),
+    relationshipObjectAuthority(sdk, 'relation-target-detail', 'relation-target-workspace', associatingId, targetType, targetWorkspaceId, 'Relationship target')
   ]);
   if (query.associationType === 'InfrastructureApplication') {
     const fromInfrastructure = await boundedSearch(sdk, 'applications-search', (page) => pageBody(page, 500, 'number', { associatedWithInfrastructureId: itElementId }), (item) => rowId(item) === associatingId);

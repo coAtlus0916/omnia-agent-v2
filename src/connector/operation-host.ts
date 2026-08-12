@@ -137,6 +137,10 @@ function record(value: unknown, label: string): Record<string, any> {
   return value as Record<string, any>;
 }
 
+function mutationNotStarted(message: string): Error & { effectState: 'not_started' } {
+  return Object.assign(new Error(message), { effectState: 'not_started' as const });
+}
+
 function loadHandler(source: string): Registered['run'] {
   const module = { exports: {} as any };
   let nextTimerId = 1;
@@ -567,7 +571,7 @@ export class OperationHost {
         throw new Error('Operation delivery identity differs from the signed Operation, binding, or effect.');
       }
     } else if (operation.effect === 'omnia_mutation') {
-      throw new Error('Mutation Operation is not authorized without its Core-authored durable delivery identity.');
+      throw mutationNotStarted('Mutation Operation is not authorized without its Core-authored durable delivery identity.');
     }
     if (input.reconcileOf !== undefined) {
       exactKeys(input.reconcileOf, [
@@ -601,9 +605,11 @@ export class OperationHost {
       || String(binding.authorityInstanceId || '') !== String(currentBinding.authorityInstanceId || '')
       || String(binding.tenantOrOrgId || '') !== String(currentBinding.tenantOrOrgId || '')
       || String(binding.packId || '') !== String(currentBinding.packId || '')
-    ) throw new Error('Operation binding no longer matches the current Connector session.');
+    ) throw operation.effect === 'omnia_mutation'
+      ? mutationNotStarted('Operation binding no longer matches the current Connector session.')
+      : new Error('Operation binding no longer matches the current Connector session.');
     if (operation.effect === 'omnia_mutation') {
-      if (!input.mutationAuthorized) throw new Error('Mutation Operation was not authorized by the confirmed Feature action.');
+      if (!input.mutationAuthorized) throw mutationNotStarted('Mutation Operation was not authorized by the confirmed Feature action.');
       const target = record(request.target, 'Mutation target');
       const workspaceScope = this.targetWorkspaceScope(target);
       const permitKey = this.permitKey(
@@ -614,9 +620,9 @@ export class OperationHost {
         String(request.planDigest || ''),
         operation.operationId
       );
-      if (!permitKey) throw new Error('Mutation target identity or plan digest is invalid.');
+      if (!permitKey) throw mutationNotStarted('Mutation target identity or plan digest is invalid.');
       const permit = this.permits.get(permitKey);
-      if (!permit || permit.consumed || permit.expiresAt < Date.now()) throw new Error('Mutation commit permit is missing, expired, or already consumed.');
+      if (!permit || permit.consumed || permit.expiresAt < Date.now()) throw mutationNotStarted('Mutation commit permit is missing, expired, or already consumed.');
       permit.consumed = true;
     }
     const routes = new Map(operation.routes.map((route) => [route.stepId, route]));

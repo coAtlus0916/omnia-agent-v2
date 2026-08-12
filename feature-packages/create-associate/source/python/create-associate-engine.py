@@ -382,8 +382,18 @@ def _workspace(row: dict) -> str:
     return unicodedata.normalize("NFKC", str(row.get("fields", {}).get("Omnia工作区", ""))).strip()
 
 
-def _app_relation_issue(row: dict, code: str, issue_type: str, message: str, *, check_id: str = "relationship_targets") -> dict:
-    return _issue("local", code, f"{row['rowKey']}.relations", issue_type, "blocking", message, check_id)
+def _app_relation_issue(
+    row: dict,
+    code: str,
+    issue_type: str,
+    message: str,
+    *,
+    check_id: str = "relationship_targets",
+    state: str = "blocking",
+    reference_identity: str = "",
+) -> dict:
+    suffix = f".{sha256_hex(reference_identity)[:16]}" if reference_identity else ""
+    return _issue("local", code, f"{row['rowKey']}.relations{suffix}", issue_type, state, message, check_id)
 
 
 def _resolve_app_relations(rows: list[dict], candidates: list[dict], issues: list[dict], field_ids: set[str], registry: dict, *, source_artifact_id: str) -> None:
@@ -397,6 +407,7 @@ def _resolve_app_relations(rows: list[dict], candidates: list[dict], issues: lis
             apps_by_id.setdefault(key, []).append(candidate)
 
     for row in rows:
+        row.pop("pendingExternalInheritance", None)
         spec = registry.get(row.get("kind"), {})
         raw_relation_field = normalize_header(spec.get("relation", ""))
         if not raw_relation_field:
@@ -410,17 +421,18 @@ def _resolve_app_relations(rows: list[dict], candidates: list[dict], issues: lis
             code = "LOCAL.TOOL_EXACTLY_ONE_APP_REQUIRED" if minimum == maximum == 1 else "LOCAL.APP_REFERENCE_CARDINALITY"
             expected = "恰好一个" if minimum == maximum == 1 else f"{minimum} 至 {maximum} 个"
             check_id = "infrastructure_links" if spec.get("inheritRait") is True else "relationship_targets"
-            issues.append(_app_relation_issue(row, code, "missing" if not relation_values else "ambiguous", f"{row['kind']} {row['elementId']} 必须关联{expected}批内 APP；不允许默认或猜测关系。", check_id=check_id))
+            issues.append(_app_relation_issue(row, code, "missing" if not relation_values else "ambiguous", f"{row['kind']} {row['elementId']} 必须填写{expected} APP 关系目标；不允许默认、重复或猜测关系。", check_id=check_id))
             _clear_inheritance(row, candidates, spec)
             continue
         seen: set[str] = set()
         sources: list[dict] = []
         valid = True
         row_workspace = _workspace(row)
-        for external_id in relation_values:
+        for relation_index, external_id in enumerate(relation_values):
             reference_key = unicodedata.normalize("NFKC", external_id).casefold()
+            reference_identity = f"{relation_index}:{reference_key}"
             if reference_key in seen:
-                issues.append(_app_relation_issue(row, "LOCAL.DUPLICATE_APP_REFERENCE", "ambiguous", f"{row['kind']} {row['elementId']} 重复引用 APP {external_id}；每个 APP 只能出现一次。"))
+                issues.append(_app_relation_issue(row, "LOCAL.DUPLICATE_APP_REFERENCE", "ambiguous", f"{row['kind']} {row['elementId']} 重复引用 APP {external_id}；每个 APP 只能出现一次。", reference_identity=reference_identity))
                 valid = False
                 continue
             seen.add(reference_key)
@@ -429,18 +441,42 @@ def _resolve_app_relations(rows: list[dict], candidates: list[dict], issues: lis
             if len(same_workspace) == 1:
                 sources.append(same_workspace[0])
                 continue
-            valid = False
             if len(same_workspace) > 1:
-                issues.append(_app_relation_issue(row, "LOCAL.AMBIGUOUS_APP_REFERENCE", "ambiguous", f"{row['kind']} {row['elementId']} 对 APP {external_id} 的批内精确匹配不唯一。"))
-            elif app_matches:
-                issues.append(_app_relation_issue(row, "LOCAL.CROSS_WORKSPACE_APP_REFERENCE", "contract_mismatch", f"{row['kind']} {row['elementId']} 与 APP {external_id} 不在同一 Omnia 工作区。"))
+                valid = False
+                issues.append(_app_relation_issue(row, "LOCAL.AMBIGUOUS_APP_REFERENCE", "ambiguous", f"{row['kind']} {row['elementId']} 对 APP {external_id} 的批内精确匹配不唯一。", reference_identity=reference_identity))
+            elif len(app_matches) == 1:
+                sources.append(app_matches[0])
+                issues.append(_app_relation_issue(
+                    row,
+                    "LOCAL.CROSS_WORKSPACE_APP_REFERENCE",
+                    "quality_warning",
+                    f"{row['kind']} {row['elementId']} 与 APP {external_id} 不在同一 Omnia 工作区；将继续按精确身份建立关系。",
+                    state="waived",
+                    reference_identity=reference_identity,
+                ))
+            elif len(app_matches) > 1:
+                valid = False
+                issues.append(_app_relation_issue(row, "LOCAL.AMBIGUOUS_APP_REFERENCE", "ambiguous", f"{row['kind']} {row['elementId']} 对 APP {external_id} 的批内身份不唯一。", reference_identity=reference_identity))
             elif identities_by_id.get(reference_key):
-                issues.append(_app_relation_issue(row, "LOCAL.NON_APP_REFERENCE", "contract_mismatch", f"{row['kind']} {row['elementId']} 的关联目标 {external_id} 不是 APP 类型。"))
+                valid = False
+                issues.append(_app_relation_issue(row, "LOCAL.NON_APP_REFERENCE", "contract_mismatch", f"{row['kind']} {row['elementId']} 的关联目标 {external_id} 不是 APP 类型。", reference_identity=reference_identity))
             else:
-                issues.append(_app_relation_issue(row, "UNSUPPORTED.EXTERNAL_APP_REFERENCE", "contract_mismatch", f"{row['kind']} {row['elementId']} 引用的 APP {external_id} 不在当前批次；未冻结外部目标前禁止准备回传。"))
+                sources.append({"rowKey": "", "elementId": external_id, "external": True})
+                issues.append(_app_relation_issue(
+                    row,
+                    "LOCAL.EXTERNAL_APP_REFERENCE_PENDING",
+                    "quality_warning",
+                    f"{row['kind']} {row['elementId']} 引用当前批次以外的 APP {external_id}；将通过当前 Pack 的只读实时身份校验解析。",
+                    state="waived",
+                    reference_identity=reference_identity,
+                ))
         if not valid or len(sources) != len(relation_values) or spec.get("inheritRait") is not True:
             if spec.get("inheritRait") is True:
                 _clear_inheritance(row, candidates, spec)
+            continue
+        if any(source.get("external") is True for source in sources):
+            _clear_inheritance(row, candidates, spec)
+            row["pendingExternalInheritance"] = True
             continue
         modes = [str(source["fields"].get("System Risk Classification", "")) for source in sources]
         if any(mode not in ("Higher", "Lower") for mode in modes):
@@ -452,7 +488,13 @@ def _resolve_app_relations(rows: list[dict], candidates: list[dict], issues: lis
         canonical_id = f"P1.{row['kind']}.GRA.RAIT_CONCLUSION"
         require(canonical_id in field_ids, "GOVERNANCE.INHERITANCE_FIELD_MISSING", f"{canonical_id} is absent from signed governance.")
         value = "Higher" if "Higher" in modes else "Lower"
-        source_refs = [{"rowKey": source["rowKey"], "elementId": source["elementId"]} for source in sources]
+        source_refs = [{
+            "rowKey": source["rowKey"],
+            "elementId": source["elementId"],
+            "workspaceName": _workspace(source),
+            "rait": mode,
+            "sourceType": "in_batch",
+        } for source, mode in zip(sources, modes)]
         row["inheritance"] = {
             "schemaVersion": "omnia.create-associate.infrastructure-app-inheritance/v1",
             "rait": value,
@@ -460,6 +502,15 @@ def _resolve_app_relations(rows: list[dict], candidates: list[dict], issues: lis
             "relationType": policy["relationType"],
         }
         mixed_sources = len(set(modes)) > 1
+        if mixed_sources:
+            issues.append(_app_relation_issue(
+                row,
+                "LOCAL.RAIT_MIXED_HIGHER_WARNING",
+                "quality_warning",
+                f"{row['kind']} {row['elementId']} 关联 APP 的 RAIT 不一致；按 Higher 优先自动设为 Higher。",
+                check_id="infrastructure_rait",
+                state="waived",
+            ))
         row["inheritanceDecision"] = {
             "schemaVersion": "omnia.create-associate.infrastructure-rait-decision/v1",
             "policy": "any_higher_else_all_lower",

@@ -6,6 +6,8 @@ const { createPythonSidecarBridge } = require('./workpaper-preparation-python-br
 const FEATURE_ID = 'omnia.workpaper-preparation';
 const FEATURE_VERSION = '__FEATURE_VERSION__';
 const CURRENT_POINTER = 'workpaper:current';
+const MAX_BATCH_GRAS = 50;
+const MAX_BATCH_CONTROLS = 2000;
 const OPERATIONS = Object.freeze({
   directory: 'omnia.workpaper.directory.read.v1',
   controls: 'omnia.workpaper.controls.read.v1',
@@ -91,14 +93,20 @@ function credentialDigest(b, s) {
     authorityInstanceId: b.authorityInstanceId, tenantOrOrgId: b.tenantOrOrgId, packId: b.packId, workspaceIds: s.workspaceIds });
 }
 function normalizeGra(value, allowedWorkspaces) {
+  const contentName = required(value && value.graContentName, 'graContentName');
+  if (!['generic', 'generic application'].includes(contentName.normalize('NFKC').toLowerCase())) {
+    fail('WORKPAPER.GENERIC_APP_ONLY', 'Only a Generic Application GRA can enter this Workpaper phase.');
+  }
   const item = {
     riskAssessmentId: required(value && value.riskAssessmentId, 'riskAssessmentId'),
     graWorkItemId: required(value && value.graWorkItemId, 'graWorkItemId'),
     appId: required(value && value.appId, 'appId'), appWorkItemId: required(value && value.appWorkItemId, 'appWorkItemId'),
+    graContentId: required(value && value.graContentId, 'graContentId'),
     workspaceId: required(value && value.workspaceId, 'workspaceId'), workspaceName: required(value && value.workspaceName, 'workspaceName'),
     graName: required(value && value.graName, 'graName'), graReferenceNumber: optional(value && value.graReferenceNumber, 'graReferenceNumber'),
     graStatus: optional(value && value.graStatus, 'graStatus'), graUpdatedOn: optional(value && value.graUpdatedOn, 'graUpdatedOn'),
     appName: required(value && value.appName, 'appName'), appNumber: optional(value && value.appNumber, 'appNumber'),
+    graContentName: 'Generic',
     graType: 'Application'
   };
   if (!allowedWorkspaces.includes(item.workspaceId)) fail('WORKPAPER.OUTSIDE_SAFETY', 'APP GRA is outside the explicit safety Workspace scope.');
@@ -124,6 +132,7 @@ function controlRequest(selected, control = null) {
     riskAssessmentId: selected.riskAssessmentId, graWorkItemId: selected.graWorkItemId,
     appId: selected.appId, appWorkItemId: selected.appWorkItemId, workspaceId: selected.workspaceId
   };
+  request.graContentId = selected.graContentId;
   if (control) {
     request.controlId = control.controlId;
     request.controlWorkItemId = control.workItemId;
@@ -134,45 +143,17 @@ function selectedIdentity(value) {
   return {
     riskAssessmentId: value.riskAssessmentId, graWorkItemId: value.graWorkItemId,
     appId: value.appId, appWorkItemId: value.appWorkItemId, workspaceId: value.workspaceId,
+    graContentId: value.graContentId,
     workspaceName: value.workspaceName, graName: value.graName, graReferenceNumber: value.graReferenceNumber,
     graStatus: value.graStatus, graUpdatedOn: value.graUpdatedOn, appName: value.appName, appNumber: value.appNumber,
+    graContentName: value.graContentName,
     graType: 'Application'
   };
 }
-function normalizePreflight(value, selected, expectedControl = null) {
-  if (!value || value.riskAssessmentId !== selected.riskAssessmentId || value.graWorkItemId !== selected.graWorkItemId
-    || value.appId !== selected.appId || value.appWorkItemId !== selected.appWorkItemId || value.workspaceId !== selected.workspaceId) {
-    fail('WORKPAPER.PREFLIGHT_CONTEXT_DRIFT', 'Control preflight returned another APP GRA context.');
-  }
-  const control = {
-    controlId: required(value.controlId, 'controlId'), workItemId: required(value.workItemId, 'control.workItemId'),
-    controlNumber: optional(value.controlNumber, 'controlNumber'), name: optional(value.name, 'control.name'),
-    updatedOn: optional(value.updatedOn, 'control.updatedOn'), opened: value.opened === true, openVerified: value.openVerified === true,
-    coreConcurrency: value.coreConcurrency || null, oeConcurrency: value.oeConcurrency || null,
-    operatingEffectivenessId: optional(value.operatingEffectivenessId, 'operatingEffectivenessId'), absent: value.absent === true, deleted: value.deleted === true
-  };
-  if (expectedControl && (control.controlId !== expectedControl.controlId || control.workItemId !== expectedControl.workItemId)) {
-    fail('WORKPAPER.PREFLIGHT_IDENTITY_DRIFT', 'Control preflight returned another Control or Work Item.');
-  }
-  if (control.absent || control.deleted) fail('WORKPAPER.CONTROL_ABSENT', 'Control is absent or deleted.');
-  if (control.opened && !control.openVerified) fail('WORKPAPER.OPEN_STATE_CONTRADICTION', 'Control reports the OE flag without the OE entity and unique Tab 209 token.');
-  if (!control.opened && (!control.coreConcurrency || Number(control.coreConcurrency.entityTabTypeId) !== 201 || !text(control.coreConcurrency.updatedOn))) {
-    fail('WORKPAPER.CORE_TOKEN_MISSING', 'Closed Control has no unique live Tab 201 token.');
-  }
-  return { ...selected, ...control };
+function observationState(value) {
+  const { outcome: _outcome, ...state } = value || {};
+  return state;
 }
-function applied(value, step) {
-  return value && value.outcome === 'applied' && value.controlId === step.controlId && value.workItemId === step.workItemId
-    && value.riskAssessmentId === step.riskAssessmentId && value.appId === step.appId && value.workspaceId === step.workspaceId
-    && value.opened === true && value.openVerified === true && value.operatingEffectivenessId
-    && value.oeConcurrency && Number(value.oeConcurrency.entityTabTypeId) === 209 && text(value.oeConcurrency.updatedOn);
-}
-function notApplied(value, step) {
-  return value && value.outcome === 'not_applied' && value.controlId === step.controlId && value.workItemId === step.workItemId
-    && value.opened === false && value.coreConcurrency && Number(value.coreConcurrency.entityTabTypeId) === 201
-    && text(value.coreConcurrency.updatedOn) === text(step.mutationPayload.concurrencyTabUpdatedOn);
-}
-
 function createFeatureWorker(ports) {
   const connector = ports && ports.connector; const store = ports && ports.store; const events = ports && ports.events;
   if (!connector || typeof connector.invoke !== 'function' || !store || typeof store.call !== 'function' || !events || typeof events.emit !== 'function') {
@@ -180,6 +161,20 @@ function createFeatureWorker(ports) {
   }
   let bridge = null;
   const planner = () => { if (!bridge) bridge = createPythonSidecarBridge({ timeoutMs: 120000 }); return bridge; };
+  async function classifyObservation(value, selected, expectedControl, runId) {
+    const classified = await planner().invoke('classify_control_observation', {
+      schemaVersion: 'omnia.workpaper-control-observation-input/v1', selectedGra: selected,
+      expectedControl: { controlId: expectedControl.controlId, workItemId: expectedControl.workItemId,
+        mutationPayload: expectedControl.mutationPayload || {}, baselineCoreUpdatedOn: expectedControl.baselineCoreUpdatedOn || '' },
+      observation: value
+    }, { runId });
+    if (!classified || classified.schemaVersion !== 'omnia.workpaper-control-observation-classification/v1'
+      || !['applied','partial_applied','not_applied','pending','contradiction'].includes(classified.outcome)
+      || !classified.control || typeof classified.control !== 'object') {
+      fail('WORKPAPER.PYTHON_OBSERVATION_INVALID', 'CPython returned an invalid Control observation classification.');
+    }
+    return { ...classified.control, outcome: classified.outcome };
+  }
   const invoke = (operationId, request) => connector.invoke({ schemaVersion: 'omnia.operation-invocation/v1',
     featureId: FEATURE_ID, featureVersion: FEATURE_VERSION, operationId, request });
   const save = async (plan) => {
@@ -200,30 +195,33 @@ function createFeatureWorker(ports) {
     riskAssessmentId: step.riskAssessmentId, controlId: step.controlId });
   const actionPatch = (state) => {
     const directory = !state || ['completed', 'failed', 'cancelled'].includes(state);
-    const pending = state === 'pending_confirmation'; const uncertain = state === 'uncertain';
+    const pending = state === 'pending_confirmation' || state === 'pending_continuation';
+    const uncertain = state === 'uncertain' || state === 'pending_continuation';
     return [
       { actionId: 'bootstrap-workpaper-directory', enabled: false, reason: 'Initial authoritative APP GRA read has completed.' },
       { actionId: 'refresh-workpaper-directory', enabled: directory, reason: directory ? '' : 'A frozen hidden-Tab plan is active.' },
       { actionId: 'prepare-hidden-tabs', enabled: directory, reason: directory ? '' : 'A frozen hidden-Tab plan is active.' },
-      { actionId: 'cancel-hidden-tab-plan', enabled: pending, reason: pending ? '' : 'Only an unconfirmed plan can be cancelled.' },
-      { actionId: 'confirm-hidden-tabs', enabled: pending, reason: pending ? '' : 'No frozen plan is awaiting confirmation.' },
-      { actionId: 'reconcile-hidden-tabs', enabled: uncertain, reason: uncertain ? '' : 'No uncertain Control command requires read-only reconciliation.' }
+      { actionId: 'cancel-hidden-tab-plan', enabled: state === 'pending_confirmation', reason: state === 'pending_confirmation' ? '' : 'Only an unconfirmed plan can be cancelled.' },
+      { actionId: 'confirm-hidden-tabs', enabled: pending, reason: pending ? '' : 'No frozen plan or reconciled continuation is awaiting confirmation.' },
+      { actionId: 'reconcile-hidden-tabs', enabled: uncertain,
+        label: state === 'pending_continuation' ? '确认继续未完成步骤' : '核验并继续未完成步骤',
+        reason: uncertain ? '' : 'No uncertain Control command or reconciled continuation is available.' }
     ];
   };
   function directorySurface(directory) {
-    const scopes = [{ id: 'app-gra:root', parentId: null, kind: 'section', level: 1, label: 'APP GRA', parentLabel: '底稿编制', selected: true, initialExpanded: true, disabledReason: '' }];
+    const scopes = [{ id: 'app-gra:root', parentId: null, kind: 'section', level: 1, label: 'Generic APP GRA', parentLabel: '底稿编制', selected: true, initialExpanded: true, disabledReason: '' }];
     for (const workspace of directory.workspaces) {
       scopes.push({ id: `workspace:${workspace.id}`, parentId: 'app-gra:root', kind: 'workspace', level: 2, label: workspace.name,
-        parentLabel: 'APP GRA', selected: true, initialExpanded: true, disabledReason: '' });
+        parentLabel: 'Generic APP GRA', selected: true, initialExpanded: true, disabledReason: '' });
       scopes.push({ id: `type:${workspace.id}:APP-GRA`, parentId: `workspace:${workspace.id}`, kind: 'element_type', level: 3,
-        label: 'Application GRA', parentLabel: workspace.name, selected: true, initialExpanded: true, disabledReason: '' });
+        label: 'Generic Application GRA', parentLabel: workspace.name, selected: true, initialExpanded: true, disabledReason: '' });
     }
-    const items = directory.gras.map((item) => ({ id: item.riskAssessmentId, scopeId: `type:${item.workspaceId}:APP-GRA`, type: 'APP GRA',
+    const items = directory.gras.map((item) => ({ id: item.riskAssessmentId, scopeId: `type:${item.workspaceId}:APP-GRA`, type: 'Generic APP GRA',
       title: item.graReferenceNumber || item.graName, subtitle: `${item.graName} · APP ${item.appNumber || item.appName} · ${item.graStatus || '当前状态未返回'}`,
       selectable: true, disabledReason: '', concurrencyToken: item.graUpdatedOn || item.riskAssessmentId }));
     return { schemaVersion: 'omnia.declarative-feature-surface-patch/v1', status: items.length ? 'ready' : 'empty',
-      statusMessage: items.length ? `已从当前 Pack 精确读取 ${items.length} 个 Application GRA；请选择且只能选择一个。`
-        : '当前显式安全锁 Workspace 中没有可用的 Application GRA。', scopes, items, selectedItemIds: [], search: '',
+      statusMessage: items.length ? `已从当前 Pack 精确读取 ${items.length} 个 Generic Application GRA；可多选后创建一个冻结批次。`
+        : '当前显式安全锁 Workspace 中没有可用的 Generic Application GRA。', scopes, items, selectedItemIds: [], search: '',
       clearFields: ['progress', 'issues'], actions: actionPatch('completed') };
   }
   function planProgress(plan) {
@@ -235,32 +233,38 @@ function createFeatureWorker(ports) {
       : plan.state === 'uncertain' ? 'uncertain' : plan.state === 'executing' ? 'running' : 'pending';
     return { label: 'Control 隐藏 Tab', completed, total, percent: total ? Math.round(completed * 100 / total) : 100, state,
       message: plan.state === 'pending_confirmation' ? '计划已冻结，尚未向 Omnia 提交任何写操作。'
+        : plan.state === 'pending_continuation' ? '只读核验已证明第一阶段生效；第二阶段已停在人工确认前，不会自动重放。'
         : plan.state === 'uncertain' ? '仅允许精确只读核验；不会重放 PATCH。'
           : plan.state === 'completed' ? '所有 Control 均已由精确读回证明隐藏 Tab 可用。' : '按 Control 逐项执行并核验。',
       items: [
-        { itemId: 'already-open', label: '原本已打开', state: already ? 'passed' : 'skipped', detail: `${already}/${total}`, completed: already, total, percent: total ? Math.round(already * 100 / total) : 100 },
+        { itemId: 'already-open', label: '原本已打开', state: already ? 'passed' : 'skipped', detail: `${already}/${already}`, completed: already, total: already, percent: 100 },
         { itemId: 'opened-now', label: '本次打开并核验', state: uncertain ? 'uncertain' : failed ? 'failed' : succeeded === plan.counts.toOpen ? 'passed' : plan.state === 'executing' ? 'running' : 'pending',
           detail: `${succeeded}/${plan.counts.toOpen}`, completed: succeeded, total: plan.counts.toOpen, percent: plan.counts.toOpen ? Math.round(succeeded * 100 / plan.counts.toOpen) : 100 }
       ] };
   }
   function planSurface(plan) {
-    const selected = plan.selectedGra;
-    const scopes = [
-      { id: 'plan:root', parentId: null, kind: 'section', level: 1, label: selected.graReferenceNumber || selected.graName, parentLabel: '底稿编制', selected: true, initialExpanded: true, disabledReason: '' },
-      { id: 'plan:workspace', parentId: 'plan:root', kind: 'workspace', level: 2, label: selected.appName, parentLabel: selected.graName, selected: true, initialExpanded: true, disabledReason: '' },
-      { id: 'plan:controls', parentId: 'plan:workspace', kind: 'element_type', level: 3, label: 'Controls', parentLabel: selected.appName, selected: true, initialExpanded: true, disabledReason: '' }
-    ];
-    const outcomeById = new Map(plan.outcomes.map((item) => [item.controlId, item]));
-    const openIds = new Set(plan.alreadyOpen.map((item) => item.controlId));
+    const selectedGras = Array.isArray(plan.selectedGras) && plan.selectedGras.length ? plan.selectedGras : [plan.selectedGra];
+    const scopes = [{ id: 'plan:root', parentId: null, kind: 'section', level: 1, label: `${selectedGras.length} 个 Generic APP GRA`,
+      parentLabel: '底稿编制', selected: true, initialExpanded: true, disabledReason: '' }];
+    for (const selected of selectedGras) {
+      scopes.push({ id: `plan:gra:${selected.riskAssessmentId}`, parentId: 'plan:root', kind: 'workspace', level: 2,
+        label: selected.graReferenceNumber || selected.graName, parentLabel: selected.appName, selected: true, initialExpanded: true, disabledReason: '' });
+      scopes.push({ id: `plan:controls:${selected.riskAssessmentId}`, parentId: `plan:gra:${selected.riskAssessmentId}`,
+        kind: 'element_type', level: 3, label: 'Controls', parentLabel: selected.graReferenceNumber || selected.graName,
+        selected: true, initialExpanded: true, disabledReason: '' });
+    }
+    const outcomeById = new Map(plan.outcomes.map((item) => [item.stepId, item]));
+    const openIds = new Set(plan.alreadyOpen.map((item) => `${item.riskAssessmentId}|${item.controlId}`));
     const items = plan.controls.map((item) => {
-      const outcome = outcomeById.get(item.controlId);
-      const result = openIds.has(item.controlId) ? '原本已打开' : outcome ? outcome.state === 'succeeded' ? '已打开并核验' : outcome.state === 'uncertain' ? '结果待只读核验' : '失败' : '待执行';
-      return { id: `control:${item.controlId}`, scopeId: 'plan:controls', type: 'Control', title: item.controlNumber || item.name || item.controlId,
+      const stepId = `control-hidden-tab|${item.workspaceId}|${item.riskAssessmentId}|${item.controlId}`;
+      const outcome = outcomeById.get(stepId);
+      const result = openIds.has(`${item.riskAssessmentId}|${item.controlId}`) ? '原本已打开' : outcome ? outcome.state === 'succeeded' ? '已打开并核验' : outcome.state === 'uncertain' ? '结果待只读核验' : '失败' : '待执行';
+      return { id: `control:${item.riskAssessmentId}:${item.controlId}`, scopeId: `plan:controls:${item.riskAssessmentId}`, type: 'Control', title: item.controlNumber || item.name || item.controlId,
         subtitle: `${item.name || item.controlNumber || item.controlId} · ${result} · ${item.controlId}`,
         selectable: false, disabledReason: 'Control 清单已冻结，只由当前计划状态机推进。', concurrencyToken: item.updatedOn || item.controlId };
     });
     return { schemaVersion: 'omnia.declarative-feature-surface-patch/v1', stateVersion: Number(plan.surfaceStateVersion || 1), status: 'ready',
-      statusMessage: `APP ${selected.appName} · GRA ${selected.graReferenceNumber || selected.graName} · Control ${plan.counts.total} · 待打开 ${plan.counts.toOpen} · 状态 ${plan.state}`,
+      statusMessage: `Generic APP GRA ${selectedGras.length} 个 · Control ${plan.counts.total} 个 · 待打开 ${plan.counts.toOpen} 个 · 状态 ${plan.state}`,
       scopes, items, selectedItemIds: [], search: '', progress: planProgress(plan), actions: actionPatch(plan.state) };
   }
   async function readDirectory(context) {
@@ -277,51 +281,101 @@ function createFeatureWorker(ports) {
     }
   }
   async function createPlan(context, targetIds, expectedStateVersion) {
-    if (!Array.isArray(targetIds) || targetIds.length !== 1) fail('WORKPAPER.SELECT_ONE_GRA', 'Please select exactly one Application GRA.');
+    if (!Array.isArray(targetIds) || targetIds.length < 1 || targetIds.length > MAX_BATCH_GRAS) {
+      fail('WORKPAPER.SELECT_GRA_BATCH', `Please select between 1 and ${MAX_BATCH_GRAS} Generic Application GRAs.`);
+    }
+    const requestedIds = targetIds.map(text);
+    if (requestedIds.some((value) => !value) || new Set(requestedIds).size !== requestedIds.length) {
+      fail('WORKPAPER.SELECT_GRA_BATCH', 'Selected Generic Application GRA identities are empty or duplicated.');
+    }
     const { b, s, directory } = await readDirectory(context);
-    const selected = directory.gras.find((item) => item.riskAssessmentId === text(targetIds[0]));
-    if (!selected) fail('WORKPAPER.GRA_STALE', 'Selected Application GRA is absent from the current authoritative directory.');
-    const controlCatalog = await invoke(OPERATIONS.controls, { connectorBinding: b, ...controlRequest(selected) });
-    if (!controlCatalog || !Array.isArray(controlCatalog.controls) || controlCatalog.controls.length > 500) {
-      fail('WORKPAPER.CONTROL_CATALOG_INVALID', 'Selected GRA Control catalog is invalid or exceeds 500 items.');
-    }
-    const preflights = [];
-    for (const raw of controlCatalog.controls) {
-      const observed = await invoke(OPERATIONS.preflight, { connectorBinding: b, ...controlRequest(selected, raw) });
-      preflights.push(normalizePreflight(observed, selected, raw));
-    }
+    const directoryById = new Map(directory.gras.map((item) => [item.riskAssessmentId, item]));
+    const selectedGras = requestedIds.map((riskAssessmentId) => directoryById.get(riskAssessmentId));
+    if (selectedGras.some((item) => !item)) fail('WORKPAPER.GRA_STALE', 'A selected Generic Application GRA is absent from the current authoritative directory.');
+    selectedGras.sort((left, right) => left.riskAssessmentId.localeCompare(right.riskAssessmentId));
     const localId = crypto.randomUUID();
-    const pythonPlan = await planner().invoke('build_hidden_tab_plan', { schemaVersion: 'omnia.workpaper-hidden-tab-input/v1',
-      selectedGra: selected, controlPreflights: preflights }, { runId: localId });
-    if (!pythonPlan || pythonPlan.schemaVersion !== 'omnia.workpaper-hidden-tab-plan/v1' || pythonPlan.selectedGra.riskAssessmentId !== selected.riskAssessmentId
-      || !Array.isArray(pythonPlan.steps) || !Array.isArray(pythonPlan.controls) || !Array.isArray(pythonPlan.alreadyOpen)) {
-      fail('WORKPAPER.PYTHON_PLAN_INVALID', 'CPython returned an invalid hidden-Tab plan.');
+    const bundles = [];
+    for (const selected of selectedGras) {
+      const controlCatalog = await invoke(OPERATIONS.controls, { connectorBinding: b, ...controlRequest(selected) });
+      if (!controlCatalog || !Array.isArray(controlCatalog.controls) || controlCatalog.controls.length > 500
+        || ['riskAssessmentId','graWorkItemId','appId','appWorkItemId','workspaceId','graContentId']
+          .some((key) => text(controlCatalog[key]) !== text(selected[key]))) {
+        fail('WORKPAPER.CONTROL_CATALOG_INVALID', 'A selected GRA Control catalog is invalid, stale, or exceeds 500 items.');
+      }
+      const selection = await planner().invoke('select_hidden_tab_controls', {
+        schemaVersion: 'omnia.workpaper-control-selection-input/v1', controls: controlCatalog.controls
+      }, { runId: localId });
+      if (!selection || selection.schemaVersion !== 'omnia.workpaper-control-selection/v1'
+        || !Array.isArray(selection.controls) || !selection.controls.length) {
+        fail('WORKPAPER.PYTHON_SELECTION_INVALID', `CPython returned no valid Phase 2 Control selection for GRA ${selected.riskAssessmentId}.`);
+      }
+      const rawByIdentity = new Map();
+      for (const raw of controlCatalog.controls) {
+        const identity = `${required(raw && raw.controlId, 'controlId')}|${required(raw && raw.workItemId, 'control.workItemId')}`;
+        if (rawByIdentity.has(identity)) fail('WORKPAPER.CONTROL_IDENTITY_DUPLICATE', 'Control catalog contains duplicate identities.');
+        rawByIdentity.set(identity, raw);
+      }
+      const eligibleControls = selection.controls.map((item) => {
+        const identity = `${required(item && item.controlId, 'selection.controlId')}|${required(item && item.workItemId, 'selection.workItemId')}`;
+        const raw = rawByIdentity.get(identity);
+        if (!raw) fail('WORKPAPER.PYTHON_SELECTION_DRIFT', 'CPython selected a Control outside the authoritative catalog.');
+        return raw;
+      });
+      if (new Set(eligibleControls.map((raw) => `${raw.controlId}|${raw.workItemId}`)).size !== eligibleControls.length) {
+        fail('WORKPAPER.PYTHON_SELECTION_DRIFT', 'CPython selected a Control identity more than once.');
+      }
+      const preflights = [];
+      for (const raw of eligibleControls) {
+        const observed = await invoke(OPERATIONS.preflight, { connectorBinding: b, ...controlRequest(selected, raw) });
+        preflights.push(await classifyObservation(observed, selected, raw, localId));
+      }
+      const pythonPlan = await planner().invoke('build_hidden_tab_plan', { schemaVersion: 'omnia.workpaper-hidden-tab-input/v1',
+        selectedGra: selected, controlPreflights: preflights }, { runId: localId });
+      if (!pythonPlan || pythonPlan.schemaVersion !== 'omnia.workpaper-hidden-tab-plan/v1'
+        || pythonPlan.selectedGra.riskAssessmentId !== selected.riskAssessmentId
+        || !Array.isArray(pythonPlan.steps) || !Array.isArray(pythonPlan.controls) || !Array.isArray(pythonPlan.alreadyOpen)) {
+        fail('WORKPAPER.PYTHON_PLAN_INVALID', 'CPython returned an invalid hidden-Tab plan.');
+      }
+      const byId = new Map(preflights.map((item) => [item.controlId, item]));
+      const steps = pythonPlan.steps.map((step) => {
+        const preflight = byId.get(step.controlId);
+        if (!preflight) fail('WORKPAPER.PYTHON_PLAN_DRIFT', 'CPython plan contains a Control outside the frozen inventory.');
+        const frozenPreflight = observationState(preflight);
+        return { ...step, ...selected, preflight: frozenPreflight, preflightDigest: digest(frozenPreflight), outcome: null };
+      });
+      bundles.push({ selected, pythonPlan, steps,
+        controls: pythonPlan.controls.map((item) => ({ ...selected, ...item })),
+        alreadyOpen: pythonPlan.alreadyOpen.map((item) => ({ ...selected, ...item })) });
     }
-    const byId = new Map(preflights.map((item) => [item.controlId, item]));
-    const steps = pythonPlan.steps.map((step) => {
-      const preflight = byId.get(step.controlId);
-      if (!preflight) fail('WORKPAPER.PYTHON_PLAN_DRIFT', 'CPython plan contains a Control outside the frozen inventory.');
-      return { ...step, ...selected, preflight, preflightDigest: digest(preflight), outcome: null };
-    });
+    const controls = bundles.flatMap((bundle) => bundle.controls);
+    const steps = bundles.flatMap((bundle) => bundle.steps);
+    const alreadyOpen = bundles.flatMap((bundle) => bundle.alreadyOpen);
+    if (controls.length > MAX_BATCH_CONTROLS || new Set(steps.map((step) => step.stepId)).size !== steps.length) {
+      fail('WORKPAPER.BATCH_INVALID', `The frozen batch is duplicated or exceeds ${MAX_BATCH_CONTROLS} Controls.`);
+    }
+    const counts = { total: controls.length, toOpen: steps.length, alreadyOpen: alreadyOpen.length };
+    const pythonPlanDigest = digest(bundles.map((bundle) => ({
+      riskAssessmentId: bundle.selected.riskAssessmentId, planDigest: bundle.pythonPlan.planDigest
+    })));
     let plan = {
       schemaVersion: 'omnia.workpaper-plan/v1', planId: localId, runId: '', featureVersion: FEATURE_VERSION,
       state: steps.length ? 'preparing' : 'completed', surfaceStateVersion: Number(expectedStateVersion) + 1,
-      binding: b, safety: s, selectedGra: selected, controls: pythonPlan.controls, steps, alreadyOpen: pythonPlan.alreadyOpen,
-      counts: pythonPlan.counts, outcomes: [], pythonPlanDigest: pythonPlan.planDigest,
+      binding: b, safety: s, selectedGras, controls, steps, alreadyOpen,
+      counts, outcomes: [], pythonPlanDigest,
       createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 15 * 60_000).toISOString()
     };
     if (!steps.length) return save(plan);
     const coreRun = await store.call('createMutationRun', { engagementId: b.engagementId });
     const targets = steps.map((step) => ({
-      kind: 'field', key: step.stepId, workspace: selected.workspaceId, objectType: 'Control', objectId: step.controlId,
-      workItemId: step.workItemId, riskAssessmentId: selected.riskAssessmentId, appId: selected.appId,
+      kind: 'field', key: step.stepId, workspace: step.workspaceId, objectType: 'Control', objectId: step.controlId,
+      workItemId: step.workItemId, riskAssessmentId: step.riskAssessmentId, appId: step.appId,
       baseline: step.preflight, preflightDigest: step.preflightDigest, mutationOperationId: OPERATIONS.direct,
       mutationPayload: step.mutationPayload, evidenceOperationIds: [OPERATIONS.reconcile], operationTargetIdentityKey: step.stepId
     }));
     const graphDigest = digest(targets.map((item) => ({ key: item.key, preflightDigest: item.preflightDigest, mutationPayload: item.mutationPayload })));
     const frozen = await store.call('prepareReturnIntent', { runId: coreRun.runId,
       plan: { schemaVersion: 'omnia.workpaper-return-intent/v1', authority: { authorityInstanceId: b.authorityInstanceId,
-        tenantOrOrgId: b.tenantOrOrgId, packId: b.packId, engagementId: b.engagementId }, selectedGra: selected, graphDigest, targets },
+        tenantOrOrgId: b.tenantOrOrgId, packId: b.packId, engagementId: b.engagementId }, selectedGras, graphDigest, targets },
       connectorBinding: b, safetyLock: s, credentialDigest: credentialDigest(b, s), preflightDigest: graphDigest });
     plan = { ...plan, planId: coreRun.runId, runId: coreRun.runId, state: 'pending_confirmation', graphDigest,
       planDigest: frozen.planDigest, confirmationId: frozen.confirmationId, confirmationToken: frozen.confirmationToken,
@@ -337,14 +391,19 @@ function createFeatureWorker(ports) {
       eventType: 'workpaper.hidden_tab_plan_cancelled', error: 'User cancelled before any mutation was submitted.' });
     plan.state = 'cancelled'; plan.surfaceStateVersion += 1; return save(plan);
   }
-  async function currentPreflight(step, b) {
+  async function currentPreflight(step, b, permitPlanDigest = '', runId = '') {
     const selected = selectedIdentity(step);
-    const value = await invoke(OPERATIONS.preflight, { connectorBinding: b, ...controlRequest(selected, step) });
-    return normalizePreflight(value, selected, step);
+    const value = await invoke(OPERATIONS.preflight, {
+      connectorBinding: b,
+      ...(permitPlanDigest ? { target: operationTarget(step), planDigest: permitPlanDigest } : {}),
+      ...controlRequest(selected, step)
+    });
+    return classifyObservation(value, selected, step, runId || crypto.randomUUID());
   }
   async function freezeReconcile(plan, step, commandId, b) {
     const request = { connectorBinding: b, target: operationTarget(step), ...controlRequest(step, step),
-      baselineCoreUpdatedOn: step.mutationPayload.concurrencyTabUpdatedOn };
+      baselineCoreUpdatedOn: step.mutationPayload.concurrencyTabUpdatedOn,
+      baselinePlanningCommonControlTesting: step.mutationPayload.baselinePlanningCommonControlTesting };
     await store.call('freezeReturnEvidenceSpec', { runId: plan.runId, commandId, operationId: OPERATIONS.reconcile, request });
     return request;
   }
@@ -356,9 +415,9 @@ function createFeatureWorker(ports) {
   async function persistOutcome(plan, step, state, phase, error = null, commandId = '') {
     const failure = error ? errorSummary(error) : { code: '', message: '' };
     const value = { controlId: step.controlId, stepId: step.stepId, state, phase, commandId, code: failure.code, message: failure.message };
-    const index = plan.outcomes.findIndex((item) => item.controlId === step.controlId);
+    const index = plan.outcomes.findIndex((item) => item.stepId === step.stepId);
     if (index >= 0) plan.outcomes[index] = value; else plan.outcomes.push(value);
-    plan.outcomes.sort((left, right) => left.controlId.localeCompare(right.controlId));
+    plan.outcomes.sort((left, right) => left.stepId.localeCompare(right.stepId));
     await save(plan); return value;
   }
   async function markUncertain(plan, step, commandId, phase, error, observed = null) {
@@ -377,12 +436,16 @@ function createFeatureWorker(ports) {
     await store.call('validateReturnAuthority', { runId: plan.runId, connectorBinding: b, safetyLock: s });
     plan.state = 'executing'; delete plan.uncertain; await save(plan);
     for (const step of plan.steps) {
-      const existing = plan.outcomes.find((item) => item.controlId === step.controlId);
+      const existing = plan.outcomes.find((item) => item.stepId === step.stepId);
       if (existing && existing.state === 'succeeded') continue;
       let before;
       try {
-        before = await currentPreflight(step, b);
-        if (!before.openVerified && digest(before) !== step.preflightDigest) fail('WORKPAPER.PREFLIGHT_DRIFT', `Control Tab 201 token changed before mutation: ${step.controlId}`);
+        before = await currentPreflight(step, b, plan.planDigest, plan.runId);
+        const partialRecovery = plan.partialRecovery && plan.partialRecovery.stepId === step.stepId
+          && plan.partialRecovery.observedDigest === digest(observationState(before));
+        if (!before.openVerified && digest(observationState(before)) !== step.preflightDigest && !partialRecovery) {
+          fail('WORKPAPER.PREFLIGHT_DRIFT', `Control state changed before mutation: ${step.controlId}`);
+        }
       } catch (error) {
         await persistOutcome(plan, step, 'failed', 'preflight', error);
         await store.call('finishReturn', { runId: plan.runId, outcome: 'failed', error: `${errorSummary(error).code}: ${errorSummary(error).message}` });
@@ -413,7 +476,8 @@ function createFeatureWorker(ports) {
         }
         let response;
         try {
-          response = await invoke(OPERATIONS.direct, { connectorBinding: b, target: operationTarget(step), ...controlRequest(step, step),
+          response = await invoke(OPERATIONS.direct, { connectorBinding: b, target: operationTarget(step), planDigest: plan.planDigest,
+            ...controlRequest(step, step),
             command: { commandId: command.commandId, idempotencyKey: command.idempotencyKey, payload: step.mutationPayload } });
         } catch (error) { return markUncertain(plan, step, command.commandId, 'submitted', error); }
         try {
@@ -424,7 +488,8 @@ function createFeatureWorker(ports) {
       let observed;
       try {
         observed = await invoke(OPERATIONS.reconcile, { ...readRequest, receiptContext: { runId: plan.runId, commandId: command.commandId } });
-        if (!applied(observed, step)) fail('WORKPAPER.READBACK_PENDING', 'Readback does not yet prove the OE entity and unique Tab 209 token.');
+        const classification = await classifyObservation(observed, selectedIdentity(step), step, plan.runId);
+        if (classification.outcome !== 'applied') fail('WORKPAPER.READBACK_PENDING', 'Readback does not yet prove the complete recorded hidden-Tab state.');
         await store.call('recordReturnEvidence', { runId: plan.runId, commandId: command.commandId,
           evidenceType: before.openVerified ? 'reconcile' : 'readback', commandState: 'readback_verified', payload: observed,
           receiptId: observed.__operationReceiptId });
@@ -437,17 +502,27 @@ function createFeatureWorker(ports) {
     plan.state = 'completed'; return save(plan);
   }
   async function confirm(plan, context, expectedStateVersion) {
-    if (!plan || plan.state !== 'pending_confirmation' || Number(plan.surfaceStateVersion) !== Number(expectedStateVersion)) {
+    if (!plan || !['pending_confirmation','pending_continuation'].includes(plan.state)) {
+      fail('WORKPAPER.CONFIRMATION_STALE', 'Hidden-Tab confirmation is stale.');
+    }
+    const continuation = plan.state === 'pending_continuation';
+    if (!continuation && Number(plan.surfaceStateVersion) !== Number(expectedStateVersion)) {
       fail('WORKPAPER.CONFIRMATION_STALE', 'Hidden-Tab confirmation is stale.');
     }
     const { b, s } = contextAuthority(context); sameAuthority(b, plan.binding); sameSafety(s, plan.safety);
-    if (!Number.isFinite(Date.parse(plan.expiresAt)) || Date.parse(plan.expiresAt) <= Date.now()) fail('WORKPAPER.CONFIRMATION_EXPIRED', 'Hidden-Tab confirmation expired.');
-    for (const step of plan.steps) {
-      const before = await currentPreflight(step, b);
-      if (!before.openVerified && digest(before) !== step.preflightDigest) fail('WORKPAPER.PREFLIGHT_DRIFT', `Control changed before confirmation: ${step.controlId}`);
+    if (!continuation && (!Number.isFinite(Date.parse(plan.expiresAt)) || Date.parse(plan.expiresAt) <= Date.now())) {
+      fail('WORKPAPER.CONFIRMATION_EXPIRED', 'Hidden-Tab confirmation expired.');
     }
-    await store.call('approveReturnIntent', { confirmationId: plan.confirmationId, confirmationToken: plan.confirmationToken,
-      expectedStateVersion: Number(plan.confirmationStateVersion), connectorBinding: b, safetyLock: s });
+    for (const step of plan.steps) {
+      const before = await currentPreflight(step, b, '', plan.runId);
+      const partialRecovery = continuation && plan.partialRecovery && plan.partialRecovery.stepId === step.stepId
+        && plan.partialRecovery.observedDigest === digest(observationState(before));
+      if (!before.openVerified && digest(observationState(before)) !== step.preflightDigest && !partialRecovery) fail('WORKPAPER.PREFLIGHT_DRIFT', `Control changed before confirmation: ${step.controlId}`);
+    }
+    if (!continuation) {
+      await store.call('approveReturnIntent', { confirmationId: plan.confirmationId, confirmationToken: plan.confirmationToken,
+        expectedStateVersion: Number(plan.confirmationStateVersion), connectorBinding: b, safetyLock: s });
+    }
     plan.surfaceStateVersion = Number(expectedStateVersion) + 1; await save(plan);
     return execute(plan, context);
   }
@@ -457,12 +532,18 @@ function createFeatureWorker(ports) {
     const step = plan.steps.find((item) => item.stepId === plan.uncertain.stepId);
     if (!step) fail('WORKPAPER.RECONCILE_INVALID', 'Uncertain Control is absent from the frozen plan.');
     const latest = await store.call('loadLatestRun', {}); const run = latest && latest.run ? latest.run : latest;
-    if (!run || text(run.run_id) !== plan.runId || text(run.state) !== 'uncertain') fail('WORKPAPER.RUN_DRIFT', 'Core Run is not in the matching uncertain state.');
-    await store.call('transitionRun', { runId: plan.runId, expectedRevision: Number(run.state_revision), toState: 'reconciling', eventType: 'workpaper.hidden_tab_reconcile_started' });
+    if (!run || text(run.run_id) !== plan.runId || !['uncertain','reconciling'].includes(text(run.state))) {
+      fail('WORKPAPER.RUN_DRIFT', 'Core Run is not in the matching uncertain/reconciling recovery state.');
+    }
+    const reconcilingRevision = text(run.state) === 'reconciling'
+      ? Number(run.state_revision)
+      : await store.call('transitionRun', { runId: plan.runId, expectedRevision: Number(run.state_revision),
+        toState: 'reconciling', eventType: 'workpaper.hidden_tab_reconcile_started' });
     const commandId = plan.uncertain.commandId;
     if (plan.uncertain.phase === 'projection') {
       const observed = plan.uncertain.observed;
-      if (!applied(observed, step)) {
+      const classification = await classifyObservation(observed, selectedIdentity(step), step, plan.runId);
+      if (classification.outcome !== 'applied') {
         await store.call('finishReturn', { runId: plan.runId, outcome: 'uncertain', error: 'Projection reconcile did not prove the hidden Tab.' });
         return save(plan);
       }
@@ -470,15 +551,31 @@ function createFeatureWorker(ports) {
     } else {
       const request = await freezeReconcile(plan, step, commandId, b);
       const observed = await invoke(OPERATIONS.reconcile, { ...request, receiptContext: { runId: plan.runId, commandId } });
-      if (!applied(observed, step) && !notApplied(observed, step)) {
+      const classification = await classifyObservation(observed, selectedIdentity(step), step, plan.runId);
+      if (!['applied','not_applied','partial_applied'].includes(classification.outcome)) {
         await store.call('finishReturn', { runId: plan.runId, outcome: 'uncertain', error: 'Read-only reconcile remains inconclusive.' });
         return save(plan);
       }
+      if (classification.outcome === 'partial_applied') {
+        const evidence = await store.call('recordReturnEvidence', { runId: plan.runId, commandId, evidenceType: 'reconcile',
+          commandState: 'readback_verified', intentResolution: 'partial_effect', payload: observed,
+          receiptId: observed.__operationReceiptId, verified: true,
+          error: 'The first mutation stage applied; the remaining signed stage requires an exact continuation command.' });
+        await store.call('transitionRun', { runId: plan.runId, expectedRevision: Number(reconcilingRevision), toState: 'returning',
+          eventType: 'workpaper.hidden_tab_partial_effect_reconciled' });
+        plan.partialRecovery = { stepId: step.stepId, priorCommandId: commandId,
+          receiptId: observed.__operationReceiptId, evidenceId: evidence.evidenceId,
+          observedDigest: digest(observationState(classification)) };
+        await persistOutcome(plan, step, 'partial_recovered', 'reconciled_partial_effect', null, commandId);
+        delete plan.uncertain;
+        plan.state = 'pending_continuation';
+        return save(plan);
+      }
       await store.call('recordReturnEvidence', { runId: plan.runId, commandId, evidenceType: 'reconcile',
-        commandState: applied(observed, step) ? 'readback_verified' : 'closed_not_applied', payload: observed,
-        receiptId: observed.__operationReceiptId, verified: applied(observed, step),
-        error: applied(observed, step) ? '' : 'Authoritative readback proved the PATCH was not applied.' });
-      if (!applied(observed, step)) {
+        commandState: classification.outcome === 'applied' ? 'readback_verified' : 'closed_not_applied', payload: observed,
+        receiptId: observed.__operationReceiptId, verified: classification.outcome === 'applied',
+        error: classification.outcome === 'applied' ? '' : 'Authoritative readback proved the PATCH was not applied.' });
+      if (classification.outcome !== 'applied') {
         await persistOutcome(plan, step, 'failed', 'reconciled_not_applied', Object.assign(new Error('The hidden-Tab PATCH was not applied.'), { code: 'WORKPAPER.NOT_APPLIED' }), commandId);
         await store.call('finishReturn', { runId: plan.runId, outcome: 'failed', error: 'WORKPAPER.NOT_APPLIED: The hidden-Tab PATCH was not applied.' });
         plan.state = 'failed'; delete plan.uncertain; return save(plan);
@@ -488,7 +585,7 @@ function createFeatureWorker(ports) {
     const after = await store.call('loadLatestRun', {}); const afterRun = after && after.run ? after.run : after;
     await store.call('transitionRun', { runId: plan.runId, expectedRevision: Number(afterRun.state_revision), toState: 'returning', eventType: 'workpaper.hidden_tab_reconcile_resolved' });
     await persistOutcome(plan, step, 'succeeded', 'reconciled_readback', null, commandId);
-    delete plan.uncertain; return execute(plan, context);
+    delete plan.uncertain; delete plan.partialRecovery; return execute(plan, context);
   }
   async function handleAction(input) {
     const context = input.context || {};
@@ -504,7 +601,9 @@ function createFeatureWorker(ports) {
     let result;
     if (input.actionId === 'cancel-hidden-tab-plan') result = await cancel(plan);
     else if (input.actionId === 'confirm-hidden-tabs') result = await confirm(plan, context, input.expectedStateVersion);
-    else if (input.actionId === 'reconcile-hidden-tabs') result = await reconcile(plan, context);
+    else if (input.actionId === 'reconcile-hidden-tabs') result = plan.state === 'pending_continuation'
+      ? await confirm(plan, context, input.expectedStateVersion)
+      : await reconcile(plan, context);
     else fail('WORKPAPER.ACTION_UNKNOWN', 'Action is not implemented.');
     result.surfaceStateVersion = Number(input.expectedStateVersion) + 1; await save(result);
     return { surfacePatch: planSurface(result) };
@@ -525,4 +624,4 @@ function createFeatureWorker(ports) {
   return Object.freeze({ health, shutdown: () => bridge ? bridge.close() : undefined, refreshCatalog: refresh, handleAction });
 }
 
-module.exports = Object.freeze({ createFeatureWorker, FEATURE_ID, FEATURE_VERSION, OPERATIONS, normalizeDirectory, normalizePreflight, applied, notApplied });
+module.exports = Object.freeze({ createFeatureWorker, FEATURE_ID, FEATURE_VERSION, OPERATIONS, normalizeDirectory });

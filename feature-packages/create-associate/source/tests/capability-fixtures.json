@@ -88,6 +88,36 @@
       "expectedIssueCodes": ["LOCAL.DUPLICATE_IDENTITY"]
     },
     {
+      "testId": "parse-plan-cross-workspace-multi-app-warning",
+      "kind": "workbook",
+      "cells": {
+        "B23": "CrossHigh", "C23": "Generic", "D23": "Higher", "E23": "Higher source.", "F23": "WS-A",
+        "B24": "CrossLow", "C24": "Generic", "D24": "Lower", "E24": "Lower source.", "F24": "WS-B",
+        "B30": "CrossDb", "C30": "SQL", "D30": "WS-C", "E30": "CrossHigh;CrossLow",
+        "B46": "CrossTool", "C46": "工单工具", "D46": "Higher", "E46": "WS-C", "F46": "CrossHigh;CrossLow"
+      },
+      "expectedWarningCodes": ["LOCAL.CROSS_WORKSPACE_APP_REFERENCE", "LOCAL.RAIT_MIXED_HIGHER_WARNING"],
+      "expectedRows": [
+        {"elementId": "CrossDb", "kind": "DB", "status": "ready_for_remote_preflight", "rait": "Higher", "dependencies": ["CrossHigh", "CrossLow"], "blockerCodes": []},
+        {"elementId": "CrossTool", "kind": "TOOL", "status": "ready_for_remote_preflight", "rait": "Higher", "dependencies": ["CrossHigh", "CrossLow"], "blockerCodes": []}
+      ]
+    },
+    {
+      "testId": "parse-plan-external-app-live-resolution",
+      "kind": "workbook",
+      "cells": {
+        "B30": "ExternalDb", "C30": "SQL", "D30": "WS-A", "E30": "ExistingPackApp"
+      },
+      "expectedWarningCodes": ["LOCAL.EXTERNAL_APP_REFERENCE_PENDING"],
+      "liveExternalTargets": [{
+        "sourceElementId": "ExternalDb", "externalId": "ExistingPackApp", "workspaceId": "11111111-1111-4111-8111-111111111111",
+        "objectId": "22222222-2222-4222-8222-222222222222", "riskAssessmentId": "33333333-3333-4333-8333-333333333333", "rait": "Lower"
+      }],
+      "expectedRows": [
+        {"elementId": "ExternalDb", "kind": "DB", "status": "ready_for_remote_preflight", "rait": "Lower", "dependencies": [], "blockerCodes": []}
+      ]
+    },
+    {
       "testId": "plan-global-blocker-propagation",
       "kind": "workbook",
       "cells": {"B23": "GlobalBlockerApp", "C23": "Generic", "D23": "Higher", "E23": "Processes explicitly identified key financial data.", "F23": "WS-A"},
@@ -213,6 +243,10 @@
     {
       "testId": "operation-app-relevance-true-write-and-readback",
       "kind": "operation-app-relevance"
+    },
+    {
+      "testId": "operation-cross-workspace-relation-read",
+      "kind": "operation-cross-workspace-relation"
     },
     {
       "testId": "operation-control-number-structural-normalization",

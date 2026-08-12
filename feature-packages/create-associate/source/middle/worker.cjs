@@ -661,9 +661,9 @@ function validationPresentation(parsed,live={}){
     ['valid_values','名称与填写内容合法',checkFailed('valid_values')?'failed':'passed',checkFailed('valid_values')?'存在不受支持能力、超长值、枚举或非法名称。':'子类型、RAIT、长度与名称符合已发布规则。'],
     ['unique_names','批次内元素 ID 与 GRA 名称唯一',checkFailed('unique_names')?'failed':'passed',checkFailed('unique_names')?'存在重复元素 ID 或派生 GRA 名。':'元素 ID 与派生 GRA 名在批内唯一。'],
     ['omnia_id_conflicts','已核验当前 Pack 与回收站中的同名元素影响',liveState('omnia_id_conflicts'),checkFailed('omnia_id_conflicts')?'活动对象、创建能力或回收站证明未闭合。':liveCheck('omnia_id_conflicts').reason],
-    ['infrastructure_links','基础设施已关联系统',checkFailed('infrastructure_links')?'failed':'passed',checkFailed('infrastructure_links')?'基础设施必须至少关联一个批内、同工作区 APP。':'基础设施已填写一个或多个精确批内关联系统。'],
-    ['infrastructure_rait','多系统关联的 RAIT 一致',liveState('infrastructure_rait'),checkFailed('infrastructure_rait')?'继承 RAIT 不唯一，或其 APP 来源未通过实时身份、类型、状态、工作区与 RAIT 校验。':liveCheck('infrastructure_rait').reason],
-    ['relationship_targets','关联目标可解析且类型正确',liveState('relationship_targets'),checkFailed('relationship_targets')?'DB/OS/Tool/DCNO 存在批外 APP、不精确目标、跨工作区目标、非 APP 目标，或目标 APP 未通过实时身份校验。':liveCheck('relationship_targets').reason],
+    ['infrastructure_links','基础设施已关联系统',checkFailed('infrastructure_links')?'failed':'passed',checkFailed('infrastructure_links')?'基础设施必须至少填写一个 APP 关系目标，且不能重复或指向明确的非 APP 行。':'基础设施已填写一个或多个 APP 关系目标；批外及跨工作区目标将在实时校验中精确解析并提醒。'],
+    ['infrastructure_rait','多系统 RAIT 按 Higher 优先归并',liveState('infrastructure_rait'),checkFailed('infrastructure_rait')?'关联 APP 的 RAIT 缺失、无效或未通过当前 Pack 的精确身份校验。':liveCheck('infrastructure_rait').reason],
+    ['relationship_targets','关联目标可解析且类型正确',liveState('relationship_targets'),checkFailed('relationship_targets')?'DB/OS/Tool/DCNO 存在缺失、歧义、非 APP 或未通过当前 Pack 精确身份校验的关系目标。批外与跨工作区本身仅作提醒。':liveCheck('relationship_targets').reason],
     ['workspace_presence','Omnia 工作区已填写',workspaceMissing?'failed':'passed',workspaceMissing?'存在缺失工作区。':'所有非排除行已填写工作区。'],
     ['factors_considered_ai_review','Factors Considered 智能复核',liveCheck('factors_considered_ai_review').state,liveCheck('factors_considered_ai_review').reason],
     ['workspace_live','Omnia 工作区名称实时有效',liveCheck('workspace_live').state,liveCheck('workspace_live').reason]
@@ -677,7 +677,17 @@ function reviewAllowedValues(parsed,raw){for(const spec of Object.values(parsed?
 function activeRows(parsed){const excluded=new Set(parsed.excludedRowKeys||[]);return (parsed.rows||[]).filter((row)=>!excluded.has(row.rowKey));}
 function aiReviewEligibleRows(parsed){return activeRows(parsed).filter((row)=>kindCapability(String(row.kind),parsed?.kindRegistry).capabilities?.aiReview===true);}
 function reviewCandidate(parsed,row,raw){return (parsed.candidates||[]).find((candidate)=>candidate.provenance?.rowKey===row.rowKey&&candidate.rawFieldKey===raw);}
-function activeReviewIssues(parsed){const excluded=new Set(parsed.excludedRowKeys||[]),rows=parsed.rows||[];return (parsed.issues||[]).filter((issue)=>issue.state!=='resolved'&&!rows.some((row)=>excluded.has(row.rowKey)&&String(issue.fieldKey).startsWith(`${row.rowKey}.`)));}
+function activeReviewIssues(parsed){
+  const excluded=new Set(parsed.excludedRowKeys||[]),rows=parsed.rows||[],used=new Set();
+  return (parsed.issues||[])
+    .filter((issue)=>issue.state!=='resolved'&&!rows.some((row)=>excluded.has(row.rowKey)&&String(issue.fieldKey).startsWith(`${row.rowKey}.`)))
+    .map((issue,index)=>{
+      const original=String(issue.issueId||'').trim();let issueId=original;
+      if(!issueId||used.has(issueId)) issueId=`${original||'legacy-review-issue'}.compat.${digest(`${original}|${issue.code||''}|${issue.fieldKey||''}|${issue.message||''}|${index}`).slice(0,16)}`;
+      while(used.has(issueId)) issueId=`${issueId}.${index}`;
+      used.add(issueId);return issueId===original?issue:{...issue,issueId};
+    });
+}
 function reviewPresentation(parsed){
   const rows=parsed.rows||[],active=activeRows(parsed),issues=activeReviewIssues(parsed);const firstIssue=issues.find((issue)=>['needs_input','blocking'].includes(issue.state));const selected=active.find((row)=>firstIssue&&String(firstIssue.fieldKey).startsWith(`${row.rowKey}.`))||active[0]||rows[0];const fields=[];
   for(const row of active){for(const [raw,label,inputKind,required,maxLength] of REVIEW_FIELDS_BY_KIND[row.kind]){const candidate=reviewCandidate(parsed,row,raw);const messages=issues.filter((issue)=>issue.fieldKey===candidate?.fieldKey||String(issue.fieldKey).startsWith(`${row.rowKey}.`)&&issue.message.includes(raw)).map((issue)=>issue.message);const decisionMessage=raw==='Inherited System Risk Classification'?String(row.inheritanceDecision?.message||''):'';fields.push({rowKey:row.rowKey,kind:row.kind,fieldKey:candidate?.fieldKey||`${row.rowKey}.readonly.${digest(raw)}`,rawFieldKey:raw,label,expectedRevision:Number(candidate?.revision||0),inputKind,currentValue:String(row.fields[raw]??''),allowedValues:reviewAllowedValues(parsed,raw),required:Boolean(required),maxLength:Number(maxLength),editable:inputKind!=='readonly'&&Boolean(candidate),message:[...messages,decisionMessage].filter(Boolean).join(' '),sourceSheet:candidate?.provenance?.sourceSheet||row.sourceSheet,sourceRow:Number(candidate?.provenance?.sourceRow||row.sourceRow),derivation:candidate?.provenance?.derivationRule||'verbatim_user_workbook_cell'});}const gra=reviewCandidate(parsed,row,'Derived GRA Name');fields.push({rowKey:row.rowKey,kind:row.kind,fieldKey:gra?.fieldKey||`${row.rowKey}.derived.gra-name`,rawFieldKey:'Derived GRA Name',label:'GRA 名称（派生）',expectedRevision:Number(gra?.revision||0),inputKind:'readonly',currentValue:String(gra?.value??deriveGraName(row.elementId)),allowedValues:[],required:true,maxLength:200,editable:false,message:'',sourceSheet:gra?.provenance?.sourceSheet||row.sourceSheet,sourceRow:Number(gra?.provenance?.sourceRow||row.sourceRow),derivation:gra?.provenance?.derivationRule||'v4.phase1-gra-name-from-element-id.v1'});const rawDescription=descriptionRawField(row.kind),description=reviewCandidate(parsed,row,rawDescription);fields.push({rowKey:row.rowKey,kind:row.kind,fieldKey:description?.fieldKey||`${row.rowKey}.derived.description`,rawFieldKey:rawDescription,label:'Description（派生）',expectedRevision:Number(description?.revision||1),inputKind:'readonly',currentValue:String(description?.value??row.elementId),allowedValues:[],required:true,maxLength:200,editable:false,message:'',sourceSheet:description?.provenance?.sourceSheet||'字段母版',sourceRow:Number(description?.provenance?.sourceRow||0),derivation:description?.provenance?.derivationRule||descriptionRuleId(row.kind)});}
@@ -701,7 +711,7 @@ function uploadSurface(latest,message,fresh=false){
     {actionId:'confirm-return',enabled:false,reason:'请先提交审核并冻结回传计划。'},{actionId:'continue-return',enabled:false,reason:'当前没有可继续的冻结计划。'},{actionId:'reconcile-return',enabled:false,reason:'当前没有待核验的写入结果。'}]};
 }
 function processingSurface(latest,message){
-  const labels=[['template_structure','模板结构可识别'],['required_fields','必填项目已填写'],['valid_values','名称与填写内容合法'],['unique_names','批次内元素 ID 与 GRA 名称唯一'],['omnia_id_conflicts','已核验当前 Pack 与回收站中的同名元素影响'],['infrastructure_links','基础设施已关联系统'],['infrastructure_rait','多系统关联的 RAIT 一致'],['relationship_targets','关联目标可解析且类型正确'],['workspace_presence','Omnia 工作区已填写'],['factors_considered_ai_review','Factors Considered 智能复核'],['workspace_live','Omnia 工作区名称实时有效']];
+  const labels=[['template_structure','模板结构可识别'],['required_fields','必填项目已填写'],['valid_values','名称与填写内容合法'],['unique_names','批次内元素 ID 与 GRA 名称唯一'],['omnia_id_conflicts','已核验当前 Pack 与回收站中的同名元素影响'],['infrastructure_links','基础设施已关联系统'],['infrastructure_rait','多系统 RAIT 按 Higher 优先归并'],['relationship_targets','关联目标可解析且类型正确'],['workspace_presence','Omnia 工作区已填写'],['factors_considered_ai_review','Factors Considered 智能复核'],['workspace_live','Omnia 工作区名称实时有效']];
   return{stateVersion:Number(latest.run.state_revision),status:'loading',statusMessage:message,scopes:[],items:[],workflow:workflowSurface(latest),progress:{label:'校验进度',completed:0,total:labels.length,percent:0,state:'running',message:'正在校验 0/11',items:labels.map(([itemId,label])=>({itemId,label,state:'pending',detail:'等待后台校验。'}))},issues:[],editors:[],artifacts:[],clearFields:['review'],actions:[
     {actionId:'download-source-template',enabled:false,reason:'正在校验。'},{actionId:'stage-source-workbook',enabled:false,reason:'正在校验。'},{actionId:'confirm-upload',enabled:false,reason:'已确认上传。'},{actionId:'validate-staged-upload',enabled:true,reason:''},...workflowNavigationActions(latest,'validate'),{actionId:'apply-revisions',enabled:false,reason:'正在校验。'},{actionId:'remove-batch-row',enabled:false,reason:'正在校验。'},{actionId:'revalidate-all',enabled:false,reason:'正在校验。'},{actionId:'prepare-return',enabled:false,reason:'正在校验。'},
     {actionId:'confirm-return',enabled:false,reason:'请先提交审核并冻结回传计划。'},{actionId:'continue-return',enabled:false,reason:'当前没有可继续的冻结计划。'},{actionId:'reconcile-return',enabled:false,reason:'当前没有待核验的写入结果。'}]};
@@ -903,10 +913,11 @@ function createFeatureWorker(dependencies) {
     return invokePythonJson('validate_ir',{schemaVersion:'omnia.create-associate.python-operation/v1',parsedHandle},runId);
   }
 
-  async function compilePlanIr(parsed,runId){
+  async function compilePlanIr(parsed,runId,liveValidation){
     const parsedHandle=await store.call('createPythonJsonInputHandle',{runId,value:parsed,maxBytes:32*1024*1024});
     const governanceHandle=await store.call('createPythonJsonInputHandle',{runId,value:governance,maxBytes:16*1024*1024});
-    const planIr=await invokePythonJson('build_plan_ir',{schemaVersion:'omnia.create-associate.python-operation/v1',parsedHandle,governanceHandle},runId);
+    const liveValidationHandle=await store.call('createPythonJsonInputHandle',{runId,value:liveValidation||{},maxBytes:16*1024*1024});
+    const planIr=await invokePythonJson('build_plan_ir',{schemaVersion:'omnia.create-associate.python-operation/v1',parsedHandle,governanceHandle,liveValidationHandle},runId);
     if(!planIr||planIr.schemaVersion!=='omnia.create-associate.capability-plan-ir/v1'||planIr.parsedDigest!==parsed.semanticDigest
       ||planIr.governanceDigest!==governance.semanticDigest||!Array.isArray(planIr.rows)||!planIr.semanticDigest){
       fail('PLAN.PYTHON_RESULT_INVALID','Managed Python plan compiler returned an invalid capability plan IR.');
@@ -917,6 +928,32 @@ function createFeatureWorker(dependencies) {
   async function invoke(operationId, connectorBinding, request) {
     return connector.invoke({ schemaVersion: 'omnia.operation-invocation/v1', featureId: FEATURE_ID,
       featureVersion: FEATURE_VERSION, operationId, request: { connectorBinding, ...request } });
+  }
+  async function resolveExternalApplicationTarget(connectorBinding, workspaceIds, externalId) {
+    const candidates = new Map(); const diagnostics = [];
+    for (const workspaceId of [...new Set((workspaceIds || []).map((value) => String(value).toLowerCase()).filter(Boolean))]) {
+      for (const rait of ['Higher', 'Lower']) {
+        const request = applicationIdentityRequest(externalId, workspaceId, rait,
+          identityKey('external-app-reference', [externalId, workspaceId, rait]));
+        try {
+          const observed = await invoke(RETURN_OPERATIONS.objectIdentityResolve, connectorBinding, request);
+          const identity = inspectApplicationIdentity(observed, request);
+          diagnostics.push({ workspaceId, rait, disposition: identity.disposition, reasonCode: identity.reasonCode });
+          if (identity.accepted && identity.disposition === 'reuse' && identity.objectId && identity.riskAssessmentId) {
+            candidates.set(`${identity.objectId}|${identity.riskAssessmentId}|${workspaceId}|${rait}`, {
+              sourceType: 'external', externalId, rowKey: '', workspaceId, objectId: identity.objectId,
+              riskAssessmentId: identity.riskAssessmentId, rait, evidence: observed?.evidence || null
+            });
+          }
+        } catch (error) {
+          diagnostics.push({ workspaceId, rait, disposition: 'error', reasonCode: String(error?.code || error?.message || error) });
+        }
+      }
+    }
+    const resolved = [...candidates.values()];
+    return resolved.length === 1
+      ? { accepted: true, target: resolved[0], diagnostics }
+      : { accepted: false, reasonCode: resolved.length ? 'external_app_ambiguous' : 'external_app_not_found', diagnostics };
   }
   async function waitForCompleteRiskControlCatalog(connectorBinding, request, relations, mode) {
     const maxSettlingMs = 120_000; const maxReads = 40; const startedAt = Date.now();
@@ -1100,7 +1137,8 @@ function createFeatureWorker(dependencies) {
   async function runReviewLiveValidation(checkpoint,context){
     checkpoint.parsed.issues=(checkpoint.parsed.issues||[]).filter((candidate)=>candidate.origin!=='live_validation'&&!String(candidate.issueId||'').startsWith('live-'));
     const aiReview=await runFactorsConsideredAiReview(checkpoint);
-    const withAiReview=(checks)=>({...checks,factors_considered_ai_review:aiReview});
+    let relationTargets=[];
+    const withAiReview=(checks)=>({...checks,factors_considered_ai_review:aiReview,relationTargets});
     const liveIssue=(code,fieldKey,issueType,state,message,checkId)=>{const created=issue('live_validation',code,fieldKey,issueType,state,message,checkId);created.issueId=issueId('live_validation',`${checkpoint.parsed.issueNamespace||checkpoint.planId||'legacy'}|${code}`,fieldKey);return created;};
     const failedLiveChecks=(reason)=>({omnia_id_conflicts:{state:'failed',reason},relationship_targets:{state:'failed',reason},infrastructure_rait:{state:'failed',reason},workspace_live:{state:'failed',reason}});
     const binding=context?.connectorBinding,safety=context?.safetyLock;if(!binding?.connectorId||Number(binding.sessionGeneration)<1||!binding.engagementId){const reason='当前没有可用的 Remote Connector binding，无法执行 APP 身份/回收站、非 APP 活动对象、关系目标类型与工作区实时检查；连接后可在原 Run 重试。';checkpoint.parsed.issues.push(liveIssue('LIVE.WORKSPACE_UNAVAILABLE','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return withAiReview(failedLiveChecks(reason));}if(!Array.isArray(safety?.workspaceIds)||!safety.workspaceIds.length){const reason='当前 Pack Workspace 安全范围为空，无法执行 APP 身份/回收站、非 APP 活动对象、关系目标类型与工作区实时检查；请启用安全范围后在原 Run 重新校验。';checkpoint.parsed.issues.push(liveIssue('LIVE.SAFETY_SCOPE_UNAVAILABLE','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return withAiReview(failedLiveChecks(reason));}
@@ -1145,26 +1183,69 @@ function createFeatureWorker(dependencies) {
       }
       const active=activeRows(checkpoint.parsed),appRowsByIdentity=new Map();
       for(const app of active.filter((candidate)=>candidate.kind==='APP')){const key=String(app.elementId).normalize('NFKC').toLocaleLowerCase('en-US'),matches=appRowsByIdentity.get(key);if(matches)matches.push(app);else appRowsByIdentity.set(key,[app]);}
-      let liveTargetFailures=0;
+      const externalCache=new Map();let liveTargetFailures=0,crossWorkspaceWarnings=0,externalWarnings=0,mixedRaitWarnings=0;
       for(const row of active.filter((candidate)=>kindCapability(candidate.kind).capabilities?.relation===true)){
+        const sourceWorkspaceId=byName.get(rowWorkspaceName(row));const rowTargets=[];
         for(const appExternalId of row.relations){
-        const matches=appRowsByIdentity.get(String(appExternalId).normalize('NFKC').toLocaleLowerCase('en-US'))||[];
-        if(matches.length!==1)continue;
-        const source=matches[0],resolution=checkpoint.liveIdentityResolutions[source.rowKey];
-        const disposition=String(resolution?.disposition||''),targetReady=disposition==='create'||(['resume','reuse'].includes(disposition)&&resolution?.ownership?.proven===true);
-        if(targetReady)continue;
-        liveTargetFailures+=1;
-        checkpoint.parsed.issues.push(liveIssue('LIVE.RELATIONSHIP_APP_IDENTITY_FAILED',`${row.rowKey}.relationship-target-live`,'contract_mismatch','blocking',`${row.kind} ${row.elementId} 的关联 APP ${source.elementId} 未通过实时身份、Application 类型、活动状态与工作区校验。`,'relationship_targets'));
-        if(infrastructureKinds().has(row.kind))checkpoint.parsed.issues.push(liveIssue('LIVE.INFRASTRUCTURE_RAIT_SOURCE_FAILED',`${row.rowKey}.inheritance-live`,'contract_mismatch','blocking',`${row.kind} ${row.elementId} 的 RAIT 来源 APP ${source.elementId} 未通过实时身份、Application 类型、活动状态、工作区与 RAIT 校验。`,'infrastructure_rait'));
+          const normalizedExternalId=String(appExternalId).normalize('NFKC').toLocaleLowerCase('en-US');
+          const matches=appRowsByIdentity.get(normalizedExternalId)||[];
+          let resolved=null;
+          if(matches.length===1){
+            const app=matches[0],resolution=checkpoint.liveIdentityResolutions[app.rowKey];
+            const disposition=String(resolution?.disposition||'');
+            const targetReady=disposition==='create'||(['resume','reuse'].includes(disposition)&&resolution?.ownership?.proven===true);
+            if(targetReady){
+              resolved={sourceRowKey:row.rowKey,sourceType:'in_batch',externalId:String(app.elementId),targetRowKey:String(app.rowKey),workspaceId:byName.get(rowWorkspaceName(app)),objectId:String(resolution?.resolved?.objectId||''),riskAssessmentId:String(resolution?.resolved?.riskAssessmentId||''),rait:normalizeRait(rowField(app,governance,'P1.APP.GRA.RAIT_CONCLUSION')),disposition};
+            }
+          }else if(matches.length===0){
+            let external=externalCache.get(normalizedExternalId);
+            if(!external){external=await resolveExternalApplicationTarget(binding,safety.workspaceIds,appExternalId);externalCache.set(normalizedExternalId,external);}
+            if(external.accepted)resolved={sourceRowKey:row.rowKey,...external.target};
+          }
+          if(!resolved||!['Higher','Lower'].includes(resolved.rait)||!resolved.workspaceId){
+            liveTargetFailures+=1;
+            checkpoint.parsed.issues.push(liveIssue('LIVE.RELATIONSHIP_APP_IDENTITY_FAILED',`${row.rowKey}.relationship-target-live.${normalizedExternalId}`,'contract_mismatch','blocking',`${row.kind} ${row.elementId} 的关联 APP ${appExternalId} 在当前 Pack 中不存在、身份不唯一、不是活动 Application，或 RAIT 无法精确解析。`,'relationship_targets'));
+            if(infrastructureKinds().has(row.kind))checkpoint.parsed.issues.push(liveIssue('LIVE.INFRASTRUCTURE_RAIT_SOURCE_FAILED',`${row.rowKey}.inheritance-live.${normalizedExternalId}`,'contract_mismatch','blocking',`${row.kind} ${row.elementId} 的 RAIT 来源 APP ${appExternalId} 未通过当前 Pack 的精确身份与 RAIT 校验。`,'infrastructure_rait'));
+            continue;
+          }
+          relationTargets.push(resolved);rowTargets.push(resolved);
+          if(resolved.sourceType==='external'){
+            externalWarnings+=1;
+            checkpoint.parsed.issues.push(liveIssue('LIVE.EXTERNAL_APP_REFERENCE',`${row.rowKey}.relationship-target-live.${normalizedExternalId}`,'contract_mismatch','waived',`${row.kind} ${row.elementId} 关联了本次上传批次之外、但已在当前 Pack 精确验证的 APP ${appExternalId}。`,'relationship_targets'));
+          }
+          if(String(resolved.workspaceId)!==String(sourceWorkspaceId)){
+            crossWorkspaceWarnings+=1;
+            checkpoint.parsed.issues.push(liveIssue('LIVE.CROSS_WORKSPACE_APP_REFERENCE',`${row.rowKey}.relationship-target-live.${normalizedExternalId}`,'contract_mismatch','waived',`${row.kind} ${row.elementId} 与关联 APP ${appExternalId} 不在同一工作区；关系仍可执行，请确认这是预期安排。`,'relationship_targets'));
+          }
+        }
+        if(infrastructureKinds().has(row.kind)&&rowTargets.length===row.relations.length){
+          const modes=[...new Set(rowTargets.map((target)=>target.rait))];
+          const inheritedMode=modes.includes('Higher')?'Higher':modes.length===1&&modes[0]==='Lower'?'Lower':'';
+          if(inheritedMode){
+            const sourceApps=rowTargets.map((target)=>({sourceType:target.sourceType,rowKey:target.targetRowKey||'',elementId:target.externalId,workspaceId:target.workspaceId,objectId:target.objectId||'',riskAssessmentId:target.riskAssessmentId||'',rait:target.rait}));
+            row.inheritance={schemaVersion:'omnia.create-associate.infrastructure-app-inheritance/v1',rait:inheritedMode,sourceApps,relationType:kindCapability(row.kind).relationPolicy.relationType};
+            row.inheritanceDecision={schemaVersion:'omnia.create-associate.infrastructure-rait-decision/v1',policy:'any_higher_else_all_lower',sourceModes:sourceApps.map((source)=>({rowKey:source.rowKey,elementId:source.elementId,rait:source.rait})),mixedSources:modes.length>1,result:inheritedMode,message:modes.length>1?'关联 APP 的 RAIT 不一致，已按 Higher 优先自动设为 Higher。':`已从精确关联 APP 继承 ${inheritedMode}。`};
+            row.fields['Inherited System Risk Classification']=inheritedMode;delete row.pendingExternalInheritance;
+            const inheritedCandidate=(checkpoint.parsed.candidates||[]).find((candidate)=>candidate.provenance?.rowKey===row.rowKey&&candidate.canonicalFieldId===`P1.${row.kind}.GRA.RAIT_CONCLUSION`);
+            if(inheritedCandidate){
+              if(inheritedCandidate.value!==inheritedMode||inheritedCandidate.status!=='accepted')inheritedCandidate.revision=Number(inheritedCandidate.revision||0)+1;
+              inheritedCandidate.value=inheritedMode;inheritedCandidate.status='accepted';inheritedCandidate.valueKind='inherited';inheritedCandidate.provenance={...(inheritedCandidate.provenance||{}),sourceApps,derivationRule:'live_verified_app_edges:any_higher_else_all_lower:v1'};
+            }
+          }
+          if(modes.length>1){
+            mixedRaitWarnings+=1;
+            checkpoint.parsed.issues.push(liveIssue('LIVE.RAIT_MIXED_HIGHER_WARNING',`${row.rowKey}.inheritance-live`,'contract_mismatch','waived',`${row.kind} ${row.elementId} 关联的 APP 同时包含 Higher 与 Lower；已按 Higher 优先自动设为 Higher。`,'infrastructure_rait'));
+          }
         }
       }
       const targetFailed=checkpoint.parsed.issues.some((candidate)=>candidate.state==='blocking'&&candidate.checkId==='relationship_targets');
       const raitFailed=checkpoint.parsed.issues.some((candidate)=>candidate.state==='blocking'&&candidate.checkId==='infrastructure_rait');
       const conflictsFailed=identityBlocks>0;
-      const mixedInheritance=active.some((row)=>infrastructureKinds().has(row.kind)&&row.inheritanceDecision?.mixedSources===true);
       const conflictReason=`所有声明的 APP/Infrastructure/Tool 活动、回收站与歧义身份解析已执行；发现 ${ownedRecoveries} 个具有严格 Agent-managed 归属证明的恢复对象、${creatable} 个可进入创建预检的新对象${nameConflicts?`，${nameConflicts} 个未授权活动同名冲突`:''}${identityBlocks-nameConflicts>0?`，${identityBlocks-nameConflicts} 个身份被拒绝或解析失败`:''}。`;
-      const inheritancePassedReason=mixedInheritance?'所有基础设施 RAIT 来源均已通过实时校验；来源混合时按 Higher 优先设置为 Higher。':'所有基础设施 RAIT 来源均绑定到已通过实时校验的 APP；批内新建 APP 使用已校验的计划 RAIT。';
-      return withAiReview({omnia_id_conflicts:{state:conflictsFailed?'failed':'passed',reason:conflictReason},relationship_targets:{state:targetFailed?'failed':'passed',reason:targetFailed?`存在不支持的批外 APP、不精确目标或 ${liveTargetFailures} 个未通过实时身份校验的 APP 目标。`:'所有 DB/OS/Tool/DCNO 关系目标均可解析为批内唯一、同工作区且类型正确的 APP；批内新建 APP 使用计划身份，不声明远端已存在。'},infrastructure_rait:{state:raitFailed?'failed':'passed',reason:raitFailed?'存在缺失/无效继承 RAIT，或 APP 来源未通过实时身份、类型、状态、工作区与 RAIT 校验。':inheritancePassedReason},workspace_live:{state:'passed',reason:`${query.workspaceNames.length} 个工作区已按当前 Pack 权威目录精确匹配。`}});
+      const relationshipWarning=crossWorkspaceWarnings+externalWarnings>0;
+      const relationshipReason=targetFailed?`存在 ${liveTargetFailures} 个未通过当前 Pack 精确身份校验的 APP 关系目标。`:`全部关系目标均已解析为当前 Pack 中唯一且活动的 APP；其中 ${externalWarnings} 个来自本次上传批次之外，${crossWorkspaceWarnings} 个跨工作区，仅作提醒。`;
+      const inheritanceReason=raitFailed?'存在缺失/无效继承 RAIT，或 APP 来源未通过当前 Pack 的精确身份与 RAIT 校验。':mixedRaitWarnings?`${mixedRaitWarnings} 个元素关联的 APP 同时包含 Higher 与 Lower，已按 Higher 优先自动设为 Higher。`:'所有继承 RAIT 均来自当前 Pack 中精确验证的 APP。';
+      return withAiReview({omnia_id_conflicts:{state:conflictsFailed?'failed':'passed',reason:conflictReason},relationship_targets:{state:targetFailed?'failed':relationshipWarning?'warning':'passed',reason:relationshipReason},infrastructure_rait:{state:raitFailed?'failed':mixedRaitWarnings?'warning':'passed',reason:inheritanceReason},workspace_live:{state:'passed',reason:`${query.workspaceNames.length} 个本次上传元素所属工作区已按当前 Pack 权威目录精确匹配。`}});
     }catch(error){const reason=`实时校验失败（APP 身份/回收站、非 APP 活动对象、关系目标类型或工作区检查未闭合；可在原 Run 重试）：${String(error.message||error)}`;checkpoint.parsed.issues.push(liveIssue('LIVE.VALIDATION_FAILED','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return withAiReview(failedLiveChecks(reason));}
   }
   async function buildReturnPreparation(checkpoint, context) {
@@ -1253,22 +1334,30 @@ function createFeatureWorker(dependencies) {
         query: { entityId: objectId, itElementType: type, name: deriveGraName(row.elementId), workspaceId }
       });
       if(graObserved.found) await invoke(RETURN_OPERATIONS.graRead,context.connectorBinding,{target:{targetIdentityKey:identityKey('gra',graBusinessIdentity(row.kind,row.elementId,workspaceId)),workspaceId},riskAssessmentId:responseId(graObserved.item,'GRA preflight'),query:{entityId:objectId,name:deriveGraName(row.elementId),itElementType:type,inkContentId:content.inkContentId,typeId:content.typeId}});
+      const resolvedRelationTargets=Array.isArray(planRow.relationPolicy?.resolvedTargets)?planRow.relationPolicy.resolvedTargets:[];
+      if(hasFrozenStage({stageNodes},'relation')&&resolvedRelationTargets.length!==row.relations.length)fail('RETURN.RELATION_TARGET_UNVERIFIED',`${row.kind} ${row.elementId} does not have one frozen live target for every relation.`);
       let mode = declaredMode; let inheritanceSources = [];
       if (planRow.rait?.strategy === 'any_higher_else_all_lower') {
-        const inheritance=row.inheritance;
-        if(!inheritance||inheritance.schemaVersion!=='omnia.create-associate.infrastructure-app-inheritance/v1'||!['Higher','Lower'].includes(inheritance.rait)||!Array.isArray(inheritance.sourceApps)||!inheritance.sourceApps.length)fail('RETURN.INHERITANCE_IR_MISSING',`${row.kind} ${row.elementId} has no governed APP inheritance result; revalidate the source workbook before Return.`);
-        const sourceKeys=new Set(inheritance.sourceApps.map((source)=>`${String(source.rowKey||'')}\u0000${String(source.elementId||'').normalize('NFKC')}`));
-        if(sourceKeys.size!==inheritance.sourceApps.length||sourceKeys.size!==row.relations.length)fail('RETURN.INHERITANCE_IR_DRIFT',`${row.kind} ${row.elementId} APP inheritance source count drifted.`);
-        inheritanceSources=inheritance.sourceApps.map((source)=>{
-          const matches=plannedApps.filter((item)=>item.rowKey===source.rowKey&&item.elementId.normalize('NFKC')===String(source.elementId||'').normalize('NFKC'));
-          if(matches.length!==1||matches[0].workspaceName.normalize('NFKC')!==workspaceName.normalize('NFKC'))fail('RETURN.INHERITANCE_SOURCE_DRIFT',`${row.kind} ${row.elementId} has a missing, ambiguous, or cross-workspace governed APP inheritance source.`);
-          return{externalId:matches[0].elementId,rowKey:matches[0].rowKey,workspaceName:matches[0].workspaceName,plannedMode:matches[0].mode};
+        const sources=Array.isArray(planRow.rait.sources)?planRow.rait.sources:[];
+        if(!['Higher','Lower'].includes(planRow.rait.value)||sources.length!==row.relations.length||sources.length!==resolvedRelationTargets.length)fail('RETURN.INHERITANCE_IR_MISSING',`${row.kind} ${row.elementId} has no exact governed APP inheritance result; revalidate the source workbook before Return.`);
+        inheritanceSources=sources.map((source)=>{
+          const sourceType=String(source.sourceType||''),externalId=String(source.elementId||''),plannedMode=normalizeRait(source.plannedMode);
+          if(!['Higher','Lower'].includes(plannedMode)||!['in_batch','external'].includes(sourceType))fail('RETURN.INHERITANCE_SOURCE_DRIFT',`${row.kind} ${row.elementId} has an invalid governed APP inheritance source.`);
+          if(sourceType==='in_batch'){
+            const matches=plannedApps.filter((item)=>item.rowKey===source.rowKey&&item.elementId.normalize('NFKC')===externalId.normalize('NFKC'));
+            if(matches.length!==1||matches[0].mode!==plannedMode)fail('RETURN.INHERITANCE_SOURCE_DRIFT',`${row.kind} ${row.elementId} has a missing or drifted in-batch APP inheritance source.`);
+            const targetWorkspaceId=workspaces.get(matches[0].workspaceName.normalize('NFKC'));
+            if(!targetWorkspaceId||targetWorkspaceId!==source.workspaceId)fail('RETURN.INHERITANCE_SOURCE_DRIFT',`${row.kind} ${row.elementId} in-batch APP inheritance workspace drifted.`);
+            return{sourceType,externalId,rowKey:matches[0].rowKey,workspaceName:matches[0].workspaceName,workspaceId:targetWorkspaceId,plannedMode,sourceKey:`inheritance-source|${row.rowKey}|${matches[0].rowKey}`};
+          }
+          if(!normalizedGuid(source.workspaceId)||!normalizedGuid(source.objectId)||!normalizedGuid(source.riskAssessmentId))fail('RETURN.INHERITANCE_SOURCE_DRIFT',`${row.kind} ${row.elementId} external APP inheritance identity is incomplete.`);
+          return{sourceType,externalId,rowKey:'',workspaceName:'',workspaceId:String(source.workspaceId),objectId:String(source.objectId),riskAssessmentId:String(source.riskAssessmentId),plannedMode,sourceKey:`inheritance-source|${row.rowKey}|external:${source.workspaceId}:${externalId}`};
         });
         const relationIds=new Set(row.relations.map((relation)=>String(relation).normalize('NFKC').toLocaleLowerCase('en-US'))),sourceIds=new Set(inheritanceSources.map((source)=>String(source.externalId).normalize('NFKC').toLocaleLowerCase('en-US')));
         if(relationIds.size!==row.relations.length||relationIds.size!==sourceIds.size||[...relationIds].some((id)=>!sourceIds.has(id)))fail('RETURN.INHERITANCE_RELATION_DRIFT',`${row.kind} ${row.elementId} relation targets differ from its governed inheritance IR.`);
         const expectedMode=inheritanceSources.some((source)=>source.plannedMode==='Higher')?'Higher':inheritanceSources.every((source)=>source.plannedMode==='Lower')?'Lower':'';
-        if(expectedMode!==inheritance.rait)fail('RETURN.INHERITANCE_RAIT_DRIFT',`${row.kind} ${row.elementId} governed inherited RAIT no longer matches its frozen APP sources.`);
-        mode=inheritance.rait;
+        if(expectedMode!==planRow.rait.value)fail('RETURN.INHERITANCE_RAIT_DRIFT',`${row.kind} ${row.elementId} governed inherited RAIT no longer matches its frozen APP sources.`);
+        mode=planRow.rait.value;
       }
       if (mode && !['Higher', 'Lower'].includes(mode)) fail('RETURN.RAIT_INVALID', `${row.kind} ${row.elementId} has an unsupported RAIT value.`);
       const identityDisposition=appIdentity?.disposition||(genericIdentity?.state==='active'?'resume':'create');
@@ -1279,7 +1368,7 @@ function createFeatureWorker(dependencies) {
         workspaceName, workspaceId, content, subtypeId, mode, declaredMode, inheritanceSources, objectTarget, objectQuery, objectObserved, objectId,graName:deriveGraName(row.elementId),
         identityDisposition,identityResolution,
         graObserved, graId: graObserved.found ? responseId(graObserved.item, 'GRA preflight') : '', relations:[...returnIntents.relationTargets], relationPolicy:planRow.relationPolicy,
-        dependencyRowKeys:[...planRow.dependencyRowKeys],stageNodes:[...stageNodes],capabilities:freezePlanCapabilities(planRow),returnIntents };
+        resolvedRelationTargets,dependencyRowKeys:[...planRow.dependencyRowKeys],stageNodes:[...stageNodes],capabilities:freezePlanCapabilities(planRow),returnIntents };
       prepared.description=String(returnIntents.description||'');
       if(prepared.description!==row.elementId) fail('RETURN.DESCRIPTION_DERIVATION_DRIFT',`${row.kind} ${row.elementId} description differs from the signed derived field revision.`);
       if(hasFrozenStage(prepared,'settings')){
@@ -1310,10 +1399,15 @@ function createFeatureWorker(dependencies) {
         operationTargetIdentityKey:graOperationIdentity('risk-factor-category',prepared,'IT风险评估（如果测试运行有效性）'),
         evidenceOperationIds:[RETURN_OPERATIONS.riskFactorCategoryRead,RETURN_OPERATIONS.riskFactorCategoryPreflight]});
       for (const relation of hasFrozenStage(prepared,'relation')?returnIntents.relationTargets:[]) {
-        const dependencyMatches=dependencySourceRows.filter((candidate)=>candidate.elementId.normalize('NFKC').toLocaleLowerCase('en-US')===String(relation).normalize('NFKC').toLocaleLowerCase('en-US'));
-        if(dependencyMatches.length!==1)fail('RETURN.CAPABILITY_PLAN_DEPENDENCY_INVALID',`Frozen relation dependency is absent or ambiguous: ${row.kind}/${row.elementId}/${relation}.`);
+        const targetMatches=resolvedRelationTargets.filter((candidate)=>String(candidate.externalId||'').normalize('NFKC').toLocaleLowerCase('en-US')===String(relation).normalize('NFKC').toLocaleLowerCase('en-US'));
+        if(targetMatches.length!==1)fail('RETURN.CAPABILITY_PLAN_DEPENDENCY_INVALID',`Frozen relation target is absent or ambiguous: ${row.kind}/${row.elementId}/${relation}.`);
+        const resolvedTarget=targetMatches[0];
+        const dependencyMatches=resolvedTarget.sourceType==='in_batch'?dependencySourceRows.filter((candidate)=>candidate.rowKey===resolvedTarget.targetRowKey&&candidate.elementId.normalize('NFKC').toLocaleLowerCase('en-US')===String(relation).normalize('NFKC').toLocaleLowerCase('en-US')):[];
+        if(resolvedTarget.sourceType==='in_batch'&&dependencyMatches.length!==1)fail('RETURN.CAPABILITY_PLAN_DEPENDENCY_INVALID',`Frozen in-batch relation dependency is absent or ambiguous: ${row.kind}/${row.elementId}/${relation}.`);
+        if(resolvedTarget.sourceType==='external'&&(!normalizedGuid(resolvedTarget.objectId)||!normalizedGuid(resolvedTarget.riskAssessmentId)))fail('RETURN.RELATION_TARGET_UNVERIFIED',`Frozen external APP relation identity is incomplete: ${row.kind}/${row.elementId}/${relation}.`);
         targets.push({ kind: 'relation', key: `element-relation|${row.rowKey}|${relation}`, rowKey: row.rowKey, workspace: workspaceId, relationType: planRow.relationPolicy.relationType,
-          sourceObjectTargetKey:`object|${row.rowKey}`,targetExternalId:relation,targetDependencyRowKey:dependencyMatches[0].rowKey,mutationOperationId:RETURN_OPERATIONS.relationWrite,
+          sourceObjectTargetKey:`object|${row.rowKey}`,targetObjectTargetKey:dependencyMatches[0]?`object|${dependencyMatches[0].rowKey}`:'',targetExternalId:relation,targetSourceType:resolvedTarget.sourceType,targetWorkspace:String(resolvedTarget.workspaceId),
+          targetDependencyRowKey:dependencyMatches[0]?.rowKey||'',resolvedTargetObjectId:String(resolvedTarget.objectId||''),resolvedTargetRiskAssessmentId:String(resolvedTarget.riskAssessmentId||''),mutationOperationId:RETURN_OPERATIONS.relationWrite,
           operationTargetIdentityMode:'resolved_relation',operationTargetIdentityKey:'post-create-resolution',evidenceOperationIds:[RETURN_OPERATIONS.relationRead] });
       }
       const selectedGovernance = hasFrozenStage(prepared,'risk_control')?returnIntents.riskControlCatalogRelations:[];
@@ -1343,18 +1437,22 @@ function createFeatureWorker(dependencies) {
         mutationOperationId:RETURN_OPERATIONS.evaluationWrite,operationTargetIdentityKey:graOperationIdentity('evaluation',prepared,'EvaluationComplete'),evidenceOperationIds:[RETURN_OPERATIONS.evaluationRead] });
     }
     for(const relation of targets.filter((item)=>item.kind==='relation')){
-      const matches=rowsPrepared.filter((item)=>item.rowKey===relation.targetDependencyRowKey&&String(item.workspaceId)===String(relation.workspace)&&item.elementId.normalize('NFKC').toLocaleLowerCase('en-US')===String(relation.targetExternalId).normalize('NFKC').toLocaleLowerCase('en-US'));
+      if(relation.targetSourceType==='external'){
+        if(!normalizedGuid(relation.resolvedTargetObjectId)||!normalizedGuid(relation.resolvedTargetRiskAssessmentId)||!normalizedGuid(relation.targetWorkspace))fail('RETURN.RELATION_TARGET_UNVERIFIED',`Relation ${relation.key} has no exact external APP target.`);
+        continue;
+      }
+      const matches=rowsPrepared.filter((item)=>item.rowKey===relation.targetDependencyRowKey&&String(item.workspaceId)===String(relation.targetWorkspace)&&item.elementId.normalize('NFKC').toLocaleLowerCase('en-US')===String(relation.targetExternalId).normalize('NFKC').toLocaleLowerCase('en-US'));
       if(matches.length!==1) fail('RETURN.RELATION_TARGET_UNVERIFIED',`Relation ${relation.key} does not resolve to one exact in-workbook APP target.`);
-      if(String(matches[0].workspaceId)!==String(relation.workspace))fail('RETURN.RELATION_TARGET_WORKSPACE_DRIFT',`Relation ${relation.key} source and APP target must use the same frozen Workspace.`);
       relation.targetObjectTargetKey=`object|${matches[0].rowKey}`;
       relation.targetWorkspace=matches[0].workspaceId;
     }
     for(const row of rowsPrepared.filter((item)=>hasFrozenStage(item,'inherited_rait'))){
       if(!row.inheritanceSources.length) fail('RETURN.RAIT_INHERITANCE_AMBIGUOUS',`${row.kind} ${row.elementId} has no governed APP inheritance sources.`);
       for(const sourceReference of row.inheritanceSources){
-        const source=rowsPrepared.find((item)=>row.dependencyRowKeys.includes(item.rowKey)&&item.rowKey===sourceReference.rowKey&&item.elementId.normalize('NFKC')===sourceReference.externalId.normalize('NFKC')&&item.workspaceName.normalize('NFKC')===sourceReference.workspaceName.normalize('NFKC'));
-        if(!source) fail('RETURN.RAIT_INHERITANCE_AMBIGUOUS',`${row.kind} ${row.elementId} APP inheritance source is not an exact planned identity.`);
-        targets.push({kind:'field',key:`inheritance-source|${row.rowKey}|${source.rowKey}`,rowKey:row.rowKey,workspace:source.workspaceId,objectType:'GRA',graTargetKey:`gra|${source.rowKey}`,sourceRowKey:source.rowKey,fieldId:'itElementRaitConclusionLevelId',value:sourceReference.plannedMode,mutationOperationId:RETURN_OPERATIONS.graStateWrite,operationTargetIdentityKey:inheritanceOperationIdentity(source,row),evidenceOperationIds:[RETURN_OPERATIONS.graStateRead]});
+        const source=sourceReference.sourceType==='in_batch'?rowsPrepared.find((item)=>row.dependencyRowKeys.includes(item.rowKey)&&item.rowKey===sourceReference.rowKey&&item.elementId.normalize('NFKC')===sourceReference.externalId.normalize('NFKC')&&item.workspaceName.normalize('NFKC')===sourceReference.workspaceName.normalize('NFKC')):null;
+        if(sourceReference.sourceType==='in_batch'&&!source) fail('RETURN.RAIT_INHERITANCE_AMBIGUOUS',`${row.kind} ${row.elementId} APP inheritance source is not an exact planned identity.`);
+        const sourceIdentity=source||{kind:'APP',elementId:sourceReference.externalId,workspaceId:sourceReference.workspaceId,graName:deriveGraName(sourceReference.externalId)};
+        targets.push({kind:'field',key:sourceReference.sourceKey,rowKey:row.rowKey,workspace:sourceReference.workspaceId,objectType:'GRA',graTargetKey:source?`gra|${source.rowKey}`:'',sourceType:sourceReference.sourceType,sourceRowKey:sourceReference.rowKey,sourceExternalId:sourceReference.externalId,resolvedRiskAssessmentId:sourceReference.riskAssessmentId||'',fieldId:'itElementRaitConclusionLevelId',value:sourceReference.plannedMode,mutationOperationId:RETURN_OPERATIONS.graStateWrite,operationTargetIdentityKey:inheritanceOperationIdentity(sourceIdentity,row),evidenceOperationIds:[RETURN_OPERATIONS.graStateRead]});
       }
     }
     const normalized=(value)=>String(value||'').normalize('NFKC').replace(/\s+/gu,' ').trim();
@@ -1462,9 +1560,10 @@ function createFeatureWorker(dependencies) {
     for(const intent of targets.filter((item)=>item.kind==='relation')){
       const source=rowsPrepared.find((item)=>`object|${item.rowKey}`===intent.sourceObjectTargetKey); const targetRow=rowsPrepared.find((item)=>`object|${item.rowKey}`===intent.targetObjectTargetKey);
       const preview=preflights.find((item)=>item.rowKey===intent.rowKey);
-      if(source?.objectId&&targetRow?.objectId){const target={targetIdentityKey:`relation|${intent.workspace}|${source.objectId}|${targetRow.objectId}|${intent.relationType}`,workspaceId:intent.workspace}; intent.resolvedOperationTargetIdentityKey=target.targetIdentityKey;
-        const observed=await invoke(RETURN_OPERATIONS.relationPreflight,context.connectorBinding,{target,query:{associationType:intent.relationType,itElementId:source.objectId,associatingEntityId:targetRow.objectId,workspaceId:intent.workspace}});
-        preview.changes.push({targetKey:intent.key,disposition:observed.associated===true&&observed.inconsistent===false?'reuse':'associate',current:observed,desired:{sourceObjectId:source.objectId,targetObjectId:targetRow.objectId,relationType:intent.relationType},operationId:intent.mutationOperationId,evidenceOperationId:intent.evidenceOperationIds[0]});
+      const targetObjectId=targetRow?.objectId||intent.resolvedTargetObjectId;
+      if(source?.objectId&&targetObjectId){const target={targetIdentityKey:`relation|${intent.workspace}|${intent.targetWorkspace}|${source.objectId}|${targetObjectId}|${intent.relationType}`,workspaceId:intent.workspace}; intent.resolvedOperationTargetIdentityKey=target.targetIdentityKey;
+        const observed=await invoke(RETURN_OPERATIONS.relationPreflight,context.connectorBinding,{target,query:{associationType:intent.relationType,itElementId:source.objectId,associatingEntityId:targetObjectId,sourceWorkspaceId:intent.workspace,targetWorkspaceId:intent.targetWorkspace}});
+        preview.changes.push({targetKey:intent.key,disposition:observed.associated===true&&observed.inconsistent===false?'reuse':'associate',current:observed,desired:{sourceObjectId:source.objectId,targetObjectId,sourceWorkspaceId:intent.workspace,targetWorkspaceId:intent.targetWorkspace,relationType:intent.relationType},operationId:intent.mutationOperationId,evidenceOperationId:intent.evidenceOperationIds[0]});
       }else preview.changes.push({targetKey:intent.key,disposition:'post-create-resolution',current:'source-or-target-object-not-yet-created',desired:{sourceObjectTargetKey:intent.sourceObjectTargetKey,targetObjectTargetKey:intent.targetObjectTargetKey,relationType:intent.relationType},operationId:intent.mutationOperationId,evidenceOperationId:intent.evidenceOperationIds[0]});
     }
     assertReturnPlanCapabilities(planIr.rows,rowsPrepared);
@@ -2163,23 +2262,25 @@ function createFeatureWorker(dependencies) {
                 : await verifiedMutation({targetKey:settingsKey,target:settingsTarget,preflightOperation:RETURN_OPERATIONS.objectSettingsPreflight,preflightRequest:{target:settingsTarget,objectId},preflightResult:before,mutationOperation:RETURN_OPERATIONS.objectSettingsWrite,commandKind:'patch_object_settings',mutationPayload:{engagementId:binding.engagementId,workspaceId:row.workspaceId,objectId,typeId:row.content.itElementTypeId,isRelevant:row.isRelevant,isDataAvailable:desiredData,mode:settingsIntent.mode},readOperation:RETURN_OPERATIONS.objectSettingsRead,readRequest:{target:settingsTarget,query},verify:(observed)=>observed.verified===true});
               await projectObject(settingsResult,row,settingsKey,row.objectType,objectId);
             }
-            // v4 ordering is intentional: an Infrastructure must be linked to its
-            // exact in-batch Application and verified from both directions before
-            // its GRA is created. The later relation pass sees the committed target
+            // Ordering is intentional: a relation-capable object must be linked to
+            // each exact in-batch or current-Pack Application and verified from both
+            // directions before its GRA is created. The later relation pass sees the committed target
             // and remains a no-op for resume compatibility.
             if(hasFrozenStage(row,'relation')&&row.relations.length){
               const relationType=String(row.relationPolicy?.relationType||'');const relationConcurrencyTabId=Number(row.relationPolicy?.concurrencyTabId||0);
               for(const appExternalId of row.relations){
                 const targetKey=`element-relation|${row.rowKey}|${appExternalId}`;
-                const dependencyRowKey=targetByKey.get(targetKey)?.targetDependencyRowKey;
+                const relationIntent=targetByKey.get(targetKey);const dependencyRowKey=relationIntent?.targetDependencyRowKey;
+                if(!relationIntent||!['in_batch','external'].includes(relationIntent.targetSourceType))fail('RETURN.INTENT_MISSING',`Frozen relation target is missing: ${targetKey}`);
                 const targetKind=String(row.relationPolicy?.targetKind||'');
-                const appRows=ordered.filter((item)=>item.kind===targetKind&&item.rowKey===dependencyRowKey&&item.workspaceId===row.workspaceId&&item.elementId.normalize('NFKC').toLocaleLowerCase('en-US')===String(appExternalId).normalize('NFKC').toLocaleLowerCase('en-US'));
-                if(appRows.length!==1) fail('RETURN.RELATION_TARGET_UNVERIFIED',`Application ${appExternalId} does not resolve to one exact Workspace-bound object.`);
-                const appId=objectIds.get(runtimeKey(targetKind,appRows[0].elementId,appRows[0].workspaceId));
+                const appRows=relationIntent?.targetSourceType==='in_batch'?ordered.filter((item)=>item.kind===targetKind&&item.rowKey===dependencyRowKey&&item.workspaceId===relationIntent.targetWorkspace&&item.elementId.normalize('NFKC').toLocaleLowerCase('en-US')===String(appExternalId).normalize('NFKC').toLocaleLowerCase('en-US')):[];
+                if(relationIntent?.targetSourceType==='in_batch'&&appRows.length!==1) fail('RETURN.RELATION_TARGET_UNVERIFIED',`Application ${appExternalId} does not resolve to one exact in-batch object.`);
+                const appId=relationIntent?.targetSourceType==='external'?normalizedGuid(relationIntent.resolvedTargetObjectId):objectIds.get(runtimeKey(targetKind,appRows[0].elementId,appRows[0].workspaceId));
                 if(!appId) fail('RETURN.RELATION_TARGET_UNVERIFIED',`Application ${appExternalId} is not a verified exact object.`);
                 if(done(targetKey)) continue;
-                const target={targetIdentityKey:`relation|${row.workspaceId}|${objectId}|${appId}|${relationType}`,workspaceId:row.workspaceId};
-                const query={associationType:relationType,itElementId:objectId,associatingEntityId:appId,workspaceId:row.workspaceId};
+                const targetWorkspaceId=String(relationIntent.targetWorkspace||'');
+                const target={targetIdentityKey:`relation|${row.workspaceId}|${targetWorkspaceId}|${objectId}|${appId}|${relationType}`,workspaceId:row.workspaceId};
+                const query={associationType:relationType,itElementId:objectId,associatingEntityId:appId,sourceWorkspaceId:row.workspaceId,targetWorkspaceId};
                 const before=await invoke(RETURN_OPERATIONS.relationPreflight,binding,{target,query,planDigest});
                 const relationResult=before.associated===true&&before.inconsistent===false
                   ?await closeVerified(targetKey,RETURN_OPERATIONS.relationWrite,RETURN_OPERATIONS.relationRead,{target,query},(observed)=>observed.associated===true&&observed.inconsistent===false)
@@ -2228,15 +2329,17 @@ function createFeatureWorker(dependencies) {
             const relationType=String(row.relationPolicy?.relationType||'');const relationConcurrencyTabId=Number(row.relationPolicy?.concurrencyTabId||0);
             for (const appExternalId of row.relations) {
               const targetKey = `element-relation|${row.rowKey}|${appExternalId}`;
-              const dependencyRowKey=targetByKey.get(targetKey)?.targetDependencyRowKey;
+              const relationIntent=targetByKey.get(targetKey);const dependencyRowKey=relationIntent?.targetDependencyRowKey;
+              if(!relationIntent||!['in_batch','external'].includes(relationIntent.targetSourceType))fail('RETURN.INTENT_MISSING',`Frozen relation target is missing: ${targetKey}`);
               const targetKind=String(row.relationPolicy?.targetKind||'');
-              const appRows=ordered.filter((item)=>item.kind===targetKind&&item.rowKey===dependencyRowKey&&item.workspaceId===row.workspaceId&&item.elementId.normalize('NFKC').toLocaleLowerCase('en-US')===String(appExternalId).normalize('NFKC').toLocaleLowerCase('en-US'));
-              if(appRows.length!==1) fail('RETURN.RELATION_TARGET_UNVERIFIED', `Application ${appExternalId} does not resolve to one exact Workspace-bound object.`);
-              const appId = objectIds.get(runtimeKey(targetKind,appRows[0].elementId,appRows[0].workspaceId));
+              const appRows=relationIntent?.targetSourceType==='in_batch'?ordered.filter((item)=>item.kind===targetKind&&item.rowKey===dependencyRowKey&&item.workspaceId===relationIntent.targetWorkspace&&item.elementId.normalize('NFKC').toLocaleLowerCase('en-US')===String(appExternalId).normalize('NFKC').toLocaleLowerCase('en-US')):[];
+              if(relationIntent?.targetSourceType==='in_batch'&&appRows.length!==1) fail('RETURN.RELATION_TARGET_UNVERIFIED', `Application ${appExternalId} does not resolve to one exact in-batch object.`);
+              const appId=relationIntent?.targetSourceType==='external'?normalizedGuid(relationIntent.resolvedTargetObjectId):objectIds.get(runtimeKey(targetKind,appRows[0].elementId,appRows[0].workspaceId));
               if (!appId) fail('RETURN.RELATION_TARGET_UNVERIFIED', `Application ${appExternalId} is not a verified exact object.`);
               if (done(targetKey)) continue;
-              const target = { targetIdentityKey:`relation|${row.workspaceId}|${objectId}|${appId}|${relationType}`, workspaceId: row.workspaceId };
-              const query = { associationType: relationType, itElementId: objectId, associatingEntityId: appId, workspaceId: row.workspaceId };
+              const targetWorkspaceId=String(relationIntent.targetWorkspace||'');
+              const target = { targetIdentityKey:`relation|${row.workspaceId}|${targetWorkspaceId}|${objectId}|${appId}|${relationType}`, workspaceId: row.workspaceId };
+              const query = { associationType: relationType, itElementId: objectId, associatingEntityId: appId, sourceWorkspaceId: row.workspaceId, targetWorkspaceId };
               const relationBefore = await invoke(RETURN_OPERATIONS.relationPreflight, binding, { target, query, planDigest });
               const result = relationBefore.associated === true && relationBefore.inconsistent === false
                 ? await closeVerified(targetKey,RETURN_OPERATIONS.relationWrite,RETURN_OPERATIONS.relationRead,{target,query},(observed)=>observed.associated===true&&observed.inconsistent===false)
@@ -2250,16 +2353,17 @@ function createFeatureWorker(dependencies) {
                 sourceObjectId: objectId, targetObjectId: appId, payload: result.observed });
             }
             if(hasFrozenStage(row,'inherited_rait')){
-              for(const source of row.inheritanceSources){ const appRow=ordered.find((item)=>item.kind==='APP'&&item.rowKey===source.rowKey&&item.elementId.normalize('NFKC')===source.externalId.normalize('NFKC')&&item.workspaceName.normalize('NFKC')===source.workspaceName.normalize('NFKC'));
-              if(!appRow) fail('RETURN.RAIT_INHERITANCE_DRIFT',`${row.kind} ${row.elementId} inheritance source disappeared.`);
-              const appGraId=graIds.get(runtimeKey('APP',appRow.elementId,appRow.workspaceId)); const sourceKey=`inheritance-source|${row.rowKey}|${appRow.rowKey}`;
-              const sourceTarget={targetIdentityKey:targetByKey.get(sourceKey).operationTargetIdentityKey,workspaceId:appRow.workspaceId};
+              for(const source of row.inheritanceSources){ const appRow=source.sourceType==='in_batch'?ordered.find((item)=>item.kind==='APP'&&item.rowKey===source.rowKey&&item.elementId.normalize('NFKC')===source.externalId.normalize('NFKC')&&item.workspaceName.normalize('NFKC')===source.workspaceName.normalize('NFKC')):null;
+              if(source.sourceType==='in_batch'&&!appRow) fail('RETURN.RAIT_INHERITANCE_DRIFT',`${row.kind} ${row.elementId} inheritance source disappeared.`);
+              const appGraId=source.sourceType==='external'?normalizedGuid(source.riskAssessmentId):graIds.get(runtimeKey('APP',appRow.elementId,appRow.workspaceId)); const sourceKey=source.sourceKey;
+              const sourceIntent=targetByKey.get(sourceKey);if(!sourceIntent||!appGraId)fail('RETURN.RAIT_INHERITANCE_DRIFT',`${row.kind} ${row.elementId} inheritance source identity is incomplete.`);
+              const sourceTarget={targetIdentityKey:sourceIntent.operationTargetIdentityKey,workspaceId:source.workspaceId};
               const sourceBefore=await invoke(RETURN_OPERATIONS.graStatePreflight,binding,{target:sourceTarget,riskAssessmentId:appGraId});
               const liveInheritedMode=normalizeRait(sourceBefore.itElementRaitConclusionLevelId||sourceBefore.itElementRaitConclusionLevelName);
               if(!['Higher','Lower'].includes(liveInheritedMode)||liveInheritedMode!==normalizeRait(source.plannedMode)) fail('RETURN.RAIT_INHERITANCE_DRIFT',`${row.kind} ${row.elementId} live APP GRA RAIT differs from the frozen APP plan.`);
               if(!done(sourceKey)){
                 const sourceResult=await closeVerified(sourceKey,RETURN_OPERATIONS.graStateWrite,RETURN_OPERATIONS.graStateRead,{target:sourceTarget,query:{riskAssessmentId:appGraId,patchKind:'rait',value:liveInheritedMode}},(observed)=>observed.verified===true);
-                await projectGraRevision(sourceResult,appRow,sourceKey,appGraId);
+                if(appRow)await projectGraRevision(sourceResult,appRow,sourceKey,appGraId);
               }
               mode=row.mode;
               const targetKey=`gra-rait|${row.rowKey}`;
@@ -2538,7 +2642,7 @@ function createFeatureWorker(dependencies) {
         const revisions=['apply-revisions','revalidate-all'].includes(input.actionId)?(input.payload?.revisions||[]):[];if(!Array.isArray(revisions))fail('REVISION.BATCH_INVALID','Review revisions must be an array.');const derivedRevisions=[];
         for(const change of revisions){const row=plan.parsed.rows.find((item)=>item.rowKey===change.rowKey),candidate=plan.parsed.candidates.find((item)=>item.fieldKey===change.fieldKey&&item.provenance?.rowKey===change.rowKey);if(!row||!candidate||Number(candidate.revision)!==Number(change.expectedRevision)||['derived','rule_default','inherited'].includes(candidate.valueKind))fail('REVISION.CAS_MISMATCH','Review field changed; reload before saving.');const fields=REVIEW_FIELDS_BY_KIND[row.kind];const spec=fields.find((item)=>item[0]===candidate.rawFieldKey);const value=String(change.value??'').normalize('NFC').trim();if(!spec||value.length>Number(spec[4]))fail('REVISION.VALUE_INVALID',`${candidate.rawFieldKey} exceeds its official limit.`);candidate.value=value;candidate.revision=Number(change.expectedRevision)+1;candidate.valueKind='user_revision';candidate.status='accepted';row.fields[candidate.rawFieldKey]=value;if(candidate.rawFieldKey===fields[0][0]){row.elementId=value;for(const [rawFieldKey,derivedValue] of [['Derived GRA Name',deriveGraName(value)],[descriptionRawField(row.kind),value]]){const derived=reviewCandidate(plan.parsed,row,rawFieldKey);if(!derived||derived.valueKind!=='derived')fail('REVISION.DERIVED_LINEAGE_MISSING',`${rawFieldKey} has no signed derived candidate lineage.`);const expectedRevision=Number(derived.revision);derived.value=derivedValue;derived.revision=expectedRevision+1;derived.status='accepted';derived.provenance.dependencyFieldKey=candidate.fieldKey;row.fields[rawFieldKey]=derivedValue;derivedRevisions.push({fieldKey:derived.fieldKey,expectedRevision,value:derivedValue,dependencyFieldKey:candidate.fieldKey,dependencyRevision:candidate.revision});}}if(candidate.rawFieldKey===String(kindCapability(row.kind).relation||''))row.relations=value.split(/[、,，;；]/u).map((item)=>item.trim()).filter(Boolean);}
         let excludedRowKey='';if(input.actionId==='remove-batch-row'){excludedRowKey=String(input.payload?.rowKey||'');if(Number(input.payload?.expectedRunRevision)!==Number(run.state_revision))fail('RUN.REVISION_MISMATCH','Run revision changed before row removal.');if(activeRows(plan.parsed).length<=1)fail('REVIEW.LAST_ROW','The final active batch row cannot be removed.');if(!activeRows(plan.parsed).some((row)=>row.rowKey===excludedRowKey))fail('REVIEW.ROW_MISSING','Selected batch row is unavailable.');plan.parsed.excludedRowKeys=[...new Set([...(plan.parsed.excludedRowKeys||[]),excludedRowKey])];}
-        plan.parsed=await validateParsedIr(plan.parsed,run.run_id);plan.planIr=await compilePlanIr(plan.parsed,run.run_id);plan.liveValidation=await runReviewLiveValidation(plan,input.context);plan.reviewNavigation='review';const validation=validationPresentation(plan.parsed,plan.liveValidation);const blocker=validation.progress.items.some((item)=>item.state==='failed'||item.state==='pending');const compiled=await compileInstance({...plan.parsed,rows:activeRows(plan.parsed)},plan.descriptor,run.run_id,run.trace_id);
+        plan.parsed=await validateParsedIr(plan.parsed,run.run_id);plan.liveValidation=await runReviewLiveValidation(plan,input.context);plan.planIr=await compilePlanIr(plan.parsed,run.run_id,plan.liveValidation);plan.reviewNavigation='review';const validation=validationPresentation(plan.parsed,plan.liveValidation);const blocker=validation.progress.items.some((item)=>item.state==='failed'||item.state==='pending');const compiled=await compileInstance({...plan.parsed,rows:activeRows(plan.parsed)},plan.descriptor,run.run_id,run.trace_id);
         const committed=await store.call('commitReviewValidation',{runId:run.run_id,expectedRunRevision:Number(run.state_revision),revisions,derivedRevisions,issues:plan.parsed.issues,nextState:blocker?'needs_input':'ready_for_review',eventType:input.actionId==='remove-batch-row'?'review.row_excluded':input.actionId==='revalidate-all'?'review.revalidated':'review.saved_and_revalidated',excludedRowKey,templateInstanceId:compiled.templateInstanceId});
         plan.updatedAt=new Date().toISOString();await store.call('savePlan',plan);const current=await store.call('loadLatestRun',{});return{surfacePatch:reviewSurface(current,plan,compiled,`已保存并重跑 11 项校验；Run revision ${committed.stateRevision}。`)};
       }
@@ -2587,7 +2691,7 @@ function createFeatureWorker(dependencies) {
       let compiled,output,unresolved;
       try{
         compiled = await compileInstance(parsed, descriptor, runId, traceId); output=compiled.output;
-        const checkpoint={...stagedPlan,planId:runId,runId,traceId,descriptor,parsed,stageState:'validated',reviewNavigation:'review',createdAt:stagedPlan.createdAt||new Date().toISOString(),updatedAt:new Date().toISOString()};checkpoint.planIr=await compilePlanIr(parsed,runId);checkpoint.liveValidation=await runReviewLiveValidation(checkpoint,input.context);
+        const checkpoint={...stagedPlan,planId:runId,runId,traceId,descriptor,parsed,stageState:'validated',reviewNavigation:'review',createdAt:stagedPlan.createdAt||new Date().toISOString(),updatedAt:new Date().toISOString()};checkpoint.liveValidation=await runReviewLiveValidation(checkpoint,input.context);checkpoint.planIr=await compilePlanIr(parsed,runId,checkpoint.liveValidation);
         await store.call('recordFieldRevisions', { runId, templateInstanceId: compiled.templateInstanceId, fields: parsed.candidates });
         await store.call('recordIssues', { runId, issues: parsed.issues });
         await store.call('savePlan', checkpoint);

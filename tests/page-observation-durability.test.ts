@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import type { Frame, Page } from 'playwright-core';
+import type { Frame, Page, Request } from 'playwright-core';
 import { OperationHost } from '../src/connector/operation-host.js';
 import {
   ManagedStreamHost,
@@ -73,6 +73,22 @@ class FakePage extends EventEmitter {
   async evaluate(): Promise<boolean> { return true; }
 }
 
+class FakeRequest {
+  constructor(
+    private readonly requestUrl: string,
+    private readonly requestMethod: string,
+    private readonly requestFrame: Frame,
+    private readonly contentType: string,
+    private readonly body: Buffer | null
+  ) {}
+  url(): string { return this.requestUrl; }
+  method(): string { return this.requestMethod; }
+  resourceType(): string { return 'fetch'; }
+  frame(): Frame { return this.requestFrame; }
+  headers(): Record<string, string> { return this.contentType ? { 'Content-Type': this.contentType } : {}; }
+  postDataBuffer(): Buffer | null { return this.body; }
+}
+
 function observationContext(page: FakePage, generation = 7, packId = 'pack-test'): PageObservationContext {
   const targetUrl = new URL(page.url());
   return {
@@ -81,6 +97,24 @@ function observationContext(page: FakePage, generation = 7, packId = 'pack-test'
     targetUrl,
     apiOrigin: targetUrl.origin
   };
+}
+
+async function readObservationEvents(
+  observations: PageObservationHost,
+  streamOwner: ManagedStreamOwner,
+  streamId: string
+): Promise<Array<Record<string, any>>> {
+  const chunks: Buffer[] = [];
+  let offset = 0;
+  for (;;) {
+    const chunk = await observations.readChunk(streamOwner, {
+      schemaVersion: 'omnia.managed-stream-read/v1', streamId, offset, maxBytes: 128 * 1024
+    });
+    chunks.push(Buffer.from(chunk.bytesBase64, 'base64'));
+    offset = chunk.nextOffset;
+    if (chunk.eof) break;
+  }
+  return Buffer.concat(chunks).toString('utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
 }
 
 function updatePackageMember(envelope: OfficialPackageEnvelope, memberPath: string, bytes: Buffer): void {
@@ -146,6 +180,58 @@ function signedOperationWithoutOwnerUpgrade(
   upgraded.signature = crypto.sign(null, Buffer.from(canonicalJson(unsigned)), privateKey).toString('base64');
   return upgraded;
 }
+
+test('page observation captures only bounded redacted JSON request bodies without feature-specific semantics', async () => {
+  const root = tempRoot();
+  const streams = new ManagedStreamHost(root);
+  const observations = new PageObservationHost(streams);
+  const page = new FakePage(`https://client.deloitteomnia.deloitte.com.cn/engagement/${engagementId}/home`);
+  const streamOwner = owner();
+  const opened = await observations.open(streamOwner, {
+    schemaVersion: 'omnia.page-observation-open/v1',
+    policyId: 'omnia.page-observation.current-pack.v1',
+    idempotencyKey: 'durable:request-body:0001'
+  }, observationContext(page));
+  const frame = page.mainFrame();
+  const apiUrl = `https://client.deloitteomnia.deloitte.com.cn/rapr/v0/engagements/${engagementId}/controls/control-test`;
+  page.emit('request', new FakeRequest(apiUrl, 'PATCH', frame, 'application/json; charset=utf-8', Buffer.from(JSON.stringify({
+    planningOperatingEffectivenessTesting: true,
+    nested: { password: 'must-not-leak', accessToken: 'must-not-leak', note: 'safe-value' },
+    credentialText: 'Bearer abcdefghijklmnopqrstuvwxyz'
+  }))) as unknown as Request);
+  page.emit('request', new FakeRequest(apiUrl, 'POST', frame, 'application/json', Buffer.from('{invalid')) as unknown as Request);
+  page.emit('request', new FakeRequest(apiUrl, 'POST', frame, 'application/json', Buffer.from(JSON.stringify({
+    large: 'x'.repeat(33 * 1024)
+  }))) as unknown as Request);
+  page.emit('request', new FakeRequest(apiUrl, 'POST', frame, 'multipart/form-data; boundary=test', Buffer.from('secret=not-json')) as unknown as Request);
+  page.emit('request', new FakeRequest('https://example.com/escape', 'POST', frame, 'application/json', Buffer.from('{"escaped":true}')) as unknown as Request);
+
+  const stopped = await observations.stop(streamOwner, {
+    schemaVersion: 'omnia.page-observation-control/v1', observationId: opened.observationId
+  });
+  assert.equal(stopped.state, 'stopped');
+  assert.equal(stopped.complete, true);
+  assert.equal(stopped.omissionCount, 0);
+  const events = await readObservationEvents(observations, streamOwner, opened.streamId);
+  const requests = events.filter((event) => event.kind === 'network.request');
+  assert.equal(requests.length, 4, 'cross-origin requests must not enter the evidence stream');
+  const [captured, invalid, oversized, nonJson] = requests;
+  assert.ok(captured && invalid && oversized && nonJson);
+  assert.equal(captured.payload.requestBodyCapture, 'captured');
+  assert.equal(captured.payload.requestBody.planningOperatingEffectivenessTesting, true);
+  assert.equal(captured.payload.requestBody.nested.password, '[redacted]');
+  assert.equal(captured.payload.requestBody.nested.accessToken, '[redacted]');
+  assert.equal(captured.payload.requestBody.nested.note, 'safe-value');
+  assert.equal(captured.payload.requestBody.credentialText, '[redacted]');
+  assert.match(captured.payload.requestBodyDigest, /^[0-9a-f]{64}$/u);
+  assert.equal(invalid.payload.requestBodyCapture, 'omitted_invalid_json');
+  assert.equal(oversized.payload.requestBodyCapture, 'omitted_too_large');
+  assert.equal(Object.hasOwn(oversized.payload, 'requestBody'), false);
+  assert.equal(Object.hasOwn(nonJson.payload, 'requestBodyCapture'), false);
+  assert.doesNotMatch(JSON.stringify(events), /must-not-leak|secret=not-json/u);
+  await observations.close();
+  streams.close();
+});
 
 test('frozen managed stream survives process reopen and only a monotonic ABI-compatible owner can read it', async () => {
   const root = tempRoot();

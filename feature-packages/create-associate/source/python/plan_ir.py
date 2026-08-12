@@ -32,7 +32,7 @@ PLAN_IR_SCHEMA = "omnia.create-associate.capability-plan-ir/v1"
 RETURN_INTENTS_SCHEMA = "omnia.create-associate.deterministic-return-intents/v1"
 
 
-def build_plan_ir(*, parsed: dict, governance: dict) -> dict:
+def build_plan_ir(*, parsed: dict, governance: dict, live_validation: dict | None = None) -> dict:
     require(parsed.get("schemaVersion") == PARSED_SCHEMA, "PLAN.PARSED_SCHEMA_INVALID", "Parsed workbook schema is invalid.")
     registry = governance.get("kindRegistry")
     require(isinstance(registry, dict) and registry == parsed.get("kindRegistry"), "PLAN.KIND_REGISTRY_DRIFT", "Parsed and signed kind registries differ.")
@@ -61,6 +61,16 @@ def build_plan_ir(*, parsed: dict, governance: dict) -> dict:
         if row.get("kind") == "APP":
             apps_by_identity.setdefault(_identity(row.get("elementId")), []).append(row)
     app_spec = registry["APP"]
+    live_validation = live_validation or {}
+    require(isinstance(live_validation, dict), "PLAN.LIVE_VALIDATION_INVALID", "Live validation must be an object.")
+    live_relation_targets = live_validation.get("relationTargets") or []
+    require(isinstance(live_relation_targets, list), "PLAN.LIVE_VALIDATION_INVALID", "Live relation targets must be an array.")
+    targets_by_source: dict[str, list[dict]] = {}
+    for target in live_relation_targets:
+        require(isinstance(target, dict), "PLAN.LIVE_VALIDATION_INVALID", "A live relation target is invalid.")
+        source_row_key = str(target.get("sourceRowKey") or "")
+        require(source_row_key in by_row, "PLAN.LIVE_VALIDATION_INVALID", "A live relation target references an unknown source row.")
+        targets_by_source.setdefault(source_row_key, []).append(dict(target))
     rows = [
         _compile_row(
             row,
@@ -69,6 +79,7 @@ def build_plan_ir(*, parsed: dict, governance: dict) -> dict:
             [*issue_by_row.get(str(row.get("rowKey")), []), *global_blocker_codes],
             apps_by_identity,
             governance,
+            targets_by_source.get(str(row.get("rowKey")), []),
         )
         for row in active_rows
     ]
@@ -89,7 +100,7 @@ def build_plan_ir(*, parsed: dict, governance: dict) -> dict:
     return result
 
 
-def _compile_row(row: dict, spec: dict, app_spec: dict, blocker_codes: list[str], apps_by_identity: dict[str, list[dict]], governance: dict) -> dict:
+def _compile_row(row: dict, spec: dict, app_spec: dict, blocker_codes: list[str], apps_by_identity: dict[str, list[dict]], governance: dict, live_targets: list[dict]) -> dict:
     kind, row_key = str(row.get("kind")), str(row.get("rowKey"))
     require(spec and spec.get("id") and isinstance(spec.get("capabilities"), dict), "PLAN.KIND_UNDECLARED", f"Plan kind is undeclared: {kind}.")
     workspace = _field(row, spec, f"P1.{kind}.IT.WORKSPACE")
@@ -97,22 +108,42 @@ def _compile_row(row: dict, spec: dict, app_spec: dict, blocker_codes: list[str]
     policy = spec.get("relationPolicy") or {}
     relation_targets = [str(value) for value in row.get("relations", [])]
     dependency_rows: list[str] = []
+    resolved_targets: list[dict] = []
     effective_blockers = set(blocker_codes)
     if relation_targets:
         for target in relation_targets:
-            matches = [candidate for candidate in apps_by_identity.get(_identity(target), []) if _workspace(candidate, app_spec) == workspace]
-            if len(matches) == 1:
-                dependency_rows.append(str(matches[0].get("rowKey") or ""))
+            live_matches = [candidate for candidate in live_targets if _identity(candidate.get("externalId")) == _identity(target)]
+            if len(live_matches) != 1:
+                effective_blockers.add("PLAN.RELATION_TARGET_UNRESOLVED")
+                continue
+            resolved = dict(live_matches[0])
+            source_type = str(resolved.get("sourceType") or "")
+            matches = apps_by_identity.get(_identity(target), [])
+            if source_type == "in_batch":
+                target_row_key = str(resolved.get("targetRowKey") or "")
+                exact_rows = [candidate for candidate in matches if str(candidate.get("rowKey") or "") == target_row_key]
+                if len(exact_rows) != 1:
+                    effective_blockers.add("PLAN.RELATION_TARGET_UNRESOLVED")
+                    continue
+                dependency_rows.append(target_row_key)
+            elif source_type == "external":
+                if matches or not str(resolved.get("objectId") or "") or not str(resolved.get("riskAssessmentId") or ""):
+                    effective_blockers.add("PLAN.RELATION_TARGET_UNRESOLVED")
+                    continue
             else:
                 effective_blockers.add("PLAN.RELATION_TARGET_UNRESOLVED")
+                continue
+            if str(resolved.get("rait") or "") not in ("Higher", "Lower") or not str(resolved.get("workspaceId") or ""):
+                effective_blockers.add("PLAN.RELATION_TARGET_UNRESOLVED")
+                continue
+            resolved_targets.append(resolved)
     minimum, maximum = int(policy.get("min") or 0), int(policy.get("max") or 0)
     if spec.get("relation") and not minimum <= len(relation_targets) <= maximum:
         effective_blockers.add("PLAN.RELATION_CARDINALITY_INVALID")
     if spec.get("inheritRait") is True:
-        source_rows = {str(item.get("rowKey") or "") for item in row.get("inheritance", {}).get("sourceApps", [])}
-        if source_rows != set(dependency_rows):
+        if len(resolved_targets) != len(relation_targets):
             effective_blockers.add("PLAN.INHERITANCE_SOURCE_DRIFT")
-    rait = _rait(row, spec)
+    rait = _rait(row, spec, resolved_targets)
     if (spec.get("inheritRait") is True or spec.get("capabilities", {}).get("directRait") is True) and rait["value"] not in ("Higher", "Lower"):
         effective_blockers.add("PLAN.RAIT_UNRESOLVED")
     capabilities = {str(key): bool(value) for key, value in spec["capabilities"].items()}
@@ -147,6 +178,7 @@ def _compile_row(row: dict, spec: dict, app_spec: dict, blocker_codes: list[str]
             "relationType": str(policy.get("relationType") or ""),
             "concurrencyTabId": int(policy.get("concurrencyTabId") or 0),
             "targets": relation_targets,
+            "resolvedTargets": resolved_targets,
         },
         "rait": rait,
         "returnIntents": return_intents,
@@ -169,16 +201,25 @@ def _workspace(row: dict, spec: dict) -> str:
     return _field(row, spec, "P1.APP.IT.WORKSPACE")
 
 
-def _rait(row: dict, spec: dict) -> dict[str, Any]:
+def _rait(row: dict, spec: dict, resolved_targets: list[dict]) -> dict[str, Any]:
     if spec.get("inheritRait") is True:
-        inheritance = row.get("inheritance") or {}
         sources = [
-            {"rowKey": str(item.get("rowKey") or ""), "elementId": str(item.get("elementId") or "")}
-            for item in inheritance.get("sourceApps", [])
+            {
+                "sourceType": str(item.get("sourceType") or ""),
+                "rowKey": str(item.get("targetRowKey") or ""),
+                "elementId": str(item.get("externalId") or ""),
+                "workspaceId": str(item.get("workspaceId") or ""),
+                "objectId": str(item.get("objectId") or ""),
+                "riskAssessmentId": str(item.get("riskAssessmentId") or ""),
+                "plannedMode": str(item.get("rait") or ""),
+            }
+            for item in resolved_targets
         ]
+        modes = [item["plannedMode"] for item in sources]
+        value = "Higher" if "Higher" in modes else "Lower" if modes and all(mode == "Lower" for mode in modes) else ""
         return {
             "strategy": "any_higher_else_all_lower",
-            "value": str(inheritance.get("rait") or ""),
+            "value": value,
             "sources": sources,
         }
     kind = str(row.get("kind"))

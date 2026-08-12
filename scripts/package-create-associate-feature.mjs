@@ -168,7 +168,7 @@ const kindCapabilityProfiles = {
   APP: { capabilities:{object:true,gra:true,settings:true,relation:false,directRait:true,inheritedRait:false,appScoring:true,riskControl:true,evaluation:true,aiReview:true}, stageNodes:['object','settings','gra','gra_state','app_category','app_scoring','documentation','risk_classification','risk_control','evaluation'] },
   DB: { capabilities:{object:true,gra:true,settings:false,relation:true,directRait:false,inheritedRait:true,appScoring:false,riskControl:true,evaluation:true,aiReview:false}, relationPolicy:{targetKind:'APP',min:1,max:200,relationType:'InfrastructureApplication',concurrencyTabId:602}, stageNodes:['object','relation','gra','inherited_rait','risk_classification','risk_control','evaluation'] },
   OS: { capabilities:{object:true,gra:true,settings:false,relation:true,directRait:false,inheritedRait:true,appScoring:false,riskControl:true,evaluation:true,aiReview:false}, relationPolicy:{targetKind:'APP',min:1,max:200,relationType:'InfrastructureApplication',concurrencyTabId:602}, stageNodes:['object','relation','gra','inherited_rait','risk_classification','risk_control','evaluation'] },
-  TOOL: { capabilities:{object:true,gra:true,settings:false,relation:true,directRait:true,inheritedRait:false,appScoring:false,riskControl:true,evaluation:true,aiReview:false}, relationPolicy:{targetKind:'APP',min:1,max:1,relationType:'ItToolApplication',concurrencyTabId:802}, stageNodes:['object','relation','gra','gra_state','risk_classification','risk_control','evaluation'] },
+  TOOL: { capabilities:{object:true,gra:true,settings:false,relation:true,directRait:true,inheritedRait:false,appScoring:false,riskControl:true,evaluation:true,aiReview:false}, relationPolicy:{targetKind:'APP',min:1,max:200,relationType:'ItToolApplication',concurrencyTabId:802}, stageNodes:['object','relation','gra','gra_state','risk_classification','risk_control','evaluation'] },
   DCNO: { capabilities:{object:true,gra:true,settings:false,relation:true,directRait:false,inheritedRait:true,appScoring:false,riskControl:true,evaluation:true,aiReview:false}, relationPolicy:{targetKind:'APP',min:1,max:200,relationType:'InfrastructureApplication',concurrencyTabId:602}, stageNodes:['object','relation','gra','inherited_rait','risk_classification','risk_control','evaluation'] }
 };
 for (const [kind, spec] of Object.entries(kindRegistry)) {
@@ -359,7 +359,7 @@ for (const inputCell of ['C35','C36']) if (!userTemplate.validations.some((item)
 for (const inputCell of ['C46','C47']) if (!userTemplate.validations.some((item) => validationCovers(item.sqref, inputCell) && item.formula.includes('代码迁移工具'))) {
   throw new Error(`Phase1 user template V5 Tool type validation does not expose 代码迁移工具 at ${inputCell}.`);
 }
-const version = '0.2.135'; const sequence = 137;
+const version = '0.2.137'; const sequence = 139;
 const route = (stepId, method, routeTemplate, parameters, bodyMode = 'none', bodyParameter = '') => ({ stepId, method, routeTemplate, parameters, bodyMode, bodyParameter });
 const applicationIdentityRoutes = () => [
   route('workitem-directory', 'POST', '/work/v1/WorkQueries/getWorkitemDetails', [], 'signed_json'),
@@ -654,7 +654,7 @@ if ([...featurePaths].some((memberPath) => /phase_1_14_|复核\.py/iu.test(membe
 if (Object.hasOwn(runtimeContract.pythonSidecar, 'capabilities')) throw new Error('Shell 0.4.14 rejects unknown pythonSidecar capabilities metadata.');
 if (Object.keys(kindRegistry).sort().join(',') !== 'APP,DB,DCNO,OS,TOOL'
   || kindRegistry.TOOL.relationPolicy?.relationType !== 'ItToolApplication'
-  || kindRegistry.TOOL.relationPolicy?.min !== 1 || kindRegistry.TOOL.relationPolicy?.max !== 1
+  || kindRegistry.TOOL.relationPolicy?.min !== 1 || kindRegistry.TOOL.relationPolicy?.max !== 200
   || kindRegistry.DB.relationPolicy?.relationType !== 'InfrastructureApplication'
   || kindRegistry.OS.relationPolicy?.relationType !== 'InfrastructureApplication'
   || kindRegistry.DCNO.returnSupport !== 'supported'

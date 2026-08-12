@@ -18,6 +18,8 @@ const MAX_ACTIVE_OBSERVATIONS = 4;
 const MAX_EVENTS = 100_000;
 const MAX_STREAM_BYTES = 64 * 1024 * 1024;
 const MAX_EVENT_BYTES = 96 * 1024;
+const MAX_REQUEST_BODY_BYTES = 32 * 1024;
+const MAX_REDACTED_REQUEST_BODY_BYTES = 48 * 1024;
 const MAX_RESPONSE_BODY_BYTES = 1024 * 1024;
 const RESPONSE_SEGMENT_BYTES = 48 * 1024;
 const MAX_DURATION_MS = 2 * 60 * 60 * 1000;
@@ -144,6 +146,48 @@ function scrubRecord(value: unknown): Record<string, unknown> {
   return result && typeof result === 'object' && !Array.isArray(result)
     ? result as Record<string, unknown>
     : { value: result };
+}
+
+function capturedJsonRequestBody(request: Request): Record<string, unknown> {
+  let contentType = '';
+  try {
+    const headers = request.headers();
+    const entry = Object.entries(headers).find(([key]) => key.toLowerCase() === 'content-type');
+    contentType = clean(entry?.[1] || '', 200);
+  } catch {
+    return { requestBodyCapture: 'unavailable' };
+  }
+  if (!/(?:application|text)\/(?:[^;]+\+)?json\b/iu.test(contentType)) return {};
+
+  let raw: Buffer | null = null;
+  try { raw = request.postDataBuffer(); }
+  catch { return { contentType, requestBodyCapture: 'unavailable' }; }
+  if (!raw) return { contentType, requestBodyCapture: 'empty' };
+  if (raw.byteLength > MAX_REQUEST_BODY_BYTES) {
+    return { contentType, requestBodyCapture: 'omitted_too_large', requestBodyBytes: raw.byteLength };
+  }
+
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw.toString('utf8')); }
+  catch { return { contentType, requestBodyCapture: 'omitted_invalid_json', requestBodyBytes: raw.byteLength }; }
+  const requestBody = scrub(parsed);
+  const redacted = Buffer.from(JSON.stringify(requestBody), 'utf8');
+  if (redacted.byteLength > MAX_REDACTED_REQUEST_BODY_BYTES) {
+    return {
+      contentType,
+      requestBodyCapture: 'omitted_redacted_too_large',
+      requestBodyBytes: raw.byteLength,
+      redactedRequestBodyBytes: redacted.byteLength
+    };
+  }
+  return {
+    contentType,
+    requestBodyCapture: 'captured',
+    requestBodyEncoding: 'utf8-json',
+    requestBodyBytes: raw.byteLength,
+    requestBodyDigest: crypto.createHash('sha256').update(redacted).digest('hex'),
+    requestBody
+  };
 }
 
 function safeUrl(value: string, observation: Observation): string {
@@ -500,7 +544,8 @@ export class PageObservationHost {
           requestId,
           method: clean(request.method(), 16).toUpperCase(),
           resourceType: clean(request.resourceType(), 40),
-          url
+          url,
+          ...capturedJsonRequestBody(request)
         }, this.requestFrame(observation, request));
       },
       response: (response) => {

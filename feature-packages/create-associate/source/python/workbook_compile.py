@@ -109,7 +109,7 @@ def _runtime_sheets(parsed: dict) -> list[tuple[str, list[str], list[list[Any]],
         if capabilities.get("settings") or capabilities.get("directRait") or capabilities.get("inheritedRait"):
             plan_rows.append([row["rowKey"], "field_diff", row["kind"], row["elementId"], disposition if not supported else "blocked_missing_input" if row_blocked else "conditional", "signed field Operation + readback"])
         for relation in row.get("relations", []) if capabilities.get("relation") else []:
-            plan_rows.append([row["rowKey"], "element_relation", row["kind"], relation, disposition, "only an APP in this workbook or a separately implemented exact live reference may be used; external APP reference is disabled"])
+            plan_rows.append([row["rowKey"], "element_relation", row["kind"], relation, disposition, "APP may be in this upload or an exact active Application in the current Pack; cross-Workspace and off-batch references warn, while missing/ambiguous/type-drifted targets block"])
         if capabilities.get("appScoring"):
             plan_rows.append([row["rowKey"], "app_scoring", row["kind"], row["elementId"], "blocked_missing_input" if row_blocked else "conditional", "one APP-generic governed scoring inventory; product content never selects another scoring engine"])
         if capabilities.get("riskControl"):
@@ -136,7 +136,7 @@ def _runtime_sheets(parsed: dict) -> list[tuple[str, list[str], list[list[Any]],
                 f"V5 accepts {input_value}; exact Omnia content={expected or 'pending'}; recording evidence is required before Return."])
     issue_rows.extend([
         ["SUPPORT.existing_reuse", "support", "supported_after_preflight", "existing exact reuse", "APP/Infrastructure/Tool may reuse an exact unique live object only with current binding-scoped Agent ownership proof."],
-        ["SUPPORT.external_app_reference", "support", "blocked_not_implemented", "external APP reference", "External APP exact preflight plus verified RAIT readback is not implemented; reference is disabled."],
+        ["SUPPORT.external_app_reference", "support", "supported_after_preflight", "external APP reference", "An off-batch APP is accepted only after exact current-Pack Application/GRA/RAIT resolution; cross-Workspace and off-batch scope are warnings, while missing or ambiguous identity remains blocking."],
         ["SUPPORT.gra", "support", "supported_after_preflight", "gra", "Signed exact create/reconcile Operation; requires live content identity."],
         ["SUPPORT.field_diff", "support", "conditional", "field_diff", "Only fields with signed Operations and readback may execute."],
         ["SUPPORT.element_relation", "support", "supported_after_preflight", "element_relation", "DB/OS/DCNO use InfrastructureApplication and Tool uses ItToolApplication from the signed registry; DCNO Higher/Lower share the exact catalog while retaining mode-specific link rules."],

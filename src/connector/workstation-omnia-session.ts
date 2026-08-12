@@ -46,6 +46,31 @@ function clean(value: unknown, max = 300): string {
   return String(value ?? '').trim().replace(/\s+/g, ' ').slice(0, max);
 }
 
+function boundedOperationErrorDetail(value: unknown): string {
+  const allowedKey = /^(?:code|detail|details|error|errors|message|messages|title|validationError|validationErrors)$/iu;
+  const visit = (current: unknown, depth: number): unknown => {
+    if (depth > 3 || current == null) return undefined;
+    if (typeof current === 'string') {
+      const normalized = current.replace(/[\u0000-\u001f\u007f]/gu, ' ').trim();
+      return normalized ? normalized.slice(0, 500) : undefined;
+    }
+    if (typeof current === 'number' || typeof current === 'boolean') return current;
+    if (Array.isArray(current)) {
+      return current.slice(0, 8).map((item) => visit(item, depth + 1)).filter((item) => item !== undefined);
+    }
+    if (typeof current !== 'object') return undefined;
+    const entries = Object.entries(current as Record<string, unknown>)
+      .filter(([key]) => allowedKey.test(key)).slice(0, 16)
+      .map(([key, item]) => [key, visit(item, depth + 1)] as const)
+      .filter(([, item]) => item !== undefined);
+    return entries.length ? Object.fromEntries(entries) : undefined;
+  };
+  const selected = visit(value, 0);
+  if (selected === undefined) return '';
+  const serialized = typeof selected === 'string' ? selected : JSON.stringify(selected);
+  return serialized.slice(0, 1_500);
+}
+
 function list(value: unknown): any[] {
   if (Array.isArray(value)) return value;
   if (Array.isArray((value as any)?.items)) return (value as any).items;
@@ -1028,9 +1053,10 @@ export class WorkstationOmniaSession {
         if (execution.commitStep && response.status >= 500) {
           throw new ConnectorOperationError('CONNECTOR.RESPONSE_LOST', `Omnia mutation returned HTTP ${response.status}; the result is uncertain.`, false);
         }
+        const detail = boundedOperationErrorDetail(payload);
         throw new ConnectorOperationError(
           response.status === 401 || response.status === 403 ? 'CONNECTOR.AUTH_REQUIRED' : 'CONNECTOR.OPERATION_FAILED',
-          `Omnia Operation step returned HTTP ${response.status}.`,
+          `Omnia Operation step returned HTTP ${response.status}${detail ? `: ${detail}` : '.'}`,
           response.status >= 500
         );
       }

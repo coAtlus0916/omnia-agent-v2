@@ -238,6 +238,36 @@ for (const fixture of fixtures.workerCases) {
       results.push({testId: fixture.testId, status: 'passed'});
     })());
     continue;
+  } else if (fixture.kind === 'operation-cross-workspace-relation') {
+    pending.push((async () => {
+      const handler=loadOperationHandler()();
+      const engagementId='11111111-1111-4111-8111-111111111111';
+      const sourceWorkspaceId='22222222-2222-4222-8222-222222222222';
+      const targetWorkspaceId='33333333-3333-4333-8333-333333333333';
+      const sourceObjectId='44444444-4444-4444-8444-444444444444';
+      const targetObjectId='55555555-5555-4555-8555-555555555555';
+      const sourceWorkItemId='66666666-6666-4666-8666-666666666666';
+      const targetWorkItemId='77777777-7777-4777-8777-777777777777';
+      const observed=await handler.run('omnia.create-associate.relation.preflight.v1',{
+        target:{targetIdentityKey:'fixture-cross-workspace-relation',workspaceId:sourceWorkspaceId},
+        query:{associationType:'InfrastructureApplication',itElementId:sourceObjectId,associatingEntityId:targetObjectId,sourceWorkspaceId,targetWorkspaceId}
+      },{
+        binding:{engagementId},
+        invokeStep:async(stepId)=>{
+          if(stepId==='relation-source-detail')return{id:sourceObjectId,workItemId:sourceWorkItemId,itElementType:'Infrastructure'};
+          if(stepId==='relation-source-workspace')return[{facetId:sourceWorkspaceId}];
+          if(stepId==='relation-target-detail')return{id:targetObjectId,workItemId:targetWorkItemId,itElementType:'Application'};
+          if(stepId==='relation-target-workspace')return[{facetId:targetWorkspaceId}];
+          if(stepId==='applications-search')return{results:[{id:targetObjectId}],totalResults:1};
+          if(stepId==='infrastructures-search')return{results:[{id:sourceObjectId}],totalResults:1};
+          throw new Error(`Unexpected cross-workspace relation step: ${stepId}`);
+        }
+      });
+      requireCondition(observed.associated===true&&observed.inconsistent===false,'Cross-workspace relationship read did not verify both authoritative directions.');
+      requireCondition(observed.sourceAuthority.workspaceId===sourceWorkspaceId&&observed.targetAuthority.workspaceId===targetWorkspaceId,'Cross-workspace relationship authorities were collapsed into one Workspace.');
+      results.push({testId:fixture.testId,status:'passed'});
+    })());
+    continue;
   } else if (fixture.kind === 'dcno-risk-control-recording') {
     const allDcno = governance.relations.filter((item) => String(item.relationId || '').startsWith('REL.DCNO.NETWORK.'));
     const higher = allDcno.filter((item) => String(item.catalogPresentHigher || '').startsWith('Y'));

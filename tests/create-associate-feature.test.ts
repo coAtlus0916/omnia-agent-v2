@@ -642,7 +642,7 @@ test('signed core Operations enforce exact IT Element, GRA, and relationship pre
 
   const relationTarget = { targetIdentityKey: `InfrastructureApplication|${infrastructureId}|${applicationId}`, workspaceId };
   const relationPlan = 'b'.repeat(64);
-  const relationQuery = { associationType: 'InfrastructureApplication', itElementId: infrastructureId, associatingEntityId: applicationId, workspaceId };
+  const relationQuery = { associationType: 'InfrastructureApplication', itElementId: infrastructureId, associatingEntityId: applicationId, sourceWorkspaceId: workspaceId, targetWorkspaceId: workspaceId };
   await invoke('omnia.create-associate.relation.preflight.v1', { connectorBinding: binding, target: relationTarget, planDigest: relationPlan, query: relationQuery });
   relationWrongWorkspace=true;const wrongWorkspaceRelation=await invoke('omnia.create-associate.relation.preflight.v1',{connectorBinding:binding,target:{...relationTarget,targetIdentityKey:`${relationTarget.targetIdentityKey}|wrong-workspace`},planDigest:'6'.repeat(64),query:relationQuery}) as any;assert.equal(wrongWorkspaceRelation.associated,false);relationWrongWorkspace=false;
   await invoke('omnia.create-associate.relation.associate.v1', {

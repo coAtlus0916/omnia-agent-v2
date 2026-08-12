@@ -72,9 +72,9 @@ interface FeatureManifest {
   assets?: Array<{ path: string; sha256: string; kind: 'governance' | 'runtime_template_base' | 'source_template' }>;
   recoveryCompatibility?: {
     schemaVersion: 'omnia.feature-recovery-compatibility/v1';
-    mode: 'partial_close_no_reuse' | 'frozen_input_finalize';
+    mode: 'partial_close_no_reuse' | 'frozen_input_finalize' | 'authoritative_reconcile_continue';
     sourceFeatureVersions: string[];
-    actionId: 'recover-interrupted-run' | 'retry-finalization';
+    actionId: 'recover-interrupted-run' | 'retry-finalization' | 'reconcile-hidden-tabs';
   };
   navigation: {
     groups: FeatureNavigationGroup[];
@@ -1643,7 +1643,7 @@ function parseManifest(envelope: OfficialPackageEnvelope): FeatureManifest {
       ['schemaVersion','mode','sourceFeatureVersions','actionId'], 'Feature recovery compatibility');
     const recovery = manifest.recoveryCompatibility;
     if (recovery.schemaVersion !== 'omnia.feature-recovery-compatibility/v1'
-      || !['partial_close_no_reuse','frozen_input_finalize'].includes(recovery.mode)
+      || !['partial_close_no_reuse','frozen_input_finalize','authoritative_reconcile_continue'].includes(recovery.mode)
       || !Array.isArray(recovery.sourceFeatureVersions)
       || recovery.sourceFeatureVersions.length < 1 || recovery.sourceFeatureVersions.length > 8
       || recovery.sourceFeatureVersions.some((version)=>!SEMVER.test(version) || version === manifest.version)
@@ -1655,6 +1655,9 @@ function parseManifest(envelope: OfficialPackageEnvelope): FeatureManifest {
     }
     if (recovery.mode === 'frozen_input_finalize' && recovery.actionId !== 'retry-finalization') {
       throw new Error('Frozen-input recovery must use its exact finalization action.');
+    }
+    if (recovery.mode === 'authoritative_reconcile_continue' && recovery.actionId !== 'reconcile-hidden-tabs') {
+      throw new Error('Authoritative partial-effect recovery must use its exact reconcile-and-continue action.');
     }
     if (recovery.mode === 'frozen_input_finalize'
       && recovery.sourceFeatureVersions.some((sourceVersion) => !semverAtLeast(manifest.version, sourceVersion))) {
@@ -3098,13 +3101,25 @@ export class FeaturePackageManager {
       .get(String(legacy.run_id)) as { count: number }).count;
     const uncertain = (this.database.prepare(`SELECT COUNT(*) AS count FROM managed_content_intents WHERE run_id=? AND state='uncertain'`)
       .get(String(legacy.run_id)) as { count: number }).count;
+    const resolvedPartial = (this.database.prepare(`
+      SELECT COUNT(DISTINCT intent.intent_id) AS count
+      FROM feature_commands command
+      JOIN managed_content_intents intent ON intent.intent_id=command.intent_id AND intent.state='frozen'
+      JOIN feature_command_evidence evidence ON evidence.command_id=command.command_id AND evidence.run_id=command.run_id
+      WHERE command.run_id=? AND command.state='readback_verified'
+        AND evidence.evidence_type='reconcile' AND evidence.verified=1
+        AND json_extract(evidence.payload_json,'$.outcome')='partial_applied'
+    `).get(String(legacy.run_id)) as {count:number}).count;
     const stateEligible = declaration?.mode === 'partial_close_no_reuse'
       ? String(legacy.state) === 'returning'
       : declaration?.mode === 'frozen_input_finalize'
         ? String(legacy.state) === 'processing'
+        : declaration?.mode === 'authoritative_reconcile_continue'
+          ? ((String(legacy.state) === 'uncertain' && inFlight === 1 && uncertain === 1)
+            || (['uncertain','reconciling','returning'].includes(String(legacy.state)) && inFlight === 0 && uncertain === 0 && resolvedPartial === 1))
         : false;
     if (!declaration || !declaration.sourceFeatureVersions.includes(String(legacy.feature_version))
-      || !stateEligible || inFlight !== 0 || uncertain !== 0) {
+      || !stateEligible || (declaration.mode !== 'authoritative_reconcile_continue' && (inFlight !== 0 || uncertain !== 0))) {
       throw new AppError('FEATURE.ACTIVE_RUN_BLOCKS_ACTIVATION', 'A nonterminal Run blocks activation; only an explicitly declared, unambiguous partial-Return recovery upgrade may proceed.');
     }
   }
@@ -3117,13 +3132,26 @@ export class FeaturePackageManager {
       .get(String(legacy.run_id)) as { count: number }).count;
     const uncertain = (this.database.prepare(`SELECT COUNT(*) AS count FROM managed_content_intents WHERE run_id=? AND state='uncertain'`)
       .get(String(legacy.run_id)) as { count: number }).count;
+    const resolvedPartial = (this.database.prepare(`
+      SELECT COUNT(DISTINCT intent.intent_id) AS count
+      FROM feature_commands command
+      JOIN managed_content_intents intent ON intent.intent_id=command.intent_id AND intent.state='frozen'
+      JOIN feature_command_evidence evidence ON evidence.command_id=command.command_id AND evidence.run_id=command.run_id
+      WHERE command.run_id=? AND command.state='readback_verified'
+        AND evidence.evidence_type='reconcile' AND evidence.verified=1
+        AND json_extract(evidence.payload_json,'$.outcome')='partial_applied'
+    `).get(String(legacy.run_id)) as {count:number}).count;
     const stateEligible = declaration?.mode === 'partial_close_no_reuse'
       ? String(legacy.state) === 'returning'
       : declaration?.mode === 'frozen_input_finalize'
         ? String(legacy.state) === 'processing'
+        : declaration?.mode === 'authoritative_reconcile_continue'
+          ? ((String(legacy.state) === 'uncertain' && inFlight === 1 && uncertain === 1)
+            || (['uncertain','reconciling','returning'].includes(String(legacy.state)) && inFlight === 0 && uncertain === 0 && resolvedPartial === 1))
         : false;
     if (!declaration || !declaration.sourceFeatureVersions.includes(String(legacy.feature_version))
-      || !stateEligible || inFlight !== 0 || uncertain !== 0
+      || !stateEligible
+      || (declaration.mode !== 'authoritative_reconcile_continue' && (inFlight !== 0 || uncertain !== 0))
       || actionId !== declaration.actionId) {
       throw new AppError('FEATURE.RECOVERY_MODE_ONLY', 'A legacy partial Return is open; only its declared read-only recovery action is permitted.');
     }
@@ -3384,9 +3412,11 @@ export class FeaturePackageManager {
     const surface = parseSurface(envelope, manifest);
     if (manifest.recoveryCompatibility) {
       const action = surface.actions.find((candidate)=>candidate.actionId===manifest.recoveryCompatibility!.actionId);
-      const requiredDependencies = manifest.recoveryCompatibility.mode === 'partial_close_no_reuse'
-        ? ['remote_connector','safety_lock'] : ['remote_connector'];
-      if (!action || action.effect !== 'local_state_write'
+      const requiredDependencies = manifest.recoveryCompatibility.mode === 'frozen_input_finalize'
+        ? ['remote_connector'] : ['remote_connector','safety_lock'];
+      const requiredEffect = manifest.recoveryCompatibility.mode === 'authoritative_reconcile_continue'
+        ? 'omnia_mutation' : 'local_state_write';
+      if (!action || action.effect !== requiredEffect
         || canonicalJson([...(action.dependencies || [])].sort()) !== canonicalJson(requiredDependencies)) {
         throw new Error('Feature recovery compatibility requires one exact local recovery action with its declared trust-boundary dependencies.');
       }
@@ -4870,6 +4900,12 @@ export class FeaturePackageManager {
               const target = operationRequest.target as Record<string, unknown> | undefined;
               const candidateReceiptRow = this.database.prepare(`
                 SELECT c.plan_digest,c.state,c.evidence_operation_ids_json,c.evidence_target_identity_key,c.evidence_request_digest,
+                  EXISTS(
+                    SELECT 1 FROM feature_command_evidence partial
+                    WHERE partial.command_id=c.command_id AND partial.run_id=c.run_id
+                      AND partial.evidence_type='reconcile' AND partial.verified=1
+                      AND json_extract(partial.payload_json,'$.outcome')='partial_applied'
+                  ) AS has_partial_evidence,
                   i.target_key,i.intended_revision_json,
                   f.credential_digest,f.connector_id,f.session_generation,f.engagement_id,
                   f.authority_instance_id,f.tenant_or_org_id,f.pack_id,
@@ -4885,7 +4921,8 @@ export class FeaturePackageManager {
               const receiptRow = candidateReceiptRow
                 && this.currentActivationOwnsRun(runId, context.featureId, context.featureVersion)
                 ? candidateReceiptRow : undefined;
-              if (!receiptRow || !['prepared','committed','verifying','uncertain'].includes(String(receiptRow.state))) {
+              if (!receiptRow || (!['prepared','committed','verifying','uncertain'].includes(String(receiptRow.state))
+                && !(String(receiptRow.state)==='readback_verified' && Number(receiptRow.has_partial_evidence)===1))) {
                 throw new AppError('FEATURE.RECEIPT_COMMAND_INVALID', 'Authoritative receipt is not bound to an eligible frozen Return command.');
               }
               const workspaceIds = JSON.parse(String(receiptRow.workspace_ids_json)) as string[];
@@ -5468,8 +5505,8 @@ export class FeaturePackageManager {
     );
     if (!legacy || !declaration.sourceFeatureVersions.includes(String(legacy.feature_version))) return false;
     if (declaration.mode === 'partial_close_no_reuse') return String(legacy.state) === 'returning';
-    return declaration.mode === 'frozen_input_finalize'
-      && String(legacy.state) === 'processing';
+    if (declaration.mode === 'authoritative_reconcile_continue') return ['uncertain','reconciling','returning'].includes(String(legacy.state));
+    return declaration.mode === 'frozen_input_finalize' && String(legacy.state) === 'processing';
   }
 
   private actionBlockReason(
@@ -5487,6 +5524,8 @@ export class FeaturePackageManager {
         ? String(legacy.state)==='returning'
         : declaration?.mode==='frozen_input_finalize'
           ? String(legacy.state)==='processing'
+          : declaration?.mode==='authoritative_reconcile_continue'
+            ? ['uncertain','reconciling','returning'].includes(String(legacy.state))
           : false;
       if(!declaration||!declaration.sourceFeatureVersions.includes(String(legacy.feature_version))
         ||!stateEligible||action.actionId!==declaration.actionId) {
@@ -5494,7 +5533,7 @@ export class FeaturePackageManager {
       }
       const inFlight=(this.database.prepare(`SELECT COUNT(*) AS count FROM feature_commands WHERE run_id=? AND state IN ('submitted','committed','verifying','uncertain')`).get(String(legacy.run_id)) as {count:number}).count;
       const uncertain=(this.database.prepare(`SELECT COUNT(*) AS count FROM managed_content_intents WHERE run_id=? AND state='uncertain'`).get(String(legacy.run_id)) as {count:number}).count;
-      if(inFlight||uncertain)return 'The legacy partial Return has in-flight or uncertain state and cannot be closed automatically.';
+      if(declaration?.mode!=='authoritative_reconcile_continue'&&(inFlight||uncertain))return 'The legacy partial Return has in-flight or uncertain state and cannot be closed automatically.';
     }
     if (!context) return '';
     const dependencies = effectiveActionDependencies(action);

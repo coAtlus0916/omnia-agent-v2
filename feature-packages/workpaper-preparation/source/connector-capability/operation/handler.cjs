@@ -59,17 +59,76 @@ function applicationElementType(value) {
     .map(lower).filter(Boolean);
   return candidates.includes('application');
 }
+function catalogId(value) {
+  const result = text(value);
+  return /^[A-Za-z0-9._:-]{1,128}$/u.test(result) ? result : '';
+}
+function normalizedLabel(value) { return text(value).normalize('NFKC').replace(/\s+/gu, ' ').toLocaleLowerCase('zh-CN'); }
+function catalogName(value) { return normalizedLabel(value).replace(/^(?:standardizedaccount|commonaccount)_/u, ''); }
+function contentCandidateNames(item) {
+  const names = [item && item.name, item && item.description];
+  for (const child of rows(item && item.subItems)) {
+    if (normalizedLabel(child && child.parentListName) === normalizedLabel('Common Account Area')) {
+      names.push(child.name, child.description);
+    }
+  }
+  return new Set(names.map(catalogName).filter(Boolean));
+}
+function genericApplicationContentId(payload, engagementId) {
+  if (!Array.isArray(payload) || payload.length !== 1) fail('Generic APP content authority is absent or ambiguous.');
+  const publication = payload[0];
+  if (!publication || typeof publication !== 'object' || Array.isArray(publication)
+    || guid(publication.engagementId) !== guid(engagementId)
+    || normalizedLabel(publication.typeName) !== normalizedLabel('Standardized Accounts List')
+    || !Array.isArray(publication.items) || publication.items.length < 1 || publication.items.length > 2000) {
+    fail('Generic APP content authority publication is invalid.');
+  }
+  const aliases = new Set(['Generic', 'Generic Application'].map(catalogName));
+  const matches = publication.items.filter((item) => item && typeof item === 'object' && !Array.isArray(item)
+    && item.isDeleted !== true
+    && guid(item.engagementId) === guid(engagementId)
+    && normalizedLabel(item.parentListName) === normalizedLabel('Standardized Accounts List')
+    && [...contentCandidateNames(item)].some((name) => aliases.has(name))
+    && rows(item.subItems).filter((child) => child && typeof child === 'object' && !Array.isArray(child)
+      && child.isDeleted !== true
+      && guid(child.engagementId) === guid(engagementId)
+      && normalizedLabel(child.parentListName) === normalizedLabel('Application type')
+      && normalizedLabel(child.name) === normalizedLabel('Application')).length === 1);
+  if (matches.length !== 1) fail('Generic APP content is absent or ambiguous in the authoritative Standardized Accounts List.');
+  const result = catalogId(matches[0].key);
+  if (!result) fail('Generic APP content lacks a canonical live catalog identity.');
+  return result;
+}
+function graContentId(value) {
+  const nested = value && value.graContent && typeof value.graContent === 'object' && !Array.isArray(value.graContent)
+    ? value.graContent : null;
+  const candidates = [...new Set([
+    value && value.inkContentId, value && value.contentId, value && value.graContentId,
+    nested && (nested.inkContentId || nested.contentId || nested.id || nested.key)
+  ].map(catalogId).filter(Boolean))];
+  return candidates.length === 1 ? candidates[0] : '';
+}
 function assessmentAppId(value) {
   const scope = rows(value && value.riskScopes).find((item) => lower(item && item.riskScopeType) === 'application' && guid(item && item.entityId));
   return guid(value && (value.entityId || value.itElementId || value.applicationId) || scope && scope.entityId);
 }
 function currentTab(value, tabId) {
-  const candidates = rows(value && value.concurrencyTabs)
-    .filter((item) => Number(item && item.entityTabTypeId) === tabId)
+  const rawCandidates = rows(value && value.concurrencyTabs)
+    .filter((item) => Number(item && item.entityTabTypeId) === tabId);
+  const candidates = rawCandidates
     .map((item) => ({ entityTabTypeId: tabId, updatedOn: text(item && item.updatedOn) }))
     .filter((item) => item.updatedOn && Number.isFinite(Date.parse(item.updatedOn)));
-  if (candidates.length !== 1) return null;
-  return candidates[0];
+  if (rawCandidates.length === 1 && candidates.length === 1) return candidates[0];
+  // Omnia also projects the currently active tab token on the Control root.
+  // This is a real concurrency pair (tab id + token), unlike the Control's
+  // ordinary updatedOn timestamp.  Prefer the unique concurrencyTabs row,
+  // but accept the exact root pair when no row for this tab is present.
+  const rootToken = text(value && value.concurrencyTabUpdatedOn);
+  if (rawCandidates.length === 0 && Number(value && value.concurrencyTabId) === tabId
+    && rootToken && Number.isFinite(Date.parse(rootToken))) {
+    return { entityTabTypeId: tabId, updatedOn: rootToken };
+  }
+  return null;
 }
 function controlState(detail) {
   const controlId = guid(detail && (detail.id || detail.controlId));
@@ -78,6 +137,36 @@ function controlState(detail) {
   const oeConcurrency = currentTab(detail, CONTROL_OE_TAB_ID);
   const operatingEffectivenessId = guid(detail && detail.controlOperatingEffectiveness && detail.controlOperatingEffectiveness.id);
   const opened = detail && detail.planningOperatingEffectivenessTesting === true;
+  const planningCommonControlTesting = detail && typeof detail.planningCommonControlTesting === 'boolean'
+    ? detail.planningCommonControlTesting : null;
+  const usePreviousAuditEvidence = detail && typeof detail.usePreviousAuditEvidence === 'boolean'
+    ? detail.usePreviousAuditEvidence : null;
+  const priorEvidenceDeclined = usePreviousAuditEvidence === false;
+  const priorEvidenceNotApplicable = usePreviousAuditEvidence === null
+    && Array.isArray(detail && detail.controlPriorYearEvidenceWorkPapers)
+    && detail.controlPriorYearEvidenceWorkPapers.length === 0;
+  // The recorded workflow explicitly selects "do not use prior evidence"
+  // even when the live evidence inventory is empty. Empty inventory is useful
+  // diagnostic state, but it is not a substitute for the requested setting.
+  const priorEvidenceComplete = priorEvidenceDeclined;
+  const diagnosticValue = (value) => {
+    if (value === null || typeof value === 'boolean' || typeof value === 'number') return value;
+    if (typeof value === 'string') return value.length <= 160 ? value : `[string:${value.length}]`;
+    if (Array.isArray(value)) return { kind: 'array', length: value.length,
+      itemKeys: [...new Set(value.slice(0, 5).flatMap((item) => item && typeof item === 'object' && !Array.isArray(item) ? Object.keys(item) : []))].sort().slice(0, 32) };
+    if (value && typeof value === 'object') return { kind: 'object', keys: Object.keys(value).sort().slice(0, 48) };
+    return `[${typeof value}]`;
+  };
+  const diagnosticEntries = [
+    ...Object.entries(detail || {}),
+    ...Object.entries(detail && detail.controlOperatingEffectiveness || {})
+      .map(([key, value]) => [`controlOperatingEffectiveness.${key}`, value])
+  ].filter(([key]) => /previous|prior|audit|evidence/iu.test(key))
+    .sort(([left], [right]) => left.localeCompare(right)).slice(0, 48);
+  const priorEvidenceDiagnostics = Object.fromEntries(diagnosticEntries.map(([key, value]) => [key, diagnosticValue(value)]));
+  const activeRiskScopeAssociations = rows(detail && detail.controlRiskScopes).filter((item) => !deleted(item)
+    && item && item.enabled !== false
+    && !['inactive', 'disabled'].includes(lower(item.entityStatus)));
   return {
     controlId,
     workItemId,
@@ -88,9 +177,35 @@ function controlState(detail) {
     coreConcurrency,
     oeConcurrency,
     operatingEffectivenessId,
-    openVerified: opened && Boolean(operatingEffectivenessId) && Boolean(oeConcurrency),
+    planningCommonControlTesting,
+    usePreviousAuditEvidence,
+    priorEvidenceDeclined,
+    priorEvidenceNotApplicable,
+    priorEvidenceComplete,
+    priorEvidenceDiagnostics,
+    // Omnia exposes master/suggested Controls from the risk-assessment
+    // catalog even when they are not associated.  Such rows are readable,
+    // but PATCH rejects them with "The control is unassociated".  A live,
+    // enabled risk-scope relation is therefore part of the executable
+    // Control identity, not an optional display attribute.
+    associated: activeRiskScopeAssociations.length > 0,
+    // The recorded Tab 209 PATCH deliberately removes
+    // /concurrencyTabUpdatedOn. Omnia can therefore return an exact,
+    // completed OE entity without a reusable Tab 209 timestamp. That is a
+    // valid terminal read-back, not permission for another mutation. The
+    // only write that needs a frozen timestamp remains the Tab 201 stage.
+    openVerified: opened && planningCommonControlTesting === false && priorEvidenceComplete
+      && Boolean(operatingEffectivenessId),
     deleted: deleted(detail)
   };
+}
+
+async function invokeMutationStep(sdk, diagnosticId, stepId, parameters, body) {
+  try { return await sdk.invokeStep(stepId, parameters, body); }
+  catch (error) {
+    const message = text(error && error.message) || 'The Omnia endpoint rejected the request.';
+    fail(`${diagnosticId}: ${message}`);
+  }
 }
 function mergeAssessmentIndex(workItems, commonAccounts) {
   const workRows = rows(workItems); const accountRows = rows(commonAccounts);
@@ -166,7 +281,8 @@ async function readAppGraContext(sdk, request, prefixes = {}) {
   const expectedAppId = guid(request && request.appId);
   const expectedAppWorkItemId = guid(request && request.appWorkItemId);
   const expectedWorkspaceId = guid(request && request.workspaceId);
-  if (!riskAssessmentId || !expectedGraWorkItemId || !expectedAppId || !expectedAppWorkItemId || !expectedWorkspaceId) {
+  const expectedGraContentId = catalogId(request && request.graContentId);
+  if (!riskAssessmentId || !expectedGraWorkItemId || !expectedAppId || !expectedAppWorkItemId || !expectedWorkspaceId || !expectedGraContentId) {
     fail('APP GRA request lacks its immutable GRA/APP/Work Item/Workspace identity.');
   }
   const detail = exactObject(await sdk.invokeStep(prefixes.gra || 'gra-detail', { riskAssessmentId }), 'GRA detail');
@@ -175,7 +291,8 @@ async function readAppGraContext(sdk, request, prefixes = {}) {
   const graWorkspaceIds = detailWorkspaceIds(detail);
   const appId = assessmentAppId(detail);
   if (actualGraId !== riskAssessmentId || graWorkItemId !== expectedGraWorkItemId || appId !== expectedAppId
-    || graWorkspaceIds.length !== 1 || graWorkspaceIds[0] !== expectedWorkspaceId || !applicationType(detail) || deleted(detail)) {
+    || graWorkspaceIds.length !== 1 || graWorkspaceIds[0] !== expectedWorkspaceId || !applicationType(detail) || deleted(detail)
+    || graContentId(detail) !== expectedGraContentId) {
     fail('APP GRA identity/type/Work Item/Workspace drifted.');
   }
   const app = exactObject(await sdk.invokeStep(prefixes.app || 'app-detail', { appId }), 'APP detail');
@@ -187,11 +304,12 @@ async function readAppGraContext(sdk, request, prefixes = {}) {
   const mapped = workspaceIds(mapping);
   if (mapped.length !== 1 || mapped[0] !== expectedWorkspaceId) fail('APP Workspace mapping drifted.');
   return {
-    riskAssessmentId, graWorkItemId, appId, appWorkItemId, workspaceId: expectedWorkspaceId,
+    riskAssessmentId, graWorkItemId, appId, appWorkItemId, workspaceId: expectedWorkspaceId, graContentId: expectedGraContentId,
     graName: text(detail.name || detail.displayName || detail.referenceNumber),
     graReferenceNumber: text(detail.referenceNumber),
     graStatus: text(detail.status), graUpdatedOn: text(detail.updatedOn || detail.updatedAt),
-    appName: text(app.name || app.displayName || app.number), appNumber: text(app.number || app.referenceNumber)
+    appName: text(app.name || app.displayName || app.number), appNumber: text(app.number || app.referenceNumber),
+    graContentName: 'Generic'
   };
 }
 async function readControl(sdk, stepId, controlId, expectedWorkItemId = '') {
@@ -225,10 +343,12 @@ function createOperationHandler() {
       const authority = authoritativeWorkspaces(await sdk.invokeStep('authority-directory', { engagementId: sdk.binding.engagementId }), sdk.binding.engagementId);
       const authorityById = new Map(authority.map((item) => [item.id, item]));
       if (requestedIds.some((workspaceId) => !authorityById.has(workspaceId))) fail('Requested Workspace is absent from current authority.');
-      const [workItems, commonAccounts] = await Promise.all([
+      const [workItems, commonAccounts, graContentAuthority] = await Promise.all([
         sdk.invokeStep('gra-workitem-index', {}, { workItemIds: [], engagementIds: [sdk.binding.engagementId], workItemTypes: ['RiskFactorEvaluation'] }),
-        sdk.invokeStep('gra-common-account-index', {}, { riskAssessmentType: [] })
+        sdk.invokeStep('gra-common-account-index', {}, { riskAssessmentType: [] }),
+        sdk.invokeStep('directory-gra-content-authority', { catalogType: 'Standardized Accounts List', releaseDate: 'null' })
       ]);
+      const genericContentId = genericApplicationContentId(graContentAuthority, sdk.binding.engagementId);
       const allowed = new Set(requestedIds);
       const projected = await mapLimit(mergeAssessmentIndex(workItems, commonAccounts), 6, async (indexed) => {
         const detailResult = await invokeOptionalWorkpaperStep(sdk, 'directory-gra-detail', { riskAssessmentId: indexed.riskAssessmentId });
@@ -239,8 +359,10 @@ function createOperationHandler() {
         const graWorkItemId = guid(detail.workItemId || detail.riskAssessmentWorkItemId || indexed.workItemId);
         const mappedGra = detailWorkspaceIds(detail, indexed);
         const appId = assessmentAppId(detail);
+        const contentId = graContentId(detail);
         const workspaceId = mappedGra.length === 1 ? mappedGra[0] : '';
-        if (riskAssessmentId !== indexed.riskAssessmentId || !graWorkItemId || !appId || !workspaceId || !allowed.has(workspaceId)) return null;
+        if (riskAssessmentId !== indexed.riskAssessmentId || !graWorkItemId || !appId || contentId !== genericContentId
+          || !workspaceId || !allowed.has(workspaceId)) return null;
         const appResult = await invokeOptionalWorkpaperStep(sdk, 'directory-app-detail', { appId });
         if (!appResult.present) return null;
         const app = exactObject(appResult.value, 'APP detail');
@@ -250,11 +372,12 @@ function createOperationHandler() {
         if (appMapping.length !== 1 || appMapping[0] !== workspaceId) return null;
         const graName = text(detail.name || detail.displayName || indexed.names && indexed.names[0] || indexed.referenceNumber);
         return {
-          riskAssessmentId, graWorkItemId, appId, appWorkItemId, workspaceId,
+          riskAssessmentId, graWorkItemId, appId, appWorkItemId, workspaceId, graContentId: genericContentId,
           workspaceName: authorityById.get(workspaceId).name,
           graName, graReferenceNumber: text(detail.referenceNumber || indexed.referenceNumber),
           graStatus: text(detail.status || indexed.status), graUpdatedOn: text(detail.updatedOn || detail.updatedAt || indexed.updatedOn),
           appName: text(app.name || app.displayName || indexed.appName), appNumber: text(app.number || app.referenceNumber),
+          graContentName: 'Generic',
           selectable: true, disabledReason: ''
         };
       });
@@ -281,13 +404,16 @@ function createOperationHandler() {
         return result;
       });
       if (new Set(controls.map((item) => item.controlId)).size !== controls.length) fail('Control catalog contains duplicate identities.');
-      return { ...context, controls: controls.sort((left, right) => left.controlId.localeCompare(right.controlId)) };
+      const associatedControls = controls.filter((item) => item.associated);
+      return { ...context, controls: associatedControls.sort((left, right) => left.controlId.localeCompare(right.controlId)) };
     }
     if (operationId === 'omnia.workpaper.control.preflight.v1') {
       const value = await readFrozenControlContext(sdk, request, { gra: 'preflight-gra-detail', app: 'preflight-app-detail', mapping: 'preflight-app-facet-mapping', control: 'preflight-control-detail' });
       if (value.absent) fail('Control is absent before opening its hidden Tab.');
-      if (value.opened && !value.openVerified) fail('Control reports an enabled OE Tab without the OE entity and unique Tab 209 token.');
-      if (!value.opened && !value.coreConcurrency) fail('Control core Tab 201 has no unique live concurrency token.');
+      if (!value.associated) fail('Control is no longer associated and cannot enter a hidden-Tab execution plan.');
+      if (value.opened && !value.operatingEffectivenessId) {
+        fail('Control reports an enabled OE Tab without its exact OE entity.');
+      }
       return value;
     }
     if (operationId === 'omnia.workpaper.control.open-hidden-tab.v1') {
@@ -295,29 +421,114 @@ function createOperationHandler() {
       const controlId = guid(payload && payload.controlId);
       const expectedControlId = guid(request && request.controlId);
       if (!controlId || controlId !== expectedControlId || payload.planningOperatingEffectivenessTesting !== true
-        || Number(payload.concurrencyTabId) !== CONTROL_CORE_TAB_ID || !text(payload.concurrencyTabUpdatedOn)) {
-        fail('Signed hidden-Tab command differs from its frozen Control identity or Tab 201 token.');
+        || payload.planningCommonControlTesting !== false
+        || payload.usePreviousAuditEvidence !== false
+        || typeof payload.baselinePlanningCommonControlTesting !== 'boolean'
+        || Number(payload.concurrencyTabId) !== CONTROL_CORE_TAB_ID) {
+        fail('Signed hidden-Tab command differs from its frozen Control identity, desired hidden-Tab state, or Tab 201 token.');
       }
-      const live = await readFrozenControlContext(sdk, request, {
+      let live = await readFrozenControlContext(sdk, request, {
         gra: 'mutation-gra-detail', app: 'mutation-app-detail', mapping: 'mutation-app-facet-mapping', control: 'mutation-control-detail'
       });
-      if (live.absent || live.opened || !live.coreConcurrency
-        || live.coreConcurrency.updatedOn !== text(payload.concurrencyTabUpdatedOn)) {
-        fail('Control identity, open state, or Tab 201 token changed immediately before the hidden-Tab PATCH.');
+      if (live.absent) fail('Control disappeared immediately before the hidden-Tab update.');
+      if (!live.associated) fail('Control is no longer associated; no hidden-Tab mutation was submitted.');
+      if (live.openVerified) return { controlId, accepted: true, mutation: 'already_applied' };
+      if (!live.opened) {
+        if (live.planningCommonControlTesting !== payload.baselinePlanningCommonControlTesting
+          || (live.coreConcurrency
+            ? live.coreConcurrency.updatedOn !== text(payload.concurrencyTabUpdatedOn)
+            : Boolean(text(payload.concurrencyTabUpdatedOn)))) {
+          fail('Control identity, open state, or Tab 201 token changed immediately before the hidden-Tab PATCH.');
+        }
+        // The recording proves that a pristine Control has no Tab 201 row and
+        // cannot accept the OE PATCH directly. Omnia first materializes Tab
+        // 201 by temporarily enabling common-control testing with the
+        // recorded no-token PATCH. Only the subsequent authoritative read may
+        // supply the concurrency token for the OE PATCH.
+        if (!live.coreConcurrency) {
+          await invokeMutationStep(sdk, 'WORKPAPER.CORE_BOOTSTRAP_PATCH_FAILED', 'open-hidden-tab', { controlId }, [
+            { op: 'replace', path: '/planningCommonControlTesting', value: true },
+            { op: 'replace', path: '/concurrencyTabId', value: CONTROL_CORE_TAB_ID },
+            { op: 'replace', path: '/concurrencyTabUpdatedOn' },
+            { op: 'replace', path: '/isPurgeHiddenData', value: true }
+          ]);
+          live = await readControl(sdk, 'mutation-stage-one-readback', controlId, request.controlWorkItemId);
+          if (live.absent || live.opened || live.planningCommonControlTesting !== true
+            || !live.coreConcurrency || !text(live.coreConcurrency.updatedOn)) {
+            fail('The recorded Tab 201 bootstrap did not produce an exact live concurrency token.');
+          }
+          await invokeMutationStep(sdk, 'WORKPAPER.COMMON_VALIDATE_FAILED', 'validate-hidden-data', { controlId }, [
+            { op: 'replace', path: '/planningCommonControlTesting', value: false }
+          ]);
+        }
+        await invokeMutationStep(sdk, 'WORKPAPER.OE_VALIDATE_FAILED', 'validate-hidden-data', { controlId }, [
+          { op: 'replace', path: '/planningOperatingEffectivenessTesting', value: true },
+          { op: 'replace', path: '/planningCommonControlTesting', value: false }
+        ]);
+        const liveCoreToken = text(live.coreConcurrency && live.coreConcurrency.updatedOn);
+        if (!liveCoreToken) fail('The operating-effectiveness PATCH requires the authoritative Tab 201 token.');
+        await invokeMutationStep(sdk, 'WORKPAPER.OE_PATCH_FAILED', 'open-hidden-tab', { controlId }, [
+          { op: 'replace', path: '/planningOperatingEffectivenessTesting', value: true },
+          { op: 'replace', path: '/planningCommonControlTesting', value: false },
+          { op: 'replace', path: '/concurrencyTabId', value: CONTROL_CORE_TAB_ID },
+          { op: 'replace', path: '/concurrencyTabUpdatedOn', value: liveCoreToken },
+          { op: 'replace', path: '/isPurgeHiddenData', value: true }
+        ]);
+        live = await readControl(sdk, 'mutation-stage-one-readback', controlId, request.controlWorkItemId);
       }
-      await sdk.invokeStep('open-hidden-tab', { controlId }, [
-        { op: 'replace', path: '/planningOperatingEffectivenessTesting', value: true },
-        { op: 'replace', path: '/concurrencyTabId', value: CONTROL_CORE_TAB_ID },
-        { op: 'replace', path: '/concurrencyTabUpdatedOn', value: text(payload.concurrencyTabUpdatedOn) }
+      if (live.absent || !live.opened || !live.operatingEffectivenessId) {
+        fail('The operating-effectiveness stage did not produce the exact OE entity.');
+      }
+      const resumeOperatingEffectivenessId = guid(payload && payload.resumeOperatingEffectivenessId);
+      if (resumeOperatingEffectivenessId && resumeOperatingEffectivenessId !== live.operatingEffectivenessId) {
+        fail('The frozen partial-state OE identity differs from the current Control.');
+      }
+      if (live.planningCommonControlTesting !== false) {
+        if (!live.coreConcurrency || live.coreConcurrency.updatedOn !== text(payload.concurrencyTabUpdatedOn)) {
+          fail('The partial Control no longer has its frozen Tab 201 token for the common-control repair.');
+        }
+        await invokeMutationStep(sdk, 'WORKPAPER.COMMON_VALIDATE_FAILED', 'validate-hidden-data', { controlId }, [
+          { op: 'replace', path: '/planningCommonControlTesting', value: false }
+        ]);
+        await invokeMutationStep(sdk, 'WORKPAPER.COMMON_PATCH_FAILED', 'open-hidden-tab', { controlId }, [
+          { op: 'replace', path: '/planningCommonControlTesting', value: false },
+          { op: 'replace', path: '/concurrencyTabId', value: CONTROL_CORE_TAB_ID },
+          { op: 'replace', path: '/concurrencyTabUpdatedOn', value: text(payload.concurrencyTabUpdatedOn) },
+          { op: 'replace', path: '/isPurgeHiddenData', value: true }
+        ]);
+        live = await readControl(sdk, 'mutation-stage-one-readback', controlId, request.controlWorkItemId);
+        if (live.absent || !live.opened || !live.operatingEffectivenessId
+          || live.planningCommonControlTesting !== false) {
+          fail('The common-control stage did not reach its exact recorded state.');
+        }
+      }
+      if (live.openVerified) return { controlId, accepted: true, mutation: 'already_applied' };
+      if (live.priorEvidenceDeclined) return { controlId, accepted: true, mutation: 'already_applied' };
+      await invokeMutationStep(sdk, 'WORKPAPER.PRIOR_EVIDENCE_VALIDATE_FAILED', 'validate-hidden-data', { controlId }, [
+        { op: 'replace', path: '/usePreviousAuditEvidence', value: false }
       ]);
-      return { controlId, accepted: true, mutation: 'planningOperatingEffectivenessTesting=true' };
+      await invokeMutationStep(sdk, 'WORKPAPER.PRIOR_EVIDENCE_PATCH_FAILED', 'open-hidden-tab', { controlId }, [
+        { op: 'replace', path: '/usePreviousAuditEvidence', value: false },
+        { op: 'replace', path: '/concurrencyTabId', value: CONTROL_OE_TAB_ID },
+        { op: 'replace', path: '/concurrencyTabUpdatedOn' },
+        { op: 'replace', path: '/isPurgeHiddenData', value: true }
+      ]);
+      return { controlId, accepted: true, mutation: 'planningOperatingEffectivenessTesting=true;planningCommonControlTesting=false;usePreviousAuditEvidence=false' };
     }
     if (operationId === 'omnia.workpaper.control.reconcile.v1') {
       const value = await readFrozenControlContext(sdk, request, { gra: 'reconcile-gra-detail', app: 'reconcile-app-detail', mapping: 'reconcile-app-facet-mapping', control: 'reconcile-control-detail' });
       if (value.absent) return { ...value, outcome: 'contradiction' };
       if (value.openVerified) return { ...value, outcome: 'applied' };
+      if (value.opened && value.operatingEffectivenessId && !value.openVerified) {
+        return { ...value, outcome: 'partial_applied' };
+      }
       const frozenToken = text(request && request.baselineCoreUpdatedOn);
-      if (!value.opened && value.coreConcurrency && value.coreConcurrency.updatedOn === frozenToken) return { ...value, outcome: 'not_applied' };
+      const baselineCommon = request && request.baselinePlanningCommonControlTesting;
+      if (!value.opened && typeof baselineCommon === 'boolean'
+        && value.planningCommonControlTesting !== baselineCommon) return { ...value, outcome: 'partial_applied' };
+      if (!value.opened && (!frozenToken || value.coreConcurrency && value.coreConcurrency.updatedOn === frozenToken)) {
+        return { ...value, outcome: 'not_applied' };
+      }
       return { ...value, outcome: 'pending' };
     }
     fail(`Unsupported signed Operation: ${operationId}`);

@@ -50,7 +50,7 @@ The current V5 contract signs `Phase1-用户填写模板V5.xlsx` as the sole use
 
 ## DCNO 本地合同与 Return 边界
 
-新版 V4 输入中的 DCNO 区段只能由精确表头 `DCNO ID` 识别为独立 `kind=DCNO`，不得按名称猜为 APP、OS 或其他元素。`DCNO ID`、`DCNO 类型`、`Omnia工作区`、`关联系统ID` 均必填；类型当前只允许 `网络`；关系允许一个或多个 APP ID，但每个 ID 必须在本批次唯一解析为同一 Workspace 的 APP。重复、批外、非 APP、跨 Workspace 或歧义目标均为 blocking。
+新版 V4 输入中的 DCNO 区段只能由精确表头 `DCNO ID` 识别为独立 `kind=DCNO`，不得按名称猜为 APP、OS 或其他元素。`DCNO ID`、`DCNO 类型`、`Omnia工作区`、`关联系统ID` 均必填；类型当前只允许 `网络`；关系允许一个或多个 APP ID。每个目标必须唯一解析为本批次 APP，或经签名只读 Operation 解析为当前 Pack 中唯一、活动的 Application 及其 GRA/RAIT。跨 Workspace 与批外引用只产生提醒；缺失、重复、歧义、非 APP、未验证或 RAIT 无效仍为 blocking。
 
 DCNO 的当前 signed `kindRegistry.returnSupport=supported`，并沿用参数化 Infrastructure 生命周期：object、relation、GRA、继承 RAIT、Risk-Control 和 Evaluation 可生成计划、intent 与签名 Operation。对象必须是 `Infrastructure`/subtype `Network`，GRA content 是 `60241274`（`通用网络设备`）；关系是一个或多个同 Workspace APP 的 `InfrastructureApplication`，`ConcurrencyTabId=602`。继承 RAIT 固定为 `any_higher_else_all_lower`（任一 Higher 即 Higher，仅全部有效来源 Lower 才 Lower）。DCNO 不执行 APP 专属 `IT风险评估` category/Factors、settings、direct RAIT、APP scoring 或 AI review，但保留 GRA/Risk-Control/Evaluation。
 
@@ -62,7 +62,7 @@ Lower 不需要重复录制同一目录；模式差异只由签名母版的 `lin
 
 DB/OS 的 `inheritanceDecision` 使用固定策略 `any_higher_else_all_lower`：任一有效来源为 Higher 即为 Higher，只有全部有效来源为 Lower 才为 Lower。Higher/Lower 混合是确定性通过状态并显示“DB/OS 将按 Higher 优先设置为 Higher”；缺失、无效或未通过实时身份/类型/Workspace/RAIT 校验的来源仍阻断。
 
-用户值每条保存 sourceArtifactId/sourceSheet/sourceRow/rowKey/rawFieldKey/canonical field_id/sourceTraceId/valueKind/revision。任一 blocking/error 缺失、冲突、歧义持久化为 `needs_input`。APP/DB/OS/DCNO/Tool 五种区段都使用各自签名 Operation 的真实预检、写入与读回；批外 APP 引用仍明确阻断。
+用户值每条保存 sourceArtifactId/sourceSheet/sourceRow/rowKey/rawFieldKey/canonical field_id/sourceTraceId/valueKind/revision。任一 blocking/error 缺失、冲突、歧义持久化为 `needs_input`。APP/DB/OS/DCNO/Tool 五种区段都使用各自签名 Operation 的真实预检、写入与读回。批外 APP 必须先完成当前 Pack 的精确身份、Application 类型、GRA 与 RAIT 只读验证；通过后仅提醒，不阻断。
 
 # Contracts
 
@@ -92,7 +92,7 @@ Core must durably record the signed read-only response before its CAS partial cl
 
 ## Tool → APP input contract
 
-`关联APP系统ID` is the versioned Tool input field and maps only to the governed `P1.TOOL.IT.APPLICATION_RELATION` declaration. A Tool row must provide exactly one in-batch APP ID. Case-insensitive identity matching must resolve exactly one APP and its normalized Workspace must equal the Tool Workspace; absent, external, ambiguous, multiple, empty, defaulted or cross-Workspace targets are blocking. The Worker freezes `ItToolApplication`, source and target object identities, Workspace and the signed relation Operations. It writes with the recorded Tool relation concurrency tab `802`, then performs the authoritative relation read-back. No APP is inferred from the current Pack or from another row.
+`关联APP系统ID` is the versioned Tool input field and maps only to the governed `P1.TOOL.IT.APPLICATION_RELATION` declaration. A Tool row must provide one or more explicit APP IDs. Each ID must resolve uniquely either to an APP row in this upload or to one exact active Application already present in the current Pack. Cross-Workspace and off-batch targets produce warnings after live verification; empty, duplicate, missing, ambiguous, inactive or non-Application targets block. The Worker freezes every `ItToolApplication` source/target identity and its own Workspace, writes each relation with concurrency tab `802`, then performs authoritative two-sided relation read-back. No APP is guessed or inferred.
 
 Version 0.2.54 adds no arbitrary route and weakens no mutation gate. Tool freezes exactly one same-Workspace in-batch APP relation. DB/OS freeze every same-Workspace APP source and the Python-derived any-Higher/all-Lower RAIT result. `continueOnIsolatedFailure` is confirmed and frozen with the Return plan: failure/uncertainty isolates only that row and dependency descendants while independent rows continue; skipped or uncertain targets never count as verified and uncertain mutation is never replayed. The concurrency ceiling remains four. Settings fresh-token fast path and Risk-Control settling are read-back optimizations, not relaxed evidence.
 
@@ -104,7 +104,7 @@ Version 0.2.50 adds two fail-closed navigation contracts. `returnRunToReview` ac
 
 An active APP/DB/OS/Tool identity is recoverable only when Core proves one exact prior committed create under the current Connector/session, Authority, tenant/org, Pack, Engagement and safety-locked Workspace, with exact object ID, external ID and mandatory object type (`Application`, `Infrastructure`, or `ITTool`). DB/OS additionally retain the live exact subtype check. That proof freezes the target as `resume` with its resolved object ID and ownership identity and is repeated before execution; an unowned, ambiguous, recycled, Workspace-drifted, type-drifted or proof-drifted same-name object remains blocking.
 
-Canonical GRA names are `GRA-${elementId}` and share one batch namespace with element IDs: Element↔Element, GRA↔GRA and Element↔another row's GRA collisions all block. DB/OS must reference one or more exact in-batch APP rows in the same normalized Workspace. One `InfrastructureApplication` relation per source is written and read from both directions before Infrastructure GRA creation; DB/OS RAIT is Higher when any valid source is Higher and Lower only when every valid source is Lower. Tool must reference exactly one exact same-Workspace in-batch APP and uses only the signed `ItToolApplication`/802 contract; no target is inferred.
+Canonical GRA names are `GRA-${elementId}` and share one batch namespace with element IDs: Element↔Element, GRA↔GRA and Element↔another row's GRA collisions all block. DB/OS/DCNO must reference one or more explicit APP IDs; Tool also supports one or more explicit APP IDs. Each target is frozen as either an exact in-batch APP dependency or an exact active current-Pack Application identity. One signed relation per target is written and read from both directions before the source GRA continues. DB/OS/DCNO RAIT is Higher when any verified source is Higher and Lower only when every verified source is Lower; mixed valid RAIT is therefore a warning, not an error. Cross-Workspace and off-batch scope are warnings only after exact verification. Missing, ambiguous, inactive, non-APP or unverified targets still block.
 
 Parser-origin structural/unmapped blockers survive revalidation. Generated issues have explicit producer/code provenance and deterministic IDs scoped by source Run artifact. Every active blocker maps to at least one failed canonical check. APP identity/recycle resolution is a signed read-only Operation and never grants a mutation permit. Only the separate action-time create preflight may grant the one-time object-create permit, and only for a fresh `create` disposition.
 

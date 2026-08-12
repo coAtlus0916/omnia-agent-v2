@@ -1,4 +1,12 @@
-﻿# 0.2.114 / sequence 116
+﻿# 0.2.137 / sequence 139
+
+Version 0.2.137 gives every per-target relationship warning a deterministic distinct identity. It also safely projects distinct compatibility identities when reopening a pre-0.2.137 Run whose persisted warning records reused one issue ID, so an existing upload can be revalidated without deleting or replaying the Run.
+
+## 0.2.136 / sequence 138
+
+Version 0.2.136 removes the obsolete same-upload/same-Workspace relationship restriction without weakening identity checks. DB/OS/DCNO/Tool may reference one or more explicit APP IDs from this upload or one exact active Application already present in the current Pack. Off-batch and cross-Workspace references are warnings after signed live object/GRA/RAIT verification; missing, ambiguous, inactive, non-Application, invalid-RAIT or unverifiable targets remain blocking. Mixed verified Higher/Lower sources deterministically freeze Higher and emit a warning. Source and target Workspace authorities are verified independently for relationship read-back. All policy, resolution and Return planning remains inside the signed Feature and its Feature-owned Operation package; Connector remains generic.
+
+## 0.2.114 / sequence 116
 
 ## 0.2.114 / sequence 116 ordered multi-command reconcile
 

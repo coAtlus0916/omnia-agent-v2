@@ -3583,8 +3583,10 @@ export class FeatureRuntimeStore {
     const request = object(input, 'Deletion command');
     const runId = String(request.runId || '');
     const planDigest = String(request.planDigest || '');
-    if (!this.core.prepare(`SELECT 1 FROM feature_runs WHERE run_id=? AND feature_id=? AND feature_version=? AND state='returning'`)
-      .get(runId, context.featureId, context.featureVersion)) throw new Error('Deletion command Run is not active.');
+    if (!this.core.prepare(`SELECT 1 FROM feature_runs WHERE run_id=? AND feature_id=? AND state='returning'`)
+      .get(runId, context.featureId) || !this.currentActivationOwnsRun(runId, context)) {
+      throw new Error('Mutation command Run is not active or is outside the finalized Feature handoff lineage.');
+    }
     const targetKind = String(request.targetKind || '');
     const targetKey = String(request.targetKey || '');
     const intent = this.core.prepare(`SELECT intent_id,state,intended_revision_json FROM managed_content_intents WHERE run_id=? AND plan_digest=? AND target_kind=? AND target_key=?`)
@@ -3622,15 +3624,40 @@ export class FeatureRuntimeStore {
     ])];
     if (durable.enabled !== 1 || durable.engagement_id !== binding.engagementId
       || !allowedWorkspaceIds.includes(String(request.workspaceId || ''))) throw new Error('Deletion target is outside the current durable safety lock.');
+    const priorPartialCommands = Number((this.core.prepare(`
+      SELECT COUNT(*) AS count FROM feature_commands prior
+      WHERE prior.intent_id=? AND prior.state='readback_verified'
+        AND EXISTS(
+          SELECT 1 FROM feature_command_evidence evidence
+          WHERE evidence.command_id=prior.command_id AND evidence.run_id=prior.run_id
+            AND evidence.evidence_type='reconcile' AND evidence.verified=1
+            AND json_extract(evidence.payload_json,'$.outcome')='partial_applied'
+        )
+    `).get(intent.intent_id) as {count:number}).count || 0);
+    const continuationIndex = priorPartialCommands + 1;
     const commandId = randomUUID();
-    const idempotencyKey = crypto.createHash('sha256').update(canonical({runId,planDigest,targetKind,targetKey,operationId:request.operationId})).digest('hex');
+    const idempotencyKey = crypto.createHash('sha256').update(canonical({
+      runId,planDigest,targetKind,targetKey,operationId:request.operationId,continuationIndex
+    })).digest('hex');
     const requestDigest = crypto.createHash('sha256').update(canonical(mutationPayload)).digest('hex');
     const exactPreparedCommand = (): {command_id:string;idempotency_key:string;request_digest:string}|undefined => this.core.prepare(`
       SELECT command_id,idempotency_key,request_digest FROM feature_commands
       WHERE run_id=? AND intent_id=? AND operation_id=? AND idempotency_key=? AND plan_digest=? AND request_digest=?
         AND evidence_operation_ids_json=? AND evidence_target_identity_key=? AND evidence_request_digest=''
         AND state='prepared' AND submitted_at='' AND commit_point_at='' AND completed_at='' AND last_error=''
-        AND (SELECT COUNT(*) FROM feature_commands sibling WHERE sibling.intent_id=feature_commands.intent_id)=1
+        AND NOT EXISTS(
+          SELECT 1 FROM feature_commands sibling
+          WHERE sibling.intent_id=feature_commands.intent_id AND sibling.command_id<>feature_commands.command_id
+            AND NOT (
+              sibling.state='readback_verified'
+              AND EXISTS(
+                SELECT 1 FROM feature_command_evidence evidence
+                WHERE evidence.command_id=sibling.command_id AND evidence.run_id=sibling.run_id
+                  AND evidence.evidence_type='reconcile' AND evidence.verified=1
+                  AND json_extract(evidence.payload_json,'$.outcome')='partial_applied'
+              )
+            )
+        )
         AND NOT EXISTS(SELECT 1 FROM feature_operation_receipts receipt WHERE receipt.command_id=feature_commands.command_id)
         AND NOT EXISTS(SELECT 1 FROM feature_command_evidence prior WHERE prior.command_id=feature_commands.command_id AND (prior.evidence_type<>'preflight' OR prior.receipt_id<>''))
     `).get(
@@ -3676,6 +3703,12 @@ export class FeatureRuntimeStore {
     }
     const row = this.core.prepare(`
       SELECT c.evidence_operation_ids_json,c.evidence_target_identity_key,c.evidence_request_digest,c.state,
+        EXISTS(
+          SELECT 1 FROM feature_command_evidence partial
+          WHERE partial.command_id=c.command_id AND partial.run_id=c.run_id
+            AND partial.evidence_type='reconcile' AND partial.verified=1
+            AND json_extract(partial.payload_json,'$.outcome')='partial_applied'
+        ) AS has_partial_evidence,
         i.intended_revision_json,f.credential_digest,f.authority_instance_id,f.tenant_or_org_id,f.pack_id,f.engagement_id
       FROM feature_commands c
       JOIN feature_runs r ON r.run_id=c.run_id
@@ -3694,7 +3727,8 @@ export class FeatureRuntimeStore {
     })).digest('hex');
     const intended = row ? JSON.parse(String(row.intended_revision_json)) as Record<string, unknown> : {};
     const digest = crypto.createHash('sha256').update(canonical(evidenceRequest)).digest('hex');
-    if (!row || !['prepared','committed','uncertain'].includes(String(row.state))
+    if (!row || (!['prepared','committed','uncertain'].includes(String(row.state))
+        && !(String(row.state)==='readback_verified' && Number(row.has_partial_evidence)===1))
       || !(JSON.parse(String(row.evidence_operation_ids_json)) as string[]).includes(operationId)
       || String(target.targetIdentityKey || '') !== String(row.evidence_target_identity_key)
       || (intended.operationTargetIdentityMode !== 'resolved_relation' && String(target.targetIdentityKey || '') !== String(intended.operationTargetIdentityKey || ''))
@@ -3734,6 +3768,9 @@ export class FeatureRuntimeStore {
       : payload;
     const evidenceDigest = crypto.createHash('sha256').update(canonical(receiptPayload)).digest('hex');
     const nextState = String(request.commandState || row.state);
+    const intentResolution = String(request.intentResolution || 'complete');
+    if (!['complete','partial_effect'].includes(intentResolution)) throw new Error('Return intent resolution is invalid.');
+    const repeatedPartialResolution = row.state === 'readback_verified' && intentResolution === 'partial_effect';
     if (!['prepared','submitted','committed','verifying','readback_verified','closed_not_applied','failed','uncertain'].includes(nextState)) throw new Error('Return command state is invalid.');
     const transitions: Record<string, string[]> = {
       prepared: ['prepared','submitted','readback_verified','closed_not_applied','failed'],
@@ -3741,7 +3778,9 @@ export class FeatureRuntimeStore {
       verifying: ['readback_verified','failed','uncertain'], uncertain: ['readback_verified','closed_not_applied','failed','uncertain'],
       readback_verified: [], closed_not_applied: [], failed: []
     };
-    if (!transitions[row.state]?.includes(nextState)) throw new Error(`Illegal Return command transition: ${row.state} -> ${nextState}.`);
+    if (!repeatedPartialResolution && !transitions[row.state]?.includes(nextState)) {
+      throw new Error(`Illegal Return command transition: ${row.state} -> ${nextState}.`);
+    }
     if (nextState === 'submitted' && evidenceType !== 'request') throw new Error('Submitted state requires request evidence.');
     if(nextState==='submitted'){
       const intended=JSON.parse(row.intended_revision_json) as Record<string,unknown>;
@@ -3758,6 +3797,12 @@ export class FeatureRuntimeStore {
     }
     if (nextState === 'closed_not_applied' && evidenceType !== 'reconcile') {
       throw new Error('Closed-not-applied state requires authoritative reconcile evidence.');
+    }
+    if (intentResolution === 'partial_effect'
+      && (nextState !== 'readback_verified' || evidenceType !== 'reconcile'
+        || !payload || typeof payload !== 'object' || Array.isArray(payload)
+        || String((payload as Record<string,unknown>).outcome || '') !== 'partial_applied')) {
+      throw new Error('Partial-effect resolution requires an exact authoritative partial-applied reconcile receipt.');
     }
     if (receiptRequired) {
       const receipt = this.core.prepare(`
@@ -3813,12 +3858,16 @@ export class FeatureRuntimeStore {
         .run(evidenceId, commandId, runId, evidenceType, evidenceDigest, receiptRequired ? receiptId : '', receiptRequired ? 1 : (request.verified === true ? 1 : 0), JSON.stringify(payload), occurredAt);
       this.core.prepare(`UPDATE feature_commands SET state=?, commit_point_at=CASE WHEN ?='commit' THEN ? ELSE commit_point_at END, submitted_at=CASE WHEN ?='request' THEN ? ELSE submitted_at END, completed_at=CASE WHEN ? IN ('readback_verified','closed_not_applied','failed') THEN ? ELSE completed_at END, last_error=? WHERE command_id=?`)
         .run(nextState, evidenceType, occurredAt, evidenceType, occurredAt, nextState, occurredAt, String(request.error || ''), commandId);
-      if (['readback_verified','closed_not_applied'].includes(nextState)) this.core.prepare(`UPDATE managed_content_intents SET state='verified', updated_at=? WHERE intent_id=?`).run(occurredAt, row.intent_id);
+      if (['readback_verified','closed_not_applied'].includes(nextState)) {
+        this.core.prepare(`UPDATE managed_content_intents SET state=?, updated_at=? WHERE intent_id=?`).run(
+          intentResolution === 'partial_effect' ? 'frozen' : 'verified', occurredAt, row.intent_id
+        );
+      }
       if (nextState==='readback_verified') this.core.prepare(`UPDATE feature_mutation_reservations SET lifecycle='completed',updated_at=? WHERE owner_command_id=? AND lifecycle='active'`).run(occurredAt,commandId);
       if (nextState==='closed_not_applied'||(nextState==='failed'&&row.state==='prepared')) this.core.prepare(`UPDATE feature_mutation_reservations SET lifecycle='released',updated_at=? WHERE owner_command_id=? AND lifecycle='active'`).run(occurredAt,commandId);
       if (nextState === 'uncertain') this.core.prepare(`UPDATE managed_content_intents SET state='uncertain', updated_at=? WHERE intent_id=?`).run(occurredAt, row.intent_id);
       if (nextState === 'failed') this.core.prepare(`UPDATE managed_content_intents SET state='failed', updated_at=? WHERE intent_id=?`).run(occurredAt, row.intent_id);
-      if (receiptRequired && verifiedReceipt) {
+      if (receiptRequired && verifiedReceipt && !repeatedPartialResolution) {
         const receipt = verifiedReceipt;
         const sourceRequestId = String(receipt.source_connector_request_id || '');
         // A prepared command may be closed as not-applied before any mutation was
@@ -3870,7 +3919,7 @@ export class FeatureRuntimeStore {
       }
       this.core.exec('COMMIT;');
     } catch (error) { this.core.exec('ROLLBACK;'); throw error; }
-    return { evidenceId, evidenceDigest };
+    return { evidenceId, evidenceDigest, intentResolution };
   }
 
   private projectVerifiedReturn(input: unknown, context: FeatureWorkerPortContext): true {

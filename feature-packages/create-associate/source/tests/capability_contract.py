@@ -123,7 +123,7 @@ def assert_registry(case: dict, governance: dict) -> None:
     }], "Code-migration Tool recorded content/relations boundary drifted.")
     require(registry["DB"]["relationPolicy"]["relationType"] == "InfrastructureApplication", "DB relation family drifted.")
     require(registry["OS"]["relationPolicy"]["relationType"] == "InfrastructureApplication", "OS relation family drifted.")
-    require(registry["TOOL"]["relationPolicy"] == {"targetKind": "APP", "min": 1, "max": 1, "relationType": "ItToolApplication", "concurrencyTabId": 802}, "TOOL exact-one APP contract drifted.")
+    require(registry["TOOL"]["relationPolicy"] == {"targetKind": "APP", "min": 1, "max": 200, "relationType": "ItToolApplication", "concurrencyTabId": 802}, "TOOL multi-APP contract drifted.")
     dcno = registry["DCNO"]
     require(dcno["returnSupport"] == "supported", "DCNO signed Network lifecycle support drifted.")
     require(dcno.get("riskControlSupportedRaitValues") == ["Higher", "Lower"], "DCNO Higher/Lower catalog parity drifted.")
@@ -184,9 +184,48 @@ def assert_workbook_case(case: dict, governance: dict, template: bytes) -> None:
     parsed.setdefault("issues", []).extend(issue_from_fixture(spec, parsed) for spec in case.get("addIssues", []))
     parsed = validate_ir(parsed)
     issue_codes = {issue["code"] for issue in parsed["issues"] if issue.get("state") in ("blocking", "needs_input")}
+    warning_codes = {issue["code"] for issue in parsed["issues"] if issue.get("state") == "waived"}
     require(set(case.get("expectedIssueCodes", [])).issubset(issue_codes), f"Expected validation issues are absent: {case['testId']} / {sorted(issue_codes)}")
+    require(set(case.get("expectedWarningCodes", [])).issubset(warning_codes), f"Expected validation warnings are absent: {case['testId']} / {sorted(warning_codes)}")
     require(not set(case.get("forbiddenIssueCodes", [])).intersection(issue_codes), f"Forbidden validation issue remains active: {case['testId']} / {sorted(issue_codes)}")
-    plan = build_plan_ir(parsed=parsed, governance=governance)
+    apps_by_id: dict[str, list[dict]] = {}
+    for candidate in parsed["rows"]:
+        if candidate.get("kind") == "APP":
+            apps_by_id.setdefault(str(candidate.get("elementId") or "").casefold(), []).append(candidate)
+    relation_targets: list[dict] = []
+    for source in parsed["rows"]:
+        for external_id in source.get("relations", []):
+            matches = apps_by_id.get(str(external_id).casefold(), [])
+            if len(matches) != 1:
+                continue
+            target = matches[0]
+            relation_targets.append({
+                "sourceRowKey": source["rowKey"],
+                "sourceType": "in_batch",
+                "externalId": target["elementId"],
+                "targetRowKey": target["rowKey"],
+                "workspaceId": f"fixture-workspace:{target['fields'].get('Omnia工作区', '')}",
+                "objectId": "",
+                "riskAssessmentId": "",
+                "rait": target["fields"].get("System Risk Classification", ""),
+                "disposition": "create",
+            })
+    rows_by_element = {str(row.get("elementId") or ""): row for row in parsed["rows"]}
+    for external in case.get("liveExternalTargets", []):
+        source = rows_by_element.get(str(external.get("sourceElementId") or ""))
+        require(source is not None, f"External live target source is absent: {case['testId']}")
+        relation_targets.append({
+            "sourceRowKey": source["rowKey"],
+            "sourceType": "external",
+            "externalId": str(external["externalId"]),
+            "targetRowKey": "",
+            "workspaceId": str(external["workspaceId"]),
+            "objectId": str(external["objectId"]),
+            "riskAssessmentId": str(external["riskAssessmentId"]),
+            "rait": str(external["rait"]),
+            "disposition": "reuse",
+        })
+    plan = build_plan_ir(parsed=parsed, governance=governance, live_validation={"relationTargets": relation_targets})
     require(plan.get("globalBlockerCodes", []) == case.get("expectedGlobalBlockerCodes", []), f"Global blocker projection drifted: {case['testId']}")
     parsed_by_key = {row["rowKey"]: row for row in parsed["rows"]}
     plan_by_element = {row["object"]["externalId"]: row for row in plan["rows"]}

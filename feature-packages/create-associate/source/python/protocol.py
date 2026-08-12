@@ -82,7 +82,11 @@ class Sidecar:
             result = validate_ir(_json_value(self.policy, payload, "parsed"))
             return self._deliver(request_id, result, payload.get("resultHandle"))
         if operation == "build_plan_ir":
-            result = build_plan_ir(parsed=_json_value(self.policy, payload, "parsed"), governance=_json_value(self.policy, payload, "governance"))
+            result = build_plan_ir(
+                parsed=_json_value(self.policy, payload, "parsed"),
+                governance=_json_value(self.policy, payload, "governance"),
+                live_validation=_json_value(self.policy, payload, "liveValidation"),
+            )
             return self._deliver(request_id, result, payload.get("resultHandle"))
         if operation == "compile_workbook":
             base = self.policy.read(payload.get("baseWorkbookHandle"), max_bytes=64 * 1024 * 1024)

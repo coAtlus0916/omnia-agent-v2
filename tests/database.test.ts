@@ -27,6 +27,58 @@ test('Core migration creates a real empty feature registry and persistent defaul
   });
 });
 
+test('migration 27 preserves existing issues and admits non-blocking quality warnings', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-db-migration27-'));
+  const filename = path.join(root, 'core.sqlite');
+  const cipher = createTestContentCipher();
+  let database = new CoreDatabase(filename, cipher);
+  try {
+    database.db.prepare(`
+      INSERT INTO feature_issues(
+        issue_id,run_id,field_key,issue_type,state,message,resolution_revision_id,created_at,resolved_at
+      ) VALUES('legacy-issue','legacy-run','legacy.field','missing','needs_input','legacy','','legacy','')
+    `).run();
+    database.db.exec(`
+      DROP INDEX feature_issues_run_state;
+      ALTER TABLE feature_issues RENAME TO feature_issues_current;
+      CREATE TABLE feature_issues (
+        issue_id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        field_key TEXT NOT NULL,
+        issue_type TEXT NOT NULL CHECK(issue_type IN ('missing','conflict','ambiguous','invalid_enum','digest_mismatch','contract_mismatch','visual_unverified')),
+        state TEXT NOT NULL CHECK(state IN ('needs_input','resolved','waived','blocking')),
+        message TEXT NOT NULL,
+        resolution_revision_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        resolved_at TEXT NOT NULL
+      );
+      INSERT INTO feature_issues SELECT * FROM feature_issues_current;
+      DROP TABLE feature_issues_current;
+      CREATE INDEX feature_issues_run_state ON feature_issues(run_id,state,created_at);
+      DELETE FROM schema_migrations WHERE version=27;
+    `);
+    database.close();
+    database = new CoreDatabase(filename, cipher);
+    assert.deepEqual(
+      database.db.prepare(`SELECT issue_id,issue_type,state FROM feature_issues ORDER BY issue_id`).all()
+        .map((row) => ({ ...(row as Record<string, unknown>) })),
+      [{ issue_id: 'legacy-issue', issue_type: 'missing', state: 'needs_input' }]
+    );
+    database.db.prepare(`
+      INSERT INTO feature_issues(
+        issue_id,run_id,field_key,issue_type,state,message,resolution_revision_id,created_at,resolved_at
+      ) VALUES('warning-issue','warning-run','warning.field','quality_warning','waived','warning','','now','')
+    `).run();
+    assert.equal(
+      (database.db.prepare(`SELECT COUNT(*) AS count FROM feature_issues WHERE issue_type='quality_warning' AND state='waived'`).get() as { count: number }).count,
+      1
+    );
+  } finally {
+    database.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('preference and layout writes use stateVersion conflict protection', () => {
   withDatabase((database) => {
     const preference = database.getPreference();

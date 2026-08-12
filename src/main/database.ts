@@ -482,7 +482,7 @@ export class CoreDatabase {
           issue_id TEXT PRIMARY KEY,
           run_id TEXT NOT NULL,
           field_key TEXT NOT NULL,
-          issue_type TEXT NOT NULL CHECK(issue_type IN ('missing','conflict','ambiguous','invalid_enum','digest_mismatch','contract_mismatch','visual_unverified')),
+          issue_type TEXT NOT NULL CHECK(issue_type IN ('missing','conflict','ambiguous','invalid_enum','digest_mismatch','contract_mismatch','visual_unverified','quality_warning')),
           state TEXT NOT NULL CHECK(state IN ('needs_input','resolved','waived','blocking')),
           message TEXT NOT NULL,
           resolution_revision_id TEXT NOT NULL,
@@ -765,7 +765,7 @@ export class CoreDatabase {
           issue_id TEXT PRIMARY KEY,
           run_id TEXT NOT NULL,
           field_key TEXT NOT NULL,
-          issue_type TEXT NOT NULL CHECK(issue_type IN ('missing','conflict','ambiguous','invalid_enum','digest_mismatch','contract_mismatch','visual_unverified')),
+          issue_type TEXT NOT NULL CHECK(issue_type IN ('missing','conflict','ambiguous','invalid_enum','digest_mismatch','contract_mismatch','visual_unverified','quality_warning')),
           state TEXT NOT NULL CHECK(state IN ('needs_input','resolved','waived','blocking')),
           message TEXT NOT NULL,
           resolution_revision_id TEXT NOT NULL,
@@ -1099,6 +1099,23 @@ export class CoreDatabase {
           validated_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
+      `],
+      [27, `
+        CREATE TABLE feature_issues_v27 (
+          issue_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          field_key TEXT NOT NULL,
+          issue_type TEXT NOT NULL CHECK(issue_type IN ('missing','conflict','ambiguous','invalid_enum','digest_mismatch','contract_mismatch','visual_unverified','quality_warning')),
+          state TEXT NOT NULL CHECK(state IN ('needs_input','resolved','waived','blocking')),
+          message TEXT NOT NULL,
+          resolution_revision_id TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          resolved_at TEXT NOT NULL
+        );
+        INSERT INTO feature_issues_v27 SELECT * FROM feature_issues;
+        DROP TABLE feature_issues;
+        ALTER TABLE feature_issues_v27 RENAME TO feature_issues;
+        CREATE INDEX feature_issues_run_state ON feature_issues(run_id,state,created_at);
       `]
     ];
     for (const [version, sql] of migrations) {

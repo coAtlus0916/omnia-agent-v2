@@ -14,6 +14,20 @@ import type {
 
 function now(): string { return new Date().toISOString(); }
 
+const FEATURE_ISSUE_TYPES = new Set([
+  'missing', 'conflict', 'ambiguous', 'invalid_enum', 'digest_mismatch',
+  'contract_mismatch', 'visual_unverified', 'quality_warning'
+]);
+const FEATURE_ISSUE_STATES = new Set(['needs_input', 'resolved', 'waived', 'blocking']);
+
+function featureIssueIdentity(value: Record<string, any>): { issueType: string; state: string } {
+  const issueType = String(value.issueType || '');
+  const state = String(value.state || 'needs_input');
+  if (!FEATURE_ISSUE_TYPES.has(issueType)) throw new Error(`Feature issue type is invalid: ${issueType || '(empty)'}.`);
+  if (!FEATURE_ISSUE_STATES.has(state)) throw new Error(`Feature issue state is invalid: ${state || '(empty)'}.`);
+  return { issueType, state };
+}
+
 function object(value: unknown, label: string): Record<string, any> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} is invalid.`);
   return value as Record<string, any>;
@@ -2962,6 +2976,7 @@ export class FeatureRuntimeStore {
     }
     for (const value of issues) {
       const issue = object(value, 'Feature issue');
+      const { issueType, state } = featureIssueIdentity(issue);
       const issueId=String(issue.issueId || randomUUID());const owner=this.core.prepare(`SELECT run_id FROM feature_issues WHERE issue_id=?`).get(issueId) as {run_id:string}|undefined;if(owner&&owner.run_id!==String(request.runId))throw new Error('Feature issue identity belongs to another Run.');
       this.core.prepare(`
         INSERT INTO feature_issues(
@@ -2969,7 +2984,7 @@ export class FeatureRuntimeStore {
         ) VALUES(?, ?, ?, ?, ?, ?, '', ?, '')
         ON CONFLICT(issue_id) DO UPDATE SET field_key=excluded.field_key,issue_type=excluded.issue_type,state=excluded.state,message=excluded.message,resolution_revision_id='',created_at=excluded.created_at,resolved_at=''
       `).run(issueId, String(request.runId), String(issue.fieldKey || ''),
-        String(issue.issueType || ''), String(issue.state || 'needs_input'), String(issue.message || ''), now());
+        issueType, state, String(issue.message || ''), now());
     }
     return issues.length;
   }
@@ -3098,7 +3113,7 @@ export class FeatureRuntimeStore {
       }
       for(const [fieldKey,dependency] of revisedDependencies){if(!/P1\.(?:APP|DB|OS|TOOL)\.IT\.ELEMENT_ID/u.test(dependency.canonicalFieldId))continue;const actual=derivedByDependency.get(fieldKey)||new Set<string>();if(!actual.has('P1.RUNTIME.GRA.NAME')||(dependency.canonicalFieldId==='P1.APP.IT.ELEMENT_ID'&&!actual.has('P1.APP.IT.DESCRIPTION')))throw new Error('Element ID revision must atomically include every signed derived field revision.');}
       this.core.prepare(`UPDATE feature_issues SET state='resolved',resolved_at=? WHERE run_id=? AND state IN ('needs_input','blocking','waived')`).run(occurredAt,runId);
-      for(const raw of issues){const issue=object(raw,'Revalidated issue');const issueId=String(issue.issueId||randomUUID());const owner=this.core.prepare(`SELECT run_id FROM feature_issues WHERE issue_id=?`).get(issueId) as {run_id:string}|undefined;if(owner&&owner.run_id!==runId)throw new Error('Revalidated issue identity belongs to another Run.');this.core.prepare(`INSERT INTO feature_issues(issue_id,run_id,field_key,issue_type,state,message,resolution_revision_id,created_at,resolved_at) VALUES(?,?,?,?,?,?,'',?,'') ON CONFLICT(issue_id) DO UPDATE SET field_key=excluded.field_key,issue_type=excluded.issue_type,state=excluded.state,message=excluded.message,resolution_revision_id='',created_at=excluded.created_at,resolved_at=''`).run(issueId,runId,String(issue.fieldKey||''),String(issue.issueType||''),String(issue.state||'needs_input'),String(issue.message||''),occurredAt);}
+      for(const raw of issues){const issue=object(raw,'Revalidated issue');const {issueType,state}=featureIssueIdentity(issue);const issueId=String(issue.issueId||randomUUID());const owner=this.core.prepare(`SELECT run_id FROM feature_issues WHERE issue_id=?`).get(issueId) as {run_id:string}|undefined;if(owner&&owner.run_id!==runId)throw new Error('Revalidated issue identity belongs to another Run.');this.core.prepare(`INSERT INTO feature_issues(issue_id,run_id,field_key,issue_type,state,message,resolution_revision_id,created_at,resolved_at) VALUES(?,?,?,?,?,?,'',?,'') ON CONFLICT(issue_id) DO UPDATE SET field_key=excluded.field_key,issue_type=excluded.issue_type,state=excluded.state,message=excluded.message,resolution_revision_id='',created_at=excluded.created_at,resolved_at=''`).run(issueId,runId,String(issue.fieldKey||''),issueType,state,String(issue.message||''),occurredAt);}
       const nextRevision=expectedRunRevision+1;const changed=this.core.prepare(`UPDATE feature_runs SET state=?,state_revision=?,last_error='',updated_at=? WHERE run_id=? AND feature_id=? AND state_revision=?`).run(nextState,nextRevision,occurredAt,runId,context.featureId,expectedRunRevision);if(changed.changes!==1)throw new Error('Review Run revision changed; reload before saving.');
       this.core.prepare(`INSERT INTO feature_run_events(event_id,run_id,revision,from_state,to_state,event_type,details_json,occurred_at) VALUES(?,?,?,?,?,?,?,?)`).run(randomUUID(),runId,nextRevision,run.state,nextState,String(request.eventType||'review.revalidated'),JSON.stringify({revisionCount:revisions.length,derivedRevisionCount:derivedRevisions.length,issueCount:issues.length,excludedRowKey:String(request.excludedRowKey||'')}),occurredAt);
       this.core.exec('COMMIT;');return{state:nextState,stateRevision:nextRevision};

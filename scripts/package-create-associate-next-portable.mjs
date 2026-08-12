@@ -11,9 +11,10 @@ const companyCurrent = process.argv.includes('--company-current');
 const profile = companyCurrent ? 'company-loopback-current' : 'create-associate-only';
 const shellVersion = String(JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version);
 const expectedFeatures = companyCurrent ? [
-  ['omnia.create-associate', '0.2.134'],
-  ['omnia.recording', '0.4.20'],
-  ['omnia.delete-elements', '0.2.1']
+  ['omnia.create-associate', '0.2.135'],
+  ['omnia.recording', '0.4.21'],
+  ['omnia.delete-elements', '0.3.31'],
+  ['omnia.workpaper-preparation', '0.1.4']
 ] : [['omnia.create-associate', '0.2.123']];
 const artifactName = companyCurrent
   ? `Omnia-Agent-v5-${shellVersion}-Company-Loopback-Portable-20260812-r1`
@@ -35,7 +36,8 @@ for (const required of [
   ...expectedFeatures.map(([featureId, version]) => {
     const directory = featureId === 'omnia.create-associate' ? 'create-associate'
       : featureId === 'omnia.recording' ? 'recording'
-        : 'delete-elements';
+        : featureId === 'omnia.delete-elements' ? 'delete-elements'
+          : 'workpaper-preparation';
     return path.join(root, 'feature-packages', directory, 'candidates', `${directory}-${version}.ofp`);
   }),
   path.join(root, 'node_modules', 'electron', 'dist', 'electron.exe'),
@@ -101,9 +103,9 @@ try {
     inventoryModule.verifyBuiltinFeatureReleaseFile(builtinTarget, builtin.entry);
   }
 
-  const connectorRoot = path.join(staging, 'connector-next');
+  const connectorRoot = path.join(appRoot, 'connector-next');
   await mkdir(connectorRoot, { recursive: true });
-  for (const member of ['server.cjs', 'agent.cjs', 'portable-launcher.cjs']) {
+  for (const member of ['server.cjs', 'agent.cjs']) {
     await cp(path.join(root, 'dist', 'connector-next', member), path.join(connectorRoot, member));
   }
   await mkdir(path.join(connectorRoot, 'node_modules'), { recursive: true });
@@ -120,6 +122,9 @@ try {
     'resources/app/dist/main/preload.cjs',
     'resources/app/dist/main/feature-preload.cjs',
     'resources/app/dist/main/feature-worker-host.cjs',
+    'resources/app/connector-next/server.cjs',
+    'resources/app/connector-next/agent.cjs',
+    'resources/app/connector-next/node_modules/playwright-core/package.json',
     ...verifiedBuiltins.map(({ entry }) => `resources/app/builtins/${entry.filename}`),
     'resources/app/dist/renderer/app.js',
     'resources/app/dist/renderer/index.html',
@@ -139,7 +144,7 @@ try {
     connectorTransport: {
       productId: 'com.deloitte.omnia-agent.connector-next',
       protocolId: 'omnia.connector-next/v3',
-      topology: 'embedded-loopback',
+      topology: 'embedded-exe-host',
       remoteServerRequired: false
     },
     featureReleaseInventory: {
@@ -158,6 +163,7 @@ try {
     candidateVersion: shellVersion,
     builtinProfile: profile,
     connectorTransport: 'connector-next-loopback',
+    launchMode: 'single-exe-host',
     createdAt: new Date().toISOString()
   }, null, 2)}\n`);
   await writeFile(path.join(staging, 'current'), `${JSON.stringify({
@@ -171,17 +177,14 @@ try {
     "$ErrorActionPreference = 'Stop'",
     '$root = [System.IO.Path]::GetFullPath($PSScriptRoot)',
     `$exe = Join-Path $root '${shellVersion}\\Omnia Agent v5.exe'`,
-    "$launcher = Join-Path $root 'connector-next\\portable-launcher.cjs'",
     "if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw 'Omnia Agent executable is missing.' }",
-    "if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw 'Connector Next portable launcher is missing.' }",
-    "$env:ELECTRON_RUN_AS_NODE = '1'",
-    "Start-Process -FilePath $exe -ArgumentList @($launcher) -WorkingDirectory $root -WindowStyle Hidden | Out-Null",
+    "Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) | Out-Null",
     ''
   ].join('\r\n'), 'utf8');
   await writeFile(path.join(staging, 'Start Omnia Agent v5.cmd'), [
     '@echo off',
     'setlocal',
-    'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0Start Omnia Agent v5.ps1"',
+    `start "" /D "%~dp0${shellVersion}" "%~dp0${shellVersion}\\Omnia Agent v5.exe"`,
     'if errorlevel 1 (',
     '  echo Omnia Agent v5 could not be started.',
     '  pause',
@@ -190,17 +193,17 @@ try {
     ''
   ].join('\r\n'), 'utf8');
   const featureSummary = companyCurrent
-    ? '内置 Feature：新建与关联 0.2.134、录制 0.4.20、删除 0.2.1。'
+    ? '内置 Feature：新建与关联 0.2.135、底稿编制 0.1.4、录制 0.4.21、删除元素 0.3.31。'
     : '内置 Feature：新建与关联 0.2.123。';
   const instructions = [
     'Omnia Agent v5 + Connector Next 本地便携版',
     '',
     '1. 将整个 ZIP 解压到公司电脑本地磁盘；不要直接在 ZIP 内运行。',
-    '2. 双击“Start Omnia Agent v5.cmd”。',
-    '3. 启动器会自动在本机 127.0.0.1 启动 Connector Next Server 与 Agent，然后启动 Shell 并完成本地绑定。',
+    `2. 直接双击“${shellVersion}\\Omnia Agent v5.exe”；根目录“Start Omnia Agent v5.cmd”只是该 EXE 的快捷入口。`,
+    '3. Shell EXE 主进程会自动持有并启动包内 Connector Next Server 与 Agent，然后完成本地绑定；CMD 不再运行监听器或外置 Node 脚本。',
     '4. 本包不连接远程 Connector 服务器，不使用旧 Connector，也不需要配对码。',
     `5. ${featureSummary}`,
-    '6. 不要单独运行版本目录中的 Omnia Agent v5.exe，也不要移动包内单个文件。',
+    '6. 不要移动包内单个文件；关闭 Shell 时，由同一 EXE 收敛其本次启动的 Connector Next 子进程。',
     '',
     '边界：Connector Next 只承载通用 Pack 会话和签名 Operation；Feature 业务逻辑仍只存在于各自签名 Feature 包。',
     '日志：connector-next-data-v3\\logs；业务数据：data。',

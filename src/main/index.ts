@@ -4,6 +4,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ConnectorNextTransport } from './connector/connector-next-transport.js';
 import { ConnectorNextControlClient } from './connector/connector-next-control-client.js';
+import { EmbeddedConnectorNextHost } from './connector/embedded-connector-next-host.js';
 import type { ConnectorTransport } from './connector/connector-transport.js';
 import {
   CONNECTOR_NEXT_PRODUCT_ID,
@@ -28,6 +29,7 @@ import { ShellService } from './services/shell-service.js';
 import { AppError, publicError } from '../shared/errors.js';
 import { FeaturePackageManager } from './features/package-manager.js';
 import { installBuiltinFeaturePackages } from './features/builtin-features.js';
+import { builtinFeatureReleaseInventoryForProfile } from './features/builtin-release-inventory.js';
 import type { FeatureActionRequest, FeatureArtifactBytesInputRequest, FeatureArtifactInputRequest } from '../shared/feature-contracts.js';
 import { SurfaceWindowManager } from './services/surface-window-manager.js';
 import { InteractionLogService, type InteractionDescriptor } from './services/interaction-log-service.js';
@@ -41,12 +43,30 @@ let surfaceWindows: SurfaceWindowManager | null = null;
 let featurePackages: FeaturePackageManager | null = null;
 let interactionLogs: InteractionLogService | null = null;
 let startupRecovery: ProtectedDataRecovery | null = null;
+let embeddedConnectorNext: EmbeddedConnectorNextHost | null = null;
+let quitCleanupStarted = false;
 
 const CONNECTOR_NEXT_CONFIGURE_ONCE_ENV = 'OMNIA_CONNECTOR_NEXT_CONFIGURE_ONCE';
 const CONNECTOR_NEXT_DEVELOPMENT_OVERRIDE_ENV = 'OMNIA_CONNECTOR_NEXT_DEVELOPMENT_OVERRIDE';
 const CONNECTOR_NEXT_OFFER_CANDIDATE_ONCE_ENV = 'OMNIA_CONNECTOR_NEXT_OFFER_CANDIDATE_ONCE';
 const CONNECTOR_NEXT_QUERY_OFFER_ONCE_ENV = 'OMNIA_CONNECTOR_NEXT_QUERY_OFFER_ONCE';
 const CONNECTOR_NEXT_OFFER_ARTIFACT_ONCE_ENV = 'OMNIA_CONNECTOR_NEXT_OFFER_ARTIFACT_ONCE';
+
+function embeddedLoopbackPortable(): { productRoot: string; builtinProfile: string } | null {
+  if (!app.isPackaged) return null;
+  const root = findPortableProductRoot(path.dirname(process.execPath));
+  const marker = JSON.parse(fs.readFileSync(path.join(root, 'portable-root.json'), 'utf8')) as Record<string, unknown>;
+  const builtinProfile = String(marker.builtinProfile || '').trim();
+  if (marker.connectorTransport !== 'connector-next-loopback' || !builtinProfile) return null;
+  builtinFeatureReleaseInventoryForProfile(builtinProfile);
+  return { productRoot: root, builtinProfile };
+}
+
+const packagedEmbedded = embeddedLoopbackPortable();
+const packagedEmbeddedProductRoot = packagedEmbedded?.productRoot || null;
+if (packagedEmbedded) {
+  app.setPath('userData', path.join(packagedEmbedded.productRoot, 'connector-next-data-v3', 'chromium'));
+}
 
 function connectorNextEnvironmentConfig(): {
   serverUrl: string;
@@ -331,6 +351,7 @@ function registerIpc(service: ShellService, packages: FeaturePackageManager, log
 app.whenReady().then(async () => {
   if (!ownsSingleInstance) return;
   const productRoot = process.env.OMNIA_AGENT_PRODUCT_ROOT
+    || packagedEmbeddedProductRoot
     || (app.isPackaged ? findPortableProductRoot(path.dirname(process.execPath)) : app.getAppPath());
   let paths = resolveProductPaths(productRoot);
   let contentCipher: ContentCipher;
@@ -413,6 +434,29 @@ app.whenReady().then(async () => {
     app.quit();
     return;
   }
+  if (packagedEmbeddedProductRoot) {
+    embeddedConnectorNext = new EmbeddedConnectorNextHost({
+      productRoot,
+      applicationRoot: app.getAppPath(),
+      executable: process.execPath,
+      onFatalError: (error) => {
+        if (app.isReady()) dialog.showErrorBox('Omnia Agent v5 Connector Next 启动失败', error.message);
+        app.quit();
+      }
+    });
+    const embedded = await embeddedConnectorNext.start();
+    const previous = database.getConnectorNextSettings();
+    if (!previous.enabled
+      || previous.serverUrl !== new URL(embedded.serverUrl).href
+      || previous.controlToken !== embedded.controlToken
+      || !sameTarget(previous.target, embedded.target)) {
+      database.saveConnectorNextSettings({
+        enabled: true,
+        ...embedded,
+        validatedAt: new Date().toISOString()
+      });
+    }
+  }
   interactionLogs = new InteractionLogService(database.db);
   const persistedConnectorNext = database.getConnectorNextSettings();
   const developmentOverride = String(process.env[CONNECTOR_NEXT_DEVELOPMENT_OVERRIDE_ENV] || '').trim() === '1'
@@ -439,7 +483,8 @@ app.whenReady().then(async () => {
   installBuiltinFeaturePackages(
     featurePackages,
     hotApplicationRoot || app.getAppPath(),
-    hotApplicationRoot ? false : app.isPackaged
+    hotApplicationRoot ? false : app.isPackaged,
+    packagedEmbedded ? builtinFeatureReleaseInventoryForProfile(packagedEmbedded.builtinProfile) : undefined
   );
   await featurePackages.initializeRuntime();
   shell = new ShellService(database, connector, chat, attachments, featurePackages, {}, {}, interactionLogs);
@@ -471,16 +516,24 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('before-quit', () => {
-  shell?.dispose();
-  surfaceWindows?.dispose();
-  void shell?.disposeFeatureRuntime();
-  void connector?.stop();
-  database?.close();
-  shell = null;
-  surfaceWindows = null;
-  connector = null;
-  featurePackages = null;
-  interactionLogs = null;
-  database = null;
+app.on('before-quit', (event) => {
+  if (quitCleanupStarted) return;
+  quitCleanupStarted = true;
+  event.preventDefault();
+  void (async () => {
+    shell?.dispose();
+    surfaceWindows?.dispose();
+    await shell?.disposeFeatureRuntime();
+    await connector?.stop();
+    await embeddedConnectorNext?.stop();
+    database?.close();
+    shell = null;
+    surfaceWindows = null;
+    connector = null;
+    embeddedConnectorNext = null;
+    featurePackages = null;
+    interactionLogs = null;
+    database = null;
+    app.exit(0);
+  })();
 });

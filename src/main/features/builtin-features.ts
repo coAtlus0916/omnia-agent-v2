@@ -2,6 +2,8 @@ import path from 'node:path';
 import type { FeaturePackageManager, FeatureInstallResult } from './package-manager.js';
 import {
   BUILTIN_FEATURE_RELEASE_PROJECTION,
+  createBuiltinFeatureReleaseProjection,
+  type BuiltinFeatureReleaseInventory,
   verifyBuiltinFeatureReleaseFile
 } from './builtin-release-inventory.js';
 
@@ -19,9 +21,13 @@ export interface BuiltinFeatureBootstrapResult {
 export function installBuiltinFeaturePackages(
   manager: FeaturePackageManager,
   applicationRoot: string,
-  packaged: boolean
+  packaged: boolean,
+  inventory?: BuiltinFeatureReleaseInventory
 ): BuiltinFeatureBootstrapResult[] {
-  return BUILTIN_FEATURES.map((builtin) => {
+  const builtins = inventory
+    ? createBuiltinFeatureReleaseProjection(inventory).runtimeCatalog
+    : BUILTIN_FEATURES;
+  return builtins.map((builtin) => {
     const filename = packaged
       ? path.join(applicationRoot, 'builtins', builtin.filename)
       : path.join(applicationRoot, 'feature-packages', builtin.sourceDirectory, 'candidates', builtin.filename);

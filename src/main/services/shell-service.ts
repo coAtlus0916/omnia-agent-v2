@@ -372,7 +372,7 @@ export class ShellService {
     return {
       schemaVersion: 'omnia.shell-home/v1',
       generatedAt: utcNow(),
-      productVersion: '0.4.15',
+      productVersion: '0.4.18',
       featureCount: this.database.activeFeatureCount(),
       features: featureRuntime,
       connection: this.connection,

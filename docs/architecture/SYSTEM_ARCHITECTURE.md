@@ -2,7 +2,7 @@
 
 状态：实现现状与目标边界（2026-08-10）
 
-产品版本：Shell 源码 `0.4.15`
+产品版本：Shell 源码 `0.4.18`
 传输决策：Remote-only；无 Local Connector fallback
 
 这份文档只描述当前可从源码验证的架构。四个官方 Feature 的独立性尚未通过发布门禁，详见 [Feature 独立性审计](FEATURE_INDEPENDENCE.md)。

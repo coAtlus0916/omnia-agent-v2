@@ -136,7 +136,7 @@ export const CREATE_ASSOCIATE_ONLY_FEATURE_RELEASE_INVENTORY: BuiltinFeatureRele
 });
 
 /**
- * Self-contained company portable profile. It freezes the three Feature
+ * Self-contained company portable profile. It freezes the four Feature
  * releases currently accepted by the product while Connector Next remains a
  * generic loopback transport with no Feature-specific code.
  */
@@ -147,45 +147,49 @@ export const COMPANY_LOOPBACK_CURRENT_FEATURE_RELEASE_INVENTORY: BuiltinFeatureR
     Object.freeze({
       delivery: 'shell-builtin-baseline',
       featureId: 'omnia.create-associate',
-      version: '0.2.134',
-      sequence: 136,
+      version: '0.2.135',
+      sequence: 137,
       sourceDirectory: 'create-associate',
-      filename: 'create-associate-0.2.134.ofp',
-      sourceRelativePath: 'feature-packages/create-associate/candidates/create-associate-0.2.134.ofp',
-      fileSha256: 'sha256:f765e30c42945267945a3f4d25b956c31e688b41a4db31b2e3bf3086fad2bd3a',
-      packageDigest: 'sha256:304346541a28e2775cc00c2c5cee7ae2c3da8a982704e8564f9d8e9beab2bb3e'
+      filename: 'create-associate-0.2.135.ofp',
+      sourceRelativePath: 'feature-packages/create-associate/candidates/create-associate-0.2.135.ofp',
+      fileSha256: 'sha256:18d38abd14f0c7ec66a1600fac96aacc7d004cd4686d6508703fdaf13d12d969',
+      packageDigest: 'sha256:175536c2683c9856d92d57a676971ddc8467c78765f6440fa5ecb92f0d31bb20'
     }),
     Object.freeze({
       delivery: 'shell-builtin-baseline',
       featureId: 'omnia.recording',
-      version: '0.4.20',
-      sequence: 33,
+      version: '0.4.21',
+      sequence: 34,
       sourceDirectory: 'recording',
-      filename: 'recording-0.4.20.ofp',
-      sourceRelativePath: 'feature-packages/recording/candidates/recording-0.4.20.ofp',
-      fileSha256: 'sha256:6fd9294e95d165f3c1163a99b80b82d98b7b1236f559aec7b06393f879db27fe',
-      packageDigest: 'sha256:2af2eefee4bee989ddb9b75e3c460d52ce2c7ce979b4a110ad212008167d6359'
+      filename: 'recording-0.4.21.ofp',
+      sourceRelativePath: 'feature-packages/recording/candidates/recording-0.4.21.ofp',
+      fileSha256: 'sha256:d9da739303b335040dcec9ff31e947e76ffadb793c9a5d0d68a0553fd4126a52',
+      packageDigest: 'sha256:948b88ea9d72e49721712cf9d31ec1d754ff809011767f8fd047b3ab4826b9a7'
     }),
     Object.freeze({
       delivery: 'shell-builtin-baseline',
       featureId: 'omnia.delete-elements',
-      version: '0.2.1',
-      sequence: 8,
+      version: '0.3.31',
+      sequence: 1786522815131,
       sourceDirectory: 'delete-elements',
-      filename: 'delete-elements-0.2.1.ofp',
-      sourceRelativePath: 'feature-packages/delete-elements/candidates/delete-elements-0.2.1.ofp',
-      fileSha256: 'sha256:c85c3c4cdabbf2ffd4d72af5c1498637409be089f831b1b78288728b6f54a3b6',
-      packageDigest: 'sha256:be02dcf583b7d50503cc2bfe23f2244c12ad626a66cee78a82f79c006eeceb7f'
+      filename: 'delete-elements-0.3.31.ofp',
+      sourceRelativePath: 'feature-packages/delete-elements/candidates/delete-elements-0.3.31.ofp',
+      fileSha256: 'sha256:12d4b35217f8694d2a4be53ab843d1d8abd7f93568c191b6c4738040240334a1',
+      packageDigest: 'sha256:474576df01ebd17a0d64458989c1833f73505bb087b91f42dd4e0bc048dfcce0'
+    }),
+    Object.freeze({
+      delivery: 'shell-builtin-baseline',
+      featureId: 'omnia.workpaper-preparation',
+      version: '0.1.4',
+      sequence: 5,
+      sourceDirectory: 'workpaper-preparation',
+      filename: 'workpaper-preparation-0.1.4.ofp',
+      sourceRelativePath: 'feature-packages/workpaper-preparation/candidates/workpaper-preparation-0.1.4.ofp',
+      fileSha256: 'sha256:b735bec9a6f4a09ca4efe95f44f7d6574e85117ad61282bd08eeb6075f8661b8',
+      packageDigest: 'sha256:0e0232a3b1514b0c3b9f28f996376cd5bd47246f57638807d233cd40bef64c3c'
     })
   ]),
-  postInstallFeatures: Object.freeze([
-    Object.freeze({
-      featureId: 'omnia.workpaper-preparation',
-      delivery: 'post-install',
-      bundled: false,
-      reason: 'Workpaper Preparation is not part of the currently accepted company portable Feature set.'
-    })
-  ])
+  postInstallFeatures: Object.freeze([])
 });
 
 export function builtinFeatureReleaseInventoryForProfile(

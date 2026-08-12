@@ -121,11 +121,6 @@ await Promise.all([
     entryPoints: [path.join(root, 'src/connector-next/shell-control-cli.ts')],
     outfile: path.join(dist, 'connector-next/shell-control.cjs'),
     bundle: true, platform: 'node', format: 'cjs', target: 'node24', external: ['node:sqlite'], sourcemap: false
-  }),
-  build({
-    entryPoints: [path.join(root, 'src/portable/create-associate-next-launcher.ts')],
-    outfile: path.join(dist, 'connector-next/portable-launcher.cjs'),
-    bundle: true, platform: 'node', format: 'cjs', target: 'node24', external: ['node:sqlite'], sourcemap: false
   })
 ]);
 

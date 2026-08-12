@@ -276,6 +276,24 @@ test('live APP-edge validation preserves the inherited-field pre-Return verifica
   assert.equal(candidate.provenance.sourceArtifactId,'source-artifact-1','live read-back must not impersonate a Run evidence artifact');
 });
 
+test('dynamic upload surface mutates only action state while signed package retains IO authority',()=>{
+  const surface=worker.uploadSurface(null,'',true);
+  const fileInput=surface.actions.find((action:any)=>action.actionId==='stage-source-workbook');
+  const templateOutput=surface.actions.find((action:any)=>action.actionId==='download-source-template');
+  assert.equal(fileInput.enabled,true);
+  assert.equal(templateOutput.enabled,true);
+  assert.deepEqual(Object.keys(fileInput).sort(),['actionId','enabled','reason']);
+  assert.deepEqual(Object.keys(templateOutput).sort(),['actionId','enabled','reason']);
+});
+
+test('terminal validation Run without Return ledger reopens as a fresh upload',()=>{
+  for(const state of ['failed','succeeded','cancelled','not_evaluable']){
+    assert.equal(worker.terminalRunReturnsToFreshUpload({run:{state},returnProgress:[]}),true,state);
+  }
+  assert.equal(worker.terminalRunReturnsToFreshUpload({run:{state:'failed'},returnProgress:[{command_state:'failed'}]}),false);
+  assert.equal(worker.terminalRunReturnsToFreshUpload({run:{state:'uncertain'},returnProgress:[]}),false);
+});
+
 test('Core Review commit atomically persists element ID, GRA name and APP description derived revisions',()=>{
   const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'omnia-derived-review-'));const paths=resolveProductPaths(temporary);const database=new CoreDatabase(paths.database,cipher);const manager=new FeaturePackageManager(database.db,paths);const store=new FeatureRuntimeStore(database.db,paths);const context={featureId:'omnia.create-associate',featureVersion:'0.2.0',allowMutation:false};
   try{

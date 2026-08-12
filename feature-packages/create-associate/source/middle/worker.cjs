@@ -650,6 +650,11 @@ function workflowNavigationActions(latest,currentStepId){
     {actionId:'back-to-upload',label:forceCancellable?'强制取消回传':'返回上一步',enabled:previousEnabled,reason:previousReason}
   ];
 }
+function terminalRunReturnsToFreshUpload(latest){
+  const state=String(latest?.run?.state||'');
+  const returnProgress=Array.isArray(latest?.returnProgress)?latest.returnProgress:[];
+  return ['succeeded','failed','cancelled','not_evaluable'].includes(state)&&returnProgress.length===0;
+}
 function validationPresentation(parsed,live={}){
   const normalizedLive={...live};
   if(live.workspace_live?.state==='failed'){
@@ -1636,6 +1641,8 @@ function createFeatureWorker(dependencies) {
       }else if(run&&['succeeded','failed'].includes(String(run.state))&&Array.isArray(latest.returnProgress)&&latest.returnProgress.length){
         const checkpoint=await store.call('loadPlan',String(run.run_id));
         recoveredSurfacePatch=returnSurface(latest,'',checkpoint?.execution||{});
+      }else if(terminalRunReturnsToFreshUpload(latest)){
+        recoveredSurfacePatch=uploadSurface(latest,'旧流程已进入终态并保留完整审计；可直接上传新文件建立全新 Run。',true);
       }
       if(run&&['needs_input','ready_for_review'].includes(run.state)){
         const checkpoint=await store.call('loadPlan',String(run.run_id));
@@ -2713,5 +2720,5 @@ function createFeatureWorker(dependencies) {
   });
 }
 
-module.exports = { createFeatureWorker, parseV8, zipEntries, V8_SHA256,AI_REVIEW_DISPLAY_LANGUAGE,AI_REVIEW_LANGUAGE_VERSION,isChineseAiReviewDisplayText,assertChineseAiReviewDisplayText,aiReviewItemUsesChineseDisplayText,assertAiReviewOutputUsesChineseDisplayText,deriveGraName,validationPresentation,reviewPresentation,reviewBlocked,freezeAppDataAvailability,resolveFrozenAppDataAvailability,workflowSurface,normalizeRait,applyLiveVerifiedInfrastructureInheritance,applicationIdentityRequest,inspectApplicationIdentity,RETURN_OPERATIONS,
+module.exports = { createFeatureWorker, parseV8, zipEntries, V8_SHA256,AI_REVIEW_DISPLAY_LANGUAGE,AI_REVIEW_LANGUAGE_VERSION,isChineseAiReviewDisplayText,assertChineseAiReviewDisplayText,aiReviewItemUsesChineseDisplayText,assertAiReviewOutputUsesChineseDisplayText,deriveGraName,validationPresentation,reviewPresentation,reviewBlocked,freezeAppDataAvailability,resolveFrozenAppDataAvailability,workflowSurface,uploadSurface,terminalRunReturnsToFreshUpload,normalizeRait,applyLiveVerifiedInfrastructureInheritance,applicationIdentityRequest,inspectApplicationIdentity,RETURN_OPERATIONS,
   buildFrozenDependencyGraph,dependencyBlockedByFailure,returnExecutionPolicy,aiReviewEligibleRows,frozenStageNodes,freezePlanCapabilities,frozenReturnIntents,assertReturnPlanCapabilities,authorityContentNameFor,governedCatalogDescription,catalogIdentityEvidenceGaps,riskControlCatalogFingerprint,catalogControlMatches,unresolvedCatalogRelations,workflowNavigationActions,returnSurface,forceCancelReturnRun,closeRunForFreshStart };

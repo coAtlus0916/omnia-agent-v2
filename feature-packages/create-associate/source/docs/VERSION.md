@@ -1,4 +1,16 @@
-﻿# 0.2.138 / sequence 140
+﻿# 0.2.141 / sequence 143
+
+Version 0.2.141 restores the Upload surface for a terminal validation Run that has no Return ledger. Failed, succeeded, cancelled, and not-evaluable validation-only Runs retain their complete audit history while the signed source-file action becomes available for a new Run; terminal Runs with Return progress remain on the Return surface.
+
+## 0.2.140 / sequence 142
+
+Version 0.2.140 restores the strict dynamic-action boundary: Worker Upload patches change only `enabled`, `reason`, and the optional label, while Core merges those fields into the immutable signed action that owns the `open_file` and managed-template contracts. This supersedes the rejected 0.2.139 dynamic IO redeclaration without weakening artifact authorization.
+
+## 0.2.139 / sequence 141
+
+Version 0.2.139 keeps the signed source-workbook file-input and source-template output contracts present in every dynamic Upload surface patch. Reopening or upgrading the Feature can no longer render an apparently available drop zone whose Core authorization lacks the exact `open_file` contract.
+
+## 0.2.138 / sequence 140
 
 Version 0.2.138 preserves the explicit pre-Return remote-verification gate after live APP-edge validation updates an inherited infrastructure RAIT field. Live validation may refine the inherited Higher/Lower value, but it cannot relabel the source workbook as verified Run evidence or remove the mandatory Return read-back boundary.
 

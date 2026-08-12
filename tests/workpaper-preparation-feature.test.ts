@@ -71,6 +71,9 @@ test('next Workpaper package declares the generic fixed-footer split catalog lay
   const packager = fs.readFileSync(path.join(repository, 'scripts', 'package-workpaper-preparation-feature.mjs'), 'utf8');
   assert.match(packager, /schemaVersion: 'omnia\.selection-browser-layout\/v1',\s*mode: 'fixed_footer_split'/u);
   assert.match(packager, /actionId: 'prepare-hidden-tabs'[\s\S]*?selectionMode: 'multiple'/u);
+  assert.match(packager, /stepId: 'select'[\s\S]*?stepId: 'open'/u);
+  assert.match(packager, /actionId: 'back-to-upload'/u);
+  assert.match(packager, /actionId: 'restart-run'[\s\S]*?presentation: 'restart'/u);
   assert.doesNotMatch(packager, /featureId\s*===\s*['"]omnia\.workpaper-preparation/u);
 });
 
@@ -97,6 +100,11 @@ test('source contract is no-replay and leaves Connector business-free', () => {
   assert.match(handler, /validate-hidden-data/);
   assert.match(handler, /CONTROL_CORE_TAB_ID = 201/);
   assert.match(handler, /CONTROL_OE_TAB_ID = 209/);
+  assert.match(worker, /function workflowSurface\(plan\)/);
+  assert.match(worker, /async function forceEnd\(plan, context\)/);
+  assert.match(worker, /async function backToSelect\(plan, context\)/);
+  assert.match(worker, /actionId === 'restart-run'/);
+  assert.match(worker, /actionId === 'back-to-upload'/);
     assert.match(crypto.createHash('sha256').update(fs.readFileSync(candidate)).digest('hex'), /^[0-9a-f]{64}$/u);
 });
 
@@ -192,6 +200,93 @@ test('Feature multi-GRA batch reaches one exact mutation and receipt-backed proj
     assert.ok(order.indexOf('store:recordReturnEvidence') < order.indexOf('operation:omnia.workpaper.control.open-hidden-tab.v1'));
     assert.ok(order.indexOf('operation:omnia.workpaper.control.reconcile.v1') < order.indexOf('store:projectVerifiedReturn'));
     assert.equal('messageCard' in completed, false);
+  } finally {
+    await worker.shutdown();
+    for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test('two-step workflow rail drives back-to-upload and restart-run navigation', async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'omnia-workpaper-nav-'));
+  const previous = Object.fromEntries(['OMNIA_MANAGED_PYTHON_EXECUTABLE', 'OMNIA_MANAGED_PYTHON_ENTRY', 'OMNIA_FEATURE_PACKAGE_ROOT', 'OMNIA_FEATURE_TEMP_ROOT']
+    .map((key) => [key, process.env[key]]));
+  process.env.OMNIA_MANAGED_PYTHON_EXECUTABLE = releasePython;
+  process.env.OMNIA_MANAGED_PYTHON_ENTRY = path.join(source, 'python', 'workpaper-preparation-engine.py');
+  process.env.OMNIA_FEATURE_PACKAGE_ROOT = source;
+  process.env.OMNIA_FEATURE_TEMP_ROOT = temporary;
+  const ids = {
+    engagement: '11111111-1111-1111-1111-111111111111', workspace: '22222222-2222-2222-2222-222222222222',
+    gra: '33333333-3333-3333-3333-333333333333', graWork: '44444444-4444-4444-4444-444444444444',
+    app: '55555555-5555-5555-5555-555555555555', appWork: '66666666-6666-6666-6666-666666666666',
+    control: '77777777-7777-7777-7777-777777777777', controlWork: '88888888-8888-8888-8888-888888888888',
+    oe: '99999999-9999-9999-9999-999999999999'
+  };
+  const binding = { connectorId: 'connector-1', sessionGeneration: 2, engagementId: ids.engagement,
+    authorityInstanceId: 'authority-1', tenantOrOrgId: '', packId: 'pack-1' };
+  const safety = { enabled: true, validForCurrentConnection: true, globalEnabled: false, globalSectionIds: [], globalWorkspaceIds: [],
+    connectorId: 'connector-1', sessionGeneration: 2, engagementId: ids.engagement, authorityInstanceId: 'authority-1', tenantOrOrgId: '',
+    packId: 'pack-1', stateVersion: 9, authorityObservationId: 'authority-observation-1', workspaceIds: [ids.workspace] };
+  const selected = { riskAssessmentId: ids.gra, graWorkItemId: ids.graWork, appId: ids.app, appWorkItemId: ids.appWork,
+    workspaceId: ids.workspace, workspaceName: 'Workspace 1', graName: 'GRA APP', graReferenceNumber: 'GRA-1', graContentId: 'generic-content',
+    graStatus: 'EvaluationComplete', graUpdatedOn: '2026-08-09T00:00:00.000Z', appName: 'APP 1', appNumber: 'APP-1',
+    graContentName: 'Generic' };
+  const control = { ...selected, controlId: ids.control, workItemId: ids.controlWork, controlNumber: 'APP.01 - GRA APP',
+    name: 'Control 1', updatedOn: '2026-08-09T00:00:00.000Z', opened: false, openVerified: false, associated: true,
+    planningCommonControlTesting: false, usePreviousAuditEvidence: null, priorEvidenceDeclined: false,
+    priorEvidenceNotApplicable: false, priorEvidenceComplete: false,
+    coreConcurrency: { entityTabTypeId: 201, updatedOn: '2026-08-09T00:00:00.000Z' }, oeConcurrency: null,
+    operatingEffectivenessId: ids.oe, absent: false, deleted: false };
+  const plans = new Map<string, any>();
+  const runState = { run_id: 'run-1', state: 'waiting_confirmation', state_revision: 1 };
+  let transitionTo: string[] = [];
+  const connector = { async invoke(input: any) {
+    if (input.operationId.endsWith('directory.read.v1')) return { ...binding, workspaces: [{ id: ids.workspace, name: 'Workspace 1' }], gras: [selected] };
+    if (input.operationId.endsWith('controls.read.v1')) return { ...selected, controls: [control] };
+    if (input.operationId.endsWith('control.preflight.v1')) return control;
+    throw new Error(`unexpected operation ${input.operationId}`);
+  } };
+  const store = { async call(method: string, input: any) {
+    if (method === 'savePlan') { plans.set(input.planId, JSON.parse(JSON.stringify(input))); return true; }
+    if (method === 'loadPlan') return plans.get(input) || null;
+    if (method === 'createMutationRun') return { runId: 'run-1', stateRevision: 1 };
+    if (method === 'prepareReturnIntent') return { planDigest: 'a'.repeat(64), confirmationId: 'confirm-1', confirmationToken: 'token-1', stateVersion: 1, expiresAt: '2099-01-01T00:00:00.000Z' };
+    if (method === 'returnRunToReview') { runState.state = 'ready_for_review'; return { stateRevision: runState.state_revision + 1 }; }
+    if (method === 'transitionRun') { transitionTo.push(input.toState); runState.state = input.toState; runState.state_revision = input.expectedRevision + 1; return runState.state_revision; }
+    if (method === 'loadLatestRun') return { run: { ...runState } };
+    throw new Error(`unexpected store method ${method}`);
+  } };
+  const workerModule = require(path.join(source, 'middle', 'worker.cjs'));
+  const worker = workerModule.createFeatureWorker({ connector, store, events: { emit() {} } });
+  const stepById = (patch: any): Map<string, any> => new Map(patch.workflow.steps.map((step: any) => [step.stepId, step]));
+  const actionById = (patch: any): Map<string, any> => new Map(patch.actions.map((action: any) => [action.actionId, action]));
+  try {
+    assert.equal((await worker.health()).ready, true);
+    const boot = await worker.handleAction({ actionId: 'bootstrap-workpaper-directory', expectedStateVersion: 1, context: { connectorBinding: binding, safetyLock: safety } });
+    assert.equal(boot.surfacePatch.workflow.currentStepId, 'select');
+    assert.equal(stepById(boot.surfacePatch).get('select').state, 'current');
+    assert.equal(stepById(boot.surfacePatch).get('open').state, 'pending');
+    assert.equal(actionById(boot.surfacePatch).get('back-to-upload').enabled, false);
+    assert.equal(actionById(boot.surfacePatch).get('restart-run').enabled, false);
+    const prepared = await worker.handleAction({ actionId: 'prepare-hidden-tabs', expectedStateVersion: 2,
+      payload: { targetIds: [ids.gra] }, context: { connectorBinding: binding, safetyLock: safety } });
+    assert.equal(prepared.surfacePatch.workflow.currentStepId, 'open');
+    assert.equal(stepById(prepared.surfacePatch).get('select').state, 'completed');
+    assert.equal(stepById(prepared.surfacePatch).get('open').state, 'current');
+    assert.equal(actionById(prepared.surfacePatch).get('back-to-upload').enabled, true);
+    assert.equal(actionById(prepared.surfacePatch).get('restart-run').enabled, true);
+    // Back to step one cancels the unconfirmed plan and clears the pointer.
+    const back = await worker.handleAction({ actionId: 'back-to-upload', expectedStateVersion: 3, context: { connectorBinding: binding, safetyLock: safety } });
+    assert.equal(back.surfacePatch.workflow.currentStepId, 'select');
+    assert.equal(stepById(back.surfacePatch).get('select').state, 'current');
+    assert.equal(plans.get('workpaper:current').currentPlanId, '');
+    assert.deepEqual(transitionTo, ['cancelled']);
+    // Prepare again, then force-end clears the pointer and returns to select.
+    await worker.handleAction({ actionId: 'prepare-hidden-tabs', expectedStateVersion: 4,
+      payload: { targetIds: [ids.gra] }, context: { connectorBinding: binding, safetyLock: safety } });
+    const ended = await worker.handleAction({ actionId: 'restart-run', expectedStateVersion: 5, context: { connectorBinding: binding, safetyLock: safety } });
+    assert.equal(ended.surfacePatch.workflow.currentStepId, 'select');
+    assert.equal(plans.get('workpaper:current').currentPlanId, '');
   } finally {
     await worker.shutdown();
     for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }

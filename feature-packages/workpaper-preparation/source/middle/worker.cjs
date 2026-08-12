@@ -193,10 +193,44 @@ function createFeatureWorker(ports) {
   };
   const operationTarget = (step) => ({ targetIdentityKey: step.stepId, workspaceId: step.workspaceId,
     riskAssessmentId: step.riskAssessmentId, controlId: step.controlId });
-  const actionPatch = (state) => {
+  function workflowSurface(plan) {
+    const state = plan ? plan.state : null;
+    const active = Boolean(state) && state !== 'cancelled';
+    const step = (stepId, label, detail, stepState) => ({ stepId, label, state: stepState, detail });
+    const openState = state === 'completed' ? 'completed'
+      : state === 'failed' ? 'failed'
+        : state === 'uncertain' || state === 'pending_continuation' ? 'warning'
+          : active ? 'current' : 'pending';
+    const openDetail = state === 'completed' ? '所有 Control 均已由精确读回证明隐藏 Tab 可用。'
+      : state === 'failed' ? '隐藏 Tab 打开未完成。'
+        : state === 'uncertain' || state === 'pending_continuation' ? '存在结果不确定的命令；请先只读核验或继续未完成步骤。'
+          : active ? '按 Control 逐项执行并核验。' : '等待选择元素。';
+    return {
+      revision: 1,
+      currentStepId: active ? 'open' : 'select',
+      steps: [
+        step('select', '选择元素', '选择 Generic Application GRA', active ? 'completed' : 'current'),
+        step('open', '打开隐藏 Tab', openDetail, openState)
+      ]
+    };
+  }
+  const actionPatch = (plan) => {
+    const state = plan ? plan.state : null;
     const directory = !state || ['completed', 'failed', 'cancelled'].includes(state);
     const pending = state === 'pending_confirmation' || state === 'pending_continuation';
     const uncertain = state === 'uncertain' || state === 'pending_continuation';
+    const backEnabled = state === 'pending_confirmation';
+    const backReason = !state ? '当前已是第一步，没有可返回的上一步。'
+      : state === 'pending_confirmation' ? '取消未确认的计划并返回选择元素；旧确认令牌立即失效。'
+        : ['uncertain', 'pending_continuation'].includes(state) ? '已产生写入且存在不确定或待继续步骤；只能强制结束，不能返回上一步。'
+          : ['preparing', 'executing'].includes(state) ? '流程正在推进；禁止返回上一步。'
+            : '当前流程已进入终态；可强制结束后重新开始。';
+    const restartEnabled = Boolean(state);
+    const restartReason = !state ? '当前没有可结束的流程。'
+      : state === 'pending_confirmation' ? '结束未确认的计划；不会向 Omnia 提交任何写操作。'
+        : ['uncertain', 'pending_continuation', 'executing'].includes(state) ? '强制结束当前流程；已验证的远端写入保持不变，不会回滚或重放。'
+          : ['completed', 'failed', 'cancelled'].includes(state) ? '保留终态审计并返回选择元素，可开始新流程。'
+            : '结束当前流程并返回选择元素。';
     return [
       { actionId: 'bootstrap-workpaper-directory', enabled: false, reason: 'Initial authoritative APP GRA read has completed.' },
       { actionId: 'refresh-workpaper-directory', enabled: directory, reason: directory ? '' : 'A frozen hidden-Tab plan is active.' },
@@ -205,7 +239,9 @@ function createFeatureWorker(ports) {
       { actionId: 'confirm-hidden-tabs', enabled: pending, reason: pending ? '' : 'No frozen plan or reconciled continuation is awaiting confirmation.' },
       { actionId: 'reconcile-hidden-tabs', enabled: uncertain,
         label: state === 'pending_continuation' ? '确认继续未完成步骤' : '核验并继续未完成步骤',
-        reason: uncertain ? '' : 'No uncertain Control command or reconciled continuation is available.' }
+        reason: uncertain ? '' : 'No uncertain Control command or reconciled continuation is available.' },
+      { actionId: 'back-to-upload', enabled: backEnabled, reason: backReason },
+      { actionId: 'restart-run', enabled: restartEnabled, reason: restartReason }
     ];
   };
   function directorySurface(directory) {
@@ -222,7 +258,7 @@ function createFeatureWorker(ports) {
     return { schemaVersion: 'omnia.declarative-feature-surface-patch/v1', status: items.length ? 'ready' : 'empty',
       statusMessage: items.length ? `已从当前 Pack 精确读取 ${items.length} 个 Generic Application GRA；可多选后创建一个冻结批次。`
         : '当前显式安全锁 Workspace 中没有可用的 Generic Application GRA。', scopes, items, selectedItemIds: [], search: '',
-      clearFields: ['progress', 'issues'], actions: actionPatch('completed') };
+      workflow: workflowSurface(null), clearFields: ['progress', 'issues'], actions: actionPatch(null) };
   }
   function planProgress(plan) {
     const total = plan.counts.total; const succeeded = plan.outcomes.filter((item) => item.state === 'succeeded').length;
@@ -265,7 +301,7 @@ function createFeatureWorker(ports) {
     });
     return { schemaVersion: 'omnia.declarative-feature-surface-patch/v1', stateVersion: Number(plan.surfaceStateVersion || 1), status: 'ready',
       statusMessage: `Generic APP GRA ${selectedGras.length} 个 · Control ${plan.counts.total} 个 · 待打开 ${plan.counts.toOpen} 个 · 状态 ${plan.state}`,
-      scopes, items, selectedItemIds: [], search: '', progress: planProgress(plan), actions: actionPatch(plan.state) };
+      scopes, items, selectedItemIds: [], search: '', workflow: workflowSurface(plan), progress: planProgress(plan), actions: actionPatch(plan) };
   }
   async function readDirectory(context) {
     const { b, s } = contextAuthority(context);
@@ -277,7 +313,7 @@ function createFeatureWorker(ports) {
     catch (error) {
       const issue = errorSummary(error);
       return { schemaVersion: 'omnia.declarative-feature-surface-patch/v1', status: 'error', statusMessage: `${issue.code}: ${issue.message}`,
-        scopes: [], items: [], selectedItemIds: [], clearFields: ['progress'], actions: actionPatch('completed') };
+        scopes: [], items: [], selectedItemIds: [], workflow: workflowSurface(null), clearFields: ['progress'], actions: actionPatch(null) };
     }
   }
   async function createPlan(context, targetIds, expectedStateVersion) {
@@ -390,6 +426,41 @@ function createFeatureWorker(ports) {
     await store.call('transitionRun', { runId: plan.runId, expectedRevision: Number(returned.stateRevision), toState: 'cancelled',
       eventType: 'workpaper.hidden_tab_plan_cancelled', error: 'User cancelled before any mutation was submitted.' });
     plan.state = 'cancelled'; plan.surfaceStateVersion += 1; return save(plan);
+  }
+  async function clearCurrentPointer() {
+    await store.call('savePlan', { schemaVersion: 'omnia.workpaper-current-pointer/v1', planId: CURRENT_POINTER,
+      currentPlanId: '', updatedAt: new Date().toISOString() });
+  }
+  async function forceEnd(plan, context) {
+    if (plan && plan.state === 'pending_confirmation') {
+      // An unconfirmed plan owns a waiting_confirmation Core Run; the clean
+      // path is the same as cancel (return-to-review then cancelled), which
+      // never issues a mutation. Already-verified remote writes do not exist
+      // at this stage.
+      await cancel(plan);
+    } else if (plan) {
+      const latest = await store.call('loadLatestRun', {}); const run = latest && latest.run ? latest.run : latest;
+      if (run && text(run.run_id) === plan.runId && !['succeeded', 'failed', 'cancelled', 'not_evaluable'].includes(text(run.state))) {
+        // Converge the Core Run to a terminal state without replaying any
+        // mutation. Already verified remote writes are preserved; the frozen
+        // plan is abandoned and a fresh element-selection flow begins.
+        let revision = Number(run.state_revision);
+        if (text(run.state) === 'uncertain') {
+          revision = await store.call('transitionRun', { runId: plan.runId, expectedRevision: revision, toState: 'reconciling',
+            eventType: 'workpaper.hidden_tab_force_end_started', error: '用户强制结束；只读核验未执行。' });
+        }
+        await store.call('transitionRun', { runId: plan.runId, expectedRevision: revision, toState: 'failed',
+          eventType: 'workpaper.hidden_tab_force_ended', error: '用户强制结束；已验证的远端写入保持不变，不回滚、不重放。' });
+      }
+    }
+    await clearCurrentPointer();
+    return refresh(context);
+  }
+  async function backToSelect(plan, context) {
+    if (!plan || plan.state !== 'pending_confirmation') fail('WORKPAPER.BACK_INVALID', 'Only an unconfirmed plan can return to element selection.');
+    await cancel(plan);
+    await clearCurrentPointer();
+    return refresh(context);
   }
   async function currentPreflight(step, b, permitPlanDigest = '', runId = '') {
     const selected = selectedIdentity(step);
@@ -597,6 +668,12 @@ function createFeatureWorker(ports) {
       return { surfacePatch: planSurface(plan) };
     }
     const plan = await current();
+    if (input.actionId === 'restart-run') {
+      return { surfacePatch: await forceEnd(plan, context) };
+    }
+    if (input.actionId === 'back-to-upload') {
+      return { surfacePatch: await backToSelect(plan, context) };
+    }
     if (!plan) fail('WORKPAPER.PLAN_NOT_FOUND', 'Current hidden-Tab plan was not found.');
     let result;
     if (input.actionId === 'cancel-hidden-tab-plan') result = await cancel(plan);

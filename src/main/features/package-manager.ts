@@ -4307,7 +4307,11 @@ export class FeaturePackageManager {
       head.featureVersion,
       {
         connectorInvoke: async (input, context) => {
-          await this.flushConnectorDeliveryAcks();
+          // Receipt/effect acknowledgements are already durable and have their
+          // own strict receipt-before-effect dependency in the outbox.  A new
+          // independent Operation must not wait for unrelated acknowledgements
+          // from the previous batch to traverse the remote control plane.
+          this.scheduleConnectorDeliveryAckFlush();
           const invocation = input as Record<string, any>;
           if (
             invocation?.schemaVersion !== 'omnia.operation-invocation/v1'

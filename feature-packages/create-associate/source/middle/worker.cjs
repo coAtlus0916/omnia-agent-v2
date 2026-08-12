@@ -1934,6 +1934,7 @@ function createFeatureWorker(dependencies) {
         const isolatedRows=new Map();
         const terminal={outcome:'',error:null,reconcileSpec:null};
         let checkpointSaveTail=Promise.resolve();
+        let progressUpdatesSinceSave=0;
         const terminalRank=(outcome)=>outcome==='uncertain'?2:outcome==='failed'?1:0;
         function signalTerminal(error,reconcileSpec=null){
           const normalized=error instanceof Error?error:new Error(String(error||'Return execution failed.'));
@@ -1955,14 +1956,30 @@ function createFeatureWorker(dependencies) {
           isolatedRows.set(row.rowKey,item);
           await saveExecution({state:'running',partial:true,itemFailures:[...isolatedRows.values()]});
         }
-        async function saveExecution(execution){
+        function mergeExecution(execution){
+          const state=forceCancelledRuns.has(runId)?'force_cancelled':terminal.outcome||execution.state||checkpoint.execution?.state||'running';
+          checkpoint.execution={...(checkpoint.execution||{}),...execution,state,
+            ...(terminal.reconcileSpec?{reconcileSpec:terminal.reconcileSpec}:{})};
+        }
+        async function persistExecutionCheckpoint(){
           checkpointSaveTail=checkpointSaveTail.catch(()=>undefined).then(async()=>{
-            const state=forceCancelledRuns.has(runId)?'force_cancelled':terminal.outcome||execution.state||'running';
-            checkpoint.execution={...(checkpoint.execution||{}),...execution,state,
-              ...(terminal.reconcileSpec?{reconcileSpec:terminal.reconcileSpec}:{})};
             await store.call('savePlan',{...checkpoint,updatedAt:new Date().toISOString()});
           });
+          progressUpdatesSinceSave=0;
           return checkpointSaveTail;
+        }
+        async function saveExecution(execution){
+          mergeExecution(execution);
+          return persistExecutionCheckpoint();
+        }
+        async function saveProgressExecution(execution){
+          mergeExecution(execution);
+          progressUpdatesSinceSave+=1;
+          // Core's command/evidence/Managed Content ledgers remain durable for
+          // every target.  This private 2MB presentation checkpoint is only a
+          // resumable progress projection, so persist it once per full worker
+          // lane instead of serializing it after every completed target.
+          if(progressUpdatesSinceSave>=RETURN_MAX_CONCURRENCY)await persistExecutionCheckpoint();
         }
         async function withReservations(keys,operation){
           const acquired=[];
@@ -2076,7 +2093,7 @@ function createFeatureWorker(dependencies) {
         }
         async function persistVerifiedTarget(targetKey,commandId){
           progress.set(targetKey,'verified');
-          await saveExecution({state:'running',background:false,lastVerifiedTargetKey:targetKey,lastCommandId:commandId,verifiedTargets:[...progress.values()].filter((state)=>state==='verified').length});
+          await saveProgressExecution({state:'running',background:false,lastVerifiedTargetKey:targetKey,lastCommandId:commandId,verifiedTargets:[...progress.values()].filter((state)=>state==='verified').length});
         }
         async function verifiedMutation(spec) {
           const command = await commandFor(spec.targetKey,spec.mutationOperation,spec.mutationPayload,spec.target.targetIdentityKey);
@@ -2447,7 +2464,7 @@ function createFeatureWorker(dependencies) {
                   // same closure. Connector remains a generic envelope host.
                   terminalNoopTargets.add(targetKey);
                   progress.set(targetKey,'verified');
-                  await saveExecution({terminalNoopTargets:[...terminalNoopTargets].sort()});
+                  await saveProgressExecution({terminalNoopTargets:[...terminalNoopTargets].sort()});
                   return;
                 }
                 const selectedValue = Number(factorPreflight.selected?.value); const currentValue = Number(factorPreflight.current?.value ?? factorPreflight.current);

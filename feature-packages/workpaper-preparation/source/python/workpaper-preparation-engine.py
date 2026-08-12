@@ -11,9 +11,18 @@ import sys
 import unicodedata
 from typing import Any
 
+# Isolated mode (-I) omits the script directory from sys.path. Add only this
+# package-owned directory so the signed sibling modules resolve.
+sys.dont_write_bytecode = True
+_PYTHON_ROOT = os.path.realpath(os.path.dirname(__file__))
+if _PYTHON_ROOT not in sys.path:
+    sys.path.insert(0, _PYTHON_ROOT)
+
+from workpaper_workbook import build_phase2_workbook, parse_uploaded_workbook
+
 
 PROTOCOL = "omnia.python-sidecar-rpc/v1"
-CAPABILITIES = ["select_hidden_tab_controls", "build_hidden_tab_plan", "classify_control_observation"]
+CAPABILITIES = ["select_hidden_tab_controls", "build_hidden_tab_plan", "classify_control_observation", "build_phase2_workbook", "parse_uploaded_workbook"]
 CONTROL_SELECTION_INPUT_SCHEMA = "omnia.workpaper-control-selection-input/v1"
 CONTROL_SELECTION_OUTPUT_SCHEMA = "omnia.workpaper-control-selection/v1"
 INPUT_SCHEMA = "omnia.workpaper-hidden-tab-input/v1"
@@ -340,6 +349,10 @@ def serve() -> None:
                          if method == "select_hidden_tab_controls"
                          else classify_control_observation(message.get("payload"))
                          if method == "classify_control_observation"
+                         else build_phase2_workbook(message.get("payload"))
+                         if method == "build_phase2_workbook"
+                         else parse_uploaded_workbook(message.get("payload"))
+                         if method == "parse_uploaded_workbook"
                          else build_hidden_tab_plan(message.get("payload")))
                 write_frame({"schemaVersion": PROTOCOL, "type": "result", "requestId": request_id, "ok": True, "value": value})
             except PlannerError as error:
@@ -402,6 +415,24 @@ def self_check() -> None:
             or value["steps"][0]["mutationPayload"]["planningCommonControlTesting"] is not False
             or value["steps"][0]["mutationPayload"]["usePreviousAuditEvidence"] is not False):
         raise SystemExit("workpaper planner self-check failed")
+    workbook = build_phase2_workbook({
+        "schemaVersion": "omnia.workpaper-phase2-workbook/v1",
+        "headers": ["控制 ID", "控制名称", "记录程序结果"],
+        "rows": [["APP.01 - GRA-TEST", "用户授权", "程序结果文本"], ["APP.02 - GRA-TEST", "变更管理", ""]],
+        "scope": {"engagementId": "eng-1", "workspaceId": "ws-1"},
+    })
+    if (workbook["sha256"] != hashlib.sha256(__import__("base64").b64decode(workbook["xlsxBase64"])).hexdigest()
+            or workbook["rowCount"] != 2
+            or workbook["sheetNames"] != ["Controls", "Scope"]):
+        raise SystemExit("workpaper workbook generator self-check failed")
+    parsed = parse_uploaded_workbook({
+        "schemaVersion": "omnia.workpaper-phase2-workbook/v1",
+        "xlsxBase64": workbook["xlsxBase64"],
+        "expectedHeaders": ["控制 ID", "控制名称", "记录程序结果"],
+        "expectedScopeKeys": ["engagementId", "workspaceId"],
+    })
+    if parsed["rowCount"] != 2 or parsed["headers"] != ["控制 ID", "控制名称", "记录程序结果"]:
+        raise SystemExit("workpaper workbook parser self-check failed")
     print("workpaper planner self-check passed")
 
 

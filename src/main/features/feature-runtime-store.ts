@@ -3334,15 +3334,22 @@ export class FeatureRuntimeStore {
       const relationQuery = commandRequest.query && typeof commandRequest.query === 'object' ? commandRequest.query as Record<string, unknown> : commandRequest;
       const sourceObjectId = String(relationQuery.itElementId || relationQuery.ItElementId || '');
       const targetIds = Array.isArray(relationQuery.AssociatingEntityIds) ? relationQuery.AssociatingEntityIds.map(String) : [String(relationQuery.associatingEntityId || '')];
-      const relationWorkspace = String(relationQuery.workspaceId || intended.workspace || '');
+      const sourceWorkspace = String(relationQuery.sourceWorkspaceId || relationQuery.workspaceId || intended.workspace || '');
+      const targetWorkspace = String(relationQuery.targetWorkspaceId || intended.targetWorkspace || '');
       const relationType = String(relationQuery.associationType || intended.relationType || '');
       const expectedSource = projectedObjectId(intended.sourceObjectTargetKey);
-      const expectedTarget = projectedObjectId(intended.targetObjectTargetKey);
+      const targetSourceType = String(intended.targetSourceType || '');
+      const expectedTarget = targetSourceType === 'in_batch'
+        ? projectedObjectId(intended.targetObjectTargetKey)
+        : targetSourceType === 'external'
+          ? String(intended.resolvedTargetObjectId || '')
+          : '';
       if (!expectedSource || !expectedTarget || sourceObjectId !== expectedSource || targetIds.length !== 1 || targetIds[0] !== expectedTarget
-        || relationWorkspace !== String(intended.workspace || '') || relationType !== String(intended.relationType || '')) {
+        || !targetWorkspace || sourceWorkspace !== String(intended.workspace || '')
+        || targetWorkspace !== String(intended.targetWorkspace || '') || relationType !== String(intended.relationType || '')) {
         throw new Error('Return relation command IDs differ from the receipt-backed frozen source and target object intents.');
       }
-      intendedTargetIdentityKey = `relation|${relationWorkspace}|${expectedSource}|${expectedTarget}|${relationType}`;
+      intendedTargetIdentityKey = `relation|${sourceWorkspace}|${targetWorkspace}|${expectedSource}|${expectedTarget}|${relationType}`;
     }
     const desired = commandRequest.query && typeof commandRequest.query === 'object'
       ? commandRequest.query as Record<string, any> : commandRequest;
@@ -4079,16 +4086,19 @@ export class FeatureRuntimeStore {
           &&(!payload||String(payload.riskName||'')!==String(intended.riskName||'')||String(payload.controlName||'')!==String(intended.controlName||''))
           ||!frozenRiskId||!frozenControlId||source!==frozenRiskId||targetId!==frozenControlId) throw new Error('Risk-Control projection differs from the frozen/signed catalog identities.');
       }else{
-        const expectedSource=resolvedRelationObject(String(intended.sourceObjectTargetKey||'')); const expectedTarget=resolvedRelationObject(String(intended.targetObjectTargetKey||''));
+        const expectedSource=resolvedRelationObject(String(intended.sourceObjectTargetKey||''));
+        const targetSourceType=String(intended.targetSourceType||'');
+        const expectedTargetId=targetSourceType==='in_batch'
+          ?String(resolvedRelationObject(String(intended.targetObjectTargetKey||''))?.object_id||'')
+          :targetSourceType==='external'
+            ?String(intended.resolvedTargetObjectId||'')
+            :'';
         if (relationType !== String(intended.relationType || '') || relationKey !== command.target_key
-          ||!expectedSource||!expectedTarget||source!==expectedSource.object_id||targetId!==expectedTarget.object_id) throw new Error('Relation projection differs from the frozen intent or its receipt-backed source/target object IDs.');
+          ||!expectedSource||!expectedTargetId||source!==expectedSource.object_id||targetId!==expectedTargetId) throw new Error('Relation projection differs from the frozen intent or its receipt-backed source/target object IDs.');
       }
       const current=this.core.prepare(`SELECT current_revision,source_object_id,target_object_id FROM managed_relations WHERE authority_instance_id=? AND tenant_or_org_id=? AND pack_id=? AND engagement_id=? AND workspace_id=? AND relation_type=? AND relation_key=?`).get(binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,relationType,relationKey) as {current_revision:number;source_object_id:string;target_object_id:string}|undefined;
-      if (current && (current.source_object_id !== source || current.target_object_id !== targetId)) {
-        throw new Error('Verified relation key is already owned by different source/target endpoints.');
-      }
       const revision=Number(current?.current_revision||0)+1;
-      this.core.prepare(`INSERT INTO managed_relations(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,relation_type,relation_key,source_object_id,target_object_id,current_revision,lifecycle,freshness,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,'active','verified_current',?) ON CONFLICT(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,relation_type,relation_key) DO UPDATE SET current_revision=excluded.current_revision,lifecycle='active',freshness='verified_current',updated_at=excluded.updated_at`).run(binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,relationType,relationKey,source,targetId,revision,occurredAt);
+      this.core.prepare(`INSERT INTO managed_relations(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,relation_type,relation_key,source_object_id,target_object_id,current_revision,lifecycle,freshness,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,'active','verified_current',?) ON CONFLICT(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,relation_type,relation_key) DO UPDATE SET source_object_id=excluded.source_object_id,target_object_id=excluded.target_object_id,current_revision=excluded.current_revision,lifecycle='active',freshness='verified_current',updated_at=excluded.updated_at`).run(binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,relationType,relationKey,source,targetId,revision,occurredAt);
       this.core.prepare(`INSERT INTO managed_relation_revisions(revision_id,authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,relation_type,relation_key,source_object_id,target_object_id,revision,run_id,intent_id,command_id,evidence_id,payload_json,verified_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(),binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,relationType,relationKey,source,targetId,revision,runId,command.intent_id,commandId,evidence.evidence_id,JSON.stringify(requestedPayload??{}),occurredAt);
     } else throw new Error('Unsupported verified projection kind.');
       this.core.exec('COMMIT;');

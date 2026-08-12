@@ -332,6 +332,52 @@ async function readFrozenControlContext(sdk, request, prefixes = {}) {
   return { ...context, ...control };
 }
 
+function phase2Snapshot(detail) {
+  // Read-only Phase 2 field snapshot. Only identity + present scalar/editor
+  // fields are projected; missing values remain empty so the generator never
+  // invents evidence. Sub-entity ids are projected for later write-back.
+  const procedures = rows(detail && (detail.gitcNonDetailedTestingProcedures || detail.nonDetailedTestingProcedures))
+    .map((procedure) => ({ id: guid(procedure && procedure.id), phaseType: text(procedure && procedure.phaseType),
+      documentProcedureResults: text(procedure && procedure.documentProcedureResults) }));
+  const design = detail && detail.controlDesignEvaluation && typeof detail.controlDesignEvaluation === 'object'
+    ? detail.controlDesignEvaluation : null;
+  const riskScopes = rows(detail && detail.controlRiskScopes).map((scope) => {
+    const detailRows = rows(scope && scope.controlRiskScopeDetails).map((item) => ({
+      id: guid(item && item.id), appropriatenessAndCorrelation: text(item && item.appropriatenessAndCorrelation) }));
+    return { id: guid(scope && scope.id), riskId: guid(scope && scope.riskId), details: detailRows };
+  });
+  const oe = detail && detail.controlOperatingEffectiveness && typeof detail.controlOperatingEffectiveness === 'object'
+    ? detail.controlOperatingEffectiveness : null;
+  return {
+    controlId: guid(detail && (detail.id || detail.controlId)),
+    workItemId: guid(detail && (detail.workItemId || detail.controlWorkItemId)),
+    controlNumber: text(detail && (detail.controlNumber || detail.number || detail.referenceNumber)),
+    name: text(detail && (detail.name || detail.displayName)),
+    description: text(detail && detail.description),
+    controlType: text(detail && detail.controlType),
+    approach: text(detail && detail.approach),
+    riskAssociationType: text(detail && detail.riskAssociationType),
+    riskAssociationDescription: text(detail && detail.riskAssociationDescription),
+    planningOperatingEffectivenessTesting: detail && detail.planningOperatingEffectivenessTesting === true,
+    planningCommonControlTesting: detail && detail.planningCommonControlTesting === true,
+    usePreviousAuditEvidence: typeof detail && detail.usePreviousAuditEvidence === 'boolean' ? detail.usePreviousAuditEvidence : null,
+    designEvaluation: design ? {
+      id: guid(design.id), competenceAndAuthorityDocumentation: text(design.competenceAndAuthorityDocumentation),
+      frequencyAndConsistency: text(design.frequencyAndConsistency), levelOfAggregation: text(design.levelOfAggregation),
+      criteriaForInvestigation: text(design.criteriaForInvestigation), dependentOnOtherControls: text(design.dependentOnOtherControls),
+      designEffective: design.designEffective, properlyImplemented: design.properlyImplemented
+    } : null,
+    procedures,
+    riskScopes,
+    operatingEffectiveness: oe ? {
+      id: guid(oe.id), procedureTiming: text(oe.procedureTiming), procedureTimingRationale: text(oe.procedureTimingRationale),
+      frequencyOfPerformance: text(oe.frequencyOfPerformance), frequencyOfPerformanceExplanation: text(oe.frequencyOfPerformanceExplanation),
+      useRecommendedSampleSize: oe.useRecommendedSampleSize, actualSampleSize: oe.actualSampleSize,
+      actualSampleSizeRationale: text(oe.actualSampleSizeRationale), operatingEffectively: oe.operatingEffectively
+    } : null
+  };
+}
+
 function createOperationHandler() {
   return Object.freeze({ async run(operationId, request, sdk) {
     if (operationId === 'omnia.workpaper.directory.read.v1') {
@@ -530,6 +576,15 @@ function createOperationHandler() {
         return { ...value, outcome: 'not_applied' };
       }
       return { ...value, outcome: 'pending' };
+    }
+    if (operationId === 'omnia.workpaper.phase2.snapshot.read.v1') {
+      const context = await readAppGraContext(sdk, request, { gra: 'snapshot-gra-detail', app: 'snapshot-app-detail', mapping: 'snapshot-app-facet-mapping' });
+      const detail = exactObject(await sdk.invokeStep('snapshot-control-detail', { controlId: guid(request.controlId) }), 'Control detail');
+      const snapshot = phase2Snapshot(detail);
+      if (snapshot.controlId !== guid(request.controlId) || (request.controlWorkItemId && snapshot.workItemId !== guid(request.controlWorkItemId))) {
+        fail('Control snapshot identity/Work Item drifted.');
+      }
+      return { ...context, ...snapshot };
     }
     fail(`Unsupported signed Operation: ${operationId}`);
   } });

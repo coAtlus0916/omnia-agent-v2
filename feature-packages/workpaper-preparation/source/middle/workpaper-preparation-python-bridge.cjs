@@ -7,7 +7,7 @@ const { randomUUID } = require('node:crypto');
 
 const PROTOCOL = 'omnia.python-sidecar-rpc/v1';
 const DISTRIBUTION = 'cpython-3.13.14-embed-amd64';
-const CAPABILITIES = Object.freeze(['select_hidden_tab_controls', 'build_hidden_tab_plan', 'classify_control_observation']);
+const CAPABILITIES = Object.freeze(['select_hidden_tab_controls', 'build_hidden_tab_plan', 'classify_control_observation', 'build_phase2_workbook', 'parse_uploaded_workbook']);
 const MAX_FRAME_BYTES = 1024 * 1024;
 const HEARTBEAT_INTERVAL_MS = 5000;
 const HEARTBEAT_TIMEOUT_MS = 15000;

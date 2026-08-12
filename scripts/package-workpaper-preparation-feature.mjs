@@ -85,6 +85,14 @@ const operations = [
       ...graContextRoutes('reconcile'),
       route('reconcile-control-detail', 'GET', '/rapr/v0/engagements/{engagementId}/controls/{controlId}', [{ name: 'controlId', type: 'guid' }])
     ]
+  },
+  {
+    operationId: 'omnia.workpaper.phase2.snapshot.read.v1', effect: 'read_only',
+    requestSchema: 'omnia.workpaper.phase2-snapshot-read-request/v1', responseSchema: 'omnia.workpaper.phase2-snapshot-read-response/v1',
+    enabledByDefault: true, grantsMutationPermit: false, routes: [
+      ...graContextRoutes('snapshot'),
+      route('snapshot-control-detail', 'GET', '/rapr/v0/engagements/{engagementId}/controls/{controlId}', [{ name: 'controlId', type: 'guid' }])
+    ]
   }
 ];
 

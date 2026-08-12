@@ -1152,7 +1152,7 @@ function createOperationHandler() {
         const query=request.query;
         exact(query,query?.objectType==='Application'?['externalId','objectType','description']:['externalId','objectType','subtypeId'],'Object read-back query');
         const result = await sdk.invokeStep('object-readback', { objectId });
-        if (rowId(result) !== objectId || deletedEntity(result)||text(result.number||result.referenceNumber||result.name).normalize('NFC')!==text(query.externalId).normalize('NFC')
+        if (rowId(result) !== objectId || deletedEntity(result)||normalizedLabel(result.number||result.referenceNumber||result.name)!==normalizedLabel(query.externalId)
           || !text(result.itElementType||result.elementType||result.type)||text(result.itElementType||result.elementType||result.type)!==text(query.objectType)
           || (query.objectType!=='Application'&&text(result.typeId||result.itElementTypeId)!==text(query.subtypeId))) fail('Object read-back identity, type, subtype, external identity, or Workspace mismatch.');
         if(query.objectType==='Application'&&canonical(editorDescription(result.description,'Application read-back description'))!==canonical(editorDescription(query.description,'Frozen Application description'))) fail('Application description read-back differs from the frozen derived editor value.');

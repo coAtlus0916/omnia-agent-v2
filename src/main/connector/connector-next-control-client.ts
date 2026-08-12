@@ -139,7 +139,11 @@ export class ConnectorNextControlClient {
           } catch (error) { reject(error); }
         });
       });
-      outbound.setTimeout(120_000, () => outbound.destroy(new Error('CONNECTOR_NEXT.UPDATE_UPLOAD_TIMEOUT')));
+      // Signed Connector packages include the pinned Node and Playwright
+      // runtimes.  Corporate uplinks can legitimately need several minutes
+      // for this one-time upload; the server still validates the exact size
+      // and SHA-256 before registering the immutable artifact.
+      outbound.setTimeout(600_000, () => outbound.destroy(new Error('CONNECTOR_NEXT.UPDATE_UPLOAD_TIMEOUT')));
       outbound.once('error', reject);
       outbound.end(packageBytes);
     });

@@ -254,6 +254,21 @@ function ensureOperationHandoffLedger(database: DatabaseSync): void {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS feature_operation_registration_adoptions_feature
     ON feature_operation_registration_adoptions(feature_id);
+
+    CREATE TABLE IF NOT EXISTS feature_operation_registration_recoveries(
+      recovery_id TEXT PRIMARY KEY,
+      feature_id TEXT NOT NULL,
+      feature_version TEXT NOT NULL,
+      package_digest TEXT NOT NULL,
+      operation_package_digest TEXT NOT NULL,
+      activation_generation INTEGER NOT NULL CHECK(activation_generation >= 2),
+      activation_event_id TEXT NOT NULL UNIQUE,
+      registration_token TEXT NOT NULL UNIQUE,
+      replaced_package_digests_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS feature_operation_registration_recoveries_feature_generation
+    ON feature_operation_registration_recoveries(feature_id,activation_generation);
   `);
 }
 
@@ -312,6 +327,47 @@ function operationRegistrationAdoptionByToken(
     WHERE feature_id=? AND registration_token=?
   `).get(featureId, registrationToken) as Record<string, unknown> | undefined;
   return row ? operationRegistrationAdoptionFromRow(row) : null;
+}
+
+interface OperationRegistrationRecovery {
+  featureId: string;
+  featureVersion: string;
+  packageDigest: string;
+  operationPackageDigest: string;
+  activationGeneration: number;
+  registrationToken: string;
+  replacedPackageDigests: string[];
+}
+
+function operationRegistrationRecoveryByToken(
+  database: DatabaseSync,
+  featureId: string,
+  registrationToken: string
+): OperationRegistrationRecovery | null {
+  const row = database.prepare(`
+    SELECT * FROM feature_operation_registration_recoveries
+    WHERE feature_id=? AND registration_token=?
+  `).get(featureId, registrationToken) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  let replaced: unknown;
+  try { replaced = JSON.parse(String(row.replaced_package_digests_json)); }
+  catch { throw new AppError('FEATURE.OPERATION_RECOVERY_LEDGER_CORRUPT', 'Operation recovery replacement identity is invalid.'); }
+  if (!Array.isArray(replaced) || replaced.length < 1
+    || replaced.some((digest) => typeof digest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(digest))
+    || canonicalJson([...new Set(replaced)].sort()) !== canonicalJson(replaced)
+    || !/^[0-9a-f]{64}$/u.test(String(row.registration_token))
+    || !Number.isSafeInteger(Number(row.activation_generation)) || Number(row.activation_generation) < 2) {
+    throw new AppError('FEATURE.OPERATION_RECOVERY_LEDGER_CORRUPT', 'Operation recovery ledger fields are invalid.');
+  }
+  return {
+    featureId: String(row.feature_id),
+    featureVersion: String(row.feature_version),
+    packageDigest: String(row.package_digest),
+    operationPackageDigest: String(row.operation_package_digest),
+    activationGeneration: Number(row.activation_generation),
+    registrationToken: String(row.registration_token),
+    replacedPackageDigests: replaced
+  };
 }
 
 function operationHandoffFromRow(row: Record<string, unknown>): OperationHandoffLedger {
@@ -438,10 +494,17 @@ async function ensureExactSourceOperationRegistration(
     const adoption = operationRegistrationAdoptionByToken(
       database, input.featureId, registration.registrationToken
     );
-    return adoption?.phase === 'finalized'
+    if (adoption?.phase === 'finalized'
       && adoption.featureVersion === input.featureVersion
       && adoption.operationPackageDigest === expected.digest
       && canonicalJson(adoption.replacedPackageDigests)
+        === canonicalJson(registration.replacedPackageDigests)) return true;
+    const recovery = operationRegistrationRecoveryByToken(
+      database, input.featureId, registration.registrationToken
+    );
+    return recovery?.featureVersion === input.featureVersion
+      && recovery.operationPackageDigest === expected.digest
+      && canonicalJson(recovery.replacedPackageDigests)
         === canonicalJson(registration.replacedPackageDigests);
   };
   const exactIdentity = () => (
@@ -660,7 +723,7 @@ async function finalizeExactBaselineOperationAdoption(
       !== canonicalJson(input.replacedPackageDigests)) {
     throw new AppError(
       'FEATURE.OPERATION_ADOPTION_REFUSED',
-      'Only an exact first-generation committed Operation registration may be adopted.'
+      `Only an exact first-generation committed Operation registration may be adopted (activation generation ${input.activationGeneration}; replaced ${input.replacedPackageDigests.join(',')}).`
     );
   }
   let adoption = operationRegistrationAdoptionByToken(
@@ -757,6 +820,153 @@ async function finalizeExactBaselineOperationAdoption(
       utcNow(), error instanceof Error ? error.message.slice(0, 1000) : 'Operation adoption finalize failed.',
       adoption.adoptionId
     );
+    throw error;
+  }
+}
+
+function finalizeExactHistoricalOperationRecovery(
+  database: DatabaseSync,
+  input: {
+    featureId: string;
+    featureVersion: string;
+    packageDigest: string;
+    activationGeneration: number;
+    operationPackageDigest: string;
+    registrationToken: string;
+    replacedPackageDigests: string[];
+  }
+): void {
+  if (input.activationGeneration < 2 || input.replacedPackageDigests.length < 1
+    || canonicalJson([...new Set(input.replacedPackageDigests)].sort())
+      !== canonicalJson(input.replacedPackageDigests)) throw new AppError(
+        'FEATURE.OPERATION_RECOVERY_REFUSED',
+        'Historical Operation recovery requires a later exact activation and non-empty committed replacement history.'
+      );
+  const existing = operationRegistrationRecoveryByToken(database, input.featureId, input.registrationToken);
+  if (existing) {
+    if (existing.featureVersion !== input.featureVersion
+      || existing.packageDigest !== input.packageDigest
+      || existing.operationPackageDigest !== input.operationPackageDigest
+      || existing.activationGeneration !== input.activationGeneration
+      || canonicalJson(existing.replacedPackageDigests) !== canonicalJson(input.replacedPackageDigests)) {
+      throw new AppError('FEATURE.OPERATION_RECOVERY_LEDGER_CAS_MISMATCH', 'Operation recovery token names another identity.');
+    }
+    return;
+  }
+  database.exec('BEGIN IMMEDIATE;');
+  try {
+    if (activeOperationHandoff(database, input.featureId)) throw new AppError(
+      'FEATURE.OPERATION_HANDOFF_IN_PROGRESS',
+      'Historical Operation recovery is blocked while another handoff is active.'
+    );
+    const head = database.prepare(`
+      SELECT feature_version,package_digest,activation_generation,runtime_enabled
+      FROM feature_activation_heads WHERE feature_id=?
+    `).get(input.featureId) as Record<string, unknown> | undefined;
+    if (!head
+      || String(head.feature_version) !== input.featureVersion
+      || String(head.package_digest) !== input.packageDigest
+      || Number(head.activation_generation) !== input.activationGeneration
+      || Number(head.runtime_enabled) !== 1) throw new AppError(
+        'FEATURE.OPERATION_RECOVERY_HEAD_MISMATCH',
+        'Historical Operation recovery differs from the exact active Feature head.'
+      );
+    const events = database.prepare(`
+      SELECT event_id,from_version FROM feature_activation_events
+      WHERE feature_id=? AND to_version=? AND activation_generation=? AND package_digest=?
+      ORDER BY occurred_at,event_id
+    `).all(
+      input.featureId, input.featureVersion, input.activationGeneration, input.packageDigest
+    ) as Array<Record<string, unknown>>;
+    if (events.length !== 1 || !String(events[0]!.from_version || '')
+      || String(events[0]!.from_version) === input.featureVersion) throw new AppError(
+        'FEATURE.OPERATION_RECOVERY_EVENT_UNPROVEN',
+        'Historical Operation recovery requires one exact local activation event from another version.'
+      );
+    database.prepare(`
+      INSERT INTO feature_operation_registration_recoveries(
+        recovery_id,feature_id,feature_version,package_digest,operation_package_digest,
+        activation_generation,activation_event_id,registration_token,replaced_package_digests_json,created_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      randomUUID(), input.featureId, input.featureVersion, input.packageDigest,
+      input.operationPackageDigest, input.activationGeneration, String(events[0]!.event_id),
+      input.registrationToken, canonicalJson(input.replacedPackageDigests), utcNow()
+    );
+    database.exec('COMMIT;');
+  } catch (error) {
+    try { database.exec('ROLLBACK;'); } catch { /* already rolled back */ }
+    throw error;
+  }
+}
+
+function recoverExactFinalizedOperationHandoff(
+  database: DatabaseSync,
+  input: {
+    featureId: string;
+    featureVersion: string;
+    packageDigest: string;
+    activationGeneration: number;
+    operationPackageDigest: string;
+    registrationToken: string;
+    replacedPackageDigests: string[];
+  }
+): boolean {
+  if (input.replacedPackageDigests.length !== 1) return false;
+  const rows = database.prepare(`
+    SELECT * FROM feature_operation_handoffs
+    WHERE feature_id=? AND target_feature_version=? AND target_package_digest=?
+      AND target_operation_package_digest=? AND target_activation_generation=?
+      AND source_operation_package_digest=? AND phase='aborted'
+      AND registration_token='' AND replaced_package_digests_json='[]'
+    ORDER BY created_at,handoff_id
+  `).all(
+    input.featureId,
+    input.featureVersion,
+    input.packageDigest,
+    input.operationPackageDigest,
+    input.activationGeneration,
+    input.replacedPackageDigests[0]!
+  ) as Array<Record<string, unknown>>;
+  if (rows.length === 0) return false;
+  if (rows.length !== 1) throw new AppError(
+    'FEATURE.OPERATION_HANDOFF_LEDGER_AMBIGUOUS',
+    'More than one aborted Operation handoff matches the Connector finalized registration.'
+  );
+  const ledger = operationHandoffFromRow(rows[0]!);
+  database.exec('BEGIN IMMEDIATE;');
+  try {
+    const head = database.prepare(`
+      SELECT feature_version,package_digest,activation_generation,runtime_enabled
+      FROM feature_activation_heads WHERE feature_id=?
+    `).get(input.featureId) as Record<string, unknown> | undefined;
+    if (!head
+      || String(head.feature_version) !== input.featureVersion
+      || String(head.package_digest) !== input.packageDigest
+      || Number(head.activation_generation) !== input.activationGeneration
+      || Number(head.runtime_enabled) !== 1) throw new AppError(
+        'FEATURE.OPERATION_HANDOFF_HEAD_CAS_MISMATCH',
+        'The active Feature head differs from the Connector finalized handoff target.'
+      );
+    const changed = database.prepare(`
+      UPDATE feature_operation_handoffs
+      SET registration_token=?,replaced_package_digests_json=?,phase='finalized',updated_at=?,last_error=''
+      WHERE handoff_id=? AND phase='aborted' AND registration_token=''
+        AND replaced_package_digests_json='[]'
+    `).run(
+      input.registrationToken,
+      canonicalJson(input.replacedPackageDigests),
+      utcNow(),
+      ledger.handoffId
+    );
+    if (changed.changes !== 1) throw new AppError(
+      'FEATURE.OPERATION_HANDOFF_LEDGER_CAS_MISMATCH',
+      'The exact aborted Operation handoff could not be recovered as finalized.'
+    );
+    database.exec('COMMIT;');
+    return true;
+  } catch (error) {
+    try { database.exec('ROLLBACK;'); } catch { /* already rolled back */ }
     throw error;
   }
 }
@@ -3233,6 +3443,7 @@ export class FeaturePackageManager {
       const envelope = verifyOfficialPackage(readEnvelope(packageFilename), 'omnia-feature');
       const digest = packageDigest(envelope);
       const { manifest, documentationDigest, operationPackage } = this.validate(envelope);
+      this.retireSupersededUnstartedOperationHandoff(manifest.featureId, operationPackage);
       assertNoActiveOperationHandoff(this.database, manifest.featureId, 'Feature install');
       this.database.prepare(`
         UPDATE feature_install_attempts
@@ -3489,6 +3700,7 @@ export class FeaturePackageManager {
   }
 
   rollback(featureId: string, targetVersion: string): FeatureInstallResult {
+    this.retireUnstartedOperationHandoffForRegisteredTarget(featureId, targetVersion);
     assertNoActiveOperationHandoff(this.database, featureId, 'Feature rollback');
     const target = this.database.prepare(`
       SELECT f.feature_version, f.package_digest, d.physical_path
@@ -3730,6 +3942,141 @@ export class FeaturePackageManager {
       packageDigest: ledger.targetPackageDigest,
       documentationPath: row.physical_path
     };
+  }
+
+  /**
+   * A Connector rejection can leave an immutable candidate in `staged` before
+   * any remote registration transaction exists.  A later official package
+   * must be able to supersede that unstarted candidate; otherwise one
+   * fail-closed rejection permanently blocks every future Feature release.
+   *
+   * This deliberately cannot retire prepared/committed work.  It also binds
+   * the decision to the still-authoritative source head and to a strictly
+   * newer signed Operation sequence before changing the ledger under the
+   * SQLite writer lock.
+   */
+  private retireSupersededUnstartedOperationHandoff(
+    featureId: string,
+    candidateOperation: ValidatedOperationPackage
+  ): void {
+    const observed = activeOperationHandoff(this.database, featureId);
+    if (!observed || observed.phase !== 'staged' || observed.lastError.trim() === '') return;
+    const active = this.head(featureId);
+    if (!active
+      || active.featureVersion !== observed.sourceFeatureVersion
+      || active.packageDigest !== observed.sourcePackageDigest
+      || active.activationGeneration !== observed.sourceActivationGeneration) return;
+    const targetOperation = this.loadInstalledOperation(
+      this.loadInstalled(this.operationHandoffTarget(observed))
+    );
+    if (targetOperation.digest !== observed.targetOperationPackageDigest) throw new AppError(
+      'FEATURE.OPERATION_HANDOFF_LEDGER_CAS_MISMATCH',
+      'The failed staged Operation target differs from its durable handoff ledger.'
+    );
+    if (candidateOperation.manifest.sequence <= targetOperation.manifest.sequence) return;
+
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      const current = activeOperationHandoff(this.database, featureId);
+      const currentHead = this.head(featureId);
+      if (!current
+        || current.handoffId !== observed.handoffId
+        || current.phase !== 'staged'
+        || current.registrationToken !== ''
+        || current.replacedPackageDigests.length !== 0
+        || current.lastError !== observed.lastError
+        || !currentHead
+        || currentHead.featureVersion !== current.sourceFeatureVersion
+        || currentHead.packageDigest !== current.sourcePackageDigest
+        || currentHead.activationGeneration !== current.sourceActivationGeneration) throw new AppError(
+          'FEATURE.OPERATION_HANDOFF_LEDGER_CAS_MISMATCH',
+          'The failed staged Operation handoff changed while a newer candidate was being installed.'
+        );
+      const changed = this.database.prepare(`
+        UPDATE feature_operation_handoffs
+        SET phase='aborted',updated_at=?,last_error=?
+        WHERE handoff_id=? AND phase='staged' AND registration_token=''
+          AND replaced_package_digests_json='[]' AND last_error=?
+      `).run(
+        utcNow(),
+        `Superseded before Connector registration by signed Operation sequence ${candidateOperation.manifest.sequence}.`,
+        current.handoffId,
+        current.lastError
+      );
+      if (changed.changes !== 1) throw new AppError(
+        'FEATURE.OPERATION_HANDOFF_LEDGER_CAS_MISMATCH',
+        'The failed staged Operation handoff could not be retired exactly.'
+      );
+      this.database.exec('COMMIT;');
+    } catch (error) {
+      try { this.database.exec('ROLLBACK;'); } catch { /* already rolled back */ }
+      throw error;
+    }
+  }
+
+  private retireUnstartedOperationHandoffForRegisteredTarget(featureId: string, targetVersion: string): void {
+    const observed = activeOperationHandoff(this.database, featureId);
+    const highWaterMatch = observed?.lastError.match(/registration high-water (\d+)/u);
+    if (!observed || observed.phase !== 'staged' || !highWaterMatch) return;
+    const target = this.database.prepare(`
+      SELECT f.package_digest,d.physical_path
+      FROM feature_registry f JOIN documentation_registry d
+        ON d.feature_id=f.feature_id AND d.feature_version=f.feature_version
+      WHERE f.feature_id=? AND f.feature_version=? AND f.lifecycle IN ('previous','candidate')
+    `).get(featureId, targetVersion) as { package_digest: string; physical_path: string } | undefined;
+    const active = this.head(featureId);
+    if (!target || !active
+      || active.featureVersion !== observed.sourceFeatureVersion
+      || active.packageDigest !== observed.sourcePackageDigest
+      || active.activationGeneration !== observed.sourceActivationGeneration) return;
+    const targetHead: ActivationHead = {
+      featureId,
+      featureVersion: targetVersion,
+      activationGeneration: active.activationGeneration + 1,
+      runtimeEnabled: false,
+      runtimeReason: '',
+      packagePath: path.posix.join(
+        'packages', 'installed', featureId, targetVersion,
+        target.package_digest.slice('sha256:'.length)
+      ),
+      packageDigest: target.package_digest,
+      documentationPath: target.physical_path
+    };
+    const targetOperation = this.loadInstalledOperation(this.loadInstalled(targetHead));
+    if (targetOperation.manifest.sequence !== Number(highWaterMatch[1])) return;
+
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      const current = activeOperationHandoff(this.database, featureId);
+      if (!current
+        || current.handoffId !== observed.handoffId
+        || current.phase !== 'staged'
+        || current.registrationToken !== ''
+        || current.replacedPackageDigests.length !== 0
+        || current.lastError !== observed.lastError) throw new AppError(
+          'FEATURE.OPERATION_HANDOFF_LEDGER_CAS_MISMATCH',
+          'The failed staged handoff changed while selecting its exact Connector-registered recovery target.'
+        );
+      const changed = this.database.prepare(`
+        UPDATE feature_operation_handoffs
+        SET phase='aborted',updated_at=?,last_error=?
+        WHERE handoff_id=? AND phase='staged' AND registration_token=''
+          AND replaced_package_digests_json='[]' AND last_error=?
+      `).run(
+        utcNow(),
+        `Retired before Connector registration to recover exact signed high-water target ${targetVersion}.`,
+        current.handoffId,
+        current.lastError
+      );
+      if (changed.changes !== 1) throw new AppError(
+        'FEATURE.OPERATION_HANDOFF_LEDGER_CAS_MISMATCH',
+        'The failed staged handoff could not be retired exactly for high-water recovery.'
+      );
+      this.database.exec('COMMIT;');
+    } catch (error) {
+      try { this.database.exec('ROLLBACK;'); } catch { /* already rolled back */ }
+      throw error;
+    }
   }
 
   private async reconcileAbortPendingOperationHandoff(
@@ -4037,16 +4384,36 @@ export class FeaturePackageManager {
                     'A replacement Operation registration is not owned by the exact active Feature head.'
                   );
                 }
-                await finalizeExactBaselineOperationAdoption(this.database, this.runtime!.connector, {
+                const recoveredHandoff = recoverExactFinalizedOperationHandoff(this.database, {
                   featureId: context.featureId,
                   featureVersion: context.featureVersion,
                   packageDigest: activeHead.packageDigest,
                   activationGeneration: activeHead.activationGeneration,
                   operationPackageDigest,
                   registrationToken: registration.registrationToken,
-                  operationManifest,
                   replacedPackageDigests: registration.replacedPackageDigests
                 });
+                if (!recoveredHandoff) {
+                  if (activeHead.activationGeneration === 1) await finalizeExactBaselineOperationAdoption(this.database, this.runtime!.connector, {
+                    featureId: context.featureId,
+                    featureVersion: context.featureVersion,
+                    packageDigest: activeHead.packageDigest,
+                    activationGeneration: activeHead.activationGeneration,
+                    operationPackageDigest,
+                    registrationToken: registration.registrationToken,
+                    operationManifest,
+                    replacedPackageDigests: registration.replacedPackageDigests
+                  });
+                  else finalizeExactHistoricalOperationRecovery(this.database, {
+                    featureId: context.featureId,
+                    featureVersion: context.featureVersion,
+                    packageDigest: activeHead.packageDigest,
+                    activationGeneration: activeHead.activationGeneration,
+                    operationPackageDigest,
+                    registrationToken: registration.registrationToken,
+                    replacedPackageDigests: registration.replacedPackageDigests
+                  });
+                }
               }
             }
             this.operationRegistrations.set(registrationKey, { sessionGeneration, packageDigest: operationPackageDigest });
@@ -4819,16 +5186,36 @@ export class FeaturePackageManager {
           && canonicalJson(ledger.replacedPackageDigests)
             === canonicalJson(registration.replacedPackageDigests);
         if (!exactHandoff) {
-          await finalizeExactBaselineOperationAdoption(this.database, this.runtime.connector, {
+          const recoveredHandoff = recoverExactFinalizedOperationHandoff(this.database, {
             featureId: head.featureId,
             featureVersion: head.featureVersion,
             packageDigest: head.packageDigest,
             activationGeneration: head.activationGeneration,
             operationPackageDigest,
             registrationToken: registration.registrationToken,
-            operationManifest,
             replacedPackageDigests: registration.replacedPackageDigests
           });
+          if (!recoveredHandoff) {
+            if (head.activationGeneration === 1) await finalizeExactBaselineOperationAdoption(this.database, this.runtime.connector, {
+              featureId: head.featureId,
+              featureVersion: head.featureVersion,
+              packageDigest: head.packageDigest,
+              activationGeneration: head.activationGeneration,
+              operationPackageDigest,
+              registrationToken: registration.registrationToken,
+              operationManifest,
+              replacedPackageDigests: registration.replacedPackageDigests
+            });
+            else finalizeExactHistoricalOperationRecovery(this.database, {
+              featureId: head.featureId,
+              featureVersion: head.featureVersion,
+              packageDigest: head.packageDigest,
+              activationGeneration: head.activationGeneration,
+              operationPackageDigest,
+              registrationToken: registration.registrationToken,
+              replacedPackageDigests: registration.replacedPackageDigests
+            });
+          }
         }
       }
       }
@@ -4847,12 +5234,17 @@ export class FeaturePackageManager {
         );
       }
       try {
-        await ensureExactSourceOperationRegistration(this.database, this.runtime.connector, {
-          featureId: handoffSource.featureId,
-          featureVersion: handoffSource.featureVersion,
-          operationPackage: sourceOperation.envelope,
-          validatedOperationPackage: sourceOperation
-        });
+        let sourceRegistrationError: unknown = null;
+        try {
+          await ensureExactSourceOperationRegistration(this.database, this.runtime.connector, {
+            featureId: handoffSource.featureId,
+            featureVersion: handoffSource.featureVersion,
+            operationPackage: sourceOperation.envelope,
+            validatedOperationPackage: sourceOperation
+          });
+        } catch (error) {
+          sourceRegistrationError = error;
+        }
         preparedHandoff = await registerExactOperationHandoff(this.runtime.connector, {
           featureId: head.featureId,
           featureVersion: head.featureVersion,
@@ -4861,6 +5253,9 @@ export class FeaturePackageManager {
           operationPackageDigest,
           sourceOperationPackageDigest: sourceOperation.digest
         });
+        if (sourceRegistrationError && preparedHandoff.registrationState !== 'committed') {
+          throw sourceRegistrationError;
+        }
       } catch (error) {
         throw new AppError(
           'FEATURE.OPERATION_HANDOFF_REFUSED',

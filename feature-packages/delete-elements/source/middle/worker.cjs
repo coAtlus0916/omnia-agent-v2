@@ -83,8 +83,8 @@ function errorSummary(error) {
   return { code: String(error && error.code || 'DELETE.STEP_FAILED').slice(0, 160), message: String(error && error.message || error || 'Delete step failed.').slice(0, 800) };
 }
 function catalogFailureMessage(failure) {
-  if (failure.code === 'DELETE.CATALOG_TIMEOUT') return '真实权威目录读取超过 90 秒，已停止界面等待。请确认 Connector 与 Pack 页面在线后点击“权威重抓取”；系统不会展示旧目录或假数据。';
-  if (failure.code === 'DELETE.CATALOG_BUSY') return '上一轮真实权威目录读取仍在收尾，未启动第二轮并发读取。请稍后点击“权威重抓取”。';
+  if (failure.code === 'DELETE.CATALOG_TIMEOUT') return '真实权威目录读取超过 90 秒，已停止界面等待。请确认 Connector 与 Pack 页面在线后点击“刷新”；系统不会展示旧目录或假数据。';
+  if (failure.code === 'DELETE.CATALOG_BUSY') return '上一轮真实权威目录读取仍在收尾，未启动第二轮并发读取。请稍后点击“刷新”。';
   return `${failure.code}: ${failure.message}`;
 }
 function frozenSafetyMatches(current, frozen) {
@@ -327,6 +327,7 @@ function createFeatureWorker(ports) {
       { actionId: 'retry-delete-plan-preparation', enabled: false, reason: '当前没有失败的只读冻结批次。' },
       { actionId: 'cancel-delete-plan', enabled: false, reason: '当前未显示待确认删除计划。' },
       { actionId: 'confirm-delete-plan', enabled: false, reason: '当前未显示待确认删除计划。' },
+      { actionId: 'resume-delete-plan', enabled: false, reason: '当前没有已完成只读核验、等待继续的删除计划。' },
       { actionId: 'reconcile-delete-plan', enabled: false, reason: '当前没有只读核验义务。' }
     ];
   }
@@ -337,13 +338,13 @@ function createFeatureWorker(ports) {
     const plan = await load(runId);
     if (!plan) fail('DELETE.REOPEN_PLAN_MISSING', '最新 Delete Core Run 缺少 Feature 计划投影；重新打开已失败关闭。');
     if (String(plan.featureId || FEATURE_ID) !== FEATURE_ID) fail('DELETE.REOPEN_PLAN_IDENTITY_DRIFT', '最新计划不属于 Delete Elements。');
-    if (!['preparing', 'pending_confirmation', 'executing', 'uncertain', 'completed', 'failed', 'cancelled'].includes(String(plan.state || ''))) {
+    if (!['preparing', 'pending_confirmation', 'executing', 'uncertain', 'resume_required', 'completed', 'failed', 'cancelled'].includes(String(plan.state || ''))) {
       fail('DELETE.REOPEN_PLAN_STATE_INVALID', '最新 Delete 计划处于未知状态。');
     }
     return plan;
   }
   function preservesFrozenPlanOnReopen(plan) {
-    return Boolean(plan) && ['preparing', 'pending_confirmation', 'executing', 'uncertain'].includes(plan.state);
+    return Boolean(plan) && ['preparing', 'pending_confirmation', 'executing', 'uncertain', 'resume_required'].includes(plan.state);
   }
   function frozenPlanRefreshFailureProjection(plan, error) {
     const failure = errorSummary(error); const patch = planSurface(plan);
@@ -428,7 +429,7 @@ function createFeatureWorker(ports) {
     if (!snapshot || snapshot.schemaVersion !== 'omnia.delete-catalog-snapshot/v1' || snapshot.planId !== planId
       || !sameBinding(snapshot.binding, b) || Number(snapshot.safetyRevision) !== Number(s.stateVersion)
       || !Number.isFinite(expiresAt) || expiresAt <= Date.now() || !Array.isArray(snapshot.items)) {
-      fail('DELETE.CATALOG_SNAPSHOT_REQUIRED', '当前权威目录快照缺失、过期或与 Connector/安全锁不一致；请先点击“权威重抓取”，再创建删除计划。');
+      fail('DELETE.CATALOG_SNAPSHOT_REQUIRED', '当前权威目录快照缺失、过期或与 Connector/安全锁不一致；请先点击“刷新”，再创建删除计划。');
     }
     return authoritativeCatalog({ engagementId: b.engagementId, items: snapshot.items }, b, s);
   }
@@ -677,7 +678,8 @@ function createFeatureWorker(ports) {
           objectType: selected.objectType, objectId: selected.objectId, operations,
           request: { objectId: selected.objectId, informationId: selected.informationId, workItemId: selected.workItemId, objectType: selected.objectType, workspaceId: selected.workspace },
           mutationPayload: selected.objectType === 'Information' ? { informationId: selected.informationId } : { objectId: selected.objectId, objectType: selected.objectType },
-          operationTarget: { targetIdentityKey: `${selected.objectType}|${selected.workspace}|${selected.objectId}`, workspaceId: selected.workspace },
+          operationTarget: { targetIdentityKey: `${selected.objectType}|${selected.workspace}|${selected.objectId}`,
+            workspaceId: selected.workspace, objectId: selected.objectId, workItemId: selected.workItemId, objectType: selected.objectType },
           baseline: preflight.baseline, preflight, dependenciesPlanned: preflight.blockers.length > 0 || preflight.relations.length > 0 || Boolean(preflight.riskAssessmentId),
           affectedTargetKeys: [targetKey(selected)] };
       });
@@ -776,6 +778,7 @@ function createFeatureWorker(ports) {
   function planActionPatch(plan) {
     const preparing = plan.state === 'preparing'; const preparationFailed = Boolean(preparing && plan.preparation && plan.preparation.failure);
     const pending = plan.state === 'pending_confirmation'; const uncertain = plan.state === 'uncertain';
+    const resumeRequired = plan.state === 'resume_required';
     const terminal = ['completed', 'failed', 'cancelled'].includes(plan.state);
     return [
       { actionId: 'bootstrap-authoritative-catalog', enabled: false, reason: '计划界面不执行目录首次读取。' },
@@ -787,6 +790,8 @@ function createFeatureWorker(ports) {
         reason: preparationFailed ? '' : '当前没有失败的只读冻结批次。' },
       { actionId: 'cancel-delete-plan', enabled: preparing || pending, reason: preparing || pending ? '' : '只有正在冻结或待确认计划可以取消。' },
       { actionId: 'confirm-delete-plan', enabled: pending, reason: pending ? '' : '当前计划不处于待确认状态。' },
+      { actionId: 'resume-delete-plan', enabled: resumeRequired,
+        reason: resumeRequired ? '' : '当前没有已完成只读核验、等待继续的删除计划。' },
       { actionId: 'reconcile-delete-plan', enabled: uncertain, reason: uncertain ? '' : '当前计划没有只读核验义务。',
         label: uncertain && plan.uncertain && plan.uncertain.phase === 'final_catalog' ? '重试最终权威核验'
           : uncertain && plan.uncertain && plan.uncertain.phase === 'core_terminal' ? '重试 Core 终态核验' : '只读核验' }
@@ -816,7 +821,7 @@ function createFeatureWorker(ports) {
     const completed = items.reduce((total, item) => total + item.completed, 0); const total = plan.steps.length;
     const state = plan.state === 'completed' ? 'passed' : plan.state === 'failed' ? 'failed' : plan.state === 'cancelled' ? 'skipped'
       : plan.state === 'uncertain' ? 'uncertain' : plan.state === 'executing' ? 'running' : 'pending';
-    return { label: '冻结删除图', completed, total, percent: total ? Math.round(completed * 100 / total) : 0, state,
+    return { label: '删除中', completed, total, percent: total ? Math.round(completed * 100 / total) : 0, state,
       message: plan.state === 'pending_confirmation' ? '计划已冻结，尚未提交任何 mutation。'
         : plan.state === 'uncertain' ? '只允许权威只读核验；不会自动重放 mutation。'
           : plan.state === 'completed' ? '所有 mutation、readback、投影与最终目录核验均已完成。'
@@ -1130,7 +1135,9 @@ function createFeatureWorker(ports) {
         if (step.kind === 'object') {
           const selected = plan.targets.find((value) => value.objectId === step.objectId && value.objectType === step.objectType);
           const before = normalizePreflight(await invoke(step.operations.preflight, invocation(step, b, plan.planDigest)), selected, s);
-          if (before.updatedAt !== step.preflight.updatedAt) fail('DELETE.PREFLIGHT_DRIFT', `Object token changed before mutation: ${step.key}`);
+          if (!step.dependenciesPlanned && before.updatedAt !== step.preflight.updatedAt) {
+            fail('DELETE.PREFLIGHT_DRIFT', `Object token changed before mutation: ${step.key}`);
+          }
           if (before.blockers.length || before.relations.length) fail('DELETE.GRAPH_NOT_CLEARED', `Planned dependencies remain for ${step.key}.`);
           if (before.riskAssessmentId) {
             const graStep = plan.steps.find((candidate) => candidate.kind === 'cascade' && candidate.objectId === before.riskAssessmentId
@@ -1266,7 +1273,8 @@ function createFeatureWorker(ports) {
         delete plan.uncertain; await save(plan);
       }
     } catch (error) { return markUncertain(plan, step, commandId, intent, reconcilePhase, error); }
-    return execute(plan, context, false);
+    plan.state = 'resume_required'; plan.stateVersion += 1; await save(plan);
+    return plan;
   }
   async function handleAction(input) {
     const context = input.context || {};
@@ -1312,6 +1320,13 @@ function createFeatureWorker(ports) {
     }
     if (input.actionId === 'confirm-delete-plan') {
       const result = await confirm(plan, context, input.expectedStateVersion);
+      result.surfaceStateVersion = Number(input.expectedStateVersion) + 1; await save(result);
+      return { surfacePatch: planSurface(result) };
+    }
+    if (input.actionId === 'resume-delete-plan') {
+      if (plan.state !== 'resume_required') fail('DELETE.RESUME_INVALID', 'No reconciled deletion plan is waiting for explicit mutation resume.');
+      if (Number(input.expectedStateVersion) !== Number(plan.surfaceStateVersion)) fail('DELETE.RESUME_STALE', 'Delete resume Surface revision is stale.');
+      const result = await execute(plan, context, false);
       result.surfaceStateVersion = Number(input.expectedStateVersion) + 1; await save(result);
       return { surfacePatch: planSurface(result) };
     }

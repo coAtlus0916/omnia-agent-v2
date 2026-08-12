@@ -4,7 +4,7 @@
 
 0.3.17 移除旧 0.3.14 pending 计划一次性迁移时最后残留的 Comments 终态投影。迁移仍精确调用一次 Core `returnRunToReview` 和一次 Run 关闭，不增加任何 Operation 调用，也不提交 mutation；action 只返回状态为 `cancelled`、进度为 `skipped` 的 Delete Feature Surface patch。历史 0.3.14 Comments 卡由 package-manager 的 activation-head `feature_version` join 过滤，不由 0.3.17 新写终态卡清理。
 
-0.3.15 把新删除计划从 Comments 完整迁入 Delete Feature 卡片：冻结目标、图步骤、确认、receipt-backed 进度、只读核验和终态结果都由同一个声明式 Surface 投影。目录态禁用计划动作；计划态禁用重抓取和重复创建；终态可用“权威重抓取”返回最新真实目录。新计划不写 Comments；旧 0.3.14 pending Comments 计划只能执行一次可审计迁移取消，不会提交 mutation。对象/GRA 预检使用峰值 8 的有界并发且按冻结输入位置收集结果，156 项规模测试在 120 秒预算内完成。同一 `relationType + source` 的全部 APP 目标按 ID 排序去重后冻结为一个关系组，使用一个 source-tab token、一次批量 `disassociate`，并逐端点执行双向或单向读回；部分边、缺端点、跨 Workspace/type 或漂移全部失败关闭。
+0.3.15 把新删除计划从 Comments 完整迁入 Delete Feature 卡片：冻结目标、图步骤、确认、receipt-backed 进度、只读核验和终态结果都由同一个声明式 Surface 投影。目录态禁用计划动作；计划态禁用刷新和重复创建；终态可用“刷新”返回最新真实目录。新计划不写 Comments；旧 0.3.14 pending Comments 计划只能执行一次可审计迁移取消，不会提交 mutation。对象/GRA 预检使用峰值 8 的有界并发且按冻结输入位置收集结果，156 项规模测试在 120 秒预算内完成。同一 `relationType + source` 的全部 APP 目标按 ID 排序去重后冻结为一个关系组，使用一个 source-tab token、一次批量 `disassociate`，并逐端点执行双向或单向读回；部分边、缺端点、跨 Workspace/type 或漂移全部失败关闭。
 
 0.3.14 修复真实 GRA 预检把 Create & Associate 的 assertion 元数据误当作删除许可的问题。GRA cascade snapshot 只冻结并校验删除所必需的 Risk、Control 与 Risk-Control 精确远端身份；根删除后仍逐项证明冻结级联全部缺席。0.3.13 的 Connector sandbox 无 `require` 修复、0.3.12 的空租户与真实 DB/OS/Network 识别全部保留。
 
@@ -39,7 +39,7 @@
 - GRA 调和：逐项证明冻结子集 deleted/absent；缺少任一证明即进入 `uncertain`，后续只允许只读 reconcile，不重放 mutation。
 - 固定顺序：`InfrastructureApplication + ItToolApplication → GRA cascade → DB/OS/DCNO/TOOL/Information → APP`。
 - 投影：普通对象与关系使用 receipt-backed 删除投影；GRA 使用 Core `projectVerifiedDeletionCascade`，由 Core 自行比较冻结 intent baseline 与可信 readback receipt 后原子投影根及子集。
-- 首次加载：声明式 Surface 的后台 action 自动执行一次真实权威目录读取，明确落到 `ready`、`empty` 或 `error`；手动“权威重抓取”仍读取当前 Connector、Section、Workspace 与目录，不使用示例数据。
+- 首次加载：声明式 Surface 的后台 action 自动执行一次真实权威目录读取，明确落到 `ready`、`empty` 或 `error`；手动“刷新”仍读取当前 Connector、Section、Workspace 与目录，不使用示例数据。
 - 失败隔离：仅 mutation 提交前且结果明确的 preflight/command 准备失败可隔离到依赖子图，其余独立步骤继续。任何请求已标记 submitted 后的错误、commit/receipt/readback/projection 不确定都立即停批，只能只读调和且绝不重放 mutation。
 - 确认失效：计划保存并展示 Core 冻结的 `expiresAt`。用户取消、确认过期、Connector/安全锁漂移或整图重验失败时，Worker 先调用 Core `returnRunToReview` 原子失效 pending Confirmation 与冻结 intents，再把 Run 关闭为 cancelled；不会留下仍可消费的旧确认。
 - 结果投影：Delete Feature 内的冻结目标与步骤条目列出真实 outcome、对象 ID、错误码与原因；分组进度由 Core command/readback ledger 更新，不用 Comments 或 Renderer 本地状态推算。

@@ -92,7 +92,8 @@ test('declarative catalog workbench fixes its real status/actions footer and pre
   assert.match(renderer,/catalog-footer-status[\s\S]*surface\.statusMessage/u);
   assert.match(renderer,/fixed-footer-split-workbench/u);
   assert.match(renderer,/feature-root-content\$\{fixedFooterSplit \? ' fixed-footer-split-root' : ''\}/u);
-  assert.match(html,/\.feature-root-content\.fixed-footer-split-root\{display:grid;grid-template-rows:auto minmax\(0,1fr\);height:100%;min-height:0\}/u);
+  assert.match(html,/\.feature-root-content\.fixed-footer-split-root\{display:flex;flex-direction:column;height:100%;min-height:0\}/u);
+  assert.match(html,/\.fixed-footer-split-root>\.feature-layout\{flex:1 1 auto\}/u);
   assert.match(html,/\.fixed-footer-split-workbench \.operation-pane\{height:100%;min-height:0;overflow:hidden\}/u);
   assert.match(html,/\.selection-browser\.fixed-footer-split\{height:100%;min-height:0[^}]*grid-template-rows:auto minmax\(0,1fr\) auto/u);
   assert.match(html,/\.selection-browser\.fixed-footer-split \.catalog-hierarchy,.selection-browser\.fixed-footer-split \.catalog-results\{overflow-x:hidden;overflow-y:auto\}/u);

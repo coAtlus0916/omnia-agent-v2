@@ -19,7 +19,8 @@
          know which Feature supplied the catalog: all content below comes from
          the same signed Surface projection and real action list. */
       .feature-layout.fixed-footer-split-workbench{height:100%;min-height:0}
-      .feature-root-content.fixed-footer-split-root{display:grid;grid-template-rows:auto minmax(0,1fr);height:100%;min-height:0}
+      .feature-root-content.fixed-footer-split-root{display:flex;flex-direction:column;height:100%;min-height:0}
+      .fixed-footer-split-root>.feature-layout{flex:1 1 auto}
       .fixed-footer-split-root>.page-error{max-height:96px;overflow:auto}
       .fixed-footer-split-workbench .operation-pane{height:100%;min-height:0;overflow:hidden}
       .fixed-footer-split-workbench .catalog-priority-layer{height:100%;min-height:0}

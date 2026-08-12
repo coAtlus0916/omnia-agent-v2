@@ -979,7 +979,9 @@ export class OperationHost {
     if (registered.packageSequence === highest
       && finalized.some((transaction) => transaction.packageDigest === registered.digest)) return;
     if (registered.packageSequence <= highest) {
-      throw new Error('Operation package is below or conflicts with the durable finalized registration high-water mark.');
+      throw new Error(
+        `Operation package sequence ${registered.packageSequence} is below or conflicts with durable finalized registration high-water ${highest}.`
+      );
     }
   }
 

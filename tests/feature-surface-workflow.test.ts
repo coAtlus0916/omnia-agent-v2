@@ -37,6 +37,14 @@ test('standard selection-browser surfaces retain the legacy layout while fixed m
   assert.equal(selectionBrowserUsesFixedFooter({schemaVersion:'omnia.declarative-selection-browser/v1',layout:{schemaVersion:'omnia.selection-browser-layout/v1',mode:'fixed_footer_split'},hierarchyLabel:'Hierarchy',resultsLabel:'Results',searchPlaceholder:'Search',emptyMessage:'Empty',allScopesLabel:'All',selectVisibleLabel:'Select',clearSelectionLabel:'Clear',footerActionIds:['select-action'],primaryActionId:'select-action'}),true);
 });
 
+test('generic selection browsers preserve both independent pane scroll positions across every DOM rerender',()=>{
+  const renderer=fs.readFileSync(path.join(root,'src/renderer/feature-window.ts'),'utf8');
+  assert.match(renderer,/function captureSelectionBrowserScroll\(\)[\s\S]*hierarchyTop: hierarchy\.scrollTop[\s\S]*resultsTop: results\.scrollTop/u);
+  assert.match(renderer,/function restoreSelectionBrowserScroll\([\s\S]*snapshot\.uiIdentity !== selectionUiIdentity[\s\S]*hierarchy\?\.scrollTo\(\{top:snapshot\.hierarchyTop[\s\S]*results\?\.scrollTo\(\{top:snapshot\.resultsTop/u);
+  assert.match(renderer,/function render\(\): void \{\s*const selectionScroll = captureSelectionBrowserScroll\(\);[\s\S]*root\.innerHTML[\s\S]*restoreSelectionBrowserScroll\(selectionScroll\);/u);
+  assert.match(renderer,/next\?\.focus\(\{preventScroll:true\}\)/u);
+});
+
 test('generic Feature review renders real review contract and dispatches CAS-safe actions without silent dirty-value loss',()=>{
   const renderer=fs.readFileSync(path.join(root,'src/renderer/feature-window.ts'),'utf8'); const html=fs.readFileSync(path.join(root,'src/renderer/feature-window.html'),'utf8');
   for(const token of ['surface.review','review.elementTypes','review.elements','review.fields','review.issueOrder','data-review-kind','data-review-element','data-review-field','data-review-input']) assert.match(renderer,new RegExp(token.replace('.','\\.'),'u'));

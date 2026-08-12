@@ -105,7 +105,7 @@ export const FEATURE_RUNTIME_STORE_PORT_POLICIES: Readonly<Record<string, Featur
   projectVerifiedReturn: { permission: 'local_write', owner: 'current_command' },
   projectVerifiedDeletion: { permission: 'local_write', owner: 'current_command' },
   projectVerifiedDeletionCascade: { permission: 'local_write', owner: 'current_command' },
-  finishReturn: { permission: 'omnia_mutation', owner: 'current_run' },
+  finishReturn: { permission: 'local_write', owner: 'current_run' },
   recordBootstrapCapabilityEvidence: { permission: 'omnia_mutation', owner: 'current_run' },
   getCapabilityEvidenceState: { permission: 'read', owner: 'feature_context' },
   validateReturnAuthority: { permission: 'read', owner: 'current_run' },
@@ -211,8 +211,6 @@ interface GraCascadeRiskControlIdentity {
   riskRiskScopeId: string;
   riskScopeId: string;
   controlId: string;
-  assertionType: string;
-  assertion: string;
 }
 interface GraCascadeIdentitySnapshot {
   schemaVersion: 'omnia.delete.gra-cascade-snapshot/v1';
@@ -275,9 +273,9 @@ function parseGraCascadeSnapshot(value: unknown, requireDeleted: boolean): {
     ['controlId', 'workItemId', 'updatedOn'], 'Deletion cascade Control',
     (row) => `${row.controlId}\u0000${row.workItemId}`);
   const riskControls = parseRows<GraCascadeRiskControlIdentity>(snapshot.riskControls,
-    ['riskId', 'riskRiskScopeId', 'riskScopeId', 'controlId', 'assertionType', 'assertion'],
+    ['riskId', 'riskRiskScopeId', 'riskScopeId', 'controlId'],
     'Deletion cascade Risk-Control',
-    (row) => `${row.riskId}\u0000${row.riskRiskScopeId}\u0000${row.controlId}\u0000${row.assertionType}\u0000${row.assertion}`);
+    (row) => `${row.riskId}\u0000${row.riskRiskScopeId}\u0000${row.riskScopeId}\u0000${row.controlId}`);
   const identity: GraCascadeIdentitySnapshot = {
     schemaVersion: 'omnia.delete.gra-cascade-snapshot/v1',
     assessment: assessmentIdentity,
@@ -3163,10 +3161,6 @@ export class FeatureRuntimeStore {
         const target = object(raw, 'Return intent target');
         if (!['object', 'relation', 'field', 'risk_control', 'documentation', 'evaluation'].includes(String(target.kind))
           || !String(target.key || '')) throw new Error('Return intent target identity is invalid.');
-        if (String(target.kind) === 'object'
-          && String(target.objectType) === 'GRA' && !['create', 'reuse'].includes(String(target.disposition))) {
-          throw new Error('Create GRA intent disposition must be exactly create or reuse.');
-        }
         if (target.workspace !== undefined && !allowedWorkspaceIds.includes(String(target.workspace))) {
           throw new Error('Return intent target Workspace is outside the exact durable safety scope.');
         }
@@ -4025,7 +4019,10 @@ export class FeatureRuntimeStore {
         if (relationType !== String(intended.relationType || '') || relationKey !== command.target_key
           ||!expectedSource||!expectedTarget||source!==expectedSource.object_id||targetId!==expectedTarget.object_id) throw new Error('Relation projection differs from the frozen intent or its receipt-backed source/target object IDs.');
       }
-      const current=this.core.prepare(`SELECT current_revision FROM managed_relations WHERE authority_instance_id=? AND tenant_or_org_id=? AND pack_id=? AND engagement_id=? AND workspace_id=? AND relation_type=? AND relation_key=?`).get(binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,relationType,relationKey) as {current_revision:number}|undefined;
+      const current=this.core.prepare(`SELECT current_revision,source_object_id,target_object_id FROM managed_relations WHERE authority_instance_id=? AND tenant_or_org_id=? AND pack_id=? AND engagement_id=? AND workspace_id=? AND relation_type=? AND relation_key=?`).get(binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,relationType,relationKey) as {current_revision:number;source_object_id:string;target_object_id:string}|undefined;
+      if (current && (current.source_object_id !== source || current.target_object_id !== targetId)) {
+        throw new Error('Verified relation key is already owned by different source/target endpoints.');
+      }
       const revision=Number(current?.current_revision||0)+1;
       this.core.prepare(`INSERT INTO managed_relations(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,relation_type,relation_key,source_object_id,target_object_id,current_revision,lifecycle,freshness,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,'active','verified_current',?) ON CONFLICT(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,relation_type,relation_key) DO UPDATE SET current_revision=excluded.current_revision,lifecycle='active',freshness='verified_current',updated_at=excluded.updated_at`).run(binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,relationType,relationKey,source,targetId,revision,occurredAt);
       this.core.prepare(`INSERT INTO managed_relation_revisions(revision_id,authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,relation_type,relation_key,source_object_id,target_object_id,revision,run_id,intent_id,command_id,evidence_id,payload_json,verified_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(),binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,binding.engagementId,workspaceId,relationType,relationKey,source,targetId,revision,runId,command.intent_id,commandId,evidence.evidence_id,JSON.stringify(requestedPayload??{}),occurredAt);
@@ -4044,8 +4041,12 @@ export class FeatureRuntimeStore {
     targetObjectId: string,
     riskControlIdentity?: GraCascadeRiskControlIdentity & { graId: string }
   ): { relationKey: string; currentRevision: number } {
-    const candidates = this.core.prepare(`
-      SELECT r.relation_key,r.current_revision,v.payload_json
+    const relationHeads = this.core.prepare(`
+      SELECT r.relation_key,r.current_revision,v.payload_json,
+        v.source_object_id AS revision_source_object_id,
+        v.target_object_id AS revision_target_object_id,
+        v.run_id AS revision_run_id,
+        v.command_id AS revision_command_id
       FROM managed_relations r
       LEFT JOIN managed_relation_revisions v
         ON v.authority_instance_id=r.authority_instance_id
@@ -4063,7 +4064,38 @@ export class FeatureRuntimeStore {
     `).all(
       binding.authorityInstanceId, binding.tenantOrOrgId, binding.packId, binding.engagementId,
       workspaceId, relationType, sourceObjectId, targetObjectId
-    ) as Array<{ relation_key: string; current_revision: number; payload_json: string }>;
+    ) as Array<{
+      relation_key: string;
+      current_revision: number;
+      payload_json: string;
+      revision_source_object_id: string;
+      revision_target_object_id: string;
+      revision_run_id: string;
+      revision_command_id: string;
+    }>;
+    const candidates = relationHeads.filter((candidate) => {
+      const revisionSource = String(candidate.revision_source_object_id || '');
+      const revisionTarget = String(candidate.revision_target_object_id || '');
+      if (revisionSource === sourceObjectId && revisionTarget === targetObjectId) return true;
+      if (!revisionSource || !revisionTarget) {
+        throw new Error('Active Managed Content relation has no exact current revision identity.');
+      }
+      const repaired = this.core.prepare(`
+        UPDATE managed_relations SET source_object_id=?,target_object_id=?
+        WHERE authority_instance_id=? AND tenant_or_org_id=? AND pack_id=? AND engagement_id=?
+          AND workspace_id=? AND relation_type=? AND relation_key=? AND current_revision=?
+          AND source_object_id=? AND target_object_id=? AND lifecycle='active'
+      `).run(
+        revisionSource, revisionTarget,
+        binding.authorityInstanceId, binding.tenantOrOrgId, binding.packId, binding.engagementId,
+        workspaceId, relationType, candidate.relation_key, candidate.current_revision,
+        sourceObjectId, targetObjectId
+      );
+      if (Number(repaired.changes || 0) !== 1) {
+        throw new Error('Managed Content relation head changed while repairing its current revision identity.');
+      }
+      return false;
+    });
     let matches = candidates;
     if (relationType === 'risk_control') {
       if (!riskControlIdentity) throw new Error('Risk-Control deletion requires its full frozen/readback identity.');
@@ -4071,13 +4103,68 @@ export class FeatureRuntimeStore {
         let payload: Record<string, unknown>;
         try { payload = object(JSON.parse(candidate.payload_json), 'Managed Risk-Control revision'); }
         catch { return false; }
-        return String(payload.graId || '') === riskControlIdentity.graId
+        const modernIdentityMatches = String(payload.graId || '') === riskControlIdentity.graId
           && String(payload.riskRiskScopeId || '') === riskControlIdentity.riskRiskScopeId
-          && String(payload.assertionType || '') === riskControlIdentity.assertionType
-          && String(payload.assertion || '') === riskControlIdentity.assertion;
+          && String(payload.riskScopeId || '') === riskControlIdentity.riskScopeId;
+        if (modernIdentityMatches) return true;
+
+        // Older signed Create projections retained the same authority identity inside the
+        // receipt-backed Pack response instead of duplicating it at the revision root.
+        // Accept that representation only when the GRA, Risk scope, and Control endpoint
+        // all independently match the frozen/readback cascade identity.
+        const detail = payload.detail && typeof payload.detail === 'object' && !Array.isArray(payload.detail)
+          ? payload.detail as Record<string, unknown> : undefined;
+        if (!detail) return false;
+        const riskCategories = Array.isArray(detail.plannedRiskFactorCategory)
+          ? detail.plannedRiskFactorCategory as Array<Record<string, unknown>> : [];
+        const risks = Array.isArray(detail.planResponseRisk)
+          ? detail.planResponseRisk as Array<Record<string, unknown>> : [];
+        const controls = Array.isArray(detail.planResponseSelectedControl)
+          ? detail.planResponseSelectedControl as Array<Record<string, unknown>> : [];
+        const payloadGraMatches = riskCategories.some((category) =>
+          String(category?.riskAssessmentId || '') === riskControlIdentity.graId);
+        let commandGraMatches = false;
+        try {
+          const storedSpec = this.core.prepare(`
+            SELECT spec_json FROM feature_command_specs
+            WHERE command_id=? AND run_id=?
+          `).get(candidate.revision_command_id, candidate.revision_run_id) as { spec_json: string } | undefined;
+          if (storedSpec) {
+            const spec = object(JSON.parse(storedSpec.spec_json), 'Legacy Risk-Control command specification');
+            const mutationPayload = object(spec.mutationPayload, 'Legacy Risk-Control mutation payload');
+            const controlRiskScopes = Array.isArray(mutationPayload.controlRiskScopes)
+              ? mutationPayload.controlRiskScopes as Array<Record<string, unknown>> : [];
+            commandGraMatches = String(mutationPayload.riskAssessmentId || '') === riskControlIdentity.graId
+              && String(mutationPayload.riskRiskScopeId || '') === riskControlIdentity.riskRiskScopeId
+              && String(mutationPayload.riskId || '') === riskControlIdentity.riskId
+              && controlRiskScopes.some((scope) =>
+                String(scope?.controlId || '') === riskControlIdentity.controlId
+                && String(scope?.riskId || '') === riskControlIdentity.riskId
+                && String(scope?.riskScopeId || '') === riskControlIdentity.riskScopeId);
+          }
+        } catch {
+          commandGraMatches = false;
+        }
+        const riskMatches = risks.some((risk) => {
+          if (String(risk?.id || '') !== riskControlIdentity.riskId
+            || String(risk?.riskScopeId || '') !== riskControlIdentity.riskScopeId) return false;
+          const scopeIds = Array.isArray(risk?.riskRiskScopeIds)
+            ? risk.riskRiskScopeIds.map((value) => String(value)) : [];
+          const scopes = Array.isArray(risk?.riskRiskScopes)
+            ? risk.riskRiskScopes as Array<Record<string, unknown>> : [];
+          return scopeIds.includes(riskControlIdentity.riskRiskScopeId)
+            || scopes.some((scope) => String(scope?.id || '') === riskControlIdentity.riskRiskScopeId
+              && String(scope?.riskId || '') === riskControlIdentity.riskId
+              && String(scope?.riskScopeId || '') === riskControlIdentity.riskScopeId);
+        });
+        const controlMatches = controls.some((control) =>
+          String(control?.controlId || '') === riskControlIdentity.controlId
+          && String(control?.riskId || '') === riskControlIdentity.riskId
+          && String(control?.riskScopeId || '') === riskControlIdentity.riskScopeId);
+        return (payloadGraMatches || commandGraMatches) && riskMatches && controlMatches;
       });
       if (candidates.length > 0 && matches.length === 0) {
-        throw new Error('Active legacy Risk-Control relations exist for the endpoints, but none matches the frozen/readback GRA, scope, assertion type, and assertion.');
+        throw new Error('Active legacy Risk-Control relations exist for the endpoints, but none matches the frozen/readback GRA and exact risk scope identity.');
       }
     }
     if (matches.length > 1) throw new Error('Deletion relation identity is ambiguous across multiple active legacy Managed Content keys.');
@@ -4309,7 +4396,7 @@ export class FeatureRuntimeStore {
       ...frozen.identity.controls.map((control) => `Control\u0000${control.controlId}`)
     ].sort();
     const expectedRelationKeys = frozen.identity.riskControls.map((relation) =>
-      `${relation.riskId}\u0000${relation.controlId}\u0000${relation.riskRiskScopeId}\u0000${relation.assertionType}\u0000${relation.assertion}`
+      `${relation.riskId}\u0000${relation.controlId}\u0000${relation.riskRiskScopeId}\u0000${relation.riskScopeId}`
     ).sort();
     const priorObjects = this.core.prepare(`
       SELECT object_type,object_id,payload_json FROM managed_object_revisions
@@ -4334,7 +4421,7 @@ export class FeatureRuntimeStore {
         const payload = object(JSON.parse(String(row.payload_json)), 'Deletion cascade relation tombstone');
         if (payload.parentCommandId !== parentCommandId || payload.evidenceId !== metadata.evidenceId
           || payload.snapshotDigest !== metadata.snapshotDigest) return '';
-        return `${String(row.source_object_id)}\u0000${String(row.target_object_id)}\u0000${String(payload.riskRiskScopeId || '')}\u0000${String(payload.assertionType || '')}\u0000${String(payload.assertion || '')}`;
+        return `${String(row.source_object_id)}\u0000${String(row.target_object_id)}\u0000${String(payload.riskRiskScopeId || '')}\u0000${String(payload.riskScopeId || '')}`;
       }).sort();
       const objectMetadataValid = priorObjectTombstones.every((row) => {
         const payload = object(JSON.parse(String(row.payload_json)), 'Deletion cascade object tombstone');
@@ -4454,7 +4541,6 @@ export class FeatureRuntimeStore {
   }
 
   private finishReturn(input: unknown, context: FeatureWorkerPortContext): true {
-    if (!context.allowMutation) throw new Error('Return completion requires an authorized mutation action.');
     const request = object(input, 'Return completion'); const runId = String(request.runId || '');
     const run = this.core.prepare(`SELECT state,state_revision FROM feature_runs WHERE run_id=? AND feature_id=?`).get(runId, context.featureId) as {state:string;state_revision:number}|undefined;
     if (!run || !['returning','verifying','uncertain','reconciling'].includes(run.state)) throw new Error('Return completion Run state is invalid.');

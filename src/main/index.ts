@@ -10,6 +10,7 @@ import {
   CONNECTOR_NEXT_PROTOCOL_ID,
   assertTarget,
   sameTarget,
+  type ConnectorNextUpdateManifest,
   type ConnectorNextTarget
 } from '../connector-next/protocol.js';
 import { CoreDatabase } from './database.js';
@@ -43,6 +44,9 @@ let startupRecovery: ProtectedDataRecovery | null = null;
 
 const CONNECTOR_NEXT_CONFIGURE_ONCE_ENV = 'OMNIA_CONNECTOR_NEXT_CONFIGURE_ONCE';
 const CONNECTOR_NEXT_DEVELOPMENT_OVERRIDE_ENV = 'OMNIA_CONNECTOR_NEXT_DEVELOPMENT_OVERRIDE';
+const CONNECTOR_NEXT_OFFER_CANDIDATE_ONCE_ENV = 'OMNIA_CONNECTOR_NEXT_OFFER_CANDIDATE_ONCE';
+const CONNECTOR_NEXT_QUERY_OFFER_ONCE_ENV = 'OMNIA_CONNECTOR_NEXT_QUERY_OFFER_ONCE';
+const CONNECTOR_NEXT_OFFER_ARTIFACT_ONCE_ENV = 'OMNIA_CONNECTOR_NEXT_OFFER_ARTIFACT_ONCE';
 
 function connectorNextEnvironmentConfig(): {
   serverUrl: string;
@@ -339,6 +343,50 @@ app.whenReady().then(async () => {
     contentCipher = createWindowsProtectedContentCipher(paths.stores);
   }
   database = new CoreDatabase(paths.database, contentCipher);
+  const queryOfferId = String(process.env[CONNECTOR_NEXT_QUERY_OFFER_ONCE_ENV] || '').trim();
+  if (queryOfferId) {
+    const config = database.getConnectorNextSettings();
+    const control = new ConnectorNextControlClient({ serverUrl: config.serverUrl, controlToken: config.controlToken });
+    process.stdout.write(`${JSON.stringify(await control.getUpdateOffer(queryOfferId))}\n`);
+    database.close();
+    database = null;
+    app.quit();
+    return;
+  }
+  const offerArtifactId = String(process.env[CONNECTOR_NEXT_OFFER_ARTIFACT_ONCE_ENV] || '').trim();
+  if (offerArtifactId) {
+    const config = database.getConnectorNextSettings();
+    const control = new ConnectorNextControlClient({ serverUrl: config.serverUrl, controlToken: config.controlToken });
+    process.stdout.write(`${JSON.stringify(await control.offerUpdate(config.target, offerArtifactId))}\n`);
+    database.close();
+    database = null;
+    app.quit();
+    return;
+  }
+  const offerCandidateRoot = String(process.env[CONNECTOR_NEXT_OFFER_CANDIDATE_ONCE_ENV] || '').trim();
+  if (offerCandidateRoot) {
+    const config = database.getConnectorNextSettings();
+    if (!config.enabled || !config.serverUrl || !config.controlToken) {
+      throw new Error('CONNECTOR_NEXT.OFFER_CONFIGURATION_UNAVAILABLE');
+    }
+    const manifest = JSON.parse(fs.readFileSync(
+      path.join(offerCandidateRoot, 'connector-next-manifest.json'), 'utf8'
+    )) as ConnectorNextUpdateManifest;
+    const packageBytes = fs.readFileSync(path.join(offerCandidateRoot, 'connector-next-package.ocn3'));
+    const control = new ConnectorNextControlClient({ serverUrl: config.serverUrl, controlToken: config.controlToken });
+    const artifact = await control.registerUpdateArtifact(manifest, packageBytes);
+    const offered = await control.offerUpdate(config.target, artifact.artifactId);
+    process.stdout.write(`${JSON.stringify({
+      artifactId: artifact.artifactId,
+      offerId: offered.offerId,
+      status: offered.status,
+      target: config.target
+    })}\n`);
+    database.close();
+    database = null;
+    app.quit();
+    return;
+  }
   if (String(process.env[CONNECTOR_NEXT_CONFIGURE_ONCE_ENV] || '').trim() === '1') {
     const config = connectorNextEnvironmentConfig();
     const control = new ConnectorNextControlClient({ serverUrl: config.serverUrl, controlToken: config.controlToken });

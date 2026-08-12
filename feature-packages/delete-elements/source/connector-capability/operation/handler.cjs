@@ -610,7 +610,11 @@ function createOperationHandler() {
         .filter((edge) => edge.sourceObjectId === target.objectId || edge.targetObjectId === target.objectId);
       const relations = [];
       for (const edge of discovered) {
-        if (edge.targetWorkItemId && edge.targetWorkspaceId) { relations.push(edge); continue; }
+        // Pack's Tool/Application search can return the .NET empty GUID for an
+        // Application Workspace. That is an absent identity, not an exact one.
+        // Resolve the endpoint through its detail + facet mapping before the
+        // signed Feature freezes the relation graph.
+        if (edge.targetWorkItemId && omniaGuid(edge.targetWorkspaceId)) { relations.push(edge); continue; }
         const detail = await sdk.invokeStep('preflight-partner-detail', { objectId: edge.targetObjectId });
         const targetWorkItemId = id(detail && (detail.workItemId || detail.applicationWorkItemId));
         if (id(detail && (detail.id || detail.itElementId)) !== edge.targetObjectId || objectKind(detail) !== 'APP' || deleted(detail) || !targetWorkItemId) {

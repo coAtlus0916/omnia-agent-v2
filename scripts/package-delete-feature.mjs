@@ -419,7 +419,25 @@ async function buildVersion(version, sequence) {
       }, null, 2))
     ]
   });
-  const versionNote = version === '0.3.21'
+  const versionNote = version === '0.3.30'
+    ? '0.3.30 将 Tool/Application 搜索返回的 .NET 空 Workspace GUID 视为缺失身份，并在只读预检中通过精确 Application detail 与 facet mapping 补齐后才冻结关系图；不放宽端点、Work Item 或 Workspace 校验。'
+    : version === '0.3.29'
+    ? '0.3.29 将 uncertain mutation 的只读核验与剩余删除步骤严格拆成两个用户动作：只读核验只收敛已提交命令并进入 resume_required，绝不借只读 action 继续提交后续 mutation；只有显式“继续删除”才恢复冻结图。'
+    : version === '0.3.28'
+    ? '0.3.28 在整图确认时仍冻结所有对象 token；执行阶段仅当对象已有已计划依赖、所有前置图步骤均成功且最新预检证明 blockers/relations 已清空时，允许由依赖解除造成的对象更新时间变化，再提交同一冻结对象。无依赖对象继续要求 token 完全不变。'
+    : version === '0.3.27'
+    ? '0.3.27 保留完整删除闭环，并将确认前后的 IT Element Operation target 都绑定同一 objectId、workItemId、objectType 与 Workspace，避免冻结计划确认时把仅含 targetIdentityKey 的宿主目标误当成业务目录行。'
+    : version === '0.3.26'
+    ? '0.3.26 保留 0.3.25 的完整删除闭环，并沿用该 Connector 开发环境既有的 Unix 毫秒 Operation sequence 规则跨越其持久高水位。'
+    : version === '0.3.25'
+    ? '0.3.25 保留 0.3.24 的完整删除闭环，并切换为可审计的 UTC 日期发布 sequence，以跨越开发环境不可查询的历史 Operation 高水位。'
+    : version === '0.3.24'
+    ? '0.3.24 保留 0.3.23 的完整删除闭环，并使用隔离的四位发布 sequence 跨越 Connector 开发环境中不可查询的历史 Operation 高水位。'
+    : version === '0.3.23'
+    ? '0.3.23 保留 0.3.22 的完整删除闭环，并以新的不可变发布 sequence 跨越开发期间 Connector 已持久化的历史 Operation 高水位。'
+    : version === '0.3.22'
+    ? '0.3.22 保留 0.3.21 的可恢复最终权威目录核验、空 tenant Connector Next 绑定、七类删除图与读回合同；仅使用新的不可变版本与 sequence 身份跨越 Connector 已持久化的 Operation 注册高水位，绝不覆写或冒充旧 0.3.21 候选。'
+    : version === '0.3.21'
     ? '0.3.21 在任何最终权威目录重抓取之前先持久化 final_catalog 只读恢复 checkpoint。若最终目录读取失败或 Worker 在读取期间重启，同一冻结 Run 仅重试 scope/catalog absence 与 Core 终态关闭，不重放 GRA cascade、对象/关系 mutation 或 projection；最终 verified 结果仍要求所有 succeeded 对象与 GRA 根从真实权威目录消失。旧 0.3.20 候选保持不可变并以固定 SHA 独立验证，不再与后续源码做错误的字节相等比较。'
     : version === '0.3.20'
     ? '0.3.20 将真实权威目录工作台声明为固定状态/动作底栏与双独立滚动目录列：底栏只显示同一后端 Surface 投影的状态、已选数和已声明 action；窗口收窄后目录列受控上下重排。该布局是通用 selectionBrowser 合同，不按 Feature ID 硬编码，不引入前端业务状态或 Comments。'
@@ -562,7 +580,7 @@ process.stdout.write('omnia.delete-elements package self-test passed\\n');
     version,
     sequence,
     displayName: '删除元素',
-    minimumShellVersion: ['0.3.16', '0.3.17', '0.3.18', '0.3.19', '0.3.20', '0.3.21'].includes(version) ? '0.4.15' : ['0.3.0', '0.3.1', '0.3.2', '0.3.3', '0.3.4', '0.3.5', '0.3.6', '0.3.7', '0.3.8', '0.3.9', '0.3.10', '0.3.11', '0.3.12', '0.3.13', '0.3.14', '0.3.15'].includes(version) ? '0.4.14' : ['0.2.0','0.2.1'].includes(version) ? '0.4.12' : version === '0.1.5' ? '0.4.10' : '0.4.0',
+    minimumShellVersion: ['0.3.16', '0.3.17', '0.3.18', '0.3.19', '0.3.20', '0.3.21', '0.3.22', '0.3.23', '0.3.24', '0.3.25', '0.3.26', '0.3.27', '0.3.28', '0.3.29', '0.3.30'].includes(version) ? '0.4.15' : ['0.3.0', '0.3.1', '0.3.2', '0.3.3', '0.3.4', '0.3.5', '0.3.6', '0.3.7', '0.3.8', '0.3.9', '0.3.10', '0.3.11', '0.3.12', '0.3.13', '0.3.14', '0.3.15'].includes(version) ? '0.4.14' : ['0.2.0','0.2.1'].includes(version) ? '0.4.12' : version === '0.1.5' ? '0.4.10' : '0.4.0',
     requiredIsolation: 'process',
     storeNamespace: 'delete_elements',
     migrationPath: 'backend/migrations/001.json',
@@ -597,7 +615,7 @@ process.stdout.write('omnia.delete-elements package self-test passed\\n');
     surfaceId: 'delete-elements.workbench',
     stateVersion: 1,
     title: '删除元素',
-    description: '仅处理安全锁范围内、经权威重抓取与二次预检确认的元素。',
+    description: '仅处理安全锁范围内、经刷新与二次预检确认的元素。',
     density: 'compact',
     status: 'loading',
     statusMessage: '正在读取当前 Pack 的真实权威目录；安全锁内目标会完整核对 Workspace、关系与 blocker，最长等待 90 秒。',
@@ -630,7 +648,7 @@ process.stdout.write('omnia.delete-elements package self-test passed\\n');
       },
       {
         actionId: 'refresh-authoritative-catalog',
-        label: '权威重抓取',
+        label: '刷新',
         effect: 'read_only',
         enabled: true,
         reason: '',
@@ -664,6 +682,10 @@ process.stdout.write('omnia.delete-elements package self-test passed\\n');
         reason: '当前未显示待确认删除计划。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock']
       },
       {
+        actionId: 'resume-delete-plan', label: '继续删除', effect: 'omnia_mutation', enabled: false,
+        reason: '当前没有已完成只读核验、等待继续的删除计划。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock']
+      },
+      {
         actionId: 'reconcile-delete-plan', label: '只读核验', effect: 'read_only', enabled: false,
         reason: '当前没有只读核验义务。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock']
       }
@@ -678,7 +700,7 @@ process.stdout.write('omnia.delete-elements package self-test passed\\n');
       allScopesLabel: '全部当前范围',
       selectVisibleLabel: '全选当前可选结果',
       clearSelectionLabel: '取消选择当前结果',
-      footerActionIds: ['refresh-authoritative-catalog', 'create-delete-plan', 'retry-delete-plan-preparation', 'cancel-delete-plan', 'confirm-delete-plan', 'reconcile-delete-plan'],
+      footerActionIds: ['refresh-authoritative-catalog', 'create-delete-plan', 'retry-delete-plan-preparation', 'cancel-delete-plan', 'confirm-delete-plan', 'resume-delete-plan', 'reconcile-delete-plan'],
       primaryActionId: 'create-delete-plan'
     }
   };
@@ -785,5 +807,5 @@ process.stdout.write('omnia.delete-elements package self-test passed\\n');
 }
 
 const results = [];
-results.push(await buildVersion('0.3.21', 30));
+results.push(await buildVersion('0.3.30', 1786516800000));
 for (const result of results) console.log(`${path.relative(root, result.filename)} ${result.digest}`);

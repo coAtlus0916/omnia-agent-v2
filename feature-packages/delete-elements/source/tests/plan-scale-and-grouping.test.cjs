@@ -242,6 +242,6 @@ test('begin rejects missing, expired, or binding-drifted snapshot before Core Ru
   const worker = createFeatureWorker({ connector: harness.connector, store: harness.store, events: { emit: async () => undefined } });
   t.after(() => worker.shutdown()); const context = { connectorBinding, safetyLock };
   await assert.rejects(worker.handleAction({ actionId: 'create-delete-plan', expectedStateVersion: 1, context,
-    payload: { targetIds: [`Information|${item.objectId}`] } }), /权威重抓取/u);
+    payload: { targetIds: [`Information|${item.objectId}`] } }), /刷新/u);
   assert.equal(harness.calls.some((call) => call.name === 'createMutationRun'), false);
 });

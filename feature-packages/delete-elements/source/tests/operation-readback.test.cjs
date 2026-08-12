@@ -77,6 +77,37 @@ test('IT Element reconcile proves exact identity, type, Workspace and deleted st
   assert.deepEqual(value, { objectId, objectType: 'APP', workspaceIds: [workspaceId], deleted: true });
 });
 
+test('Tool preflight resolves a .NET empty Application Workspace through exact partner detail and facet mapping', async () => {
+  const toolId = '99999999-9999-4999-8999-999999999991';
+  const toolWorkItemId = '99999999-9999-4999-8999-999999999992';
+  const applicationId = '99999999-9999-4999-8999-999999999993';
+  const applicationWorkItemId = '99999999-9999-4999-8999-999999999994';
+  const emptyGuid = '00000000-0000-0000-0000-000000000000';
+  const calls = [];
+  const sdk = {
+    binding,
+    invokeStep: async (stepId, parameters) => {
+      calls.push(stepId);
+      if (stepId === 'preflight-tool-search') return { results: [{ id: toolId, workItemId: toolWorkItemId, itElementType: 'ITTool' }], totalResults: 1 };
+      if (stepId === 'it-element-detail') return { id: toolId, workItemId: toolWorkItemId, itElementType: 'ITTool', updatedOn: '2026-08-12T00:00:00.000Z' };
+      if (stepId === 'it-element-facet-mapping') return [{ facetId: workspaceId }];
+      if (stepId === 'it-element-blocking-relationships') return { blockingEntities: [], convertingEntities: [], blockingControlEntities: [], accountContents: [], showDeleteAccountProcedureMappingPrompt: false };
+      if (stepId === 'preflight-tool-relation-search') return { results: [{
+        id: applicationId, workItemId: applicationWorkItemId, workspaceId: emptyGuid, itElementType: 'Application'
+      }], totalResults: 1 };
+      if (stepId === 'preflight-partner-detail') return { id: applicationId, workItemId: applicationWorkItemId, itElementType: 'Application' };
+      if (stepId === 'preflight-partner-facet-mapping') return [{ facetId: workspaceId }];
+      throw new Error(`unexpected step: ${stepId} ${JSON.stringify(parameters)}`);
+    }
+  };
+  const value = await handler.run('omnia.delete.it-element.preflight.v1', { target: { objectId: toolId } }, sdk);
+  assert.equal(value.relations.length, 1);
+  assert.equal(value.relations[0].targetWorkspaceId, workspaceId);
+  assert.equal(value.relations[0].targetWorkItemId, applicationWorkItemId);
+  assert.equal(calls.includes('preflight-partner-detail'), true);
+  assert.equal(calls.includes('preflight-partner-facet-mapping'), true);
+});
+
 test('Infrastructure/Network uses the parameterized IT Element preflight, mutation and readback contract as DCNO', async () => {
   const networkId = '77777777-7777-7777-7777-777777777777';
   const networkWorkItemId = '88888888-8888-8888-8888-888888888888';

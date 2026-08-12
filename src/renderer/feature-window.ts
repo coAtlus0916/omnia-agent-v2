@@ -206,6 +206,40 @@ function selectionBrowserUnavailable(): boolean {
   return !surface || ['loading', 'blocked', 'error', 'stale'].includes(surface.status);
 }
 
+type SelectionBrowserScrollSnapshot = {
+  uiIdentity: string;
+  rootTop: number;
+  rootLeft: number;
+  hierarchyTop: number;
+  hierarchyLeft: number;
+  resultsTop: number;
+  resultsLeft: number;
+};
+
+function captureSelectionBrowserScroll(): SelectionBrowserScrollSnapshot | null {
+  const hierarchy = root.querySelector<HTMLElement>('.selection-browser .catalog-hierarchy');
+  const results = root.querySelector<HTMLElement>('.selection-browser .catalog-results');
+  if (!hierarchy || !results || !selectionUiIdentity) return null;
+  return {
+    uiIdentity: selectionUiIdentity,
+    rootTop: root.scrollTop,
+    rootLeft: root.scrollLeft,
+    hierarchyTop: hierarchy.scrollTop,
+    hierarchyLeft: hierarchy.scrollLeft,
+    resultsTop: results.scrollTop,
+    resultsLeft: results.scrollLeft
+  };
+}
+
+function restoreSelectionBrowserScroll(snapshot: SelectionBrowserScrollSnapshot | null): void {
+  if (!snapshot || snapshot.uiIdentity !== selectionUiIdentity || !surface?.selectionBrowser) return;
+  const hierarchy = root.querySelector<HTMLElement>('.selection-browser .catalog-hierarchy');
+  const results = root.querySelector<HTMLElement>('.selection-browser .catalog-results');
+  root.scrollTo({top:snapshot.rootTop,left:snapshot.rootLeft,behavior:'auto'});
+  hierarchy?.scrollTo({top:snapshot.hierarchyTop,left:snapshot.hierarchyLeft,behavior:'auto'});
+  results?.scrollTo({top:snapshot.resultsTop,left:snapshot.resultsLeft,behavior:'auto'});
+}
+
 export function selectionBrowserUsesFixedFooter(browser: DeclarativeFeatureSurface['selectionBrowser']): boolean {
   return browser?.layout?.mode === 'fixed_footer_split';
 }
@@ -675,6 +709,7 @@ function renderIfChanged(): void {
 }
 
 function render(): void {
+  const selectionScroll = captureSelectionBrowserScroll();
   if (!surface) {
     root.innerHTML = '<section class="feature-bootstrap" role="status" aria-live="polite" aria-busy="true"><div><strong>正在载入功能界面</strong><progress aria-label="正在载入功能界面"></progress></div></section>';
     renderedSurface = '';
@@ -733,6 +768,7 @@ function render(): void {
     ? `<section class="surface-layer upload-layer" data-surface-layer="upload">${header}<div class="upload-card"><h2>上传资料</h2><p class="state">选择或拖入官方 .xlsx 只会暂存文件；点击“确认上传”后才进入校验。</p>${drop}${artifacts ? `<div class="artifacts">${artifacts}</div>` : ''}${actions ? `<div class="actions">${actions}</div>` : ''}</div></section>`
     : `<section class="surface-layer ${activeLayer === 'review' ? 'review-layer' : activeLayer === 'return' ? 'return-layer' : 'default-layer'}${hasSelectionBrowser ? ' catalog-priority-layer' : ''}" data-surface-layer="${activeLayer}">${header}${selectionBrowser}${recorder}${progress}${issues ? `<section class="issues">${issues}</section>` : ''}${review}${items ? `<div class="items">${items}</div>` : ''}${editors ? `<div class="editors">${editors}</div>` : ''}${artifacts ? `<div class="artifacts">${artifacts}</div>` : ''}${actions ? `<div class="actions">${actions}</div>` : ''}</section>`);
   root.innerHTML = `<div class="feature-root-content${fixedFooterSplit ? ' fixed-footer-split-root' : ''}">${errorMessage ? `<p class="error page-error" role="alert">${esc(errorMessage)}</p>` : ''}<div class="feature-layout ${hasWorkflowRail ? 'has-workflow' : 'no-workflow'}${fixedFooterSplit ? ' fixed-footer-split-workbench' : ''}">${hasWorkflowRail ? `<nav class="workflow-rail" aria-label="步骤"><ol>${steps}</ol>${railNavigation}</nav>` : ''}<section class="operation-pane">${layerContent}</section></div></div>`;
+  restoreSelectionBrowserScroll(selectionScroll);
   renderedSurface = surfaceProjection(surface);
   renderedSurfaceValue = surface;
   renderedError = errorMessage;
@@ -811,7 +847,7 @@ function bindInteractions(inputAction: DeclarativeFeatureAction | undefined): vo
     render();
     requestAnimationFrame(() => {
       const next = root.querySelector<HTMLInputElement>('[data-catalog-search]');
-      next?.focus();
+      next?.focus({preventScroll:true});
       if (next && selectionStart !== null) next.setSelectionRange(selectionStart, selectionStart);
     });
   });

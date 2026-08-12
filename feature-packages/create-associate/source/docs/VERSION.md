@@ -1,4 +1,8 @@
-﻿# 0.2.141 / sequence 143
+﻿# 0.2.142 / sequence 144
+
+Version 0.2.142 restores exact read-only recovery and normal-path throughput for the current Return batch. Application read-back compares Pack-normalized external identities, cross-Workspace relations bind both frozen Workspace authorities and exact receipt-backed endpoints, verified relation heads advance to the latest revision while retaining prior revision history, durable Connector ACK delivery no longer serializes unrelated operations, and disposable UI progress checkpoints are coalesced while Core command/evidence ledgers remain durable per target.
+
+## 0.2.141 / sequence 143
 
 Version 0.2.141 restores the Upload surface for a terminal validation Run that has no Return ledger. Failed, succeeded, cancelled, and not-evaluable validation-only Runs retain their complete audit history while the signed source-file action becomes available for a new Run; terminal Runs with Return progress remain on the Return surface.
 

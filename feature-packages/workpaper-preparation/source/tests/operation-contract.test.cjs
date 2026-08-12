@@ -322,3 +322,50 @@ test('a completed OE read-back remains authoritative when the recorded Tab 209 t
   assert.equal(calls.some((item) => item.stepId === 'validate-hidden-data'), false);
   assert.equal(calls.some((item) => item.stepId === 'open-hidden-tab'), false);
 });
+
+test('phase2 writeback resolves sub-entity paths and confirms each stage via readback', async () => {
+  const { sdk, calls } = fixture({ opened: true, planningCommonControlTesting: false });
+  const handler = createOperationHandler();
+  let description = 'old description';
+  let procedureResult = 'old procedure result';
+  const writableSdk = {
+    ...sdk,
+    async invokeStep(stepId, parameters, body) {
+      calls.push({ stepId, parameters, body });
+      if (stepId === 'writeback-control-detail' || stepId === 'writeback-readback') {
+        return {
+          id: CONTROL, workItemId: CONTROL_WORK, controlNumber: 'APP.01 - GRA-APP', name: 'Control 1',
+          description, approach: 'Preventive',
+          controlDesignEvaluation: { id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1', competenceAndAuthorityDocumentation: '' },
+          gitcNonDetailedTestingProcedures: [{ id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1', phaseType: 'TestOfDesign', documentProcedureResults: procedureResult }],
+          controlRiskScopes: [{ id: 'cccccccc-cccc-cccc-cccc-ccccccccccc1', riskId: 'dddddddd-dddd-dddd-dddd-ddddddddddd1', controlRiskScopeDetails: [{ id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1', appropriatenessAndCorrelation: '' }] }],
+          controlOperatingEffectiveness: { id: OE },
+          concurrencyTabs: [{ entityTabTypeId: 201, updatedOn: '2026-08-09T00:00:00.000Z' }]
+        };
+      }
+      if (stepId === 'writeback-patch') {
+        for (const op of body) {
+          if (op.path === '/description') description = op.value;
+          if (op.path === '/gitcNonDetailedTestingProcedures/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1/documentProcedureResults') procedureResult = op.value;
+        }
+        return {};
+      }
+      return sdk.invokeStep(stepId, parameters, body);
+    }
+  };
+  const response = await handler.run('omnia.workpaper.phase2.writeback.v1', {
+    ...contextRequest(), controlId: CONTROL, controlWorkItemId: CONTROL_WORK,
+    command: { payload: { controlId: CONTROL, changes: [
+      { writePath: '/description', value: 'new description', valueKind: 'text', concurrencyTab: 201 },
+      { writePath: '/gitcNonDetailedTestingProcedures/{procedureId}/documentProcedureResults', value: 'new procedure', valueKind: 'editor', concurrencyTab: 201, phaseType: 'TestOfDesign' }
+    ] } }
+  }, writableSdk);
+  assert.equal(response.accepted, true);
+  assert.equal(response.ledger.length, 2);
+  assert.deepEqual(response.ledger.map((item) => item.confirmed), [true, true]);
+  assert.equal(description, 'new description');
+  assert.equal(procedureResult, 'new procedure');
+  const patchCalls = calls.filter((item) => item.stepId === 'writeback-patch');
+  assert.equal(patchCalls.length, 2);
+  assert.ok(patchCalls.every((item) => item.body.some((op) => op.path === '/concurrencyTabId' && op.value === 201)));
+});

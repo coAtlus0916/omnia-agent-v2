@@ -134,7 +134,7 @@ export class ConnectorNextTransport implements ConnectorTransport {
       return result.value;
     }
     if (job.status === 'failed') {
-      if (job.error?.effectState === 'not_started') {
+      if (effect === 'mutation' && job.error?.effectState === 'not_started') {
         throw new AppError(
           'CONNECTOR_NEXT.MUTATION_NOT_STARTED',
           job.error?.details?.message || 'Connector Next proved that the mutation did not start.',

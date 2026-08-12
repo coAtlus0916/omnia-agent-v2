@@ -288,14 +288,17 @@ test('Connector Next transport drives durable Pack binding and Recording operati
   const f = await fixture();
   let pump: Promise<void> | undefined;
   let stopPump = () => {};
+  let logs: ConnectorNextLogSpool | undefined;
+  let gate: ConnectorNextRuntimeGate | undefined;
+  let transport: ConnectorNextTransport | undefined;
   try {
     const enrollment = await f.control.createEnrollment(target);
-    const descriptor = connectorNextDescriptor(target, '0.1.3', 4, 1);
+    const descriptor = connectorNextDescriptor(target, '0.1.6', 7, 1);
     const agent = new ConnectorNextAgentClient({ serverUrl: f.serverUrl, descriptor });
     await agent.enroll(enrollment.enrollmentCode);
     const paths = connectorNextPaths({ installRoot: path.join(f.root, 'Omnia Connector Next install'), dataRoot: path.join(f.root, 'Omnia Connector Next data') });
-    const logs = new ConnectorNextLogSpool(paths.logDatabase);
-    const gate = new ConnectorNextRuntimeGate(paths.runtimeDatabase);
+    logs = new ConnectorNextLogSpool(paths.logDatabase);
+    gate = new ConnectorNextRuntimeGate(paths.runtimeDatabase);
     const engagementId = '11111111-1111-4111-8111-111111111111';
     const binding = {
       connectorId: target.connectorInstanceId, sessionGeneration: 77, engagementId,
@@ -318,7 +321,7 @@ test('Connector Next transport drives durable Pack binding and Recording operati
         observedCommands.push(envelope.command);
         if (envelope.command.startsWith('pack.session.')) return {
           status: 'connected', connected: true, connecting: false, connectorId: binding.connectorId,
-          connectorName: 'Omnia Agent Connector Next', connectorVersion: '0.1.3', sessionGeneration: binding.sessionGeneration,
+          connectorName: 'Omnia Agent Connector Next', connectorVersion: '0.1.6', sessionGeneration: binding.sessionGeneration,
           authorityInstanceId: binding.authorityInstanceId, tenantOrOrgId: binding.tenantOrOrgId, packId: binding.packId,
           engagementId, engagementName: 'Exact Pack', clientName: 'Exact Client', checkedAt: new Date().toISOString(), message: 'connected'
         };
@@ -329,6 +332,7 @@ test('Connector Next transport drives durable Pack binding and Recording operati
         };
         const operationId = String(envelope.input.operationId || '');
         observedOperationIds.push(operationId);
+        if (operationId === 'omnia.recording.synthetic.readback-failure.v1') throw new Error('synthetic read-back failed');
         if (operationId.endsWith('.pause.v1')) state = 'paused';
         if (operationId.endsWith('.resume.v1')) state = 'observing';
         if (operationId.endsWith('.stop.v1')) state = 'stopped';
@@ -341,7 +345,9 @@ test('Connector Next transport drives durable Pack binding and Recording operati
       },
       async close() {}
     };
-    const runtime = new ConnectorNextAgentRuntime({ client: agent, descriptor, logs, gate, packOperations });
+    const runtime = new ConnectorNextAgentRuntime({
+      client: agent, descriptor, logs, gate, packOperations, executionGeneration: 'a'.repeat(48)
+    });
     let running = true;
     stopPump = () => { running = false; };
     pump = (async () => {
@@ -350,14 +356,15 @@ test('Connector Next transport drives durable Pack binding and Recording operati
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
     })();
-    const transport = new ConnectorNextTransport(() => ({ serverUrl: f.serverUrl, controlToken: f.controlToken, target }));
-    await transport.start();
-    const connected = await transport.connect();
+    const activeTransport = new ConnectorNextTransport(() => ({ serverUrl: f.serverUrl, controlToken: f.controlToken, target }));
+    transport = activeTransport;
+    await activeTransport.start();
+    const connected = await activeTransport.connect();
     assert.equal(connected.adapter, 'connector_next_v3');
     assert.equal(connected.connectorId, binding.connectorId);
     const packageDigestValue = `sha256:${'c'.repeat(64)}`;
-    await transport.registerOperation({ schemaVersion: 'omnia.operation-registration/v1', featureId: 'omnia.recording', featureVersion: '0.4.20', operationPackage: {} });
-    const invoke = (operationId: string, request: Record<string, unknown>) => transport.invokeOperation({
+    await activeTransport.registerOperation({ schemaVersion: 'omnia.operation-registration/v1', featureId: 'omnia.recording', featureVersion: '0.4.20', operationPackage: {} });
+    const invoke = (operationId: string, request: Record<string, unknown>) => activeTransport.invokeOperation({
       schemaVersion: 'omnia.operation-invocation/v1', featureId: 'omnia.recording', featureVersion: '0.4.20', operationId,
       request: { connectorBinding: binding, ...request }, operationPackageDigest: packageDigestValue, mutationAuthorized: false
     });
@@ -369,26 +376,48 @@ test('Connector Next transport drives durable Pack binding and Recording operati
     assert.equal(stopped.state, 'stopped');
     const chunk = await invoke('omnia.recording.observation.read-chunk.v1', { streamId, offset: 0 }) as Record<string, unknown>;
     assert.equal(chunk.eof, true);
+    const failedReadback = await activeTransport.invokeOperationWithWitness({
+      schemaVersion: 'omnia.operation-invocation/v1', featureId: 'omnia.recording', featureVersion: '0.4.20',
+      operationId: 'omnia.recording.synthetic.readback-failure.v1', request: { connectorBinding: binding },
+      operationPackageDigest: packageDigestValue, mutationAuthorized: false,
+      deliveryContext: {
+        schemaVersion: 'omnia.connector-delivery-context/v1', requestId: '11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        featureId: 'omnia.recording', featureVersion: '0.4.20', operationId: 'omnia.recording.synthetic.readback-failure.v1',
+        operationPackageDigest: packageDigestValue, runId: 'run-readback-failure', commandId: 'command-readback-failure',
+        connectorId: binding.connectorId, sessionGeneration: binding.sessionGeneration, purpose: 'readback'
+      }
+    });
+    assert.equal(failedReadback.ok, false);
+    assert.equal(failedReadback.error?.code, 'CONNECTOR_NEXT.OPERATION_JOB_FAILED');
+    assert.notEqual(failedReadback.error?.code, 'CONNECTOR_NEXT.MUTATION_NOT_STARTED');
     assert.deepEqual(observedOperationIds, [
       'omnia.recording.observation.open.v1', 'omnia.recording.observation.pause.v1',
       'omnia.recording.observation.resume.v1', 'omnia.recording.observation.stop.v1',
-      'omnia.recording.observation.status.v1', 'omnia.recording.observation.read-chunk.v1'
+      'omnia.recording.observation.status.v1', 'omnia.recording.observation.read-chunk.v1',
+      'omnia.recording.synthetic.readback-failure.v1'
     ]);
     const durable = f.store.db.prepare(`SELECT COUNT(*) count FROM connector_next_jobs WHERE operation=? AND status='succeeded'`).get(CONNECTOR_NEXT_OPERATION_EXECUTE) as { count: number };
-    assert.equal(durable.count, 8);
+    assert.equal(durable.count, 9);
     assert.ok(observedCommands.includes('operation.register'));
-    await transport.stop();
+    await activeTransport.stop();
+    transport = undefined;
     stopPump();
     await pump;
     pump = undefined;
     gate.close();
+    gate = undefined;
     logs.close();
+    logs = undefined;
   } finally {
+    await transport?.stop().catch(() => undefined);
     stopPump();
     if (pump) await pump.catch(() => undefined);
+    try { gate?.close(); } catch { /* already closed */ }
+    try { logs?.close(); } catch { /* already closed */ }
     await f.runtime.close();
     f.store.close();
-    fs.rmSync(f.root, { recursive: true, force: true });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    fs.rmSync(f.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 

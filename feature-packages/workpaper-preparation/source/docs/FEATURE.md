@@ -1,13 +1,29 @@
 # 底稿编制 Feature __FEATURE_VERSION__
 
-当前版本实现 Phase2 的第一个真实闭环：为选定 Application GRA 下的 Control 激活隐藏 Tab。
+当前版本实现 Phase2 的完整闭环：激活隐藏 Tab 后，生成控制底稿 Excel、下载审核、重新上传、逐字段预览、确认后写回已有 Control/ProcedureResults/RiskScopeDetails/DesignEvaluation/OperatingEffectiveness 字段，并做写后 readback 与 uncertain reconcile。
 
 1. 从当前 Connector authority、显式安全锁 Workspace 与 Standardized Accounts List 读取权威 Generic Application GRA，允许选择一个或多个 GRA 形成同一冻结批次。
 2. 读取该 GRA 的真实 Control 目录，逐项核验 Control、Work Item、APP、GRA、Workspace 和并发令牌。
 3. 用户确认后，按照真实录制的两阶段流程执行：先开启运行有效性测试，再明确选择“不利用前期审计证据”。
 4. 最终只在同一 Control 同时满足以下条件时判定成功：`planningOperatingEffectivenessTesting=true`、`planningCommonControlTesting=false`、`usePreviousAuditEvidence=false`、存在 OE 实体。Tab 209 时间戳是诊断证据，不是完成条件。
+5. 打开并读回成功后，可生成 Phase 2 控制底稿 Excel：一行一个 Control（含来源 GRA 与精确四元组身份），可写字段列来自可执行字段合同，缺证据字段留空，绝不猜测。
+6. 用户下载、线下修改、重新上传后，按隐藏 Scope sheet 的四元组精确匹配回冻结 Control，拒绝重复/歧义/无法证明来源的行，生成「上传值 vs 实时快照值」的逐字段只读预览。
+7. 只有用户明确确认后才写回：按 Control 逐个执行，每个字段一个 JSON Patch（带 Tab 201/209 并发令牌），写后立即权威读回对账，成功才标记完成；超时/断线/中断标 uncertain，只读 reconcile，禁止盲目重放。
 
 所有选择、确认、执行进度、失败和待核验状态只显示在 Feature 工作台，不写入 Comments。
+
+## 写回目标与证据来源
+
+写回不新建任何 Workpaper 对象，而是对已有实体的字段做 JSON Patch（`PATCH /rapr/v0/engagements/{id}/controls/{controlId}`）：
+
+- Control 本体：`/description`、`/approach`、`/riskAssociationType`、`/riskAssociationDescription`
+- Design Evaluation：`/controlDesignEvaluation/{id}/competenceAndAuthorityDocumentation|frequencyAndConsistency|levelOfAggregation|criteriaForInvestigation|dependentOnOtherControls|designEffective|properlyImplemented`
+- ProcedureResults：`/gitcNonDetailedTestingProcedures/{procedureId}/documentProcedureResults`（TestOfDesign=Tab 201，OperatingEffectiveness=Tab 209）
+- RiskScopeDetails：`/controlRiskScopes/{scopeId}/controlRiskScopeDetails/{detailId}/appropriatenessAndCorrelation`
+- Operating Effectiveness：`/controlOperatingEffectiveness/{id}/{procedureTiming|frequencyOfPerformance|...|operatingEffectively}`
+
+这些 JSON Patch path 继承 v4 gc-editor 对 Omnia 真实 API 的已验证行为（`gc-stage-builder.js`），当前证据标注为 `v4-verified-path`，后续用 v5 录制复核。字段合同见 `docs/PHASE2_GENERIC_APP_FIELDS.json`（含 writePath/concurrencyTab/valueKind/readOnly/evidence）。
+
 
 ## 安全与恢复
 

@@ -5,8 +5,8 @@ import path from 'node:path';
 const root = path.resolve(import.meta.dirname, '..');
 const source = path.join(root, 'feature-packages', 'workpaper-preparation', 'source');
 const output = path.join(root, 'feature-packages', 'workpaper-preparation', 'candidates');
-const version = '0.1.35';
-const sequence = 36;
+const version = '0.1.36';
+const sequence = 37;
 const signingRoot = process.env.OMNIA_V5_SIGNING_ROOT || path.join(process.env.USERPROFILE || '', '.omnia-agent-v5', 'signing');
 const featurePrivateKey = await readFile(path.join(signingRoot, 'feature-ed25519-private.pem'), 'utf8');
 const operationPrivateKey = await readFile(path.join(signingRoot, 'operation-ed25519-private.pem'), 'utf8');
@@ -93,6 +93,16 @@ const operations = [
       ...graContextRoutes('snapshot'),
       route('snapshot-control-detail', 'GET', '/rapr/v0/engagements/{engagementId}/controls/{controlId}', [{ name: 'controlId', type: 'guid' }])
     ]
+  },
+  {
+    operationId: 'omnia.workpaper.phase2.writeback.v1', effect: 'omnia_mutation',
+    requestSchema: 'omnia.workpaper.phase2-writeback-request/v1', responseSchema: 'omnia.workpaper.phase2-writeback-response/v1',
+    enabledByDefault: false, grantsMutationPermit: false, routes: [
+      ...graContextRoutes('writeback'),
+      route('writeback-control-detail', 'GET', '/rapr/v0/engagements/{engagementId}/controls/{controlId}', [{ name: 'controlId', type: 'guid' }]),
+      route('writeback-patch', 'PATCH', '/rapr/v0/engagements/{engagementId}/controls/{controlId}', [{ name: 'controlId', type: 'guid' }], 'signed_json'),
+      route('writeback-readback', 'GET', '/rapr/v0/engagements/{engagementId}/controls/{controlId}', [{ name: 'controlId', type: 'guid' }])
+    ]
   }
 ];
 
@@ -114,6 +124,7 @@ const operationPackage = envelope({ product: 'omnia-connector-operation', packag
 const featureDocs = (await readFile(path.join(source, 'docs', 'FEATURE.md'), 'utf8')).replaceAll('__FEATURE_VERSION__', version);
 const implementationDocs = (await readFile(path.join(source, 'docs', 'IMPLEMENTATION_MAP.md'), 'utf8')).replaceAll('__FEATURE_VERSION__', version);
 const genericAppDocs = await readFile(path.join(source, 'docs', 'PHASE2_GENERIC_APP.md'), 'utf8');
+const phase2Fields = JSON.parse(await readFile(path.join(source, 'docs', 'PHASE2_GENERIC_APP_FIELDS.json'), 'utf8'));
 const documentationFiles = [
   { path: 'docs/FEATURE.md', bytes: Buffer.from(featureDocs), purpose: 'product-safety-and-evidence-contract' },
   { path: 'docs/IMPLEMENTATION_MAP.md', bytes: Buffer.from(implementationDocs), purpose: 'four-plane-implementation-map' },
@@ -127,13 +138,13 @@ const runtimeContract = {
   errors: ['WORKPAPER.*', 'PYTHON.*', 'CONNECTOR.RESPONSE_LOST'],
   storePorts: ['savePlan', 'loadPlan', 'createMutationRun', 'prepareReturnIntent', 'approveReturnIntent', 'validateReturnAuthority',
     'returnRunToReview', 'prepareDeletionCommand', 'freezeReturnEvidenceSpec', 'recordReturnEvidence', 'projectVerifiedReturn',
-    'loadLatestRun', 'transitionRun', 'finishReturn'],
+    'loadLatestRun', 'transitionRun', 'finishReturn', 'commitStandaloneArtifact', 'readArtifactBytes'],
   pythonSidecar: { schemaVersion: 'omnia.python-sidecar-runtime/v1', implementation: 'cpython', version: '3.13.14', architecture: 'win32-x64',
-    protocol: 'omnia.python-sidecar-rpc/v1', bridgePath: 'middle/workpaper-preparation-python-bridge.cjs', entryPath: 'python/workpaper-preparation-engine.py', members: ['python/workpaper-preparation-engine.py'],
+    protocol: 'omnia.python-sidecar-rpc/v1', bridgePath: 'middle/workpaper-preparation-python-bridge.cjs', entryPath: 'python/workpaper-preparation-engine.py', members: ['python/canonical.py', 'python/errors.py', 'python/ooxml.py', 'python/workpaper-preparation-engine.py', 'python/workpaper_workbook.py'],
     maxFrameBytes: 1024 * 1024, heartbeatIntervalMs: 5000, heartbeatTimeoutMs: 15000 }
 };
 const implementationContract = { schemaVersion: 'omnia.feature-implementation-map/v1', featureId: 'omnia.workpaper-preparation', featureVersion: version,
-  planes: { surface: ['frontend/surface.json'], worker: ['middle/worker.cjs', 'middle/workpaper-preparation-python-bridge.cjs', 'python/workpaper-preparation-engine.py'],
+  planes: { surface: ['frontend/surface.json'], worker: ['middle/worker.cjs', 'middle/workpaper-preparation-python-bridge.cjs', 'python/workpaper-preparation-engine.py', 'python/workpaper_workbook.py', 'python/ooxml.py', 'python/canonical.py', 'python/errors.py'],
     store: ['backend/migrations/001.json', 'contracts/feature-runtime.json'], connector: ['connector-capability/operation.ofop'] },
   operations: operations.map(({ operationId, effect }) => ({ operationId, effect })) };
 const featureManifest = {
@@ -155,6 +166,9 @@ const actions = [
   { actionId: 'cancel-hidden-tab-plan', label: '取消计划', effect: 'local_state_write', enabled: false, reason: '当前没有待确认计划。', selectionMode: 'none', dependencies: [] },
   { actionId: 'confirm-hidden-tabs', label: '确认打开隐藏 Tab', effect: 'omnia_mutation', enabled: false, reason: '当前没有待确认计划。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock'] },
   { actionId: 'reconcile-hidden-tabs', label: '核验并继续未完成步骤', effect: 'omnia_mutation', enabled: false, reason: '当前没有待核验 command。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock'] },
+  { actionId: 'generate-workpaper', label: '生成控制底稿', effect: 'local_state_write', enabled: false, reason: '只有已完成隐藏 Tab 打开并读回的计划才能生成控制底稿。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock'] },
+  { actionId: 'preview-workpaper', label: '上传并预览变更', effect: 'local_state_write', enabled: false, reason: '请先生成控制底稿，再上传已审核的文件。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock'], input: { kind: 'open_file', accept: ['.xlsx'], label: '选择已审核的控制底稿' } },
+  { actionId: 'confirm-writeback', label: '确认写回', effect: 'omnia_mutation', enabled: false, reason: '请先上传并预览出实际字段变更，再确认写回。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock'] },
   { actionId: 'back-to-upload', label: '返回上一步', effect: 'local_state_write', enabled: false, reason: '当前已是第一步，没有可返回的上一步。', selectionMode: 'none', dependencies: [] },
   { actionId: 'restart-run', label: '强制结束流程', effect: 'local_state_write', enabled: false, reason: '当前没有可结束的流程。', presentation: 'restart', selectionMode: 'none', dependencies: [] }
 ];
@@ -165,7 +179,12 @@ const surface = {
   status: 'loading', statusMessage: '正在读取当前 Pack 的真实 Application GRA。', scopes: [], items: [], selectedItemIds: [], search: '', actions,
   workflow: { revision: 1, currentStepId: 'select', steps: [
     { stepId: 'select', label: '选择元素', state: 'current', detail: '选择 Generic Application GRA' },
-    { stepId: 'open', label: '打开隐藏 Tab', state: 'pending', detail: '等待选择元素' }
+    { stepId: 'open', label: '打开隐藏 Tab', state: 'pending', detail: '等待选择元素' },
+    { stepId: 'generate', label: '生成控制底稿', state: 'pending', detail: '等待隐藏 Tab 完成' },
+    { stepId: 'download', label: '下载审核', state: 'pending', detail: '等待生成' },
+    { stepId: 'upload', label: '上传底稿', state: 'pending', detail: '等待上传' },
+    { stepId: 'preview', label: '预览变更', state: 'pending', detail: '上传已审核底稿后逐字段预览' },
+    { stepId: 'writeback', label: '确认写回', state: 'pending', detail: '确认后写回真实 Control 字段并读回核验' }
   ] },
   selectionBrowser: { schemaVersion: 'omnia.declarative-selection-browser/v1',
     layout: { schemaVersion: 'omnia.selection-browser-layout/v1', mode: 'fixed_footer_split' },
@@ -194,16 +213,23 @@ const operation=JSON.parse(read('connector-capability/operation.ofop'));const ha
 const handler=handlerMember&&Buffer.from(handlerMember.contentBase64,'base64').toString('utf8');const worker=read('middle/worker.cjs'),engine=read('python/workpaper-preparation-engine.py');
 if(manifest.featureId!=='omnia.workpaper-preparation'||manifest.version!=='${version}'||runtime.pythonSidecar?.version!=='3.13.14')throw new Error('runtime identity failed');
 if(surface.actions.some((item)=>item.actionId.includes('comment'))||worker.includes('messageCard')||!surface.selectionBrowser||surface.selectionBrowser.layout?.mode!=='fixed_footer_split'||surface.actions.find((item)=>item.actionId==='prepare-hidden-tabs')?.selectionMode!=='multiple')throw new Error('Feature-only two-step Surface failed');
-if(!surface.workflow||surface.workflow.steps.length!==2||surface.workflow.steps[0].stepId!=='select'||surface.workflow.steps[1].stepId!=='open'||!surface.actions.some((item)=>item.actionId==='back-to-upload')||!surface.actions.some((item)=>item.actionId==='restart-run'&&item.presentation==='restart'))throw new Error('Declarative three-column workflow Surface failed');
+if(!surface.workflow||surface.workflow.steps.length!==7||surface.workflow.steps[0].stepId!=='select'||surface.workflow.steps[1].stepId!=='open'||surface.workflow.steps[6].stepId!=='writeback'||!surface.actions.some((item)=>item.actionId==='back-to-upload')||!surface.actions.some((item)=>item.actionId==='restart-run'&&item.presentation==='restart'))throw new Error('Declarative three-column workflow Surface failed');
 if(!handler||!handler.includes("path: '/planningOperatingEffectivenessTesting'")||!handler.includes("path: '/planningCommonControlTesting'")||!handler.includes("path: '/usePreviousAuditEvidence'")||!handler.includes("'validate-hidden-data'")||!handler.includes('CONTROL_CORE_TAB_ID = 201')||!handler.includes('CONTROL_OE_TAB_ID = 209')||!handler.includes("outcome: 'not_applied'"))throw new Error('signed hidden-tab Operation failed');
 if(!worker.includes("finishReturn', { runId: plan.runId, outcome: 'uncertain'")||!worker.includes("operationId: OPERATIONS.reconcile")
   ||!worker.includes('currentPreflight(step, b, plan.planDigest, plan.runId)')||!worker.includes('planDigest: plan.planDigest')
   ||!worker.includes('workflowSurface(plan)')||!worker.includes('forceEnd(plan, context)')||!worker.includes('backToSelect(plan, context)')
-  ||!engine.includes('select_hidden_tab_controls')||!engine.includes('build_hidden_tab_plan')||!engine.includes('classify_control_observation'))throw new Error('permit, delivery, no-replay, workflow navigation, or Python planner contract failed');
+  ||!worker.includes('generateWorkpaper(plan, context)')||!worker.includes('previewWorkpaper(plan, context')||!worker.includes('confirmWriteback(plan, context')||!worker.includes('commitStandaloneArtifact')
+  ||!surface.actions.some((item)=>item.actionId==='generate-workpaper')||!surface.actions.some((item)=>item.actionId==='preview-workpaper'&&item.input?.kind==='open_file')||!surface.actions.some((item)=>item.actionId==='confirm-writeback'&&item.effect==='omnia_mutation')
+  ||!handler.includes('omnia.workpaper.phase2.writeback.v1')||!handler.includes('valueSatisfied')
+  ||!engine.includes('build_phase2_workbook')||!engine.includes('parse_uploaded_workbook')
+  ||!handler.includes('omnia.workpaper.phase2.snapshot.read.v1')||!handler.includes('documentProcedureResults')
+  ||!engine.includes('select_hidden_tab_controls')||!engine.includes('build_hidden_tab_plan')||!engine.includes('classify_control_observation'))throw new Error('permit, delivery, no-replay, workflow navigation, workpaper generation, or Python planner contract failed');
 process.stdout.write('omnia.workpaper-preparation package self-test passed\\n');`;
 const documentationManifest = { schemaVersion: 'omnia.feature-documentation/v1', featureId: featureManifest.featureId, featureVersion: version,
   documents: documentationFiles.map((item) => ({ path: item.path, sha256: sha256(item.bytes), purpose: item.purpose })) };
-const worker = (await readFile(path.join(source, 'middle', 'worker.cjs'), 'utf8')).replaceAll('__FEATURE_VERSION__', version);
+const worker = (await readFile(path.join(source, 'middle', 'worker.cjs'), 'utf8'))
+  .replaceAll('__FEATURE_VERSION__', version)
+  .replaceAll('__PHASE2_FIELDS__', JSON.stringify(phase2Fields.fields));
 const featurePackage = envelope({ product: 'omnia-feature', packageId: featureManifest.featureId,
   keyId: 'omnia-v5-official-feature-2026-01', privateKey: featurePrivateKey, files: [
     file('SIGNATURE.json', JSON.stringify({ schemaVersion: 'omnia.package-signature-metadata/v1', scope: 'feature', keyId: 'omnia-v5-official-feature-2026-01' }, null, 2)),
@@ -216,6 +242,10 @@ const featurePackage = envelope({ product: 'omnia-feature', packageId: featureMa
     file('frontend/surface.json', JSON.stringify(surface, null, 2)), file('manifest.json', JSON.stringify(featureManifest, null, 2)),
     file('middle/worker.cjs', worker), file('middle/workpaper-preparation-python-bridge.cjs', await readFile(path.join(source, 'middle', 'workpaper-preparation-python-bridge.cjs'))),
     file('python/workpaper-preparation-engine.py', await readFile(path.join(source, 'python', 'workpaper-preparation-engine.py'))),
+    file('python/workpaper_workbook.py', await readFile(path.join(source, 'python', 'workpaper_workbook.py'))),
+    file('python/ooxml.py', await readFile(path.join(source, 'python', 'ooxml.py'))),
+    file('python/canonical.py', await readFile(path.join(source, 'python', 'canonical.py'))),
+    file('python/errors.py', await readFile(path.join(source, 'python', 'errors.py'))),
     file('tests/manifest.json', JSON.stringify(testsManifest, null, 2)), file('tests/vectors.json', JSON.stringify(testVectors, null, 2)),
     file('tests/self-test.cjs', packageSelfTest),
     file('sbom.json', JSON.stringify({ bomFormat: 'CycloneDX', specVersion: '1.6', version: 1,

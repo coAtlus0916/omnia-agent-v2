@@ -35,6 +35,7 @@ function durableFailureResult(
   descriptor: ConnectorNextDescriptor,
   executionGeneration: string,
   error: unknown,
+  effective: 'read_only' | 'mutation',
   effectState: 'not_started' | 'unknown'
 ): Record<string, unknown> | null {
   if (job.operation !== 'connector.next.operation.execute/v1') return null;
@@ -45,7 +46,7 @@ function durableFailureResult(
   assertConnectorDeliveryContext(invocation.deliveryContext);
   if (!/^[a-f0-9]{48}$/u.test(executionGeneration)) throw new Error('CONNECTOR_NEXT.EXECUTION_GENERATION_INVALID');
   const message = error instanceof Error ? error.message : String(error);
-  const code = effectState === 'not_started'
+  const code = effective === 'mutation' && effectState === 'not_started'
     ? 'CONNECTOR_NEXT.MUTATION_NOT_STARTED'
     : 'CONNECTOR_NEXT.OPERATION_JOB_FAILED';
   const wireError = { code, message, retryable: false };
@@ -147,6 +148,7 @@ export class ConnectorNextAgentRuntime {
         this.options.descriptor,
         this.options.executionGeneration || '',
         error,
+        effective,
         effectState
       );
       if (durableFailure) await this.options.client.completeJob(job, { ok: true, result: durableFailure });

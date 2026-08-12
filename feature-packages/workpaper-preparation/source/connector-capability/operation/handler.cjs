@@ -378,6 +378,81 @@ function phase2Snapshot(detail) {
   };
 }
 
+function resolveWritebackPath(template, snapshot) {
+  // Replace sub-entity placeholders with the exact live ids read from the
+  // authoritative Control detail. Any placeholder that cannot be resolved to a
+  // unique live id fails closed (never write to ':missing').
+  const placeholders = {
+    designEvaluationId: snapshot.designEvaluation && snapshot.designEvaluation.id,
+    operatingEffectivenessId: snapshot.operatingEffectiveness && snapshot.operatingEffectiveness.id
+  };
+  let path = template;
+  for (const [name, id] of Object.entries(placeholders)) {
+    path = path.replaceAll(`{${name}}`, id || '');
+  }
+  if (/\{(procedureId|riskScopeId|riskScopeDetailId)\}/u.test(path)) {
+    fail('Write-back path requires a procedure or risk-scope sub-entity id that is not directly resolvable.');
+  }
+  if (/\{[A-Za-z]+\}/u.test(path) || path.includes('//') || path === template && /\{[A-Za-z]+\}/u.test(template)) {
+    fail('Write-back path contains an unresolved sub-entity identity.');
+  }
+  return path;
+}
+function procedureWritebackPath(template, snapshot, phaseType) {
+  const procedure = (snapshot.procedures || []).find((item) => item.phaseType === phaseType);
+  if (!procedure || !procedure.id) fail(`Write-back requires a unique ${phaseType} procedure id.`);
+  return template.replaceAll('{procedureId}', procedure.id);
+}
+function riskScopeWritebackPath(template, snapshot) {
+  const detail = (snapshot.riskScopes || []).flatMap((scope) => (scope.details || []).map((item) => ({ scopeId: scope.id, detailId: item.id })))[0];
+  if (!detail || !detail.scopeId || !detail.detailId) fail('Write-back requires a unique risk-scope detail id.');
+  return template.replaceAll('{riskScopeId}', detail.scopeId).replaceAll('{riskScopeDetailId}', detail.detailId);
+}
+function normalizeWritebackValue(value, valueKind) {
+  if (valueKind === 'number') {
+    const number = Number(value);
+    if (!Number.isFinite(number)) fail('Write-back number value is invalid.');
+    return number;
+  }
+  if (valueKind === 'boolean') {
+    if (value === true || value === false) return value;
+    if (value === '是' || value === 'true' || value === '1') return true;
+    if (value === '否' || value === 'false' || value === '0') return false;
+    fail('Write-back boolean value is invalid.');
+  }
+  return text(value);
+}
+function extractSnapshotField(snapshot, template, phaseType) {
+  // Map a writePath template back to the flattened phase2Snapshot field so the
+  // write-back readback can compare the written value against the same semantic
+  // field (phase2Snapshot uses `procedures`/`designEvaluation`/`riskScopes`,
+  // not the raw Omnia entity names).
+  if (template.startsWith('/controlDesignEvaluation/')) {
+    const field = template.split('/').pop();
+    return snapshot.designEvaluation ? snapshot.designEvaluation[field] : undefined;
+  }
+  if (template.startsWith('/gitcNonDetailedTestingProcedures/')) {
+    const procedure = (snapshot.procedures || []).find((item) => item.phaseType === (phaseType || 'TestOfDesign'));
+    return procedure ? procedure.documentProcedureResults : undefined;
+  }
+  if (template.startsWith('/controlRiskScopes/')) {
+    const detail = (snapshot.riskScopes || []).flatMap((scope) => scope.details || [])[0];
+    return detail ? detail.appropriatenessAndCorrelation : undefined;
+  }
+  if (template.startsWith('/controlOperatingEffectiveness/')) {
+    const field = template.split('/').pop();
+    return snapshot.operatingEffectiveness ? snapshot.operatingEffectiveness[field] : undefined;
+  }
+  const field = template.replace(/^\//u, '');
+  return snapshot[field];
+}
+function valueSatisfied(snapshot, template, expected, valueKind, phaseType) {
+  const current = extractSnapshotField(snapshot, template, phaseType);
+  if (valueKind === 'number') return Number(current) === Number(expected);
+  if (valueKind === 'boolean') return current === expected;
+  return text(current) === text(expected);
+}
+
 function createOperationHandler() {
   return Object.freeze({ async run(operationId, request, sdk) {
     if (operationId === 'omnia.workpaper.directory.read.v1') {
@@ -585,6 +660,47 @@ function createOperationHandler() {
         fail('Control snapshot identity/Work Item drifted.');
       }
       return { ...context, ...snapshot };
+    }
+    if (operationId === 'omnia.workpaper.phase2.writeback.v1') {
+      const payload = request && request.command && request.command.payload;
+      const controlId = guid(payload && payload.controlId);
+      const expectedControlId = guid(request && request.controlId);
+      const changes = Array.isArray(payload && payload.changes) ? payload.changes : [];
+      if (!controlId || controlId !== expectedControlId || !changes.length || changes.length > 40) {
+        fail('Write-back command identity or change list is invalid.');
+      }
+      const detail = exactObject(await sdk.invokeStep('writeback-control-detail', { controlId }), 'Control detail');
+      const snapshot = phase2Snapshot(detail);
+      if (snapshot.controlId !== controlId) fail('Write-back Control identity drifted.');
+      const ledger = [];
+      for (const change of changes) {
+        const template = text(change && change.writePath);
+        const valueKind = text(change && change.valueKind) || 'text';
+        if (!template) fail('Write-back change lacks a signed field path.');
+        const value = normalizeWritebackValue(change.value, valueKind);
+        let path;
+        if (template.includes('{procedureId}')) {
+          path = procedureWritebackPath(template, snapshot, text(change.phaseType || 'TestOfDesign'));
+        } else if (template.includes('{riskScopeId}')) {
+          path = riskScopeWritebackPath(template, snapshot);
+        } else {
+          path = resolveWritebackPath(template, snapshot);
+        }
+        const tab = Number(change.concurrencyTab) === CONTROL_OE_TAB_ID ? CONTROL_OE_TAB_ID : CONTROL_CORE_TAB_ID;
+        const token = currentTab(detail, tab);
+        if (!token || !token.updatedOn) fail('Write-back lacks the authoritative concurrency token for its stage.');
+        const operations = [
+          { op: 'replace', path, value },
+          { op: 'replace', path: '/concurrencyTabId', value: tab },
+          { op: 'replace', path: '/concurrencyTabUpdatedOn', value: token.updatedOn },
+          { op: 'replace', path: '/isPurgeHiddenData', value: true }
+        ];
+        await invokeMutationStep(sdk, 'WORKPAPER.WRITEBACK_PATCH_FAILED', 'writeback-patch', { controlId }, operations);
+        const readback = exactObject(await sdk.invokeStep('writeback-readback', { controlId }), 'Control detail');
+        const after = phase2Snapshot(readback);
+        ledger.push({ path, valueKind, confirmed: valueSatisfied(after, template, value, valueKind, text(change.phaseType || 'TestOfDesign')) });
+      }
+      return { controlId, accepted: true, ledger };
     }
     fail(`Unsupported signed Operation: ${operationId}`);
   } });

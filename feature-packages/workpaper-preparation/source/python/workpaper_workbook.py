@@ -55,13 +55,13 @@ def _worksheet_xml(headers: list[str], rows: list[list[Any]], *, hidden: bool) -
         data.append(f'<row r="{index}" ht="22" customHeight="1">{cells}</row>')
     last = _col_name(len(headers))
     columns = "".join(f'<col min="{index}" max="{index}" width="{float(width):.2f}" customWidth="1"/>' for index, width in enumerate(widths, 1))
-    sheet_state = ' state="hidden"' if hidden else ""
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         f'<worksheet xmlns="{_NS_MAIN}"><sheetPr><pageSetUpPr fitToPage="1" autoPageBreaks="1"/></sheetPr>'
         f'<dimension ref="A1:{last}{len(rows) + 1}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
         f'<sheetFormatPr defaultRowHeight="15"/><cols>{columns}</cols><sheetData>{"".join(data)}</sheetData>'
-        f'<autoFilter ref="A1:{last}{len(rows) + 1}"/><sheetProtection sheet="1" objects="1" scenarios="1"/>'
+        f'<sheetProtection sheet="1" objects="1" scenarios="1"/>'
+        f'<autoFilter ref="A1:{last}{len(rows) + 1}"/>'
         f'<pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/>'
         f'<pageSetup paperSize="9" orientation="landscape" fitToWidth="1" fitToHeight="0"/></worksheet>'
     ) if not hidden else (
@@ -123,7 +123,8 @@ def _container_parts(sheet_count: int, sheet_names: list[str], active_tab: int =
             '<fonts count="2"><font><sz val="10"/><name val="Aptos"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="10"/><name val="Aptos"/></font></fonts>'
             '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF1F4E78"/><bgColor indexed="64"/></patternFill></fill></fills>'
             '<borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs>'
-            '<cellXfs count="3"><xf xfId="0"/><xf xfId="0" fontId="1" fillId="2" applyFont="1" applyFill="1" applyAlignment="1"><alignment wrapText="1" vertical="center"/></xf><xf xfId="0" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf></cellXfs></styleSheet>'
+            '<cellXfs count="3"><xf xfId="0"/><xf xfId="0" fontId="1" fillId="2" applyFont="1" applyFill="1" applyAlignment="1"><alignment wrapText="1" vertical="center"/></xf><xf xfId="0" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf></cellXfs>'
+            '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>'
         ).encode("utf-8"),
         "docProps/core.xml": (
             '<?xml version="1.0" encoding="UTF-8"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Omnia Workpaper Phase 2</dc:title></cp:coreProperties>'
@@ -224,32 +225,18 @@ def parse_uploaded_workbook(payload: Any) -> dict[str, Any]:
 def build_phase2_template(payload: Any) -> dict[str, Any]:
     """Generate the v4-semantics Phase 2 pre-filled template.
 
-    Four sheets: Input (locked APP scope), 替换字段 (placeholder directory;
-    user fills the E column), Controls (six control-point rows per APP, with
-    【placeholders】), Scope (frozen four-tuple identity). The directory and
-    control-point text are Feature business data carried in the payload.
+    One sheet only: 替换字段 (placeholder directory; the user fills the E
+    column). The directory and control-point text are Feature business data
+    carried in the payload.
     """
     require(isinstance(payload, dict) and payload.get("schemaVersion") == WORKBOOK_SCHEMA, "WORKBOOK.INPUT_INVALID", "Template build input schema is invalid.")
     systems = payload.get("systems")
     directory = payload.get("directory")
-    control_headers = payload.get("controlHeaders")
-    control_rows = payload.get("controlRows")
     scope = payload.get("scope")
     require(isinstance(systems, list) and 0 < len(systems) <= 50, "WORKBOOK.SYSTEMS_INVALID", "Template requires 1..50 APP systems.")
     require(all(isinstance(s, str) and s.strip() for s in systems), "WORKBOOK.SYSTEMS_INVALID", "Template APP system names must be non-empty.")
     require(isinstance(directory, list) and directory, "WORKBOOK.DIRECTORY_INVALID", "Template placeholder directory is empty.")
-    require(isinstance(control_headers, list) and control_headers, "WORKBOOK.CONTROL_HEADERS_INVALID", "Template Control headers are empty.")
-    require(isinstance(control_rows, list) and control_rows, "WORKBOOK.CONTROL_ROWS_INVALID", "Template Control rows are empty.")
     require(isinstance(scope, dict), "WORKBOOK.SCOPE_INVALID", "Template scope is invalid.")
-
-    # Input sheet: lock the APP scope (rows from row 4, like v4).
-    input_headers = ["系统范围", "状态", "", "", "", ""]
-    input_rows: list[list[Any]] = [
-        [f"Phase 2 系统范围（已选择 APP：{len(systems)}）", "", "", "", "", ""],
-        ["系统范围已锁定。请勿新增、删除、改名或调整顺序；请前往“替换字段”sheet 填写关键信息。", "", "", "", "", ""],
-        ["系统 ID", "状态", "", "", "", ""],
-    ]
-    input_rows += [[system, "已锁定范围", "", "", "", ""] for system in systems]
 
     # 替换字段 sheet: placeholder directory per system. Columns match v4:
     # 编号 / 系统 / 测试点 / 替换项目 / 替换内容(E列用户填) / 替换内容示例.
@@ -260,41 +247,23 @@ def build_phase2_template(payload: Any) -> dict[str, Any]:
             repl_rows.append([item.get("code", ""), system, item.get("controlPoint", ""),
                               item.get("placeholder", ""), "", item.get("example", "")])
 
-    # Controls sheet: six control-point rows per system, with 系统ID replaced.
-    controls_rows: list[list[Any]] = []
-    for system in systems:
-        for row in control_rows:
-            control_number = str(row.get("controlNumber", "")).replace("系统ID", system)
-            values = [control_number]
-            raw = row.get("values") or row.get("cells") or []
-            # values[0] is the controlNumber; the rest are the 21 field values.
-            if isinstance(raw, list):
-                values += [str(v).replace("系统ID", system) if isinstance(v, str) else v for v in raw[1:]]
-            controls_rows.append(values[:len(control_headers)])
-
-    # Assemble four sheets.
-    sheet_names = ["Input", "替换字段", "Controls", "Scope"]
-    parts = _container_parts(4, sheet_names, active_tab=1, hidden_sheets=(4,))
-    parts["xl/worksheets/sheet1.xml"] = _worksheet_xml(input_headers, input_rows, hidden=False).encode("utf-8")
-    parts["xl/worksheets/sheet2.xml"] = _worksheet_xml(repl_headers, repl_rows, hidden=False).encode("utf-8")
-    parts["xl/worksheets/sheet3.xml"] = _worksheet_xml(control_headers, controls_rows, hidden=False).encode("utf-8")
-    scope_rows = [[key, json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value] for key, value in scope.items()]
-    parts["xl/worksheets/sheet4.xml"] = _worksheet_xml(["key", "value"], scope_rows, hidden=True).encode("utf-8")
+    sheet_names = ["替换字段"]
+    parts = _container_parts(1, sheet_names, active_tab=0, hidden_sheets=())
+    parts["xl/worksheets/sheet1.xml"] = _worksheet_xml(repl_headers, repl_rows, hidden=False).encode("utf-8")
 
     output = _deterministic_zip(parts)
     workbook = read_xlsx(output, allow_formula_cache=True)
     require(tuple(sheet.name for sheet in workbook.sheets) == tuple(sheet_names), "WORKBOOK.ROUNDTRIP_STRUCTURE", "Generated template sheet contract drifted.")
-    require(workbook.sheets[2].rows.get(1, []) == list(control_headers), "WORKBOOK.ROUNDTRIP_HEADERS", "Generated template Control headers drifted.")
+    require(workbook.sheets[0].rows.get(1, []) == list(repl_headers), "WORKBOOK.ROUNDTRIP_HEADERS", "Generated template replacement headers drifted.")
 
     return {
         "schemaVersion": "omnia.workpaper-phase2-template-result/v1",
         "xlsxBase64": base64.b64encode(output).decode("ascii"),
         "sizeBytes": len(output),
         "sha256": sha256_hex(output),
-        "semanticDigest": semantic_digest({"systems": systems, "directory": directory, "controlHeaders": control_headers, "controlRows": control_rows, "scope": scope}),
+        "semanticDigest": semantic_digest({"systems": systems, "directory": directory, "scope": scope}),
         "sheetNames": sheet_names,
         "applicationCount": len(systems),
-        "controlRowCount": len(controls_rows),
         "replacementRowCount": len(repl_rows),
     }
 
@@ -309,7 +278,7 @@ def _cell_text(value: Any) -> str:
 
 REPLACEMENT_INPUT_SCHEMA = "omnia.workpaper-replacement-input/v1"
 REPLACEMENT_OUTPUT_SCHEMA = "omnia.workpaper-replacement/v1"
-_REPLACEMENT_SHEET_NAMES = ("Input", "替换字段", "Controls", "Scope")
+_REPLACEMENT_SHEET_NAMES = ("替换字段",)
 _REPLACEMENT_HEADERS = ("编号", "系统", "测试点", "替换项目", "替换内容", "替换内容示例")
 _REPLACEMENT_VALUE_COLUMN = 4  # E column (0-based): 替换内容
 
@@ -317,10 +286,10 @@ _REPLACEMENT_VALUE_COLUMN = 4  # E column (0-based): 替换内容
 def apply_replacement_fields(payload: Any) -> dict[str, Any]:
     """Parse the user-filled pre-filled template back into replacement values.
 
-    Reads the 替换字段 sheet's E column (替换内容) plus its row identity (编号 /
-    系统 / 测试点 / 替换项目). Rows with an empty value are skipped. The Input
-    sheet's locked APP list is returned verbatim so the worker can prove the
-    uploaded template still matches the frozen system scope.
+    Reads the single 替换字段 sheet's E column (替换内容) plus its row identity
+    (编号 / 系统 / 测试点 / 替换项目). Rows with an empty value are skipped. The
+    locked system list is derived from the non-empty 系统 column so the worker
+    can prove the uploaded template still matches the frozen system scope.
     """
     require(isinstance(payload, dict) and payload.get("schemaVersion") == REPLACEMENT_INPUT_SCHEMA,
             "WORKBOOK.INPUT_INVALID", "Replacement input schema is invalid.")
@@ -335,18 +304,14 @@ def apply_replacement_fields(payload: Any) -> dict[str, Any]:
     require(tuple(sheet.name for sheet in workbook.sheets) == _REPLACEMENT_SHEET_NAMES,
             "WORKBOOK.ROUNDTRIP_STRUCTURE", "Uploaded template sheet contract drifted.")
 
-    input_sheet = workbook.sheets[0]
-    # Input sheet: rows 1-3 are title/instructions, row 4 is the header
-    # (系统 ID / 状态), rows 5+ carry the locked system list in column A.
-    systems = [input_sheet.rows[row][0] for row in sorted(r for r in input_sheet.rows if r >= 5)
-               if input_sheet.rows[row] and str(input_sheet.rows[row][0]).strip()]
-
-    replacement_sheet = workbook.sheets[1]
+    replacement_sheet = workbook.sheets[0]
     actual_headers = replacement_sheet.rows.get(1, [])
     require(actual_headers == list(_REPLACEMENT_HEADERS),
             "WORKBOOK.HEADERS_DRIFT", "Uploaded template replacement headers drifted.")
     replacements: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
+    systems: list[str] = []
+    seen_systems: set[str] = set()
     for row_number in sorted(r for r in replacement_sheet.rows if r > 1):
         values = replacement_sheet.rows[row_number]
         while len(values) <= _REPLACEMENT_VALUE_COLUMN:
@@ -358,6 +323,9 @@ def apply_replacement_fields(payload: Any) -> dict[str, Any]:
         value = str(values[_REPLACEMENT_VALUE_COLUMN] or "").strip()
         if not code and not system and not placeholder and not value:
             continue  # the instruction row (请仅填写 E 列绿色单元格…)
+        if system and system not in seen_systems:
+            seen_systems.add(system)
+            systems.append(system)
         if not value:
             continue
         key = (system, code)

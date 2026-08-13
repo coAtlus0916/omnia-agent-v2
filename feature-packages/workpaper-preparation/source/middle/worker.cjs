@@ -98,11 +98,6 @@ function sameAuthority(current, frozen) {
     if (String(current[key]) !== String(frozen[key])) fail('WORKPAPER.AUTHORITY_DRIFT', `Current ${key} differs from the frozen authority.`);
   }
 }
-function sameRecoveryAuthority(current, frozen) {
-  for (const key of ['connectorId', 'engagementId', 'authorityInstanceId', 'tenantOrOrgId', 'packId']) {
-    if (String(current[key]) !== String(frozen[key])) fail('WORKPAPER.AUTHORITY_DRIFT', `Current ${key} differs from the frozen recovery authority.`);
-  }
-}
 function sameSafety(current, frozen) {
   if (Number(current.stateVersion) !== Number(frozen.stateVersion)
     || current.authorityObservationId !== frozen.authorityObservationId
@@ -110,14 +105,6 @@ function sameSafety(current, frozen) {
     || canonicalWorkpaperState(current.globalSectionIds) !== canonicalWorkpaperState(frozen.globalSectionIds)
     || canonicalWorkpaperState(current.globalWorkspaceIds) !== canonicalWorkpaperState(frozen.globalWorkspaceIds)) {
     fail('WORKPAPER.SAFETY_DRIFT', 'Current safety lock differs from the frozen plan.');
-  }
-}
-function sameRecoverySafety(current, frozen) {
-  sameRecoveryAuthority(current, frozen);
-  if (canonicalWorkpaperState(current.workspaceIds) !== canonicalWorkpaperState(frozen.workspaceIds)
-    || canonicalWorkpaperState(current.globalSectionIds) !== canonicalWorkpaperState(frozen.globalSectionIds)
-    || canonicalWorkpaperState(current.globalWorkspaceIds) !== canonicalWorkpaperState(frozen.globalWorkspaceIds)) {
-    fail('WORKPAPER.SAFETY_DRIFT', 'Current safety scope differs from the frozen recovery scope.');
   }
 }
 function credentialDigest(b, s) {
@@ -239,93 +226,51 @@ function createFeatureWorker(ports) {
   const operationTarget = (step) => ({ targetIdentityKey: step.stepId, workspaceId: step.workspaceId,
     riskAssessmentId: step.riskAssessmentId, controlId: step.controlId });
   function workflowSurface(plan) {
-    const state = plan ? plan.state : null;
     const wp = plan && plan.workpaper ? plan.workpaper : null;
     const wpState = wp ? wp.state : null;
-    const active = Boolean(state) && state !== 'cancelled';
     const step = (stepId, label, detail, stepState) => ({ stepId, label, state: stepState, detail });
-    // Hidden-Tab opening is complete only when the whole plan is terminal.
-    const openState = state === 'completed' ? 'completed'
-      : state === 'failed' ? 'failed'
-        : state === 'uncertain' || state === 'pending_continuation' ? 'warning'
-          : active ? 'current' : 'pending';
-    const openDetail = state === 'completed' ? '所有 Control 均已由精确读回证明隐藏 Tab 可用。'
-      : state === 'failed' ? '隐藏 Tab 打开未完成。'
-        : state === 'uncertain' || state === 'pending_continuation' ? '存在结果不确定的命令；请先只读核验或继续未完成步骤。'
-          : active ? '按 Control 逐项执行并核验。' : '等待选择元素。';
-    const workpaperReady = state === 'completed';
-    // upload: the template is auto-generated once hidden tabs are terminal; the
-    // material step stays current while the template exists and materials are
-    // still being collected, then completes once resolutions are ready.
-    const uploadState = !wpState ? 'pending'
-      : ['resolved', 'writeback_complete', 'writeback_uncertain', 'writeback_noop'].includes(wpState) ? 'completed' : 'current';
-    const uploadDetail = !wpState ? '等待隐藏 Tab 完成'
-      : wpState && !['generated'].includes(wpState) ? '材料已上传并转化' : '下载填写件 + 上传填写件与制度资料';
-    // writeback: one explicit confirmation writes back to Omnia.
-    const writebackState = wpState === 'writeback_complete' || wpState === 'writeback_noop' ? 'completed'
-      : wpState === 'writeback_uncertain' ? 'warning'
-        : wpState === 'resolved' ? 'current'
-          : 'pending';
-    const writebackDetail = wpState === 'writeback_complete' || wpState === 'writeback_noop' ? '写回已完成'
-      : wpState === 'writeback_uncertain' ? '存在不确定写回，请只读核验'
-        : wpState === 'resolved' ? '材料已转化；确认后写回真实 Control 字段' : '等待材料上传与转化';
+    // Three steps: select → upload (template + materials) → writeback.
+    // Opening the hidden Tab and reading back Controls live inside the
+    // writeback capsules, not as a standalone step.
+    const writebackDone = ['writeback_complete', 'writeback_noop'].includes(wpState);
+    const writebackUncertain = wpState === 'writeback_uncertain';
+    const resolved = wpState === 'resolved';
+    const uploadDone = resolved || writebackDone || writebackUncertain;
+    const selectState = !wpState ? 'current' : 'completed';
+    const uploadState = !wpState ? 'pending' : uploadDone ? 'completed' : 'current';
+    const uploadDetail = !wpState ? '等待选择元素'
+      : wpState === 'generated' ? '下载填写件、上传填写件与制度资料'
+        : '材料已上传并转化';
+    const writebackState = writebackDone ? 'completed'
+      : writebackUncertain ? 'warning'
+        : resolved ? 'current' : 'pending';
+    const writebackDetail = writebackDone ? '写回已完成'
+      : writebackUncertain ? '存在不确定写回，请只读核验'
+        : resolved ? '激活 OE Tab、读回 Control 并写回' : '等待材料上传与转化';
     const steps = [
-      step('select', '选择元素', '选择 Generic Application GRA', active ? 'completed' : 'current'),
-      step('open', '打开隐藏 Tab', openDetail, openState),
+      step('select', '选择元素', '选择 Generic Application GRA', selectState),
       step('upload', '上传材料', uploadDetail, uploadState),
       step('writeback', '确认回传', writebackDetail, writebackState)
     ];
-    const currentStepId = wpState === 'writeback_complete' || wpState === 'writeback_noop' ? 'writeback'
-      : wpState === 'writeback_uncertain' ? 'writeback'
-        : wpState === 'resolved' ? 'writeback'
-          : wpState ? 'upload'
-            : workpaperReady ? 'upload' : active ? 'open' : 'select';
+    const currentStepId = writebackDone || writebackUncertain || resolved ? 'writeback'
+      : wpState ? 'upload' : 'select';
     return { revision: 1, currentStepId, steps };
   }
   const actionPatch = (plan) => {
-    const state = plan ? plan.state : null;
-    const directory = !state || ['completed', 'failed', 'cancelled'].includes(state);
-    const pending = state === 'pending_confirmation' || state === 'pending_continuation';
-    const uncertain = state === 'uncertain' || state === 'pending_continuation';
-    const backEnabled = state === 'pending_confirmation';
-    const backReason = !state ? '当前已是第一步，没有可返回的上一步。'
-      : state === 'pending_confirmation' ? '取消未确认的计划并返回选择元素；旧确认令牌立即失效。'
-        : ['uncertain', 'pending_continuation'].includes(state) ? '已产生写入且存在不确定或待继续步骤；只能强制结束，不能返回上一步。'
-          : ['preparing', 'executing'].includes(state) ? '流程正在推进；禁止返回上一步。'
-            : '当前流程已进入终态；可强制结束后重新开始。';
-    const restartEnabled = Boolean(state);
-    const restartReason = !state ? '当前没有可结束的流程。'
-      : state === 'pending_confirmation' ? '结束未确认的计划；不会向 Omnia 提交任何写操作。'
-        : ['uncertain', 'pending_continuation', 'executing'].includes(state) ? '强制结束当前流程；已验证的远端写入保持不变，不会回滚或重放。'
-          : ['completed', 'failed', 'cancelled'].includes(state) ? '保留终态审计并返回选择元素，可开始新流程。'
-            : '结束当前流程并返回选择元素。';
-    const generateEnabled = ['completed', 'uncertain', 'pending_continuation'].includes(state);
-    const generateReason = generateEnabled ? '' : '只有已完成隐藏 Tab 打开并读回的计划才能生成控制底稿。';
-    const filledEnabled = Boolean(plan && plan.workpaper && plan.workpaper.state === 'generated');
-    const filledReason = filledEnabled ? '' : '请先完成控制底稿模板生成，再上传填写好的替换字段表。';
-    const policyEnabled = Boolean(plan && plan.workpaper && plan.workpaper.state === 'generated');
-    const policyReason = policyEnabled ? '' : '请先生成控制底稿模板，再上传制度资料。';
-    const writebackEnabled = Boolean(plan && plan.workpaper && plan.workpaper.state === 'resolved');
-    const writebackReason = writebackEnabled ? '' : '请先上传填写件与制度资料并完成系统转化，再确认回传。';
-    // Once the workpaper is generated, the Control catalog and hidden-Tab
-    // controls are no longer relevant. Collapse to the workpaper-stage actions.
-    const workpaperStage = Boolean(plan && plan.workpaper && plan.workpaper.state);
-    const wpState = plan && plan.workpaper ? plan.workpaper.state : null;
+    const wp = plan && plan.workpaper ? plan.workpaper : null;
+    const wpState = wp ? wp.state : null;
+    const directory = !wpState;
+    const generated = wpState === 'generated';
+    const resolved = wpState === 'resolved';
+    const writebackUncertain = wpState === 'writeback_uncertain';
     return [
-      { actionId: 'bootstrap-workpaper-directory', enabled: false, visible: !workpaperStage, reason: 'Initial authoritative APP GRA read has completed.' },
-      { actionId: 'refresh-workpaper-directory', enabled: directory, visible: !workpaperStage, reason: directory ? '' : 'A frozen hidden-Tab plan is active.' },
-      { actionId: 'prepare-hidden-tabs', enabled: directory, visible: !workpaperStage, reason: directory ? '' : 'A frozen hidden-Tab plan is active.' },
-      { actionId: 'cancel-hidden-tab-plan', enabled: state === 'pending_confirmation', visible: !workpaperStage, reason: state === 'pending_confirmation' ? '' : 'Only an unconfirmed plan can be cancelled.' },
-      { actionId: 'confirm-hidden-tabs', enabled: pending, visible: !workpaperStage, reason: pending ? '' : 'No frozen plan or reconciled continuation is awaiting confirmation.' },
-      { actionId: 'reconcile-hidden-tabs', enabled: uncertain, visible: !workpaperStage,
-        label: state === 'pending_continuation' ? '确认继续未完成步骤' : '核验并继续未完成步骤',
-        reason: uncertain ? '' : 'No uncertain Control command or reconciled continuation is available.' },
-      { actionId: 'generate-workpaper', enabled: generateEnabled, visible: !wpState, presentation: 'background', reason: generateReason },
-      { actionId: 'upload-filled-workbook', enabled: filledEnabled, visible: wpState === 'generated', reason: filledReason },
-      { actionId: 'upload-policy', enabled: policyEnabled, visible: wpState === 'generated', reason: policyReason },
-      { actionId: 'confirm-writeback', enabled: writebackEnabled, visible: wpState === 'resolved', reason: writebackReason },
-      { actionId: 'back-to-upload', enabled: backEnabled, visible: !workpaperStage, reason: backReason },
-      { actionId: 'restart-run', enabled: restartEnabled, reason: restartReason }
+      { actionId: 'bootstrap-workpaper-directory', enabled: false, visible: false, reason: 'Initial authoritative APP GRA read has completed.' },
+      { actionId: 'refresh-workpaper-directory', enabled: directory, visible: directory, reason: directory ? '' : '底稿流程已开始。' },
+      { actionId: 'select-elements', enabled: directory, visible: directory, reason: directory ? '' : '填写件模板已生成。' },
+      { actionId: 'upload-filled-workbook', enabled: generated, visible: generated, reason: generated ? '' : '请先生成填写件模板，再上传填写好的替换字段表。' },
+      { actionId: 'upload-policy', enabled: generated, visible: generated, reason: generated ? '' : '请先生成填写件模板，再上传制度资料。' },
+      { actionId: 'confirm-writeback', enabled: resolved, visible: resolved || writebackUncertain, reason: resolved ? '' : '请先上传填写件与制度资料并完成系统转化，再确认回传。' },
+      { actionId: 'restart-run', enabled: Boolean(wpState), reason: wpState ? '结束当前流程并返回选择元素。' : '当前没有可结束的流程。' }
     ];
   };
   function directorySurface(directory) {
@@ -395,22 +340,43 @@ function createFeatureWorker(ports) {
   // catalog, only the downloaded artifact and the next-stage action. This is
   // the "下载审核 / 上传 / 预览 / 确认写回" workspace after the hidden-Tab
   // phase has completed.
+  function writebackProgress(plan) {
+    const wp = plan.workpaper;
+    const wb = wp && wp.writeback;
+    if (!wb || !Array.isArray(wb.capsules)) return null;
+    const capsules = wb.capsules.map((capsule) => ({
+      itemId: capsule.capsuleId, label: capsule.label, state: capsule.state, detail: capsule.detail || '',
+      completed: Number(capsule.completed || 0), total: Number(capsule.total || 0),
+      percent: Number(capsule.total) ? Math.round(Number(capsule.completed) * 100 / Number(capsule.total)) : (capsule.state === 'passed' ? 100 : 0)
+    }));
+    const total = capsules.reduce((sum, item) => sum + item.total, 0);
+    const completed = capsules.reduce((sum, item) => sum + item.completed, 0);
+    const state = wb.state === 'passed' ? 'passed' : wb.state === 'uncertain' ? 'uncertain' : wb.state === 'failed' ? 'failed' : 'running';
+    return { label: '确认回传', completed, total, percent: total ? Math.round(completed * 100 / total) : 0, state,
+      message: state === 'passed' ? '回传已完成。' : state === 'uncertain' ? '存在不确定写回，请只读核验。' : state === 'failed' ? '回传失败。' : '正在回传。',
+      items: capsules };
+  }
   function workpaperSurface(plan) {
     const wp = plan.workpaper;
     const artifact = wp ? [{
       artifactId: wp.artifactId, kind: 'result', name: `workpaper-phase2-${plan.runId}.xlsx`,
       sha256: wp.sha256, sizeBytes: wp.sizeBytes, available: true, reason: ''
     }] : [];
-    const message = wp && wp.state === 'generated'
-      ? `填写件已生成：${plan.counts.total} 个 Control · ${wp.rowCount} 行。请下载填写件，填写“替换字段”sheet 后上传，并上传制度资料。`
-      : wp && wp.state === 'resolved'
-        ? '材料已转化；请确认后写回真实 Control 字段。'
-        : wp && wp.state === 'writeback_complete' ? '写回已完成并逐字段读回核验。'
-          : wp && wp.state === 'writeback_uncertain' ? '存在不确定写回；请只读核验，禁止盲目重放。'
-            : '控制底稿状态。';
+    const message = !wp
+      ? `已选择 ${plan.selectedGras.length} 个 Generic Application GRA；生成填写件模板后开始填写。`
+      : wp && wp.state === 'generated'
+        ? `填写件已生成：${wp.rowCount} 行。请下载填写件，填写“替换字段”sheet 后上传，并上传制度资料。`
+        : wp && wp.state === 'resolved'
+          ? '材料已转化；确认后将激活 OE Tab、读回 Control 并写回。'
+          : wp && wp.state === 'writeback_complete' ? '写回已完成并逐字段读回核验。'
+            : wp && wp.state === 'writeback_uncertain' ? '存在不确定写回；请只读核验，禁止盲目重放。'
+              : '控制底稿状态。';
+    const progress = (wp && (wp.state === 'resolved' || wp.state === 'writeback_complete' || wp.state === 'writeback_uncertain'))
+      ? writebackProgress(plan) : null;
     return { schemaVersion: 'omnia.declarative-feature-surface-patch/v1', stateVersion: Number(plan.surfaceStateVersion || 1),
       status: 'ready', statusMessage: message, scopes: [], items: [], selectedItemIds: [], search: '',
-      artifacts: artifact, workflow: workflowSurface(plan), clearFields: ['progress'], actions: actionPatch(plan) };
+      artifacts: artifact, workflow: workflowSurface(plan),
+      ...(progress ? { progress } : { clearFields: ['progress'] }), actions: actionPatch(plan) };
   }
   async function readDirectory(context) {
     const { b, s } = contextAuthority(context);
@@ -429,7 +395,7 @@ function createFeatureWorker(ports) {
         scopes: [], items: [], selectedItemIds: [], workflow: workflowSurface(null), clearFields: ['progress'], actions: actionPatch(null) };
     }
   }
-  async function createPlan(context, targetIds, expectedStateVersion) {
+  async function selectElements(context, targetIds, expectedStateVersion) {
     if (!Array.isArray(targetIds) || targetIds.length < 1 || targetIds.length > MAX_BATCH_GRAS) {
       fail('WORKPAPER.SELECT_GRA_BATCH', `Please select between 1 and ${MAX_BATCH_GRAS} Generic Application GRAs.`);
     }
@@ -443,8 +409,23 @@ function createFeatureWorker(ports) {
     if (selectedGras.some((item) => !item)) fail('WORKPAPER.GRA_STALE', 'A selected Generic Application GRA is absent from the current authoritative directory.');
     selectedGras.sort((left, right) => left.riskAssessmentId.localeCompare(right.riskAssessmentId));
     const localId = crypto.randomUUID();
+    return save({
+      schemaVersion: 'omnia.workpaper-plan/v1', planId: localId, runId: '', featureVersion: FEATURE_VERSION,
+      state: 'selected', surfaceStateVersion: Number(expectedStateVersion) + 1,
+      binding: b, safety: s, selectedGras, controls: [], steps: [], alreadyOpen: [],
+      counts: { total: 0, toOpen: 0, alreadyOpen: 0 }, outcomes: [],
+      createdAt: new Date().toISOString()
+    });
+  }
+  // Freeze the hidden-Tab plan at writeback time. Reads each selected GRA's
+  // Control catalog, selects the eligible Phase-2 Controls, preflights them,
+  // and builds the exact mutation plan. A GRA with no eligible Control is
+  // skipped (not an error); a fully already-open batch has no Core Run.
+  async function freezeHiddenTabPlan(plan, context) {
+    const { b, s } = contextAuthority(context); sameAuthority(b, plan.binding); sameSafety(s, plan.safety);
+    const localId = plan.planId;
     const bundles = [];
-    for (const selected of selectedGras) {
+    for (const selected of plan.selectedGras) {
       const controlCatalog = await invoke(OPERATIONS.controls, { connectorBinding: b, ...controlRequest(selected) });
       if (!controlCatalog || !Array.isArray(controlCatalog.controls) || controlCatalog.controls.length > 500
         || ['riskAssessmentId','graWorkItemId','appId','appWorkItemId','workspaceId','graContentId']
@@ -456,7 +437,9 @@ function createFeatureWorker(ports) {
       }, { runId: localId });
       if (!selection || selection.schemaVersion !== 'omnia.workpaper-control-selection/v1'
         || !Array.isArray(selection.controls) || !selection.controls.length) {
-        fail('WORKPAPER.PYTHON_SELECTION_INVALID', `CPython returned no valid Phase 2 Control selection for GRA ${selected.riskAssessmentId}.`);
+        // No eligible Phase-2 Control: the whole GRA has nothing to open.
+        bundles.push({ selected, steps: [], controls: [], alreadyOpen: [] });
+        continue;
       }
       const rawByIdentity = new Map();
       for (const raw of controlCatalog.controls) {
@@ -492,7 +475,7 @@ function createFeatureWorker(ports) {
         const frozenPreflight = observationState(preflight);
         return { ...step, ...selected, preflight: frozenPreflight, preflightDigest: digest(frozenPreflight), outcome: null };
       });
-      bundles.push({ selected, pythonPlan, steps,
+      bundles.push({ selected, steps,
         controls: pythonPlan.controls.map((item) => ({ ...selected, ...item })),
         alreadyOpen: pythonPlan.alreadyOpen.map((item) => ({ ...selected, ...item })) });
     }
@@ -503,17 +486,8 @@ function createFeatureWorker(ports) {
       fail('WORKPAPER.BATCH_INVALID', `The frozen batch is duplicated or exceeds ${MAX_BATCH_CONTROLS} Controls.`);
     }
     const counts = { total: controls.length, toOpen: steps.length, alreadyOpen: alreadyOpen.length };
-    const pythonPlanDigest = digest(bundles.map((bundle) => ({
-      riskAssessmentId: bundle.selected.riskAssessmentId, planDigest: bundle.pythonPlan.planDigest
-    })));
-    let plan = {
-      schemaVersion: 'omnia.workpaper-plan/v1', planId: localId, runId: '', featureVersion: FEATURE_VERSION,
-      state: steps.length ? 'preparing' : 'completed', surfaceStateVersion: Number(expectedStateVersion) + 1,
-      binding: b, safety: s, selectedGras, controls, steps, alreadyOpen,
-      counts, outcomes: [], pythonPlanDigest,
-      createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 15 * 60_000).toISOString()
-    };
-    if (!steps.length) return save(plan);
+    plan.controls = controls; plan.steps = steps; plan.alreadyOpen = alreadyOpen; plan.counts = counts; plan.outcomes = [];
+    if (!steps.length) return plan;
     const coreRun = await store.call('createMutationRun', { engagementId: b.engagementId });
     const targets = steps.map((step) => ({
       kind: 'field', key: step.stepId, workspace: step.workspaceId, objectType: 'Control', objectId: step.controlId,
@@ -524,39 +498,58 @@ function createFeatureWorker(ports) {
     const graphDigest = digest(targets.map((item) => ({ key: item.key, preflightDigest: item.preflightDigest, mutationPayload: item.mutationPayload })));
     const frozen = await store.call('prepareReturnIntent', { runId: coreRun.runId,
       plan: { schemaVersion: 'omnia.workpaper-return-intent/v1', authority: { authorityInstanceId: b.authorityInstanceId,
-        tenantOrOrgId: b.tenantOrOrgId, packId: b.packId, engagementId: b.engagementId }, selectedGras, graphDigest, targets },
+        tenantOrOrgId: b.tenantOrOrgId, packId: b.packId, engagementId: b.engagementId }, selectedGras: plan.selectedGras, graphDigest, targets },
       connectorBinding: b, safetyLock: s, credentialDigest: credentialDigest(b, s), preflightDigest: graphDigest });
-    plan = { ...plan, planId: coreRun.runId, runId: coreRun.runId, state: 'pending_confirmation', graphDigest,
+    plan = Object.assign(plan, { planId: coreRun.runId, runId: coreRun.runId, state: 'pending_confirmation', graphDigest,
       planDigest: frozen.planDigest, confirmationId: frozen.confirmationId, confirmationToken: frozen.confirmationToken,
-      confirmationStateVersion: frozen.stateVersion, expiresAt: frozen.expiresAt };
+      confirmationStateVersion: frozen.stateVersion });
     return save(plan);
   }
-  async function cancel(plan) {
-    if (!plan || plan.state !== 'pending_confirmation') fail('WORKPAPER.CANCEL_INVALID', 'Only an unconfirmed hidden-Tab plan can be cancelled.');
-    const latest = await store.call('loadLatestRun', {}); const run = latest && latest.run ? latest.run : latest;
-    if (!run || text(run.run_id) !== plan.runId) fail('WORKPAPER.RUN_DRIFT', 'Current Core Run differs from the frozen plan.');
-    const returned = await store.call('returnRunToReview', { runId: plan.runId, expectedRevision: Number(run.state_revision) });
-    await store.call('transitionRun', { runId: plan.runId, expectedRevision: Number(returned.stateRevision), toState: 'cancelled',
-      eventType: 'workpaper.hidden_tab_plan_cancelled', error: 'User cancelled before any mutation was submitted.' });
-    plan.state = 'cancelled'; plan.surfaceStateVersion += 1; return save(plan);
+  // Approve the frozen intent and open the hidden Tabs (executes the Core Return).
+  async function openHiddenTabs(plan, context) {
+    if (!plan.steps || !plan.steps.length) { plan.state = 'completed'; return plan; }
+    const { b, s } = contextAuthority(context); sameAuthority(b, plan.binding); sameSafety(s, plan.safety);
+    for (const step of plan.steps) {
+      const before = await currentPreflight(step, b, '', plan.runId);
+      if (!before.openVerified && digest(observationState(before)) !== step.preflightDigest) fail('WORKPAPER.PREFLIGHT_DRIFT', `Control changed before confirmation: ${step.controlId}`);
+    }
+    await store.call('approveReturnIntent', { confirmationId: plan.confirmationId, confirmationToken: plan.confirmationToken,
+      expectedStateVersion: Number(plan.confirmationStateVersion), connectorBinding: b, safetyLock: s });
+    return execute(plan, context);
+  }
+  // Read back every Control of every selected GRA (not only eligible) so the
+  // write-back intersection can be computed against the authoritative list.
+  async function readbackAllControls(plan, context) {
+    const { b, s } = contextAuthority(context); sameAuthority(b, plan.binding); sameSafety(s, plan.safety);
+    const readbackControls = [];
+    for (const selected of plan.selectedGras) {
+      const controlCatalog = await invoke(OPERATIONS.controls, { connectorBinding: b, ...controlRequest(selected) });
+      if (!controlCatalog || !Array.isArray(controlCatalog.controls) || controlCatalog.controls.length > 500
+        || ['riskAssessmentId','graWorkItemId','appId','appWorkItemId','workspaceId','graContentId']
+          .some((key) => text(controlCatalog[key]) !== text(selected[key]))) {
+        fail('WORKPAPER.CONTROL_CATALOG_INVALID', 'A selected GRA Control catalog is invalid, stale, or exceeds 500 items.');
+      }
+      for (const raw of controlCatalog.controls) {
+        readbackControls.push({
+          controlId: required(raw && raw.controlId, 'controlId'),
+          workItemId: required(raw && raw.workItemId, 'control.workItemId'),
+          controlNumber: optional(raw && raw.controlNumber, 'controlNumber'),
+          riskAssessmentId: selected.riskAssessmentId, appId: selected.appId, workspaceId: selected.workspaceId
+        });
+      }
+    }
+    plan.readbackControls = readbackControls;
+    plan.readbackCount = readbackControls.length;
+    return plan;
   }
   async function clearCurrentPointer() {
     await store.call('savePlan', { schemaVersion: 'omnia.workpaper-current-pointer/v1', planId: CURRENT_POINTER,
       currentPlanId: '', updatedAt: new Date().toISOString() });
   }
   async function forceEnd(plan, context) {
-    if (plan && plan.state === 'pending_confirmation') {
-      // An unconfirmed plan owns a waiting_confirmation Core Run; the clean
-      // path is the same as cancel (return-to-review then cancelled), which
-      // never issues a mutation. Already-verified remote writes do not exist
-      // at this stage.
-      await cancel(plan);
-    } else if (plan) {
+    if (plan) {
       const latest = await store.call('loadLatestRun', {}); const run = latest && latest.run ? latest.run : latest;
       if (run && text(run.run_id) === plan.runId && !['succeeded', 'failed', 'cancelled', 'not_evaluable'].includes(text(run.state))) {
-        // Converge the Core Run to a terminal state without replaying any
-        // mutation. Already verified remote writes are preserved; the frozen
-        // plan is abandoned and a fresh element-selection flow begins.
         let revision = Number(run.state_revision);
         if (text(run.state) === 'uncertain') {
           revision = await store.call('transitionRun', { runId: plan.runId, expectedRevision: revision, toState: 'reconciling',
@@ -566,12 +559,6 @@ function createFeatureWorker(ports) {
           eventType: 'workpaper.hidden_tab_force_ended', error: '用户强制结束；已验证的远端写入保持不变，不回滚、不重放。' });
       }
     }
-    await clearCurrentPointer();
-    return refresh(context);
-  }
-  async function backToSelect(plan, context) {
-    if (!plan || plan.state !== 'pending_confirmation') fail('WORKPAPER.BACK_INVALID', 'Only an unconfirmed plan can return to element selection.');
-    await cancel(plan);
     await clearCurrentPointer();
     return refresh(context);
   }
@@ -631,8 +618,8 @@ function createFeatureWorker(ports) {
     return '';
   }
   async function generateWorkpaper(plan, context) {
-    if (!plan || !['completed', 'uncertain', 'pending_continuation'].includes(plan.state)) {
-      fail('WORKPAPER.GENERATE_INVALID', '只有已完成隐藏 Tab 打开并读回的计划才能生成控制底稿。');
+    if (!plan || plan.workpaper) {
+      fail('WORKPAPER.GENERATE_INVALID', '填写件模板已生成或没有当前计划；请先选择元素。');
     }
     const { b, s } = contextAuthority(context); sameAuthority(b, plan.binding); sameSafety(s, plan.safety);
     if (!PHASE2_TEMPLATE.directory.length || !PHASE2_TEMPLATE.headers.length || !PHASE2_TEMPLATE.controls.length) {
@@ -648,8 +635,7 @@ function createFeatureWorker(ports) {
     const runId = plan.runId || plan.planId;
     const built = await planner().invoke('build_phase2_template', {
       schemaVersion: 'omnia.workpaper-phase2-workbook/v1', systems,
-      directory: PHASE2_TEMPLATE.directory, controlHeaders: PHASE2_TEMPLATE.headers,
-      controlRows: PHASE2_TEMPLATE.controls, scope
+      directory: PHASE2_TEMPLATE.directory, scope
     }, { runId });
     if (!built || built.schemaVersion !== 'omnia.workpaper-phase2-template-result/v1'
       || !/^[0-9a-f]{64}$/u.test(built.sha256 || '') || !built.xlsxBase64) {
@@ -657,7 +643,7 @@ function createFeatureWorker(ports) {
     }
     const artifact = await store.call('commitStandaloneArtifact', {
       kind: 'result', contentBase64: built.xlsxBase64,
-      originalName: `workpaper-phase2-${plan.runId}.xlsx`,
+      originalName: `workpaper-phase2-${plan.runId || plan.planId}.xlsx`,
       mediaType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       engagementId: b.engagementId, surfaceId: 'workpaper-preparation.workbench', sourceRef: 'workpaper-phase2-template'
     });
@@ -666,7 +652,7 @@ function createFeatureWorker(ports) {
     }
     plan.workpaper = {
       artifactId: artifact.artifactId, sha256: built.sha256, sizeBytes: built.sizeBytes,
-      semanticDigest: built.semanticDigest, rowCount: built.controlRowCount, headers: built.sheetNames,
+      semanticDigest: built.semanticDigest, rowCount: built.replacementRowCount, headers: built.sheetNames,
       scopeDigest: digest(scope), generatedAt: plan.updatedAt, state: 'generated',
       systems
     };
@@ -767,6 +753,14 @@ function createFeatureWorker(ports) {
       plan.surfaceStateVersion += 1; await save(plan);
       return plan;
     }
+    if (!Array.isArray(plan.workpaper.policy.documents) || plan.workpaper.policy.documents.length === 0) {
+      // No indexable policy text (e.g. all scanned PDFs were skipped) is a
+      // warning, not a failure: every placeholder stays empty as missing_evidence.
+      plan.workpaper.resolution = { state: 'resolved', resolutions: [], resolvedAt: new Date().toISOString() };
+      plan.workpaper.state = 'resolved';
+      plan.surfaceStateVersion += 1; await save(plan);
+      return plan;
+    }
     const policyIndex = await planner().invoke('build_policy_index', {
       schemaVersion: 'omnia.workpaper-policy-index-input/v1', documents: plan.workpaper.policy.documents
     }, { runId });
@@ -845,50 +839,136 @@ function createFeatureWorker(ports) {
     }
     return output;
   }
+  // The whole write-back capsule chain, run on one explicit confirmation:
+  //   1. activate OE Tab (freeze → confirm → open hidden Tabs)
+  //   2. read back every Control of every selected GRA
+  //   3. intersect read-back Controls with resolved rows, then write back.
   async function confirmWriteback(plan, context) {
     if (!plan || !plan.workpaper || plan.workpaper.state !== 'resolved' || !plan.workpaper.resolution) {
       fail('WORKPAPER.WRITEBACK_INVALID', '请先上传填写件与制度资料并完成系统转化，再确认回传。');
     }
     const { b, s } = contextAuthority(context); sameAuthority(b, plan.binding); sameSafety(s, plan.safety);
-    // For each Control, apply the resolved placeholders to the TestOfDesign text
-    // and write the resulting documentProcedureResults back to Omnia.
-    plan.workpaper.writeback = { startedAt: new Date().toISOString(), outcomes: [] };
-    for (const control of plan.controls) {
-      const resolution = (plan.workpaper.resolution.resolutions || []).find((item) => item.controlNumber === control.controlNumber);
+    const progress = { startedAt: new Date().toISOString(), state: 'running', capsules: [] };
+    plan.workpaper.writeback = progress;
+    plan.surfaceStateVersion += 1; await save(plan);
+
+    // Capsule 1: activate OE Tab. Freeze the hidden-Tab plan first (reads each
+    // GRA's Control catalog and preflights the eligible Controls), then open
+    // the hidden Tabs. A batch whose Controls are all already open completes
+    // with zero mutation steps.
+    progress.capsules.push({ capsuleId: 'activate-oe', label: '激活 OE Tab', state: 'running', completed: 0, total: 0, detail: '正在读取并冻结' });
+    await save(plan);
+    try {
+      await freezeHiddenTabPlan(plan, context);
+      if (!plan.steps || !plan.steps.length) {
+        progress.capsules[0] = { capsuleId: 'activate-oe', label: '激活 OE Tab', state: 'passed', completed: 0, total: 0, detail: '无需要打开的隐藏 Tab' };
+      } else {
+        progress.capsules[0] = { capsuleId: 'activate-oe', label: '激活 OE Tab', state: 'running', completed: plan.counts.alreadyOpen, total: plan.counts.total, detail: `${plan.counts.alreadyOpen}/${plan.counts.total}` };
+        await save(plan);
+        await openHiddenTabs(plan, context);
+        const openFailed = plan.outcomes.filter((item) => item.state === 'failed').length;
+        const openUncertain = plan.outcomes.filter((item) => item.state === 'uncertain').length;
+        progress.capsules[0] = openUncertain ? { capsuleId: 'activate-oe', label: '激活 OE Tab', state: 'uncertain', completed: plan.counts.total, total: plan.counts.total, detail: `${plan.counts.total}/${plan.counts.total}` }
+          : openFailed ? { capsuleId: 'activate-oe', label: '激活 OE Tab', state: 'failed', completed: plan.counts.total, total: plan.counts.total, detail: `${plan.counts.total}/${plan.counts.total}` }
+            : { capsuleId: 'activate-oe', label: '激活 OE Tab', state: 'passed', completed: plan.counts.total, total: plan.counts.total, detail: `${plan.counts.total}/${plan.counts.total}` };
+      }
+    } catch (error) {
+      const summary = errorSummary(error);
+      progress.capsules[0] = { capsuleId: 'activate-oe', label: '激活 OE Tab', state: 'failed', completed: 0, total: 0, detail: summary.message };
+      progress.state = 'failed';
+      plan.workpaper.state = 'writeback_uncertain';
+      plan.surfaceStateVersion += 1; await save(plan);
+      return plan;
+    }
+    plan.surfaceStateVersion += 1; await save(plan);
+
+    // Capsule 2: read back every Control.
+    progress.capsules.push({ capsuleId: 'readback', label: '读回 Control', state: 'running', completed: 0, total: 0, detail: '正在读回' });
+    await save(plan);
+    try {
+      await readbackAllControls(plan, context);
+      progress.capsules[1] = { capsuleId: 'readback', label: '读回 Control', state: 'passed', completed: plan.readbackCount, total: plan.readbackCount, detail: `${plan.readbackCount}/${plan.readbackCount}` };
+    } catch (error) {
+      progress.capsules[1] = { capsuleId: 'readback', label: '读回 Control', state: 'failed', completed: 0, total: 0, detail: errorSummary(error).message };
+      progress.state = 'failed';
+      plan.workpaper.state = 'writeback_uncertain';
+      plan.surfaceStateVersion += 1; await save(plan);
+      return plan;
+    }
+    plan.surfaceStateVersion += 1; await save(plan);
+
+    // Capsule 3: intersect read-back Controls with resolved rows, then write.
+    const reconcile = await planner().invoke('reconcile_writeback_controls', {
+      schemaVersion: 'omnia.workpaper-writeback-reconcile-input/v1',
+      readbackControls: plan.readbackControls, resolutions: plan.workpaper.resolution.resolutions
+    }, { runId: plan.runId || plan.planId });
+    if (!reconcile || reconcile.schemaVersion !== 'omnia.workpaper-writeback-reconcile/v1' || !Array.isArray(reconcile.rows)) {
+      fail('WORKPAPER.RECONCILE_OUTPUT_INVALID', 'CPython returned an invalid write-back reconcile.');
+    }
+    const total = reconcile.rows.length;
+    progress.capsules.push({ capsuleId: 'writeback', label: '写回 Control', state: 'running', completed: 0, total, detail: `0/${total}` });
+    await save(plan);
+
+    const outcomes = [];
+    const field = PHASE2_FIELDS.find((item) => item.backendKey === 'gitcNonDetailedTestingProcedures[phaseType=TestOfDesign].documentProcedureResults');
+    if (!field || !field.writePath) fail('WORKPAPER.WRITEBACK_FIELD', 'TestOfDesign 字段没有可写的 Phase 2 合同。');
+    for (let index = 0; index < reconcile.rows.length; index += 1) {
+      const row = reconcile.rows[index];
+      if (!row.matched) {
+        outcomes.push({ controlId: row.controlId, state: 'skipped', reason: '无匹配的写回控制点' });
+        progress.capsules[2] = { capsuleId: 'writeback', label: '写回 Control', state: 'running', completed: index + 1, total, detail: `${index + 1}/${total}` };
+        plan.surfaceStateVersion += 1; await save(plan);
+        continue;
+      }
+      const control = plan.controls.find((item) => item.controlId === row.controlId);
+      if (!control) {
+        outcomes.push({ controlId: row.controlId, state: 'skipped', reason: '读回 Control 不在冻结清单中' });
+        progress.capsules[2] = { capsuleId: 'writeback', label: '写回 Control', state: 'running', completed: index + 1, total, detail: `${index + 1}/${total}` };
+        plan.surfaceStateVersion += 1; await save(plan);
+        continue;
+      }
+      const resolution = row.resolution;
       if (!resolution || !resolution.placeholders || !resolution.placeholders.length) {
-        plan.workpaper.writeback.outcomes.push({ controlId: control.controlId, state: 'noop', reason: '无占位符需写回' });
+        outcomes.push({ controlId: row.controlId, state: 'skipped', reason: '无占位符需写回' });
+        progress.capsules[2] = { capsuleId: 'writeback', label: '写回 Control', state: 'running', completed: index + 1, total, detail: `${index + 1}/${total}` };
+        plan.surfaceStateVersion += 1; await save(plan);
         continue;
       }
-      // Read the live Control to resolve the procedure id and current value.
       const snapshot = await invoke(OPERATIONS.snapshot, { connectorBinding: b, ...controlRequest(control, control) });
-      if (!snapshot || snapshot.controlId !== control.controlId) fail('WORKPAPER.SNAPSHOT_DRIFT', `Control ${control.controlId} 实时快照身份漂移。`);
-      const procedure = (snapshot.procedures || []).find((item) => item.phaseType === 'TestOfDesign');
-      const currentText = procedure ? procedure.documentProcedureResults : '';
-      const finalText = applyResolutions(currentText, resolution.placeholders);
-      if (finalText === currentText) {
-        plan.workpaper.writeback.outcomes.push({ controlId: control.controlId, state: 'noop', reason: '占位符已解析，无实际变更' });
-        continue;
+      if (!snapshot || snapshot.controlId !== control.controlId) {
+        outcomes.push({ controlId: row.controlId, state: 'uncertain', reason: '实时快照身份漂移' });
+      } else {
+        const procedure = (snapshot.procedures || []).find((item) => item.phaseType === 'TestOfDesign');
+        const currentText = procedure ? procedure.documentProcedureResults : '';
+        const finalText = applyResolutions(currentText, resolution.placeholders);
+        if (finalText === currentText) {
+          outcomes.push({ controlId: row.controlId, state: 'skipped', reason: '占位符已解析，无实际变更' });
+        } else {
+          const changes = [{ writePath: field.writePath, value: finalText, valueKind: 'editor',
+            concurrencyTab: field.concurrencyTab || 201, phaseType: 'TestOfDesign' }];
+          try {
+            const result = await invoke(OPERATIONS.writeback, {
+              connectorBinding: b, ...controlRequest(control, control),
+              command: { payload: { controlId: control.controlId, changes } }
+            });
+            const allConfirmed = Array.isArray(result.ledger) && result.ledger.every((entry) => entry.confirmed === true);
+            outcomes.push({ controlId: row.controlId, state: allConfirmed ? 'succeeded' : 'uncertain', ledger: result.ledger });
+          } catch (error) {
+            outcomes.push({ controlId: row.controlId, state: 'uncertain', code: errorSummary(error).code, message: errorSummary(error).message });
+          }
+        }
       }
-      const field = PHASE2_FIELDS.find((item) => item.backendKey === 'gitcNonDetailedTestingProcedures[phaseType=TestOfDesign].documentProcedureResults');
-      if (!field || !field.writePath) fail('WORKPAPER.WRITEBACK_FIELD', 'TestOfDesign 字段没有可写的 Phase 2 合同。');
-      const changes = [{ writePath: field.writePath, value: finalText, valueKind: 'editor',
-        concurrencyTab: field.concurrencyTab || 201, phaseType: 'TestOfDesign' }];
-      let outcome;
-      try {
-        const result = await invoke(OPERATIONS.writeback, {
-          connectorBinding: b, ...controlRequest(control, control),
-          command: { payload: { controlId: control.controlId, changes } }
-        });
-        const allConfirmed = Array.isArray(result.ledger) && result.ledger.every((entry) => entry.confirmed === true);
-        outcome = { controlId: control.controlId, state: allConfirmed ? 'succeeded' : 'uncertain', ledger: result.ledger };
-      } catch (error) {
-        outcome = { controlId: control.controlId, state: 'uncertain', code: errorSummary(error).code, message: errorSummary(error).message };
-      }
-      plan.workpaper.writeback.outcomes.push(outcome);
+      progress.capsules[2] = { capsuleId: 'writeback', label: '写回 Control', state: 'running', completed: index + 1, total, detail: `${index + 1}/${total}` };
       plan.surfaceStateVersion += 1; await save(plan);
     }
-    const uncertain = plan.workpaper.writeback.outcomes.filter((item) => item.state === 'uncertain').length;
-    plan.workpaper.state = uncertain ? 'writeback_uncertain' : 'writeback_complete';
+    const uncertainCount = outcomes.filter((item) => item.state === 'uncertain').length;
+    const succeededCount = outcomes.filter((item) => item.state === 'succeeded').length;
+    const skippedCount = outcomes.filter((item) => item.state === 'skipped').length;
+    progress.capsules[2] = { capsuleId: 'writeback', label: '写回 Control', state: uncertainCount ? 'uncertain' : 'passed', completed: total, total, detail: `${total}/${total}` };
+    progress.state = uncertainCount ? 'uncertain' : 'passed';
+    plan.workpaper.writeback = { ...progress, outcomes };
+    plan.workpaper.state = uncertainCount ? 'writeback_uncertain' : 'writeback_complete';
+    plan.workpaper.writebackCounts = { total, succeeded: succeededCount, skipped: skippedCount, uncertain: uncertainCount };
     plan.surfaceStateVersion += 1; await save(plan);
     return plan;
   }
@@ -1058,115 +1138,22 @@ function createFeatureWorker(ports) {
     }
     return save(plan);
   }
-  async function confirm(plan, context, expectedStateVersion) {
-    if (!plan || !['pending_confirmation','pending_continuation'].includes(plan.state)) {
-      fail('WORKPAPER.CONFIRMATION_STALE', 'Hidden-Tab confirmation is stale.');
-    }
-    const continuation = plan.state === 'pending_continuation';
-    if (!continuation && Number(plan.surfaceStateVersion) !== Number(expectedStateVersion)) {
-      fail('WORKPAPER.CONFIRMATION_STALE', 'Hidden-Tab confirmation is stale.');
-    }
-    const { b, s } = contextAuthority(context); sameAuthority(b, plan.binding); sameSafety(s, plan.safety);
-    if (!continuation && (!Number.isFinite(Date.parse(plan.expiresAt)) || Date.parse(plan.expiresAt) <= Date.now())) {
-      fail('WORKPAPER.CONFIRMATION_EXPIRED', 'Hidden-Tab confirmation expired.');
-    }
-    for (const step of plan.steps) {
-      const before = await currentPreflight(step, b, '', plan.runId);
-      const partialRecovery = continuation && plan.partialRecovery && plan.partialRecovery.stepId === step.stepId
-        && plan.partialRecovery.observedDigest === digest(observationState(before));
-      if (!before.openVerified && digest(observationState(before)) !== step.preflightDigest && !partialRecovery) fail('WORKPAPER.PREFLIGHT_DRIFT', `Control changed before confirmation: ${step.controlId}`);
-    }
-    if (!continuation) {
-      await store.call('approveReturnIntent', { confirmationId: plan.confirmationId, confirmationToken: plan.confirmationToken,
-        expectedStateVersion: Number(plan.confirmationStateVersion), connectorBinding: b, safetyLock: s });
-    }
-    plan.surfaceStateVersion = Number(expectedStateVersion) + 1; await save(plan);
-    return execute(plan, context);
-  }
-  async function reconcile(plan, context) {
-    if (!plan || plan.state !== 'uncertain' || !plan.uncertain) fail('WORKPAPER.RECONCILE_INVALID', 'No uncertain Control command is available.');
-    const { b, s } = contextAuthority(context); sameRecoveryAuthority(b, plan.binding); sameRecoverySafety(s, plan.safety);
-    const step = plan.steps.find((item) => item.stepId === plan.uncertain.stepId);
-    if (!step) fail('WORKPAPER.RECONCILE_INVALID', 'Uncertain Control is absent from the frozen plan.');
-    const openRun = await store.call('loadOpenRun', {});
-    const latest = openRun ? null : await store.call('loadLatestRun', {});
-    const run = openRun || (latest && latest.run ? latest.run : latest);
-    if (!run || text(run.run_id) !== plan.runId || !['uncertain','reconciling'].includes(text(run.state))) {
-      fail('WORKPAPER.RUN_DRIFT', 'Core Run is not in the matching uncertain/reconciling recovery state.');
-    }
-    const reconcilingRevision = text(run.state) === 'reconciling'
-      ? Number(run.state_revision)
-      : await store.call('transitionRun', { runId: plan.runId, expectedRevision: Number(run.state_revision),
-        toState: 'reconciling', eventType: 'workpaper.hidden_tab_reconcile_started' });
-    const commandId = plan.uncertain.commandId;
-    if (plan.uncertain.phase === 'projection') {
-      const observed = plan.uncertain.observed;
-      const classification = await classifyObservation(observed, selectedIdentity(step), step, plan.runId);
-      if (classification.outcome !== 'applied') {
-        await store.call('finishReturn', { runId: plan.runId, outcome: 'uncertain', error: 'Projection reconcile did not prove the hidden Tab.' });
-        return save(plan);
-      }
-      await project(plan, step, commandId, b, observed);
-    } else {
-      const request = await freezeReconcile(plan, step, commandId, b);
-      const observed = await invoke(OPERATIONS.reconcile, { ...request, receiptContext: { runId: plan.runId, commandId } });
-      const classification = await classifyObservation(observed, selectedIdentity(step), step, plan.runId);
-      if (!['applied','not_applied','partial_applied'].includes(classification.outcome)) {
-        await store.call('finishReturn', { runId: plan.runId, outcome: 'uncertain', error: 'Read-only reconcile remains inconclusive.' });
-        return save(plan);
-      }
-      if (classification.outcome === 'partial_applied') {
-        const evidence = await store.call('recordReturnEvidence', { runId: plan.runId, commandId, evidenceType: 'reconcile',
-          commandState: 'readback_verified', intentResolution: 'partial_effect', payload: observed,
-          receiptId: observed.__operationReceiptId, verified: true,
-          error: 'The first mutation stage applied; the remaining signed stage requires an exact continuation command.' });
-        await store.call('transitionRun', { runId: plan.runId, expectedRevision: Number(reconcilingRevision), toState: 'returning',
-          eventType: 'workpaper.hidden_tab_partial_effect_reconciled' });
-        plan.partialRecovery = { stepId: step.stepId, priorCommandId: commandId,
-          receiptId: observed.__operationReceiptId, evidenceId: evidence.evidenceId,
-          observedDigest: digest(observationState(classification)) };
-        await persistOutcome(plan, step, 'partial_recovered', 'reconciled_partial_effect', null, commandId);
-        delete plan.uncertain;
-        plan.state = 'pending_continuation';
-        return save(plan);
-      }
-      await store.call('recordReturnEvidence', { runId: plan.runId, commandId, evidenceType: 'reconcile',
-        commandState: classification.outcome === 'applied' ? 'readback_verified' : 'closed_not_applied', payload: observed,
-        receiptId: observed.__operationReceiptId, verified: classification.outcome === 'applied',
-        error: classification.outcome === 'applied' ? '' : 'Authoritative readback proved the PATCH was not applied.' });
-      if (classification.outcome !== 'applied') {
-        await persistOutcome(plan, step, 'failed', 'reconciled_not_applied', Object.assign(new Error('The hidden-Tab PATCH was not applied.'), { code: 'WORKPAPER.NOT_APPLIED' }), commandId);
-        await store.call('finishReturn', { runId: plan.runId, outcome: 'failed', error: 'WORKPAPER.NOT_APPLIED: The hidden-Tab PATCH was not applied.' });
-        plan.state = 'failed'; delete plan.uncertain; return save(plan);
-      }
-      await project(plan, step, commandId, b, observed);
-    }
-    const afterOpenRun = await store.call('loadOpenRun', {});
-    const afterLatest = afterOpenRun ? null : await store.call('loadLatestRun', {});
-    const afterRun = afterOpenRun || (afterLatest && afterLatest.run ? afterLatest.run : afterLatest);
-    await store.call('transitionRun', { runId: plan.runId, expectedRevision: Number(afterRun.state_revision), toState: 'returning', eventType: 'workpaper.hidden_tab_reconcile_resolved' });
-    await persistOutcome(plan, step, 'succeeded', 'reconciled_readback', null, commandId);
-    delete plan.uncertain; delete plan.partialRecovery; return execute(plan, context);
-  }
   async function handleAction(input) {
     const context = input.context || {};
     if (input.actionId === 'bootstrap-workpaper-directory' || input.actionId === 'refresh-workpaper-directory') {
       return { surfacePatch: await refresh(context) };
     }
-    if (input.actionId === 'prepare-hidden-tabs') {
-      const plan = await createPlan(context, input.payload && input.payload.targetIds, input.expectedStateVersion);
-      return { surfacePatch: planSurface(plan) };
-    }
-    const plan = await current();
-    if (input.actionId === 'restart-run') {
-      return { surfacePatch: await forceEnd(plan, context) };
-    }
-    if (input.actionId === 'back-to-upload') {
-      return { surfacePatch: await backToSelect(plan, context) };
-    }
-    if (input.actionId === 'generate-workpaper') {
+    if (input.actionId === 'select-elements') {
+      const plan = await selectElements(context, input.payload && input.payload.targetIds, input.expectedStateVersion);
+      // "选择元素并下一步": selecting immediately generates the pre-filled
+      // template and advances into the upload step. No separate generate action.
       const generated = await generateWorkpaper(plan, context);
       return { surfacePatch: workpaperSurface(generated) };
+    }
+    const plan = await current();
+    if (!plan) fail('WORKPAPER.PLAN_NOT_FOUND', 'Current workpaper plan was not found.');
+    if (input.actionId === 'restart-run') {
+      return { surfacePatch: await forceEnd(plan, context) };
     }
     if (input.actionId === 'confirm-writeback') {
       const written = await confirmWriteback(plan, context);
@@ -1180,16 +1167,7 @@ function createFeatureWorker(ports) {
       const filled = await applyReplacementFields(plan, context, input.payload && input.payload.artifact);
       return { surfacePatch: workpaperSurface(filled) };
     }
-    if (!plan) fail('WORKPAPER.PLAN_NOT_FOUND', 'Current hidden-Tab plan was not found.');
-    let result;
-    if (input.actionId === 'cancel-hidden-tab-plan') result = await cancel(plan);
-    else if (input.actionId === 'confirm-hidden-tabs') result = await confirm(plan, context, input.expectedStateVersion);
-    else if (input.actionId === 'reconcile-hidden-tabs') result = plan.state === 'pending_continuation'
-      ? await confirm(plan, context, input.expectedStateVersion)
-      : await reconcile(plan, context);
-    else fail('WORKPAPER.ACTION_UNKNOWN', 'Action is not implemented.');
-    result.surfaceStateVersion = Number(input.expectedStateVersion) + 1; await save(result);
-    return { surfacePatch: planSurface(result) };
+    fail('WORKPAPER.ACTION_UNKNOWN', 'Action is not implemented.');
   }
   async function health() {
     try {

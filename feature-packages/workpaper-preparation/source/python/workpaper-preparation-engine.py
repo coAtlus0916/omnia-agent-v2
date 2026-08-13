@@ -24,13 +24,15 @@ from policy_resolve import build_policy_index, extract_placeholders, retrieve_po
 
 
 PROTOCOL = "omnia.python-sidecar-rpc/v1"
-CAPABILITIES = ["select_hidden_tab_controls", "build_hidden_tab_plan", "classify_control_observation", "build_phase2_workbook", "parse_uploaded_workbook", "build_phase2_template", "apply_replacement_fields", "extract_policy_archive", "build_policy_index", "retrieve_policy_snippets", "extract_placeholders"]
+CAPABILITIES = ["select_hidden_tab_controls", "build_hidden_tab_plan", "classify_control_observation", "build_phase2_workbook", "parse_uploaded_workbook", "build_phase2_template", "apply_replacement_fields", "extract_policy_archive", "build_policy_index", "retrieve_policy_snippets", "extract_placeholders", "reconcile_writeback_controls"]
 CONTROL_SELECTION_INPUT_SCHEMA = "omnia.workpaper-control-selection-input/v1"
 CONTROL_SELECTION_OUTPUT_SCHEMA = "omnia.workpaper-control-selection/v1"
 INPUT_SCHEMA = "omnia.workpaper-hidden-tab-input/v1"
 OUTPUT_SCHEMA = "omnia.workpaper-hidden-tab-plan/v1"
 OBSERVATION_INPUT_SCHEMA = "omnia.workpaper-control-observation-input/v1"
 OBSERVATION_OUTPUT_SCHEMA = "omnia.workpaper-control-observation-classification/v1"
+RECONCILE_INPUT_SCHEMA = "omnia.workpaper-writeback-reconcile-input/v1"
+RECONCILE_OUTPUT_SCHEMA = "omnia.workpaper-writeback-reconcile/v1"
 MAX_FRAME_BYTES = 1024 * 1024
 MAX_CONTROLS = 500
 HIDDEN_TAB_CONTROL_CODES = frozenset({
@@ -109,6 +111,57 @@ def select_hidden_tab_controls(payload: Any) -> dict[str, Any]:
         raise PlannerError("WORKPAPER.CONTROL_IDENTITY_DUPLICATE", "Selected Control identity is duplicated.")
     selected.sort(key=lambda item: (item["controlCode"], item["controlId"], item["workItemId"]))
     return {"schemaVersion": CONTROL_SELECTION_OUTPUT_SCHEMA, "controls": selected}
+
+
+def reconcile_writeback_controls(payload: Any) -> dict[str, Any]:
+    """Compute the write-back intersection between read-back Controls and the
+    resolved template rows.
+
+    The template resolution keys controlNumber by its APP.xx prefix (the system
+    name is substituted in), while a read-back Control carries the raw Omnia
+    controlNumber. Match on the extracted APP.xx code only. Every read-back
+    Control is reported exactly once (skipped rows still count as a normal
+    completed write-back row).
+    """
+    if not isinstance(payload, dict) or payload.get("schemaVersion") != RECONCILE_INPUT_SCHEMA:
+        raise PlannerError("WORKPAPER.RECONCILE_INPUT_INVALID", "Write-back reconcile input schema is invalid.")
+    readback = payload.get("readbackControls")
+    resolutions = payload.get("resolutions")
+    if not isinstance(readback, list) or not isinstance(resolutions, list):
+        raise PlannerError("WORKPAPER.RECONCILE_INPUT_INVALID", "Write-back reconcile requires control and resolution lists.")
+    resolution_by_code: dict[str, list[dict[str, Any]]] = {}
+    for resolution in resolutions:
+        if not isinstance(resolution, dict):
+            raise PlannerError("WORKPAPER.RECONCILE_INPUT_INVALID", "Resolution row is not an object.")
+        code = hidden_tab_control_code(resolution.get("controlNumber"))
+        if not code:
+            continue
+        resolution_by_code.setdefault(code, []).append(resolution)
+    rows: list[dict[str, Any]] = []
+    seen_controls: set[tuple[str, str]] = set()
+    for control in readback:
+        if not isinstance(control, dict):
+            raise PlannerError("WORKPAPER.RECONCILE_INPUT_INVALID", "Read-back Control row is not an object.")
+        control_id = required_text(control.get("controlId"), "controlId", 100)
+        work_item_id = required_text(control.get("workItemId"), "workItemId", 100)
+        identity = (control_id, work_item_id)
+        if identity in seen_controls:
+            raise PlannerError("WORKPAPER.CONTROL_IDENTITY_DUPLICATE", "Read-back Control identity is duplicated.")
+        seen_controls.add(identity)
+        code = hidden_tab_control_code(control.get("controlNumber"))
+        matched = resolution_by_code.get(code, []) if code else []
+        if not matched:
+            rows.append({"controlId": control_id, "workItemId": work_item_id, "controlNumber": code or optional_text(control.get("controlNumber"), 200),
+                         "matched": False, "resolutionCount": 0})
+            continue
+        # A read-back Control matches a resolution on the same APP.xx code; the
+        # resolution list may hold one row per system, but a read-back Control
+        # is always a single live Omnia entity — take the first matching row.
+        rows.append({"controlId": control_id, "workItemId": work_item_id, "controlNumber": code,
+                     "matched": True, "resolutionCount": len(matched),
+                     "resolution": matched[0]})
+    return {"schemaVersion": RECONCILE_OUTPUT_SCHEMA, "rows": rows, "total": len(rows),
+            "matchedCount": sum(1 for row in rows if row["matched"])}
 
 
 def concurrency(value: Any, expected_tab: int, label: str) -> dict[str, Any] | None:
@@ -367,6 +420,8 @@ def serve() -> None:
                          if method == "retrieve_policy_snippets"
                          else extract_placeholders(message.get("payload"))
                          if method == "extract_placeholders"
+                         else reconcile_writeback_controls(message.get("payload"))
+                         if method == "reconcile_writeback_controls"
                          else build_hidden_tab_plan(message.get("payload")))
                 write_frame({"schemaVersion": PROTOCOL, "type": "result", "requestId": request_id, "ok": True, "value": value})
             except PlannerError as error:
@@ -447,6 +502,22 @@ def self_check() -> None:
     })
     if parsed["rowCount"] != 2 or parsed["headers"] != ["控制 ID", "控制名称", "记录程序结果"]:
         raise SystemExit("workpaper workbook parser self-check failed")
+    reconcile = reconcile_writeback_controls({
+        "schemaVersion": RECONCILE_INPUT_SCHEMA,
+        "readbackControls": [
+            {"controlId": "c-1", "workItemId": "cw-1", "controlNumber": "APP.01 Control"},
+            {"controlId": "c-2", "workItemId": "cw-2", "controlNumber": "APP.02 Control"},
+            {"controlId": "c-3", "workItemId": "cw-3", "controlNumber": "APP.03 Control"},
+            {"controlId": "c-5", "workItemId": "cw-5", "controlNumber": "APP.05 Control"},
+        ],
+        "resolutions": [
+            {"controlNumber": "APP.01 - 系统A", "placeholders": []},
+            {"controlNumber": "APP.02 - 系统A", "placeholders": []},
+        ],
+    })
+    if (reconcile["total"] != 4 or reconcile["matchedCount"] != 2
+            or [row["controlId"] for row in reconcile["rows"] if row["matched"]] != ["c-1", "c-2"]):
+        raise SystemExit("workpaper write-back reconcile self-check failed")
     print("workpaper planner self-check passed")
 
 

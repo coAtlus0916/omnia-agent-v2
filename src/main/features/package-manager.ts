@@ -1456,19 +1456,6 @@ export function liveReturnProgressPublishMode(method: string, input: unknown): L
 }
 
 /**
- * Workpaper hidden-Tab opening persists its authoritative plan after every
- * Control outcome. A savePlan whose payload is a live workpaper plan (in any
- * post-freeze state) is the trigger for a disposable open-progress projection.
- */
-export function liveWorkpaperOpenPlan(method: string, input: unknown): Record<string, unknown> | null {
-  if (method !== 'savePlan' || !input || typeof input !== 'object' || Array.isArray(input)) return null;
-  const plan = input as Record<string, unknown>;
-  if (String(plan.schemaVersion || '') !== 'omnia.workpaper-plan/v1') return null;
-  if (!Array.isArray(plan.outcomes) || typeof plan.counts !== 'object' || plan.counts === null || Array.isArray(plan.counts)) return null;
-  return plan;
-}
-
-/**
  * Any signed Feature may persist a generic validation-progress checkpoint in
  * its private plan. Core validates only the generic progress contract and
  * never interprets Feature-specific check IDs or business rules.
@@ -1624,69 +1611,6 @@ export function buildLiveReturnProgress(
 
 function utcNow(): string {
   return new Date().toISOString();
-}
-
-/**
- * Builds a disposable Workpaper open-Tab progress projection directly from the
- * durable plan payload the Worker persists after every Control outcome. Unlike
- * the Core receipt-ledger projection, the Workpaper plan itself carries the
- * exact succeeded/failed/uncertain counters, so no extra Store read is needed.
- * The shape mirrors the Worker's own planProgress() and is only published while
- * the owning mutation is still running (plan.state === 'executing').
- */
-function workpaperOpenProgressFromPlan(declared: DeclarativeProgress, plan: Record<string, unknown>): DeclarativeProgress | null {
-  const counts = plan.counts && typeof plan.counts === 'object' && !Array.isArray(plan.counts)
-    ? plan.counts as Record<string, unknown> : null;
-  if (!counts) return null;
-  const total = Number(counts.total || 0);
-  const toOpen = Number(counts.toOpen || 0);
-  const already = Number(counts.alreadyOpen || 0);
-  if (!Number.isSafeInteger(total) || !Number.isSafeInteger(toOpen) || !Number.isSafeInteger(already)
-    || total < 0 || toOpen < 0 || already < 0 || already + toOpen > total || total > 2_000) return null;
-  const outcomes = Array.isArray(plan.outcomes) ? plan.outcomes : [];
-  const succeeded = outcomes.filter((item) => item && (item as { state?: string }).state === 'succeeded').length;
-  const failed = outcomes.filter((item) => item && (item as { state?: string }).state === 'failed').length;
-  const uncertain = outcomes.filter((item) => item && (item as { state?: string }).state === 'uncertain').length;
-  if (succeeded + failed + uncertain > toOpen) return null;
-  const completed = Math.min(total, already + succeeded + failed + uncertain);
-  const planState = String(plan.state || '');
-  const progressState: DeclarativeProgress['state'] = planState === 'completed' ? 'passed'
-    : planState === 'failed' ? 'failed'
-      : planState === 'uncertain' ? 'uncertain'
-        : 'running';
-  const message = planState === 'completed' ? '所有 Control 均已由精确读回证明隐藏 Tab 可用。'
-    : planState === 'failed' ? '部分 Control 打开失败。'
-      : planState === 'uncertain' ? '存在结果不确定的命令；请先只读核验。'
-        : '按 Control 逐项执行并核验。';
-  const openedNowState: DeclarativeProgress['items'][number]['state'] = uncertain ? 'uncertain'
-    : failed ? 'failed' : succeeded === toOpen ? 'passed' : 'running';
-  const declaredItems = Array.isArray(declared.items) ? declared.items : [];
-  const makeItem = (index: number, fallback: { itemId: string; label: string; state: DeclarativeProgress['items'][number]['state']; detail: string; completed: number; total: number }) => {
-    const declaredItem = declaredItems[index];
-    const totalValue = fallback.total;
-    return {
-      itemId: fallback.itemId,
-      label: declaredItem && typeof declaredItem.label === 'string' ? declaredItem.label : fallback.label,
-      state: fallback.state,
-      detail: fallback.detail,
-      completed: fallback.completed,
-      total: totalValue,
-      percent: totalValue === 0 ? 0 : Math.floor(fallback.completed * 100 / totalValue)
-    };
-  };
-  const items = [
-    makeItem(0, { itemId: 'already-open', label: '原本已打开', state: already ? 'passed' : 'skipped', detail: `${already}/${already}`, completed: already, total: already }),
-    makeItem(1, { itemId: 'opened-now', label: '本次打开并核验', state: openedNowState, detail: `${succeeded}/${toOpen}`, completed: succeeded, total: toOpen })
-  ];
-  return {
-    ...declared,
-    completed,
-    total,
-    percent: total === 0 ? 0 : Math.floor(completed * 100 / total),
-    state: progressState,
-    message,
-    items
-  };
 }
 
 export function featureValidationProgressFromPlan(
@@ -3039,7 +2963,6 @@ export class FeaturePackageManager {
   private readonly runtimeSurfaces = new Map<string, DeclarativeFeatureSurface>();
   private readonly liveReturnProgressSnapshots = new Map<string, LiveReturnProgressSnapshot>();
   private readonly liveReturnProgressCoalescer = new LiveReturnProgressCoalescer();
-  private readonly liveWorkpaperOpenProgressSnapshots = new Map<string, { stateVersion: number; signature: string }>();
   private readonly liveFeatureValidationProgressSnapshots = new Map<string, { stateVersion: number; signature: string }>();
   private readonly operationRegistrations = new Map<string, { sessionGeneration: number; packageDigest: string }>();
   private readonly installedPackages = new Map<string, { identity: string; value: InstalledFeaturePackage }>();
@@ -4519,39 +4442,6 @@ export class FeaturePackageManager {
     );
   }
 
-  /**
-   * Publishes a disposable Workpaper open-Tab progress projection directly from
-   * the plan payload the Worker just persisted (the storeCall port passes it in
-   * whole, so no additional Store read or Worker invocation is required). The
-   * authoritative runtime Surface is never mutated; the final Worker result
-   * remains the source of truth.
-   */
-  private publishLiveWorkpaperOpenProgress(
-    featureId: string,
-    featureVersion: string,
-    plan: Record<string, unknown>
-  ): void {
-    const publish = this.runtime?.publishSurfaceProjection;
-    const head = this.head(featureId);
-    const surface = this.runtimeSurfaces.get(featureId);
-    if (!publish || !head || head.featureVersion !== featureVersion || !surface?.progress
-      || surface.workflow?.currentStepId !== 'open') return;
-    try {
-      const progress = workpaperOpenProgressFromPlan(surface.progress, plan);
-      if (!progress) return;
-      const signatureKey = `${featureId}\u0000${featureVersion}\u0000${String(plan.runId || plan.planId || '')}`;
-      const signature = JSON.stringify(progress);
-      const cached = this.liveWorkpaperOpenProgressSnapshots.get(signatureKey);
-      if (cached?.stateVersion === surface.stateVersion && cached.signature === signature) return;
-      const { manifest } = this.loadInstalled(head);
-      const projection = validateSurface({ ...surface, progress }, manifest);
-      this.liveWorkpaperOpenProgressSnapshots.set(signatureKey, { stateVersion: surface.stateVersion, signature });
-      publish(projection);
-    } catch {
-      // A disposable projection can never fail or alter the owning mutation.
-    }
-  }
-
   private publishLiveFeatureValidationProgress(
     featureId: string,
     featureVersion: string,
@@ -5408,10 +5298,6 @@ export class FeaturePackageManager {
               ? String((input as Record<string, unknown>).runId || '')
               : '';
             if (runId) this.scheduleLiveReturnProgress(context.featureId, context.featureVersion, runId, context, progressPublishMode);
-          }
-          if (context.allowMutation) {
-            const workpaperPlan = liveWorkpaperOpenPlan(method, input);
-            if (workpaperPlan) this.publishLiveWorkpaperOpenProgress(context.featureId, context.featureVersion, workpaperPlan);
           }
           const validationPlan = liveFeatureValidationPlan(method, input);
           if (validationPlan) this.publishLiveFeatureValidationProgress(context.featureId, context.featureVersion, validationPlan);

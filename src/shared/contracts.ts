@@ -115,6 +115,14 @@ export interface WorkspaceSafetySnapshot {
   updatedAt: string;
   validForCurrentConnection: boolean;
   invalidReason: string;
+  /**
+   * The single recovery action the Surface should offer for a safety lock that
+   * is no longer valid for the current connection. Projected by the Shell from
+   * the same state machine that computes `validForCurrentConnection`; the
+   * Renderer never re-derives this from raw identity fields. Optional at the
+   * persistence boundary (defaults to `none`); the Shell projection always sets it.
+   */
+  recovery?: 'none' | 'rebind' | 'reconfigure';
 }
 
 export type MessageRole = 'user' | 'assistant';

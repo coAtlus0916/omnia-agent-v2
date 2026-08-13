@@ -297,15 +297,16 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [reloadNotice, setReloadNotice] = useState('');
   const directory = snapshot.workspaceDirectory.observation;
-  // A safety lock is bound to one Pack. After a Pack switch the old lock is
-  // invalid for the current connection, so its Workspace selection must not seed
-  // the picker with stale IDs; the new Pack stays fail-closed until the user
-  // selects its Workspaces and saves a fresh binding.
-  const packChangedFor = (value: ShellSnapshot) => value.safety.enabled
-    && value.connection.connected
-    && value.safety.engagementId !== value.connection.engagementId;
-  const packChanged = packChangedFor(snapshot);
-  const draftForSnapshot = (value: ShellSnapshot) => packChangedFor(value)
+  // The Shell projects the single recovery action for a safety lock that is no
+  // longer valid for the current connection. The Renderer consumes that action
+  // verbatim instead of re-deriving it from raw identity fields, so the two can
+  // never drift.
+  const recovery = snapshot.safety.recovery || 'none';
+  // A `reconfigure` recovery means the lock is bound to another Pack. Its
+  // Workspace selection must not seed the picker with stale IDs; the current
+  // Pack stays fail-closed until the user selects its Workspaces and saves a
+  // fresh binding.
+  const draftForSnapshot = (value: ShellSnapshot) => (value.safety.recovery || 'none') === 'reconfigure'
     ? { selected: new Set<string>(), globalEnabled: false, globalSections: new Set<string>() }
     : {
         selected: new Set(value.safety.workspaceIds),
@@ -317,15 +318,7 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
     setSelected(draft.selected);
     setGlobalEnabled(draft.globalEnabled);
     setGlobalSections(draft.globalSections);
-  }, [snapshot.safety.stateVersion, snapshot.connection.engagementId]);
-  const rebindableGenerationChange = snapshot.safety.enabled
-    && snapshot.connection.connected
-    && snapshot.safety.connectorId === snapshot.connection.connectorId
-    && snapshot.safety.engagementId === snapshot.connection.engagementId
-    && snapshot.safety.authorityInstanceId === String(snapshot.connection.authorityInstanceId || '')
-    && snapshot.safety.tenantOrOrgId === String(snapshot.connection.tenantOrOrgId || '')
-    && snapshot.safety.packId === String(snapshot.connection.packId || '')
-    && snapshot.safety.sessionGeneration !== Number(snapshot.connection.sessionGeneration || 0);
+  }, [snapshot.safety.stateVersion, snapshot.safety.recovery]);
   const replaceDraftFromSnapshot = (latest: ShellSnapshot) => {
     const draft = draftForSnapshot(latest);
     setSelected(draft.selected);
@@ -425,7 +418,7 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
     {snapshot.safety.enabled && !snapshot.safety.validForCurrentConnection ? <div className="reason error" role="status">
       <strong>{snapshot.connection.connected ? '安全锁需要重新验证' : 'Remote Connector / Pack 未连接'}</strong>
       <p>{snapshot.safety.invalidReason}</p>
-      {rebindableGenerationChange ? <button type="button" className="primary" onClick={rebindExistingSafety}>
+      {recovery === 'rebind' ? <button type="button" className="primary" onClick={rebindExistingSafety}>
         重新验证并重绑安全锁
       </button> : null}
     </div> : null}
@@ -453,7 +446,7 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
       <div className="button-row no-border">
         <button type="button" onClick={reloadSafety} title="丢弃本窗口未保存的选择，并读取 Core 中最新的安全锁状态">重新读取安全锁</button>
         <button type="button" onClick={() => run('workspaces', () => window.omnia.refreshWorkspaceDirectory())} disabled={!snapshot.connection.connected}>刷新 Workspace</button>
-        {packChanged ? <button type="button" onClick={clearSafetyForCurrentPack} title="当前 Pack 已变化，旧安全锁对本 Pack 无效；清除旧选择并从当前 Pack 的 Workspace 重新勾选">重新配置安全锁</button> : null}
+        {recovery === 'reconfigure' ? <button type="button" onClick={clearSafetyForCurrentPack} title="当前 Pack 已变化，旧安全锁对本 Pack 无效；清除旧选择并从当前 Pack 的 Workspace 重新勾选">重新配置安全锁</button> : null}
       </div>
     </div>
     {!directory ? <p className="reason">{snapshot.workspaceDirectory.reason}</p> : <div className="safety-picker">
@@ -486,8 +479,8 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
       </aside>
     </div>}
     {reloadNotice ? <p className="reason">{reloadNotice}</p> : null}
-    <div className="safety-footer"><div><strong>{selected.size}</strong> 个显式 Workspace{packChanged ? ' · 已切换 Pack，旧锁对本 Pack 无效' : snapshot.safety.enabled ? ' · 当前安全锁已启用' : ''}</div><div className="button-row no-border">
-      <button type="button" className="primary" disabled={!selected.size || !directory || (globalEnabled && (!globalSections.size || !globalMembershipCount))} onClick={() => save(true)}>{packChanged ? '保存并启用新安全锁' : snapshot.safety.enabled ? '保存安全锁' : '保存并启用'}</button>
+    <div className="safety-footer"><div><strong>{selected.size}</strong> 个显式 Workspace{recovery === 'reconfigure' ? ' · 已切换 Pack，旧锁对本 Pack 无效' : snapshot.safety.enabled ? ' · 当前安全锁已启用' : ''}</div><div className="button-row no-border">
+      <button type="button" className="primary" disabled={!selected.size || !directory || (globalEnabled && (!globalSections.size || !globalMembershipCount))} onClick={() => save(true)}>{recovery === 'reconfigure' ? '保存并启用新安全锁' : snapshot.safety.enabled ? '保存安全锁' : '保存并启用'}</button>
       {snapshot.safety.enabled ? <button type="button" onClick={() => save(false)}>关闭安全锁</button> : null}</div></div>
     {snapshot.safety.invalidReason ? <p className="reason error">{snapshot.safety.invalidReason}</p> : null}
   </section>;

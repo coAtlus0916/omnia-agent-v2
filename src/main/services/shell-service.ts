@@ -289,20 +289,22 @@ export class ShellService {
       : [];
     const projected = safety;
     if (!safety.enabled) {
-      return { ...projected, validForCurrentConnection: true, invalidReason: '' };
+      return { ...projected, validForCurrentConnection: true, invalidReason: '', recovery: 'none' };
     }
     if (!this.connection.connected) {
       return {
         ...projected,
         validForCurrentConnection: false,
-        invalidReason: `Remote Connector 或 Pack 当前未连接${this.connection.message ? `：${this.connection.message}` : ''}。安全锁已保留，恢复连接前将继续失败关闭。`
+        invalidReason: `Remote Connector 或 Pack 当前未连接${this.connection.message ? `：${this.connection.message}` : ''}。安全锁已保留，恢复连接前将继续失败关闭。`,
+        recovery: 'none'
       };
     }
     if (safety.engagementId !== this.connection.engagementId) {
       return {
         ...projected,
         validForCurrentConnection: false,
-        invalidReason: '安全锁绑定的 Pack 与当前已连接 Pack 不一致，请切回原 Pack 或重新配置安全锁。'
+        invalidReason: '安全锁绑定的 Pack 与当前已连接 Pack 不一致，请切回原 Pack 或重新配置安全锁。',
+        recovery: 'reconfigure'
       };
     }
     const sameAuthority = safety.connectorId === this.connection.connectorId
@@ -313,14 +315,16 @@ export class ShellService {
       return {
         ...projected,
         validForCurrentConnection: false,
-        invalidReason: 'Remote Connector 已在线且仍为同一 Pack，但连接 generation 已变化。安全锁已保留；请用当前实时 Workspace 目录重新验证并重绑，完成前删除继续失败关闭。'
+        invalidReason: 'Remote Connector 已在线且仍为同一 Pack，但连接 generation 已变化。安全锁已保留；请用当前实时 Workspace 目录重新验证并重绑，完成前删除继续失败关闭。',
+        recovery: 'rebind'
       };
     }
     if (!sameAuthority) {
       return {
         ...projected,
         validForCurrentConnection: false,
-        invalidReason: '安全锁绑定的 Connector 或权威 Pack 身份与当前已连接会话不一致；不能直接重绑，请核对当前 Pack 后重新配置。'
+        invalidReason: '安全锁绑定的 Connector 或权威 Pack 身份与当前已连接会话不一致；不能直接重绑，请核对当前 Pack 后重新配置。',
+        recovery: 'reconfigure'
       };
     }
     if (!current) {
@@ -331,7 +335,8 @@ export class ShellService {
         validForCurrentConnection: false,
         invalidReason: cached
           ? `当前 Workspace 实时复核暂不可用${reason ? `：${reason}` : ''}。列表为上次成功缓存；安全锁仍保留，但删除会在自动重读成功前失败关闭。`
-          : `当前没有可核验的实时 Workspace 目录${reason ? `：${reason}` : ''}。`
+          : `当前没有可核验的实时 Workspace 目录${reason ? `：${reason}` : ''}。`,
+        recovery: 'none'
       };
     }
     const availableIds = new Set(current.workspaces.map((workspace) => workspace.id));
@@ -340,7 +345,8 @@ export class ShellService {
       return {
         ...projected,
         validForCurrentConnection: false,
-        invalidReason: '安全锁中的 Workspace 已不在当前权威目录内，请重新配置。'
+        invalidReason: '安全锁中的 Workspace 已不在当前权威目录内，请重新配置。',
+        recovery: 'reconfigure'
       };
     }
     const availableSectionIds = new Set(current.sections.map((section) => section.id));
@@ -349,7 +355,8 @@ export class ShellService {
       return {
         ...projected,
         validForCurrentConnection: false,
-        invalidReason: '全局安全锁中的所在部分已不属于当前权威目录，请重新配置。'
+        invalidReason: '全局安全锁中的所在部分已不属于当前权威目录，请重新配置。',
+        recovery: 'reconfigure'
       };
     }
     if (safety.globalEnabled && (currentGlobalWorkspaceIds.length !== safety.globalWorkspaceIds.length
@@ -357,10 +364,11 @@ export class ShellService {
       return {
         ...projected,
         validForCurrentConnection: false,
-        invalidReason: '全局安全锁所在部分的 Workspace 成员已经变化，请重新保存后再执行删除。'
+        invalidReason: '全局安全锁所在部分的 Workspace 成员已经变化，请重新保存后再执行删除。',
+        recovery: 'reconfigure'
       };
     }
-    return { ...projected, validForCurrentConnection: true, invalidReason: '' };
+    return { ...projected, validForCurrentConnection: true, invalidReason: '', recovery: 'none' };
   }
 
   snapshot(): ShellSnapshot {

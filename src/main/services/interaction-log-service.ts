@@ -12,7 +12,7 @@ import type {
 } from '../../shared/interaction-log-contracts.js';
 
 const MAX_ROWS = 20_000;
-const RETENTION_DAYS = 14;
+const RETENTION_DAYS = 1;
 const MAX_DETAILS_BYTES = 2_048;
 const SECRET_KEY = /(api.?key|token|cookie|authorization|secret|password|credential|ciphertext|poll.?secret|pairing.?code|body|content|bytes|payload|request|response|path|filename)/iu;
 const SAFE_DETAIL_KEYS = new Set([

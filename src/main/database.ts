@@ -1116,6 +1116,31 @@ export class CoreDatabase {
         DROP TABLE feature_issues;
         ALTER TABLE feature_issues_v27 RENAME TO feature_issues;
         CREATE INDEX feature_issues_run_state ON feature_issues(run_id,state,created_at);
+      `],
+      [28, `
+        ALTER TABLE feature_mutation_reservations ADD COLUMN absence_receipt_id TEXT NOT NULL DEFAULT '';
+        UPDATE feature_mutation_reservations
+        SET lifecycle='released',
+            absence_receipt_id='',
+            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE lifecycle='active'
+          AND EXISTS(
+            SELECT 1
+            FROM feature_commands command
+            JOIN feature_runs run ON run.run_id=command.run_id
+            WHERE command.command_id=feature_mutation_reservations.owner_command_id
+              AND command.run_id=feature_mutation_reservations.owner_run_id
+              AND command.intent_id=feature_mutation_reservations.owner_intent_id
+              AND run.state IN ('failed','cancelled','not_evaluable')
+              AND command.state IN ('prepared','failed','closed_not_applied')
+              AND command.submitted_at=''
+              AND command.commit_point_at=''
+              AND command.connector_request_id=''
+              AND NOT EXISTS(
+                SELECT 1 FROM connector_delivery_requests delivery
+                WHERE delivery.command_id=command.command_id AND delivery.purpose='mutation'
+              )
+          );
       `]
     ];
     for (const [version, sql] of migrations) {

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { CoreDatabase } from '../src/main/database.js';
+import { FeaturePackageManager } from '../src/main/features/package-manager.js';
 import { FeatureRuntimeStore } from '../src/main/features/feature-runtime-store.js';
 import { canonicalJson } from '../src/main/features/official-package.js';
 import { resolveProductPaths } from '../src/main/paths.js';
@@ -61,6 +62,7 @@ function addReceiptBackedReadback(database: CoreDatabase, input: {
 test('Create GRA command and projection require the frozen semantic content identity', () => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'omnia-create-gra-identity-'));
   const paths = resolveProductPaths(temporary); const database = new CoreDatabase(paths.database, cipher);
+  new FeaturePackageManager(database.db, paths);
   const store = new FeatureRuntimeStore(database.db, paths);
   const context = { featureId: 'omnia.create-associate', featureVersion: '0.2.101', allowMutation: true };
   const runId = '11111111-1111-4111-8111-111111111111'; const workspaceId = '22222222-2222-4222-8222-222222222222';
@@ -72,6 +74,10 @@ test('Create GRA command and projection require the frozen semantic content iden
   const graTargetIdentity = 'target-gra-row-1'; const graEvidenceOperation = 'omnia.create-associate.gra.reconcile.v1';
   const contentIdentity = { inkContentId: '66176468', typeId: '3' };
   try {
+    database.db.prepare(`INSERT INTO feature_registry(feature_id,feature_version,lifecycle,package_digest,publisher_key_id,health,activated_at) VALUES('omnia.create-associate',?,'active',?,'test-key','healthy',?)`)
+      .run(context.featureVersion,`sha256:${'1'.repeat(64)}`,now);
+    database.db.prepare(`INSERT INTO feature_activation_heads(feature_id,feature_version,activation_generation,runtime_enabled,runtime_reason,package_path,package_digest,updated_at) VALUES('omnia.create-associate',?,1,1,'','test-package',?,?)`)
+      .run(context.featureVersion,`sha256:${'1'.repeat(64)}`,now);
     database.db.prepare(`UPDATE workspace_safety SET enabled=1,engagement_id=?,workspace_ids_json=?,state_version=2 WHERE singleton=1`).run(engagementId, JSON.stringify([workspaceId]));
     database.db.prepare(`INSERT INTO feature_runs(run_id,trace_id,feature_id,feature_version,engagement_id,state,state_revision,source_artifact_id,template_version_id,output_artifact_id,plan_digest,last_error,created_at,updated_at) VALUES(?,?,'omnia.create-associate','0.2.101',?,'returning',3,'','','',?,'',?,?)`)
       .run(runId, '66666666-6666-4666-8666-666666666666', engagementId, planDigest, now, now);

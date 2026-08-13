@@ -11,7 +11,7 @@ const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 const worker = require(path.join(repository, 'feature-packages/create-associate/source/middle/worker.cjs')) as {
   deriveGraName(elementId: string): string;
   parseUserWorkbook(bytes: Buffer, artifactId: string, governance: Record<string, unknown>): any;
-  validationPresentation(parsed: Record<string, unknown>, live?: Record<string, unknown>): { progress: { items: Array<{ itemId: string; state: string }> } };
+  validationPresentation(parsed: Record<string, unknown>, live?: Record<string, unknown>): { progress: { items: Array<{ itemId: string; state: string }> }; issues: Array<{ severity: string }> };
   recomputeLocalIssues(parsed: Record<string, unknown>): any[];
   reviewPresentation(parsed: Record<string, unknown>): any;
   reviewBlocked(parsed: Record<string, unknown>, live?: Record<string, unknown>): boolean;
@@ -115,6 +115,16 @@ test('canonical validation exposes exactly 11 checks and never treats unexecuted
   assert.equal(byId.relationship_targets, 'pending');
   assert.equal(byId.workspace_live, 'pending');
   assert.equal(byId.factors_considered_ai_review, 'skipped');
+});
+
+test('validation warnings stay summarized in check cards and are not duplicated as issue details', () => {
+  const parsed = parsedWith({ fieldKey: 'DB:2.relationship-target-live.external', issueType: 'contract_mismatch', state: 'waived', message: 'cross workspace warning' });
+  const live = { ...livePassed, relationship_targets: { state: 'warning', reason: '1 个跨工作区关系，仅提醒。' } };
+  const warningResult = worker.validationPresentation(parsed, live);
+  assert.equal(warningResult.progress.items.find((item) => item.itemId === 'relationship_targets')?.state, 'warning');
+  assert.deepEqual(warningResult.issues, []);
+  const blockingResult = worker.validationPresentation(parsedWith({ fieldKey: 'DB:2.identity', issueType: 'conflict', state: 'blocking', message: 'blocked' }), livePassed);
+  assert.deepEqual(blockingResult.issues.map((issue) => issue.severity), ['error']);
 });
 
 test('the real V3 copy has no user isDataAvailable contract and emits the signed internal false default', () => {

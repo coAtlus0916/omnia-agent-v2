@@ -117,6 +117,7 @@ export const FEATURE_RUNTIME_STORE_PORT_POLICIES: Readonly<Record<string, Featur
   prepareReturnIntent: { permission: 'local_write', owner: 'current_run' },
   approveReturnIntent: { permission: 'omnia_mutation', owner: 'feature_context' },
   prepareReturnCommand: { permission: 'omnia_mutation', owner: 'current_run' },
+  bindMutationReservationEvidence: { permission: 'omnia_mutation', owner: 'current_command' },
   prepareDeletionCommand: { permission: 'omnia_mutation', owner: 'current_run' },
   freezeReturnEvidenceSpec: { permission: 'local_write', owner: 'current_command' },
   recordReturnEvidence: { permission: 'local_write', owner: 'current_command' },
@@ -707,6 +708,7 @@ export class FeatureRuntimeStore {
     if (method === 'prepareReturnIntent') return this.prepareReturnIntent(input, context);
     if (method === 'approveReturnIntent') return this.approveReturnIntent(input, context);
     if (method === 'prepareReturnCommand') return this.prepareReturnCommand(input, context);
+    if (method === 'bindMutationReservationEvidence') return this.bindMutationReservationEvidence(input, context);
     if (method === 'prepareDeletionCommand') return this.prepareDeletionCommand(input, context);
     if (method === 'freezeReturnEvidenceSpec') return this.freezeReturnEvidenceSpec(input, context);
     if (method === 'recordReturnEvidence') return this.recordReturnEvidence(input, context);
@@ -2771,6 +2773,7 @@ export class FeatureRuntimeStore {
     };
     const requestedState = String(change.toState || '');
     const requestedEventType = String(change.eventType || 'run.transition');
+    const forceClose = requestedEventType === 'return.force_cancelled' || requestedEventType === 'run.fresh_start_force_closed';
     const completedReconcile = row.state === 'reconciling'
       && ['return.reconcile_resolved','return.reconcile_not_applied'].includes(requestedEventType);
     const remainingUncertain = completedReconcile
@@ -2787,6 +2790,29 @@ export class FeatureRuntimeStore {
     const occurredAt = now();
     this.core.exec('BEGIN IMMEDIATE;');
     try {
+      let releasedReservations=0;
+      if(forceClose){
+        const unsafe=(this.core.prepare(`
+          SELECT COUNT(*) AS count FROM feature_commands c
+          WHERE c.run_id=? AND (
+            c.state='uncertain'
+            OR (c.state IN ('submitted','committed','verifying') AND c.completed_at='')
+            OR EXISTS(SELECT 1 FROM connector_delivery_requests delivery
+              WHERE delivery.command_id=c.command_id AND delivery.purpose='mutation'
+                AND delivery.state NOT IN ('effect_resolved') AND delivery.abandoned_at='')
+          )
+        `).get(runId) as {count:number}).count;
+        if(unsafe) throw new Error('Run force-close requires every dispatched mutation to have a conclusive read-only outcome.');
+        releasedReservations=Number(this.core.prepare(`
+          UPDATE feature_mutation_reservations SET lifecycle='released',updated_at=?
+          WHERE owner_run_id=? AND lifecycle='active'
+            AND EXISTS(SELECT 1 FROM feature_commands c WHERE c.command_id=owner_command_id
+              AND c.run_id=? AND c.state IN ('prepared','failed','closed_not_applied')
+              AND c.submitted_at='' AND c.commit_point_at='' AND c.connector_request_id=''
+              AND NOT EXISTS(SELECT 1 FROM connector_delivery_requests delivery
+                WHERE delivery.command_id=c.command_id AND delivery.purpose='mutation'))
+        `).run(occurredAt,runId,runId).changes);
+      }
       const updated = this.core.prepare(`
         UPDATE feature_runs SET state=?, state_revision=?, last_error=?, updated_at=?
         WHERE run_id=? AND feature_id=? AND state_revision=?
@@ -2798,7 +2824,7 @@ export class FeatureRuntimeStore {
         VALUES(?, ?, ?, ?, ?, ?, ?, ?)
       `).run(randomUUID(), runId, nextRevision, row.state, toState,
         completedReconcile && remainingUncertain > 0 ? 'return.reconcile_partial' : requestedEventType,
-        JSON.stringify(remainingUncertain > 0 ? {...object(change.details || {},'Run transition details'),remainingUncertain} : change.details || {}), occurredAt);
+        JSON.stringify({...(remainingUncertain > 0 ? {...object(change.details || {},'Run transition details'),remainingUncertain} : object(change.details || {},'Run transition details')),...(forceClose?{releasedCreateReservations:releasedReservations}:{})}), occurredAt);
       this.core.exec('COMMIT;');
       return nextRevision;
     } catch (error) {
@@ -3200,6 +3226,10 @@ export class FeatureRuntimeStore {
         const target = object(raw, 'Return intent target');
         if (!['object', 'relation', 'field', 'risk_control', 'documentation', 'evaluation'].includes(String(target.kind))
           || !String(target.key || '')) throw new Error('Return intent target identity is invalid.');
+        if (String(target.kind) === 'object' && String(target.objectType) === 'GRA'
+          && !['create', 'reuse'].includes(String(target.disposition || ''))) {
+          throw new Error('GRA Return intent disposition must be exactly create or reuse.');
+        }
         if (target.workspace !== undefined && !allowedWorkspaceIds.includes(String(target.workspace))) {
           throw new Error('Return intent target Workspace is outside the exact durable safety scope.');
         }
@@ -3576,11 +3606,11 @@ export class FeatureRuntimeStore {
           preEffectPrepared.command_id,runId,intent.intent_id);
         if (closed.changes !== 1) throw new Error('The pre-effect prepared command changed before it could be safely superseded.');
         if (String(intended.kind)==='object' && String(intended.disposition)==='create') {
-          const reservation = this.core.prepare(`
-            UPDATE feature_mutation_reservations SET owner_command_id=?,updated_at=?
-            WHERE owner_run_id=? AND owner_intent_id=? AND owner_command_id=? AND lifecycle='active'
+          const reservation=this.core.prepare(`
+          UPDATE feature_mutation_reservations SET owner_command_id=?,absence_receipt_id='',updated_at=?
+          WHERE owner_run_id=? AND owner_intent_id=? AND owner_command_id=? AND lifecycle='active'
           `).run(replacementCommandId,replacementCreatedAt,runId,intent.intent_id,preEffectPrepared.command_id);
-          if (reservation.changes !== 1) throw new Error('The prepared create command no longer owns its exact active mutation reservation.');
+          if(reservation.changes!==1)throw new Error('The prepared create command no longer owns its exact active mutation reservation.');
         }
         this.core.prepare(`INSERT INTO feature_commands(command_id, run_id, intent_id, operation_id, idempotency_key, plan_digest, request_digest, evidence_operation_ids_json, evidence_target_identity_key, evidence_request_digest, state, commit_point_at, submitted_at, completed_at, last_error, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'prepared', '', '', '', '', ?)`)
           .run(replacementCommandId,runId,intent.intent_id,String(request.operationId||''),replacementIdempotencyKey,
@@ -3598,15 +3628,89 @@ export class FeatureRuntimeStore {
       if(claimedIntent.changes!==1) throw new Error('Return intent was already claimed by another command.');
       if(String(intended.kind)==='object'&&String(intended.disposition)==='create'){
         const leaseExpiresAt=new Date(Date.parse(createdAt)+15*60_000).toISOString();
-        const reservation=this.core.prepare(`INSERT INTO feature_mutation_reservations(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,logical_identity_key,owner_run_id,owner_intent_id,owner_command_id,lifecycle,acquired_at,lease_expires_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,'active',?,?,?) ON CONFLICT(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,logical_identity_key) DO UPDATE SET owner_run_id=excluded.owner_run_id,owner_intent_id=excluded.owner_intent_id,owner_command_id=excluded.owner_command_id,lifecycle='active',acquired_at=excluded.acquired_at,lease_expires_at=excluded.lease_expires_at,updated_at=excluded.updated_at WHERE feature_mutation_reservations.lifecycle='released' OR (feature_mutation_reservations.lifecycle='active' AND feature_mutation_reservations.lease_expires_at<excluded.acquired_at AND EXISTS(SELECT 1 FROM feature_commands prior WHERE prior.command_id=feature_mutation_reservations.owner_command_id AND ((prior.state='prepared' AND prior.submitted_at='' AND prior.commit_point_at='') OR (prior.state='failed' AND prior.last_error='CONNECTOR_NEXT.ADMISSION_CLOSED' AND prior.commit_point_at='' AND prior.completed_at<>'' AND EXISTS(SELECT 1 FROM connector_delivery_requests delivery WHERE delivery.command_id=prior.command_id AND delivery.request_id=prior.connector_request_id AND delivery.purpose='mutation' AND delivery.state='prepared' AND delivery.wire_result_digest='' AND delivery.execution_generation='' AND delivery.abandoned_at='')))))`).run(
+        const reservation=this.core.prepare(`INSERT INTO feature_mutation_reservations(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,logical_identity_key,owner_run_id,owner_intent_id,owner_command_id,lifecycle,acquired_at,lease_expires_at,updated_at,absence_receipt_id) VALUES(?,?,?,?,?,?,?,?,?,'active',?,?,?,'') ON CONFLICT(authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,logical_identity_key) DO UPDATE SET owner_run_id=excluded.owner_run_id,owner_intent_id=excluded.owner_intent_id,owner_command_id=excluded.owner_command_id,lifecycle='active',acquired_at=excluded.acquired_at,lease_expires_at=excluded.lease_expires_at,updated_at=excluded.updated_at,absence_receipt_id='' WHERE feature_mutation_reservations.lifecycle IN ('completed','released') OR (feature_mutation_reservations.lifecycle='active' AND feature_mutation_reservations.lease_expires_at<excluded.acquired_at AND EXISTS(SELECT 1 FROM feature_commands prior WHERE prior.command_id=feature_mutation_reservations.owner_command_id AND prior.state='prepared' AND prior.submitted_at='' AND prior.commit_point_at='' AND prior.connector_request_id='' AND NOT EXISTS(SELECT 1 FROM connector_delivery_requests delivery WHERE delivery.command_id=prior.command_id AND delivery.purpose='mutation')))`).run(
           String(binding.authorityInstanceId||''),String(binding.tenantOrOrgId||''),String(binding.packId||''),String(binding.engagementId||''),String(intended.workspace||''),intendedTargetIdentityKey,runId,intent.intent_id,commandId,createdAt,leaseExpiresAt,createdAt);
-        if(reservation.changes!==1) throw new Error('Another Run owns the durable mutation reservation for this exact authority and logical identity.');
+        if(reservation.changes!==1) throw new Error('Another Run owns an active create mutation for this exact authority and logical identity.');
       }
       this.core.prepare(`INSERT INTO feature_commands(command_id, run_id, intent_id, operation_id, idempotency_key, plan_digest, request_digest, evidence_operation_ids_json, evidence_target_identity_key, evidence_request_digest, state, commit_point_at, submitted_at, completed_at, last_error, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'prepared', '', '', '', '', ?)`)
         .run(commandId, runId, intent.intent_id, String(request.operationId || ''), idempotencyKey, planDigest, requestDigest, canonical(evidenceOperationIds), evidenceTargetIdentityKey, createdAt);
       this.core.exec('COMMIT;');
     } catch (error) { this.core.exec('ROLLBACK;'); throw error; }
     return { commandId, intentId: intent.intent_id, idempotencyKey, requestDigest };
+  }
+
+  private bindMutationReservationEvidence(input: unknown, context: FeatureWorkerPortContext): Record<string, unknown> {
+    if (!context.allowMutation) throw new Error('Mutation reservation evidence requires an authorized mutation action.');
+    const request=object(input,'Mutation reservation evidence binding');
+    const runId=String(request.runId||''),commandId=String(request.commandId||''),operationId=String(request.operationId||'');
+    const receiptId=String(request.receiptId||'');
+    const row=this.core.prepare(`
+      SELECT c.state,c.intent_id,c.operation_id,c.evidence_operation_ids_json,c.evidence_target_identity_key,
+        c.submitted_at,c.commit_point_at,c.connector_request_id,i.intended_revision_json,e.payload_json,e.receipt_id,
+        receipt.operation_id AS receipt_operation_id,receipt.target_identity_key AS receipt_target_identity_key,
+        receipt.response_json AS receipt_response_json,receipt.request_digest AS receipt_request_digest,
+        receipt.authority_instance_id AS receipt_authority_instance_id,
+        receipt.tenant_or_org_id AS receipt_tenant_or_org_id,receipt.pack_id AS receipt_pack_id,
+        receipt.engagement_id AS receipt_engagement_id,
+        f.authority_instance_id,f.tenant_or_org_id,f.pack_id,f.engagement_id
+      FROM feature_commands c
+      JOIN managed_content_intents i ON i.intent_id=c.intent_id AND i.run_id=c.run_id AND i.plan_digest=c.plan_digest
+      JOIN feature_runs r ON r.run_id=c.run_id
+      JOIN feature_confirmations f ON f.run_id=c.run_id AND f.plan_digest=c.plan_digest AND f.decision='approved'
+      JOIN feature_command_evidence e ON e.command_id=c.command_id AND e.run_id=c.run_id
+        AND e.evidence_type='preflight' AND e.verified=1
+      JOIN feature_operation_receipts receipt ON receipt.receipt_id=e.receipt_id
+        AND receipt.command_id=c.command_id AND receipt.run_id=c.run_id
+      WHERE c.command_id=? AND c.run_id=? AND r.feature_id=? AND r.feature_version=? AND r.state='returning'
+        AND e.receipt_id=?
+      ORDER BY f.created_at DESC LIMIT 1
+    `).get(commandId,runId,context.featureId,context.featureVersion,receiptId) as Record<string,any>|undefined;
+    const intended=row?JSON.parse(String(row.intended_revision_json)) as Record<string,unknown>:{};
+    const observed=row?JSON.parse(String(row.payload_json)) as Record<string,unknown>:{};
+    const receiptObserved=row?JSON.parse(String(row.receipt_response_json)) as Record<string,unknown>:{};
+    const evidenceRequest=object(request.evidenceRequest,'Create absence evidence request');
+    const binding=returnAuthorityBinding(evidenceRequest.connectorBinding,'Create absence evidence authority');
+    const target=object(evidenceRequest.target,'Create absence preflight target');
+    const query=object(evidenceRequest.query,'Create absence preflight query');
+    if(!row||row.state!=='prepared'||row.submitted_at||row.commit_point_at||row.connector_request_id
+      ||String(intended.kind||'')!=='object'||String(intended.disposition||'')!=='create'
+      ||!(JSON.parse(String(row.evidence_operation_ids_json)) as string[]).includes(operationId)
+      ||!receiptId||String(row.receipt_id||'')!==receiptId||receiptId!==String(observed.__operationReceiptId||'')
+      ||String(row.receipt_operation_id||'')!==operationId
+      ||String(row.receipt_target_identity_key||'')!==String(row.evidence_target_identity_key)
+      ||canonical(receiptObserved)!==canonical(Object.fromEntries(Object.entries(observed).filter(([key])=>key!=='__operationReceiptId')))
+      ||canonicalDigest(evidenceRequest)!==String(row.receipt_request_digest||'')
+      ||String(row.receipt_authority_instance_id||'')!==String(row.authority_instance_id||'')
+      ||String(row.receipt_tenant_or_org_id||'')!==String(row.tenant_or_org_id||'')
+      ||String(row.receipt_pack_id||'')!==String(row.pack_id||'')||String(row.receipt_engagement_id||'')!==String(row.engagement_id||'')
+      ||String(target.targetIdentityKey||'')!==String(row.evidence_target_identity_key)
+      ||String(target.targetIdentityKey||'')!==String(intended.operationTargetIdentityKey||'')
+      ||String(target.workspaceId||'')!==String(intended.workspace||'')||String(query.workspaceId||'')!==String(intended.workspace||'')
+      ||String(binding.authorityInstanceId||'')!==String(row.authority_instance_id||'')
+      ||String(binding.tenantOrOrgId||'')!==String(row.tenant_or_org_id||'')||String(binding.packId||'')!==String(row.pack_id||'')
+      ||String(binding.engagementId||'')!==String(row.engagement_id||'')
+      ||(String(intended.objectType||'')==='GRA'?String(query.name||'')!==String(intended.externalId||''):
+        String(query.externalId||'')!==String(intended.externalId||'')||String(query.objectType||'')!==String(intended.objectType||''))){
+      throw new Error('Mutation reservation evidence requires an exact trusted preflight receipt bound to the frozen command, target, authority, and request.');
+    }
+    const claimedAt=now();
+    this.core.exec('BEGIN IMMEDIATE;');
+    try{
+      // A resumed pre-effect command may perform a newer authoritative absence
+      // read. Rebinding the same owned, still-prepared reservation to that newer
+      // receipt is safe; no mutation request or delivery exists yet.
+      const reservation=this.core.prepare(`UPDATE feature_mutation_reservations SET absence_receipt_id=?,updated_at=? WHERE authority_instance_id=? AND tenant_or_org_id=? AND pack_id=? AND engagement_id=? AND workspace_id=? AND logical_identity_key=? AND owner_run_id=? AND owner_intent_id=? AND owner_command_id=? AND lifecycle='active' AND EXISTS(SELECT 1 FROM feature_commands c WHERE c.command_id=? AND c.run_id=? AND c.state='prepared' AND c.submitted_at='' AND c.commit_point_at='' AND c.connector_request_id='' AND NOT EXISTS(SELECT 1 FROM connector_delivery_requests delivery WHERE delivery.command_id=c.command_id AND delivery.purpose='mutation'))`).run(
+        String(row.receipt_id),claimedAt,String(row.authority_instance_id),String(row.tenant_or_org_id),String(row.pack_id),String(row.engagement_id),String(intended.workspace||''),String(row.evidence_target_identity_key),runId,String(row.intent_id),commandId,commandId,runId);
+      if(reservation.changes!==1)throw new Error('Create mutation reservation changed before its authoritative absence receipt could be bound.');
+      // The command's evidence_request_digest is a one-at-a-time admission
+      // slot. The preflight receipt is now durably owned by the reservation,
+      // so release the slot for the later post-effect read-back/reconcile.
+      const releasedEvidenceSlot=this.core.prepare(`UPDATE feature_commands SET evidence_request_digest='' WHERE command_id=? AND run_id=? AND state='prepared' AND evidence_request_digest=? AND submitted_at='' AND commit_point_at='' AND connector_request_id=''`).run(
+        commandId,runId,String(row.receipt_request_digest));
+      if(releasedEvidenceSlot.changes!==1)throw new Error('Create absence evidence slot changed before the reservation could be finalized.');
+      this.core.exec('COMMIT;');
+      return{claimed:true,logicalIdentityKey:String(row.evidence_target_identity_key),absenceReceiptId:String(row.receipt_id)};
+    }catch(error){this.core.exec('ROLLBACK;');throw error;}
   }
 
   private prepareDeletionCommand(input: unknown, context: FeatureWorkerPortContext): Record<string, unknown> {
@@ -3832,12 +3936,17 @@ export class FeatureRuntimeStore {
     if(nextState==='submitted'){
       const intended=JSON.parse(row.intended_revision_json) as Record<string,unknown>;
       if(String(intended.kind)==='object'&&String(intended.disposition)==='create'){
-        const owned=this.core.prepare(`SELECT 1 FROM feature_mutation_reservations WHERE owner_command_id=? AND lifecycle='active'`).get(commandId);
+        const owned=this.core.prepare(`SELECT 1 FROM feature_mutation_reservations WHERE owner_command_id=? AND lifecycle='active' AND absence_receipt_id<>''`).get(commandId);
         if(!owned) throw new Error('Create mutation reservation was superseded or released before submission.');
       }
     }
     if (nextState === 'committed' && evidenceType !== 'commit') throw new Error('Committed state requires commit evidence.');
-    const receiptRequired = nextState === 'readback_verified' || nextState === 'closed_not_applied';
+    const conclusiveReceiptRequired = nextState === 'readback_verified' || nextState === 'closed_not_applied';
+    // Create preflight is the authority that unlocks a reclaimed logical
+    // identity. Preserve and validate its receipt exactly like a final
+    // read-back, but do not treat it as an effect-resolution receipt.
+    const absenceReceiptRequired = evidenceType === 'preflight' && nextState === 'prepared' && receiptId !== '';
+    const trustedReceiptRequired = conclusiveReceiptRequired || absenceReceiptRequired;
     let verifiedReceipt: Record<string, any> | null = null;
     if (nextState === 'readback_verified' && !['readback','reconcile'].includes(evidenceType)) {
       throw new Error('Read-back verified state requires authoritative readback/reconcile evidence.');
@@ -3851,7 +3960,7 @@ export class FeatureRuntimeStore {
         || String((payload as Record<string,unknown>).outcome || '') !== 'partial_applied')) {
       throw new Error('Partial-effect resolution requires an exact authoritative partial-applied reconcile receipt.');
     }
-    if (receiptRequired) {
+    if (trustedReceiptRequired) {
       const receipt = this.core.prepare(`
         SELECT o.*,c.plan_digest AS command_plan_digest,c.evidence_operation_ids_json,c.evidence_target_identity_key,
           c.evidence_request_digest,i.target_key,i.intended_revision_json,c.state AS command_state,
@@ -3928,8 +4037,19 @@ export class FeatureRuntimeStore {
     }
     this.core.exec('BEGIN IMMEDIATE;');
     try {
+      if(nextState==='submitted'){
+        // Linearize submission against force-close. If force-close wins the
+        // SQLite writer lock, the Run/reservation is already closed and this
+        // transition cannot manufacture a submitted command afterwards. If
+        // submission wins, force-close observes it and must refuse.
+        const intended=JSON.parse(row.intended_revision_json) as Record<string,unknown>;
+        const createReservationSql=String(intended.kind)==='object'&&String(intended.disposition)==='create'
+          ?`AND EXISTS(SELECT 1 FROM feature_mutation_reservations mr WHERE mr.owner_command_id=c.command_id AND mr.lifecycle='active' AND mr.absence_receipt_id<>'')`:'';
+        const admitted=this.core.prepare(`SELECT 1 FROM feature_commands c JOIN feature_runs r ON r.run_id=c.run_id WHERE c.command_id=? AND c.run_id=? AND c.state=? AND r.state='returning' ${createReservationSql}`).get(commandId,runId,row.state);
+        if(!admitted)throw new Error('Return mutation submission lost authority to a concurrent force-close or reservation transition.');
+      }
       this.core.prepare(`INSERT INTO feature_command_evidence(evidence_id, command_id, run_id, evidence_type, evidence_digest, receipt_id, verified, payload_json, occurred_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(evidenceId, commandId, runId, evidenceType, evidenceDigest, receiptRequired ? receiptId : '', receiptRequired ? 1 : (request.verified === true ? 1 : 0), JSON.stringify(payload), occurredAt);
+        .run(evidenceId, commandId, runId, evidenceType, evidenceDigest, trustedReceiptRequired ? receiptId : '', trustedReceiptRequired ? 1 : (request.verified === true ? 1 : 0), JSON.stringify(payload), occurredAt);
       this.core.prepare(`UPDATE feature_commands SET state=?, commit_point_at=CASE WHEN ?='commit' THEN ? ELSE commit_point_at END, submitted_at=CASE WHEN ?='request' THEN ? ELSE submitted_at END, completed_at=CASE WHEN ? IN ('readback_verified','closed_not_applied','failed') THEN ? ELSE completed_at END, last_error=? WHERE command_id=?`)
         .run(nextState, evidenceType, occurredAt, evidenceType, occurredAt, nextState, occurredAt, String(request.error || ''), commandId);
       if (['readback_verified','closed_not_applied'].includes(nextState)) {
@@ -3938,10 +4058,29 @@ export class FeatureRuntimeStore {
         );
       }
       if (nextState==='readback_verified') this.core.prepare(`UPDATE feature_mutation_reservations SET lifecycle='completed',updated_at=? WHERE owner_command_id=? AND lifecycle='active'`).run(occurredAt,commandId);
-      if (nextState==='closed_not_applied'||(nextState==='failed'&&row.state==='prepared')) this.core.prepare(`UPDATE feature_mutation_reservations SET lifecycle='released',updated_at=? WHERE owner_command_id=? AND lifecycle='active'`).run(occurredAt,commandId);
+      if (nextState==='closed_not_applied') this.core.prepare(`UPDATE feature_mutation_reservations SET lifecycle='released',absence_receipt_id='',updated_at=? WHERE owner_command_id=? AND lifecycle='active'`).run(occurredAt,commandId);
+      if (nextState==='failed'&&row.state==='prepared') {
+        // A pre-effect failure may release only the exact command's reservation
+        // when no mutation request or delivery ever existed. This keeps a
+        // failed read/check from blocking a later Run without weakening the
+        // uncertain-mutation fence.
+        this.core.prepare(`
+          UPDATE feature_mutation_reservations SET lifecycle='released',absence_receipt_id='',updated_at=?
+          WHERE owner_run_id=? AND owner_intent_id=? AND owner_command_id=? AND lifecycle='active'
+            AND EXISTS(
+              SELECT 1 FROM feature_commands c
+              WHERE c.command_id=? AND c.run_id=? AND c.state='failed'
+                AND c.submitted_at='' AND c.commit_point_at='' AND c.connector_request_id=''
+                AND NOT EXISTS(
+                  SELECT 1 FROM connector_delivery_requests delivery
+                  WHERE delivery.command_id=c.command_id AND delivery.purpose='mutation'
+                )
+            )
+        `).run(occurredAt,runId,row.intent_id,commandId,commandId,runId);
+      }
       if (nextState === 'uncertain') this.core.prepare(`UPDATE managed_content_intents SET state='uncertain', updated_at=? WHERE intent_id=?`).run(occurredAt, row.intent_id);
       if (nextState === 'failed') this.core.prepare(`UPDATE managed_content_intents SET state='failed', updated_at=? WHERE intent_id=?`).run(occurredAt, row.intent_id);
-      if (receiptRequired && verifiedReceipt && !repeatedPartialResolution) {
+      if (conclusiveReceiptRequired && verifiedReceipt && !repeatedPartialResolution) {
         const receipt = verifiedReceipt;
         const sourceRequestId = String(receipt.source_connector_request_id || '');
         // A prepared command may be closed as not-applied before any mutation was

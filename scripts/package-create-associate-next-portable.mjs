@@ -11,7 +11,7 @@ const companyCurrent = process.argv.includes('--company-current');
 const profile = companyCurrent ? 'company-loopback-current' : 'create-associate-only';
 const shellVersion = String(JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version);
 const expectedFeatures = companyCurrent ? [
-  ['omnia.create-associate', '0.2.146'],
+  ['omnia.create-associate', '0.2.149'],
   ['omnia.recording', '0.4.21'],
   ['omnia.delete-elements', '0.3.31'],
   ['omnia.workpaper-preparation', '0.1.52']
@@ -193,7 +193,7 @@ try {
     ''
   ].join('\r\n'), 'utf8');
   const featureSummary = companyCurrent
-    ? '内置 Feature：新建与关联 0.2.146、底稿编制 0.1.52、录制 0.4.21、删除元素 0.3.31。'
+    ? '内置 Feature：新建与关联 0.2.149、底稿编制 0.1.52、录制 0.4.21、删除元素 0.3.31。'
     : '内置 Feature：新建与关联 0.2.123。';
   const instructions = [
     'Omnia Agent v5 + Connector Next 本地便携版',

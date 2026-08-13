@@ -139,8 +139,21 @@ test('command specifications bind feature, version, run, and command and remain 
   const paths = resolveProductPaths(root);
   const database = new CoreDatabase(paths.database,cipher);
   try {
+    new FeaturePackageManager(database.db,paths);
     const alpha = seedRun(database,'official.alpha','1.0.0');
     const beta = seedRun(database,'official.beta','2.0.0');
+    const activatedAt = new Date().toISOString();
+    const alphaDigest = `sha256:${'a'.repeat(64)}`;
+    database.db.prepare(`
+      INSERT INTO feature_registry(feature_id,feature_version,lifecycle,package_digest,publisher_key_id,health,activated_at)
+      VALUES('official.alpha','1.0.0','active',?,'publisher','ready',?)
+    `).run(alphaDigest,activatedAt);
+    database.db.prepare(`
+      INSERT INTO feature_activation_heads(
+        feature_id,feature_version,activation_generation,runtime_enabled,runtime_reason,
+        package_path,package_digest,updated_at,documentation_path
+      ) VALUES('official.alpha','1.0.0',1,1,'','packages/alpha',?,?,'documentation/alpha')
+    `).run(alphaDigest,activatedAt);
     const store = new FeatureRuntimeStore(database.db,paths);
     const alphaContext = {featureId:'official.alpha',featureVersion:'1.0.0',allowMutation:false};
     const spec = {

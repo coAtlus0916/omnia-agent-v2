@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -73,6 +74,74 @@ test('migration 27 preserves existing issues and admits non-blocking quality war
       (database.db.prepare(`SELECT COUNT(*) AS count FROM feature_issues WHERE issue_type='quality_warning' AND state='waived'`).get() as { count: number }).count,
       1
     );
+  } finally {
+    database.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('migration 28 releases only terminal Runs whose create mutation was never dispatched', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-db-migration28-'));
+  const filename = path.join(root, 'core.sqlite');
+  const cipher = createTestContentCipher();
+  let database = new CoreDatabase(filename, cipher);
+  try {
+    const insertRun = (runId: string, state: 'failed' | 'returning') => {
+      database.db.prepare(`
+        INSERT INTO feature_runs(
+          run_id,trace_id,feature_id,feature_version,engagement_id,state,state_revision,
+          source_artifact_id,template_version_id,output_artifact_id,plan_digest,last_error,created_at,updated_at
+        ) VALUES(?,?, 'official.create', '1.0.0','engagement',?,1,'','','',?,'','now','now')
+      `).run(runId, crypto.randomUUID(), state, crypto.randomBytes(32).toString('hex'));
+    };
+    const insertCommand = (runId: string, commandId: string, submitted: boolean) => {
+      const intentId = crypto.randomUUID();
+      const planDigest = (database.db.prepare(`SELECT plan_digest FROM feature_runs WHERE run_id=?`).get(runId) as { plan_digest: string }).plan_digest;
+      database.db.prepare(`
+        INSERT INTO managed_content_intents(
+          intent_id,run_id,plan_digest,target_kind,target_key,intended_revision_json,state,created_at,updated_at
+        ) VALUES(?,?,?,'object',?,'{}','commanded','now','now')
+      `).run(intentId, runId, planDigest, `object|${commandId}`);
+      database.db.prepare(`
+        INSERT INTO feature_commands(
+          command_id,run_id,intent_id,operation_id,idempotency_key,plan_digest,request_digest,
+          evidence_operation_ids_json,evidence_target_identity_key,evidence_request_digest,state,
+          commit_point_at,submitted_at,completed_at,last_error,created_at,connector_request_id
+        ) VALUES(?,?,?,'official.create.v1',?,?,?,'[]',?,'',?,'',?,'','','now',?)
+      `).run(commandId,runId,intentId,crypto.randomBytes(32).toString('hex'),planDigest,
+        crypto.randomBytes(32).toString('hex'),`object|${commandId}`,submitted?'submitted':'prepared',submitted?'now':'',submitted?'request-id':'');
+      database.db.prepare(`
+        INSERT INTO feature_mutation_reservations(
+          authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,logical_identity_key,
+          owner_run_id,owner_intent_id,owner_command_id,lifecycle,acquired_at,lease_expires_at,updated_at,absence_receipt_id
+        ) VALUES('authority','tenant','pack','engagement','workspace',?,?,?,?, 'active','now','later','now','receipt')
+      `).run(`identity|${commandId}`,runId,intentId,commandId);
+    };
+    const safeRun = crypto.randomUUID(); const safeCommand = crypto.randomUUID();
+    const liveRun = crypto.randomUUID(); const liveCommand = crypto.randomUUID();
+    const submittedRun = crypto.randomUUID(); const submittedCommand = crypto.randomUUID();
+    insertRun(safeRun,'failed'); insertCommand(safeRun,safeCommand,false);
+    insertRun(liveRun,'returning'); insertCommand(liveRun,liveCommand,false);
+    insertRun(submittedRun,'failed'); insertCommand(submittedRun,submittedCommand,true);
+    database.db.prepare('DELETE FROM schema_migrations WHERE version=28').run();
+    database.db.exec(`CREATE TABLE feature_mutation_reservations_v27 AS SELECT
+      authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,logical_identity_key,
+      owner_run_id,owner_intent_id,owner_command_id,lifecycle,acquired_at,lease_expires_at,updated_at
+      FROM feature_mutation_reservations;
+      DROP TABLE feature_mutation_reservations;
+      ALTER TABLE feature_mutation_reservations_v27 RENAME TO feature_mutation_reservations;
+      CREATE UNIQUE INDEX feature_mutation_reservations_identity_v27 ON feature_mutation_reservations(
+        authority_instance_id,tenant_or_org_id,pack_id,engagement_id,workspace_id,logical_identity_key
+      );
+      CREATE INDEX feature_mutation_reservation_owner ON feature_mutation_reservations(owner_run_id,owner_intent_id,lifecycle);`);
+    database.close();
+    database = new CoreDatabase(filename, cipher);
+    const lifecycle = (commandId: string) => (database.db.prepare(`
+      SELECT lifecycle FROM feature_mutation_reservations WHERE owner_command_id=?
+    `).get(commandId) as { lifecycle: string }).lifecycle;
+    assert.equal(lifecycle(safeCommand),'released');
+    assert.equal(lifecycle(liveCommand),'active');
+    assert.equal(lifecycle(submittedCommand),'active');
   } finally {
     database.close();
     rmSync(root, { recursive: true, force: true });

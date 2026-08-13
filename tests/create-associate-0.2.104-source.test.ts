@@ -18,7 +18,7 @@ const { createOperationHandler } = require(path.join(sourceRoot, 'connector-capa
 };
 
 const EXPECTED_STORE_PORTS = [
-  'approveReturnIntent', 'authorizeLegacyReturnRecovery', 'closeLegacyPartialReturn', 'commitPythonOutputHandle',
+  'approveReturnIntent', 'authorizeLegacyReturnRecovery', 'bindMutationReservationEvidence', 'closeLegacyPartialReturn', 'commitPythonOutputHandle',
   'commitReviewValidation', 'createPythonJsonInputHandle', 'createPythonOutputHandle', 'finishReturn',
   'freezeReturnEvidenceSpec', 'inspectLegacyReturnRecovery', 'loadLatestRun', 'loadPlan', 'loadReturnProgress',
   'loadReturnReconcileSpec', 'openPythonArtifactHandle', 'prepareReturnCommand', 'prepareReturnIntent',
@@ -49,8 +49,8 @@ function declaredStorePorts(): string[] {
   return [...block.matchAll(/['"]([A-Za-z][A-Za-z0-9]*)['"]/gu)].map((match) => match[1]!).sort();
 }
 
-test('0.2.110/112 is the live-accepted AD, code-migration and return-performance source boundary', () => {
-  assert.match(packageScript, /const version = '0\.2\.110'; const sequence = 112;/u);
+test('0.2.149/151 is the current AD, code-migration and resumable Return source boundary', () => {
+  assert.match(packageScript, /const version = '0\.2\.149'; const sequence = 151;/u);
   assert.match(packageScript, /bridgePath:'middle\/create-associate-python-bridge\.cjs'/u);
   assert.match(packageScript, /entryPath:'python\/create-associate-engine\.py'/u);
   assert.equal(fs.statSync(bridgePath).isFile(), true);
@@ -59,8 +59,8 @@ test('0.2.110/112 is the live-accepted AD, code-migration and return-performance
   assert.equal(fs.existsSync(path.join(sourceRoot, 'python', 'engine.py')), false);
 });
 
-test('0.2.110 declares the exact 34 Store ports called by its isolated Worker and bridge', () => {
-  assert.equal(EXPECTED_STORE_PORTS.length, 34);
+test('current source declares the exact 35 Store ports called by its isolated Worker and bridge', () => {
+  assert.equal(EXPECTED_STORE_PORTS.length, 35);
   assert.deepEqual(actualStorePorts(), EXPECTED_STORE_PORTS);
   assert.deepEqual(declaredStorePorts(), EXPECTED_STORE_PORTS);
 });

@@ -359,7 +359,7 @@ for (const inputCell of ['C35','C36']) if (!userTemplate.validations.some((item)
 for (const inputCell of ['C46','C47']) if (!userTemplate.validations.some((item) => validationCovers(item.sqref, inputCell) && item.formula.includes('代码迁移工具'))) {
   throw new Error(`Phase1 user template V5 Tool type validation does not expose 代码迁移工具 at ${inputCell}.`);
 }
-const version = '0.2.146'; const sequence = 148;
+const version = '0.2.149'; const sequence = 151;
 const route = (stepId, method, routeTemplate, parameters, bodyMode = 'none', bodyParameter = '') => ({ stepId, method, routeTemplate, parameters, bodyMode, bodyParameter });
 const applicationIdentityRoutes = () => [
   route('workitem-directory', 'POST', '/work/v1/WorkQueries/getWorkitemDetails', [], 'signed_json'),
@@ -544,7 +544,7 @@ const runtimeContract={schemaVersion:'omnia.feature-runtime-contract/v1',feature
     'approveReturnIntent','authorizeLegacyReturnRecovery','closeLegacyPartialReturn','commitPythonOutputHandle',
     'commitReviewValidation','createPythonJsonInputHandle','createPythonOutputHandle','finishReturn',
     'freezeReturnEvidenceSpec','inspectLegacyReturnRecovery','loadLatestRun','loadPlan','loadReturnProgress',
-    'loadReturnReconcileSpec','openPythonArtifactHandle','prepareReturnCommand','prepareReturnIntent',
+    'loadReturnReconcileSpec','openPythonArtifactHandle','prepareReturnCommand','bindMutationReservationEvidence','prepareReturnIntent',
     'projectVerifiedReturn','proveOwnedCreatedObject','readArtifactBytes','readPythonJsonHandle',
     'recordBootstrapCapabilityEvidence','recordFieldRevisions','recordIssues','recordLegacyReturnRecoveryOutcome',
     'recordReturnEvidence','recordTemplateMetadata','releasePythonArtifactHandles','restartRun','returnRunToReview',

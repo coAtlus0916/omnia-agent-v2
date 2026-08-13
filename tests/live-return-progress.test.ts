@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { DeclarativeFeatureSurface, DeclarativeProgress } from '../src/shared/feature-contracts.ts';
-import { buildLiveReturnProgress } from '../src/main/features/package-manager.ts';
+import {
+  buildLiveReturnProgress,
+  featureValidationProgressFromPlan,
+  liveFeatureValidationPlan,
+  LiveReturnProgressCoalescer,
+  liveReturnProgressPublishMode
+} from '../src/main/features/package-manager.ts';
 import { mergeMonotonicProgress, returnProgressWaitState, shouldReleasePendingReturn } from '../src/renderer/feature-window.ts';
 
 function declaredProgress(): DeclarativeProgress {
@@ -25,6 +31,28 @@ function declaredProgress(): DeclarativeProgress {
     }))
   };
 }
+
+function declaredValidationProgress(): DeclarativeProgress {
+  return {
+    label: '校验进度', completed: 0, total: 3, percent: 0, state: 'running', message: '正在校验 0/3',
+    items: ['structure', 'identity', 'workspace'].map((itemId) => ({ itemId, label: itemId, state: 'pending', detail: '等待后台校验。' }))
+  };
+}
+
+test('generic live validation projection advances only for persisted real results', () => {
+  const plan = { planId: 'run-1', validationProgress: { schemaVersion: 'omnia.feature-validation-progress/v1', total: 3, results: [
+    { itemId: 'structure', state: 'passed', detail: '真实解析已完成。' }
+  ] } };
+  assert.equal(liveFeatureValidationPlan('savePlan', plan), plan);
+  const first = featureValidationProgressFromPlan(declaredValidationProgress(), plan);
+  assert.ok(first);
+  assert.equal(first.completed, 1);
+  assert.equal(first.message, '正在校验 1/3');
+  assert.deepEqual(first.items.map((item) => item.state), ['passed', 'pending', 'pending']);
+  assert.equal(featureValidationProgressFromPlan(declaredValidationProgress(), { ...plan, validationProgress: { ...plan.validationProgress, results: [
+    ...plan.validationProgress.results, { itemId: 'unknown', state: 'passed', detail: 'invalid' }
+  ] } }), null);
+});
 
 test('live Return projection accepts partially materialized ledger rows and keeps declared totals', () => {
   const projected = buildLiveReturnProgress(declaredProgress(), [
@@ -93,6 +121,26 @@ test('live Return projection maps a real four-capsule plan without a relationshi
   assert.deepEqual(projected.items.map((item) => [item.label, item.completed, item.total]), [
     ['元素', 2, 2], ['GRA', 2, 2], ['Risk-Control', 35, 35], ['设置', 7, 49]
   ]);
+});
+
+test('live Return progress coalesces ordinary completions but publishes failures and final completion immediately', async () => {
+  assert.equal(liveReturnProgressPublishMode('recordReturnEvidence', {commandState: 'readback_verified'}), 'coalesced');
+  assert.equal(liveReturnProgressPublishMode('recordReturnEvidence', {commandState: 'closed_not_applied'}), 'coalesced');
+  assert.equal(liveReturnProgressPublishMode('recordReturnEvidence', {commandState: 'uncertain'}), 'immediate');
+  assert.equal(liveReturnProgressPublishMode('recordReturnEvidence', {commandState: 'failed'}), 'immediate');
+  assert.equal(liveReturnProgressPublishMode('recordReturnEvidence', {commandState: 'committed'}), null);
+  assert.equal(liveReturnProgressPublishMode('finishReturn', {}), 'immediate');
+
+  const coalescer = new LiveReturnProgressCoalescer(20);
+  const published: string[] = [];
+  coalescer.schedule('run-a', () => published.push('stale'));
+  coalescer.schedule('run-a', () => published.push('latest'));
+  coalescer.schedule('run-b', () => published.push('cancelled'));
+  coalescer.schedule('run-b', () => published.push('terminal'), true);
+  assert.deepEqual(published, ['terminal']);
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  assert.deepEqual(published, ['terminal', 'latest']);
+  coalescer.cancelAll();
 });
 
 function returnSurface(

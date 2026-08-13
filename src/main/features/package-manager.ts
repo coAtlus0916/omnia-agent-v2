@@ -1468,6 +1468,20 @@ export function liveWorkpaperOpenPlan(method: string, input: unknown): Record<st
   return plan;
 }
 
+/**
+ * Any signed Feature may persist a generic validation-progress checkpoint in
+ * its private plan. Core validates only the generic progress contract and
+ * never interprets Feature-specific check IDs or business rules.
+ */
+export function liveFeatureValidationPlan(method: string, input: unknown): Record<string, unknown> | null {
+  if (method !== 'savePlan' || !input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const plan = input as Record<string, unknown>;
+  const progress = plan.validationProgress;
+  if (!progress || typeof progress !== 'object' || Array.isArray(progress)) return null;
+  if (String((progress as Record<string, unknown>).schemaVersion || '') !== 'omnia.feature-validation-progress/v1') return null;
+  return plan;
+}
+
 export class LiveReturnProgressCoalescer {
   private readonly pending = new Map<string, { timer: NodeJS.Timeout; task: () => void }>();
 
@@ -1671,6 +1685,52 @@ function workpaperOpenProgressFromPlan(declared: DeclarativeProgress, plan: Reco
     percent: total === 0 ? 0 : Math.floor(completed * 100 / total),
     state: progressState,
     message,
+    items
+  };
+}
+
+export function featureValidationProgressFromPlan(
+  declared: DeclarativeProgress,
+  plan: Record<string, unknown>
+): DeclarativeProgress | null {
+  const raw = plan.validationProgress;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const checkpoint = raw as Record<string, unknown>;
+  if (checkpoint.schemaVersion !== 'omnia.feature-validation-progress/v1'
+    || Number(checkpoint.total) !== declared.total
+    || !Array.isArray(checkpoint.results)
+    || checkpoint.results.length > declared.total) return null;
+  const declaredById = new Map(declared.items.map((item) => [item.itemId, item]));
+  const allowedStates = new Set(['passed', 'warning', 'failed', 'skipped']);
+  const results = new Map<string, { state: DeclarativeProgress['items'][number]['state']; detail: string }>();
+  for (const candidate of checkpoint.results as unknown[]) {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null;
+    const item = candidate as Record<string, unknown>;
+    if (Object.keys(item).sort().join(',') !== 'detail,itemId,state') return null;
+    const itemId = String(item.itemId || '');
+    const state = String(item.state || '') as DeclarativeProgress['items'][number]['state'];
+    const detail = String(item.detail || '');
+    if (!declaredById.has(itemId) || results.has(itemId) || !allowedStates.has(state)
+      || !detail || detail.length > 2_000) return null;
+    results.set(itemId, { state, detail });
+  }
+  const items = declared.items.map((item) => {
+    const result = results.get(item.itemId);
+    return result ? { ...item, state: result.state, detail: result.detail }
+      : { ...item, state: 'pending' as const, detail: '等待后台校验。' };
+  });
+  const completed = results.size;
+  const states = [...results.values()].map((item) => item.state);
+  const state: DeclarativeProgress['state'] = states.includes('failed') ? 'failed'
+    : states.includes('warning') ? 'warning'
+      : completed === declared.total ? 'passed' : 'running';
+  return {
+    ...declared,
+    completed,
+    percent: declared.total === 0 ? 0 : Math.floor(completed * 100 / declared.total),
+    state,
+    message: completed === declared.total ? `已完成 ${completed}/${declared.total} 项校验。`
+      : `正在校验 ${completed}/${declared.total}`,
     items
   };
 }
@@ -2240,7 +2300,8 @@ function validateSurface(value: unknown, manifest: FeatureManifest): Declarative
       if (element.inheritanceDecision !== null) {
         const decision = element.inheritanceDecision;
         exactKeys(decision, ['schemaVersion', 'policy', 'sourceModes', 'mixedSources', 'result', 'message'], 'Declarative inheritance decision');
-        if (decision.schemaVersion !== 'omnia.create-associate.infrastructure-rait-decision/v1'
+        if (typeof decision.schemaVersion !== 'string'
+          || !/^omnia\.[a-z0-9]+(?:-[a-z0-9]+)*\.infrastructure-rait-decision\/v1$/u.test(decision.schemaVersion)
           || decision.policy !== 'any_higher_else_all_lower'
           || !Array.isArray(decision.sourceModes) || decision.sourceModes.length < 1 || decision.sourceModes.length > 200
           || typeof decision.mixedSources !== 'boolean' || !['Higher', 'Lower'].includes(decision.result)
@@ -2979,6 +3040,7 @@ export class FeaturePackageManager {
   private readonly liveReturnProgressSnapshots = new Map<string, LiveReturnProgressSnapshot>();
   private readonly liveReturnProgressCoalescer = new LiveReturnProgressCoalescer();
   private readonly liveWorkpaperOpenProgressSnapshots = new Map<string, { stateVersion: number; signature: string }>();
+  private readonly liveFeatureValidationProgressSnapshots = new Map<string, { stateVersion: number; signature: string }>();
   private readonly operationRegistrations = new Map<string, { sessionGeneration: number; packageDigest: string }>();
   private readonly installedPackages = new Map<string, { identity: string; value: InstalledFeaturePackage }>();
   private readonly pendingRuntimeEvents = new Set<string>();
@@ -3159,6 +3221,12 @@ export class FeaturePackageManager {
       const verified=this.database.prepare(`UPDATE managed_content_intents SET state='verified',updated_at=?
         WHERE intent_id=? AND state='commanded'`).run(occurredAt,String(command.intent_id));
       if(Number(verified.changes)!==1)throw new Error('Connector Next pre-effect intent closure changed concurrently.');
+      const releasedReservation=this.database.prepare(`
+        UPDATE feature_mutation_reservations
+        SET lifecycle='released',updated_at=?
+        WHERE owner_run_id=? AND owner_intent_id=? AND owner_command_id=? AND lifecycle='active'
+      `).run(occurredAt,input.runId,String(command.intent_id),input.commandId);
+      if(Number(releasedReservation.changes)>1)throw new Error('Connector Next pre-effect closure matched more than one mutation reservation.');
       this.database.prepare(`INSERT INTO feature_command_evidence(
         evidence_id,command_id,run_id,evidence_type,evidence_digest,receipt_id,verified,payload_json,occurred_at
       ) VALUES(?,?,?,'reconcile',?,'',1,?,?)`).run(randomUUID(),input.commandId,input.runId,proofDigest,canonicalJson(proof),occurredAt);
@@ -4484,6 +4552,32 @@ export class FeaturePackageManager {
     }
   }
 
+  private publishLiveFeatureValidationProgress(
+    featureId: string,
+    featureVersion: string,
+    plan: Record<string, unknown>
+  ): void {
+    const publish = this.runtime?.publishSurfaceProjection;
+    const head = this.head(featureId);
+    const surface = this.runtimeSurfaces.get(featureId);
+    if (!publish || !head || head.featureVersion !== featureVersion || !surface?.progress
+      || surface.workflow?.currentStepId !== 'validate') return;
+    try {
+      const progress = featureValidationProgressFromPlan(surface.progress, plan);
+      if (!progress) return;
+      const signatureKey = `${featureId}\u0000${featureVersion}\u0000${String(plan.runId || plan.planId || '')}`;
+      const signature = JSON.stringify(progress);
+      const cached = this.liveFeatureValidationProgressSnapshots.get(signatureKey);
+      if (cached?.stateVersion === surface.stateVersion && cached.signature === signature) return;
+      const { manifest } = this.loadInstalled(head);
+      const projection = validateSurface({ ...surface, progress }, manifest);
+      this.liveFeatureValidationProgressSnapshots.set(signatureKey, { stateVersion: surface.stateVersion, signature });
+      publish(projection);
+    } catch {
+      // Disposable progress never changes the authoritative Worker result.
+    }
+  }
+
   private async startRuntime(head: ActivationHead, handoffSource: ActivationHead | null = null): Promise<void> {
     if (!this.runtime) throw new Error('Feature runtime dependencies are unavailable.');
     const installed = this.loadInstalled(head);
@@ -4679,7 +4773,24 @@ export class FeaturePackageManager {
                   c.connector_request_id,c.connector_execution_generation,c.connector_session_generation,
                   f.credential_digest,f.authority_instance_id,f.tenant_or_org_id,f.pack_id,f.engagement_id,
                   s.workspace_ids_json,s.global_enabled,s.global_workspace_ids_json,i.intended_revision_json,
-                  EXISTS(SELECT 1 FROM feature_mutation_reservations mr WHERE mr.owner_command_id=c.command_id AND mr.lifecycle='active') AS owns_reservation
+                  EXISTS(SELECT 1 FROM feature_mutation_reservations mr WHERE mr.owner_command_id=c.command_id AND mr.lifecycle='active') AS owns_reservation,
+                  EXISTS(
+                    SELECT 1 FROM feature_mutation_reservations mr
+                    JOIN feature_operation_receipts absence_receipt
+                      ON absence_receipt.receipt_id=mr.absence_receipt_id
+                     AND absence_receipt.command_id=c.command_id
+                     AND absence_receipt.run_id=c.run_id
+                     AND absence_receipt.feature_id=r.feature_id
+                     AND absence_receipt.feature_version=r.feature_version
+                     AND absence_receipt.target_identity_key=c.evidence_target_identity_key
+                    JOIN feature_command_evidence absence_evidence
+                      ON absence_evidence.receipt_id=absence_receipt.receipt_id
+                     AND absence_evidence.command_id=c.command_id
+                     AND absence_evidence.run_id=c.run_id
+                     AND absence_evidence.evidence_type='preflight'
+                     AND absence_evidence.verified=1
+                    WHERE mr.owner_command_id=c.command_id AND mr.lifecycle='active'
+                  ) AS owns_verified_absence_reservation
                 FROM feature_commands c
                 JOIN feature_runs r ON r.run_id=c.run_id
                 JOIN managed_content_intents i ON i.intent_id=c.intent_id AND i.run_id=c.run_id
@@ -4710,7 +4821,7 @@ export class FeaturePackageManager {
                 ||String(mutationBinding?.tenantOrOrgId||'')!==String(commandRow.tenant_or_org_id)
                 ||String(mutationBinding?.packId||'')!==String(commandRow.pack_id)
                 ||String(mutationBinding?.engagementId||'')!==String(commandRow.engagement_id)
-                ||(reservationRequired&&Number(commandRow.owns_reservation)!==1)) {
+                ||(reservationRequired&&(Number(commandRow.owns_reservation)!==1||Number(commandRow.owns_verified_absence_reservation)!==1))) {
                 throw new AppError('FEATURE.MUTATION_COMMAND_DRIFT','Signed mutation differs from the immutable confirmed command, target, plan, payload, or authority.');
               }
             }
@@ -5302,6 +5413,8 @@ export class FeaturePackageManager {
             const workpaperPlan = liveWorkpaperOpenPlan(method, input);
             if (workpaperPlan) this.publishLiveWorkpaperOpenProgress(context.featureId, context.featureVersion, workpaperPlan);
           }
+          const validationPlan = liveFeatureValidationPlan(method, input);
+          if (validationPlan) this.publishLiveFeatureValidationProgress(context.featureId, context.featureVersion, validationPlan);
           return value;
         },
         featureReview: async (input, context) => {

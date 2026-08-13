@@ -123,6 +123,39 @@ async function runBoundedIndependent(items, limit, worker) {
   if (failures.length) throw failures.sort((left, right) => left.index - right.index)[0].error;
   return results;
 }
+function createFifoOperationLimiter(limit) {
+  const capacity = Math.max(1, Math.trunc(Number(limit) || 1));
+  const waiting = [];
+  let active = 0;
+  const dispatch = () => {
+    while (active < capacity && waiting.length) {
+      active += 1;
+      waiting.shift()();
+    }
+  };
+  return async (operation) => {
+    if (typeof operation !== 'function') fail('RETURN.OPERATION_LIMITER_INVALID', 'Remote Operation limiter requires one callable operation.');
+    await new Promise((resolve) => { waiting.push(resolve); dispatch(); });
+    try { return await operation(); }
+    finally { active -= 1; dispatch(); }
+  };
+}
+function completeObjectCreateAbsence(observed,objectType){
+  const proof=observed?.evidence&&typeof observed.evidence==='object'?observed.evidence:{};
+  const application=objectType==='Application'
+    &&Number(observed?.matchCount)===0&&Number(observed?.graMatchCount)===0
+    &&Number(proof.applicationPagesRead)>0&&Number(proof.applicationObserved)>=0;
+  const generic=objectType!=='Application'
+    &&Number(observed?.matchCount)===0&&Number(observed?.activeCount)===0&&Number(observed?.recycleBinCount)===0
+    &&Number(observed?.graMatchCount)===0&&Number(proof.pagesRead)>0&&Number(proof.observed)>=0;
+  return observed?.found===false&&observed?.item===null&&observed?.disposition==='create'
+    &&observed?.reasonCode==='not_found'&&observed?.matchState==='none'&&observed?.graState==='none'
+    &&(application||generic);
+}
+function completeGraCreateAbsence(observed){
+  return observed?.found===false&&observed?.item===null
+    &&Number(observed?.evidence?.directoryMatches)===0;
+}
 const V8_SHA256 = '6511D225827D805B2C7D8DBFE85D09C076E17C21F4A6B9EF13DDF3BCC4A9135D';
 const GOVERNANCE = '__GOVERNANCE_JSON__';
 const EXPECTED_SHEETS = Object.freeze([
@@ -655,6 +688,7 @@ function terminalRunReturnsToFreshUpload(latest){
   const returnProgress=Array.isArray(latest?.returnProgress)?latest.returnProgress:[];
   return ['succeeded','failed','cancelled','not_evaluable'].includes(state)&&returnProgress.length===0;
 }
+const VALIDATION_CHECK_LABELS=[['template_structure','模板结构可识别'],['required_fields','必填项目已填写'],['valid_values','名称与填写内容合法'],['unique_names','批次内元素 ID 与 GRA 名称唯一'],['omnia_id_conflicts','已核验当前 Pack 与回收站中的同名元素影响'],['infrastructure_links','基础设施已关联系统'],['infrastructure_rait','多系统 RAIT 按 Higher 优先归并'],['relationship_targets','关联目标可解析且类型正确'],['workspace_presence','Omnia 工作区已填写'],['factors_considered_ai_review','Factors Considered 智能复核'],['workspace_live','Omnia 工作区名称实时有效']];
 function validationPresentation(parsed,live={}){
   const normalizedLive={...live};
   if(live.workspace_live?.state==='failed'){
@@ -684,7 +718,7 @@ function validationPresentation(parsed,live={}){
     ['workspace_live','Omnia 工作区名称实时有效',liveCheck('workspace_live').state,liveCheck('workspace_live').reason]
   ];
   const pending=checks.filter((item)=>item[2]==='pending').length,failed=checks.filter((item)=>item[2]==='failed').length,completed=checks.length-pending;
-  return {progress:{label:'校验进度',completed,total:checks.length,percent:Math.floor(completed*100/checks.length),state:failed?'failed':checks.some((item)=>item[2]==='warning')||warnings.length?'warning':pending?'pending':'passed',message:`${completed}/${checks.length} 项已执行；error ${errors.length}，warning ${warnings.length}。`,items:checks.map(([itemId,label,state,detail])=>({itemId,label,state,detail}))},issues:issues.map((issue)=>{const row=parsed.rows.find((candidate)=>String(issue.fieldKey).startsWith(`${candidate.rowKey}.`));return{issueId:issue.issueId,scope:row?(issue.fieldKey.includes('.identity')?'element':'field'):'global',severity:['needs_input','blocking'].includes(issue.state)?'error':'warning',elementId:row?.elementId||'',fieldKey:issue.fieldKey,message:issue.message};})};
+  return {progress:{label:'校验进度',completed,total:checks.length,percent:Math.floor(completed*100/checks.length),state:failed?'failed':checks.some((item)=>item[2]==='warning')||warnings.length?'warning':pending?'pending':'passed',message:`${completed}/${checks.length} 项已执行；error ${errors.length}，warning ${warnings.length}。`,items:checks.map(([itemId,label,state,detail])=>({itemId,label,state,detail}))},issues:errors.map((issue)=>{const row=parsed.rows.find((candidate)=>String(issue.fieldKey).startsWith(`${candidate.rowKey}.`));return{issueId:issue.issueId,scope:row?(issue.fieldKey.includes('.identity')?'element':'field'):'global',severity:'error',elementId:row?.elementId||'',fieldKey:issue.fieldKey,message:issue.message};})};
 }
 function reviewBlocked(parsed,live={}){return validationPresentation(parsed,live).progress.items.some((item)=>item.state==='failed'||item.state==='pending');}
 const REVIEW_FIELDS_BY_KIND=new Proxy({}, {get(_target,kind){return kindCapability(String(kind)).reviewFields.map((field)=>[field.rawFieldKey,field.label,field.inputKind,field.required,field.maxLength]);}});
@@ -705,8 +739,8 @@ function activeReviewIssues(parsed){
 }
 function reviewPresentation(parsed){
   const rows=parsed.rows||[],active=activeRows(parsed),issues=activeReviewIssues(parsed);const firstIssue=issues.find((issue)=>['needs_input','blocking'].includes(issue.state));const selected=active.find((row)=>firstIssue&&String(firstIssue.fieldKey).startsWith(`${row.rowKey}.`))||active[0]||rows[0];const fields=[];
-  for(const row of active){for(const [raw,label,inputKind,required,maxLength] of REVIEW_FIELDS_BY_KIND[row.kind]){const candidate=reviewCandidate(parsed,row,raw);const messages=issues.filter((issue)=>issue.fieldKey===candidate?.fieldKey||String(issue.fieldKey).startsWith(`${row.rowKey}.`)&&issue.message.includes(raw)).map((issue)=>issue.message);const decisionMessage=raw==='Inherited System Risk Classification'?String(row.inheritanceDecision?.message||''):'';fields.push({rowKey:row.rowKey,kind:row.kind,fieldKey:candidate?.fieldKey||`${row.rowKey}.readonly.${digest(raw)}`,rawFieldKey:raw,label,expectedRevision:Number(candidate?.revision||0),inputKind,currentValue:String(row.fields[raw]??''),allowedValues:reviewAllowedValues(parsed,raw),required:Boolean(required),maxLength:Number(maxLength),editable:inputKind!=='readonly'&&Boolean(candidate),message:[...messages,decisionMessage].filter(Boolean).join(' '),sourceSheet:candidate?.provenance?.sourceSheet||row.sourceSheet,sourceRow:Number(candidate?.provenance?.sourceRow||row.sourceRow),derivation:candidate?.provenance?.derivationRule||'verbatim_user_workbook_cell'});}const gra=reviewCandidate(parsed,row,'Derived GRA Name');fields.push({rowKey:row.rowKey,kind:row.kind,fieldKey:gra?.fieldKey||`${row.rowKey}.derived.gra-name`,rawFieldKey:'Derived GRA Name',label:'GRA 名称（派生）',expectedRevision:Number(gra?.revision||0),inputKind:'readonly',currentValue:String(gra?.value??deriveGraName(row.elementId)),allowedValues:[],required:true,maxLength:200,editable:false,message:'',sourceSheet:gra?.provenance?.sourceSheet||row.sourceSheet,sourceRow:Number(gra?.provenance?.sourceRow||row.sourceRow),derivation:gra?.provenance?.derivationRule||'v4.phase1-gra-name-from-element-id.v1'});const rawDescription=descriptionRawField(row.kind),description=reviewCandidate(parsed,row,rawDescription);fields.push({rowKey:row.rowKey,kind:row.kind,fieldKey:description?.fieldKey||`${row.rowKey}.derived.description`,rawFieldKey:rawDescription,label:'Description（派生）',expectedRevision:Number(description?.revision||1),inputKind:'readonly',currentValue:String(description?.value??row.elementId),allowedValues:[],required:true,maxLength:200,editable:false,message:'',sourceSheet:description?.provenance?.sourceSheet||'字段母版',sourceRow:Number(description?.provenance?.sourceRow||0),derivation:description?.provenance?.derivationRule||descriptionRuleId(row.kind)});}
-  const kinds=[['APP','Application'],['DB','Database'],['OS','Operating System'],['TOOL','IT Tool'],['DCNO','DCNO']];return{selectedKind:selected?.kind||'APP',selectedRowKey:selected?.rowKey||'',elementTypes:kinds.map(([kind,label])=>{const typed=active.filter((row)=>row.kind===kind),typedIssues=issues.filter((issue)=>typed.some((row)=>String(issue.fieldKey).startsWith(`${row.rowKey}.`)));return{kind,label,count:typed.length,issueCount:typedIssues.filter((issue)=>['needs_input','blocking'].includes(issue.state)).length,warningCount:typedIssues.filter((issue)=>issue.state==='waived').length,disabled:typed.length===0,reason:typed.length?'':`本批没有 ${label} 行。`};}),elements:rows.map((row)=>{const rowIssues=issues.filter((issue)=>String(issue.fieldKey).startsWith(`${row.rowKey}.`));return{rowKey:row.rowKey,kind:row.kind,elementId:row.elementId,label:`${row.elementId} · ${row.sourceSheet}:${row.sourceRow}`,sourceSheet:row.sourceSheet,sourceRow:row.sourceRow,issueCount:rowIssues.filter((issue)=>['needs_input','blocking'].includes(issue.state)).length,warningCount:rowIssues.filter((issue)=>issue.state==='waived').length,derivedDisplay:`${deriveGraName(row.elementId)} / ${String(row.fields[descriptionRawField(row.kind)]||row.elementId)}`,inheritanceDecision:row.inheritanceDecision||null,blocking:rowIssues.some((issue)=>['needs_input','blocking'].includes(issue.state)),excluded:(parsed.excludedRowKeys||[]).includes(row.rowKey)};}),fields,issueOrder:issues.map((issue)=>{const row=rows.find((candidate)=>String(issue.fieldKey).startsWith(`${candidate.rowKey}.`));return{issueId:issue.issueId,rowKey:row?.rowKey||'',fieldKey:issue.fieldKey,severity:['needs_input','blocking'].includes(issue.state)?'error':'warning',message:issue.message};})};
+  for(const row of active){for(const [raw,label,inputKind,required,maxLength] of REVIEW_FIELDS_BY_KIND[row.kind]){const candidate=reviewCandidate(parsed,row,raw);const messages=issues.filter((issue)=>['needs_input','blocking'].includes(issue.state)&&(issue.fieldKey===candidate?.fieldKey||String(issue.fieldKey).startsWith(`${row.rowKey}.`)&&issue.message.includes(raw))).map((issue)=>issue.message);fields.push({rowKey:row.rowKey,kind:row.kind,fieldKey:candidate?.fieldKey||`${row.rowKey}.readonly.${digest(raw)}`,rawFieldKey:raw,label,expectedRevision:Number(candidate?.revision||0),inputKind,currentValue:String(row.fields[raw]??''),allowedValues:reviewAllowedValues(parsed,raw),required:Boolean(required),maxLength:Number(maxLength),editable:inputKind!=='readonly'&&Boolean(candidate),message:messages.join(' '),sourceSheet:candidate?.provenance?.sourceSheet||row.sourceSheet,sourceRow:Number(candidate?.provenance?.sourceRow||row.sourceRow),derivation:candidate?.provenance?.derivationRule||'verbatim_user_workbook_cell'});}const gra=reviewCandidate(parsed,row,'Derived GRA Name');fields.push({rowKey:row.rowKey,kind:row.kind,fieldKey:gra?.fieldKey||`${row.rowKey}.derived.gra-name`,rawFieldKey:'Derived GRA Name',label:'GRA 名称（派生）',expectedRevision:Number(gra?.revision||0),inputKind:'readonly',currentValue:String(gra?.value??deriveGraName(row.elementId)),allowedValues:[],required:true,maxLength:200,editable:false,message:'',sourceSheet:gra?.provenance?.sourceSheet||row.sourceSheet,sourceRow:Number(gra?.provenance?.sourceRow||row.sourceRow),derivation:gra?.provenance?.derivationRule||'v4.phase1-gra-name-from-element-id.v1'});const rawDescription=descriptionRawField(row.kind),description=reviewCandidate(parsed,row,rawDescription);fields.push({rowKey:row.rowKey,kind:row.kind,fieldKey:description?.fieldKey||`${row.rowKey}.derived.description`,rawFieldKey:rawDescription,label:'Description（派生）',expectedRevision:Number(description?.revision||1),inputKind:'readonly',currentValue:String(description?.value??row.elementId),allowedValues:[],required:true,maxLength:200,editable:false,message:'',sourceSheet:description?.provenance?.sourceSheet||'字段母版',sourceRow:Number(description?.provenance?.sourceRow||0),derivation:description?.provenance?.derivationRule||descriptionRuleId(row.kind)});}
+  const kinds=[['APP','Application'],['DB','Database'],['OS','Operating System'],['TOOL','IT Tool'],['DCNO','DCNO']];return{selectedKind:selected?.kind||'APP',selectedRowKey:selected?.rowKey||'',elementTypes:kinds.map(([kind,label])=>{const typed=active.filter((row)=>row.kind===kind),typedIssues=issues.filter((issue)=>typed.some((row)=>String(issue.fieldKey).startsWith(`${row.rowKey}.`)));return{kind,label,count:typed.length,issueCount:typedIssues.filter((issue)=>['needs_input','blocking'].includes(issue.state)).length,warningCount:typedIssues.filter((issue)=>issue.state==='waived').length,disabled:typed.length===0,reason:typed.length?'':`本批没有 ${label} 行。`};}),elements:rows.map((row)=>{const rowIssues=issues.filter((issue)=>String(issue.fieldKey).startsWith(`${row.rowKey}.`));return{rowKey:row.rowKey,kind:row.kind,elementId:row.elementId,label:`${row.elementId} · ${row.sourceSheet}:${row.sourceRow}`,sourceSheet:row.sourceSheet,sourceRow:row.sourceRow,issueCount:rowIssues.filter((issue)=>['needs_input','blocking'].includes(issue.state)).length,warningCount:rowIssues.filter((issue)=>issue.state==='waived').length,derivedDisplay:`${deriveGraName(row.elementId)} / ${String(row.fields[descriptionRawField(row.kind)]||row.elementId)}`,inheritanceDecision:row.inheritanceDecision||null,blocking:rowIssues.some((issue)=>['needs_input','blocking'].includes(issue.state)),excluded:(parsed.excludedRowKeys||[]).includes(row.rowKey)};}),fields,issueOrder:issues.filter((issue)=>['needs_input','blocking'].includes(issue.state)).map((issue)=>{const row=rows.find((candidate)=>String(issue.fieldKey).startsWith(`${candidate.rowKey}.`));return{issueId:issue.issueId,rowKey:row?.rowKey||'',fieldKey:issue.fieldKey,severity:'error',message:issue.message};})};
 }
 function reviewSurface(latest,plan,compiled,message){const parsed=plan.parsed,progress=progressSurface(latest,parsed),validation=validationPresentation(parsed,plan.liveValidation||{}),returnBlocked=reviewBlocked(parsed,plan.liveValidation||{}),activeCount=activeRows(parsed).length;return{stateVersion:Number(latest.run.state_revision),status:returnBlocked?'blocked':'ready',statusMessage:message,scopes:progress.scopes,items:progress.items,workflow:progress.workflow,progress:validation.progress,issues:validation.issues,review:reviewPresentation(parsed),editors:[],artifacts:[],actions:[
   {actionId:'download-source-template',enabled:false,reason:'校验步骤不显示上传动作。'},{actionId:'stage-source-workbook',enabled:false,reason:'请先返回上传。'},{actionId:'confirm-upload',enabled:false,reason:'当前资料已经确认。'},{actionId:'validate-staged-upload',enabled:false,reason:'当前校验已经完成。'},
@@ -725,9 +759,10 @@ function uploadSurface(latest,message,fresh=false){
     ...workflowNavigationActions(latest,'upload'),{actionId:'apply-revisions',enabled:false,reason:'等待校验。'},{actionId:'remove-batch-row',enabled:false,reason:'等待校验。'},{actionId:'revalidate-all',enabled:false,reason:'等待校验。'},{actionId:'prepare-return',enabled:false,reason:'等待校验通过。'},
     {actionId:'confirm-return',enabled:false,reason:'请先提交审核并冻结回传计划。'},{actionId:'continue-return',enabled:false,reason:'当前没有可继续的冻结计划。'},{actionId:'reconcile-return',enabled:false,reason:'当前没有待核验的写入结果。'}]};
 }
-function processingSurface(latest,message){
-  const labels=[['template_structure','模板结构可识别'],['required_fields','必填项目已填写'],['valid_values','名称与填写内容合法'],['unique_names','批次内元素 ID 与 GRA 名称唯一'],['omnia_id_conflicts','已核验当前 Pack 与回收站中的同名元素影响'],['infrastructure_links','基础设施已关联系统'],['infrastructure_rait','多系统 RAIT 按 Higher 优先归并'],['relationship_targets','关联目标可解析且类型正确'],['workspace_presence','Omnia 工作区已填写'],['factors_considered_ai_review','Factors Considered 智能复核'],['workspace_live','Omnia 工作区名称实时有效']];
-  return{stateVersion:Number(latest.run.state_revision),status:'loading',statusMessage:message,scopes:[],items:[],workflow:workflowSurface(latest),progress:{label:'校验进度',completed:0,total:labels.length,percent:0,state:'running',message:'正在校验 0/11',items:labels.map(([itemId,label])=>({itemId,label,state:'pending',detail:'等待后台校验。'}))},issues:[],editors:[],artifacts:[],clearFields:['review'],actions:[
+function processingSurface(latest,message,validationProgress=null){
+  const completedResults=new Map((Array.isArray(validationProgress?.results)?validationProgress.results:[]).map((item)=>[String(item.itemId),item]));
+  const completed=completedResults.size,total=VALIDATION_CHECK_LABELS.length;
+  return{stateVersion:Number(latest.run.state_revision),status:'loading',statusMessage:message,scopes:[],items:[],workflow:workflowSurface(latest),progress:{label:'校验进度',completed,total,percent:Math.floor(completed*100/total),state:'running',message:`正在校验 ${completed}/${total}`,items:VALIDATION_CHECK_LABELS.map(([itemId,label])=>{const result=completedResults.get(itemId);return{itemId,label,state:result?.state||'pending',detail:result?.detail||'等待后台校验。'};})},issues:[],editors:[],artifacts:[],clearFields:['review'],actions:[
     {actionId:'download-source-template',enabled:false,reason:'正在校验。'},{actionId:'stage-source-workbook',enabled:false,reason:'正在校验。'},{actionId:'confirm-upload',enabled:false,reason:'已确认上传。'},{actionId:'validate-staged-upload',enabled:true,reason:''},...workflowNavigationActions(latest,'validate'),{actionId:'apply-revisions',enabled:false,reason:'正在校验。'},{actionId:'remove-batch-row',enabled:false,reason:'正在校验。'},{actionId:'revalidate-all',enabled:false,reason:'正在校验。'},{actionId:'prepare-return',enabled:false,reason:'正在校验。'},
     {actionId:'confirm-return',enabled:false,reason:'请先提交审核并冻结回传计划。'},{actionId:'continue-return',enabled:false,reason:'当前没有可继续的冻结计划。'},{actionId:'reconcile-return',enabled:false,reason:'当前没有待核验的写入结果。'}]};
 }
@@ -811,6 +846,12 @@ function createFeatureWorker(dependencies) {
   const store = dependencies.store;
   const forceCancelledRuns=new Set();
   const connector = dependencies.connector;
+  // The Feature has row-level and within-GRA parallelism, while Connector Next
+  // exposes eight execution lanes. Limit only each individual signed Operation
+  // call (never a whole row or dependency stage), so nested work cannot retain
+  // a permit while waiting for another permit and the durable remote queue is
+  // not overfilled by dozens of command promises.
+  const withRemoteOperationPermit = createFifoOperationLimiter(RETURN_MAX_CONCURRENCY);
   const ai = dependencies.ai;
   const {createPythonSidecarBridge}=require('./create-associate-python-bridge.cjs');
   const python=createPythonSidecarBridge({ports:dependencies,maxFrameBytes:1024*1024,requestTimeoutMs:120000,heartbeatIntervalMs:5000,heartbeatTimeoutMs:15000});
@@ -941,8 +982,8 @@ function createFeatureWorker(dependencies) {
   }
 
   async function invoke(operationId, connectorBinding, request) {
-    return connector.invoke({ schemaVersion: 'omnia.operation-invocation/v1', featureId: FEATURE_ID,
-      featureVersion: FEATURE_VERSION, operationId, request: { connectorBinding, ...request } });
+    return withRemoteOperationPermit(() => connector.invoke({ schemaVersion: 'omnia.operation-invocation/v1', featureId: FEATURE_ID,
+      featureVersion: FEATURE_VERSION, operationId, request: { connectorBinding, ...request } }));
   }
   async function resolveExternalApplicationTarget(connectorBinding, workspaceIds, externalId) {
     const candidates = new Map(); const diagnostics = [];
@@ -1149,15 +1190,19 @@ function createFeatureWorker(dependencies) {
       return{state:'warning',reason};
     }
   }
-  async function runReviewLiveValidation(checkpoint,context){
+  async function runReviewLiveValidation(checkpoint,context,onCheck=async()=>{}){
     checkpoint.parsed.issues=(checkpoint.parsed.issues||[]).filter((candidate)=>candidate.origin!=='live_validation'&&!String(candidate.issueId||'').startsWith('live-'));
     const aiReview=await runFactorsConsideredAiReview(checkpoint);
+    await onCheck('factors_considered_ai_review',aiReview);
     let relationTargets=[];
     const withAiReview=(checks)=>({...checks,factors_considered_ai_review:aiReview,relationTargets});
+    const reportLiveChecks=async(checks)=>{for(const checkId of ['workspace_live','omnia_id_conflicts','relationship_targets','infrastructure_rait'])await onCheck(checkId,checks[checkId]);};
     const liveIssue=(code,fieldKey,issueType,state,message,checkId)=>{const created=issue('live_validation',code,fieldKey,issueType,state,message,checkId);created.issueId=issueId('live_validation',`${checkpoint.parsed.issueNamespace||checkpoint.planId||'legacy'}|${code}`,fieldKey);return created;};
     const failedLiveChecks=(reason)=>({omnia_id_conflicts:{state:'failed',reason},relationship_targets:{state:'failed',reason},infrastructure_rait:{state:'failed',reason},workspace_live:{state:'failed',reason}});
-    const binding=context?.connectorBinding,safety=context?.safetyLock;if(!binding?.connectorId||Number(binding.sessionGeneration)<1||!binding.engagementId){const reason='当前没有可用的 Remote Connector binding，无法执行 APP 身份/回收站、非 APP 活动对象、关系目标类型与工作区实时检查；连接后可在原 Run 重试。';checkpoint.parsed.issues.push(liveIssue('LIVE.WORKSPACE_UNAVAILABLE','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return withAiReview(failedLiveChecks(reason));}if(!Array.isArray(safety?.workspaceIds)||!safety.workspaceIds.length){const reason='当前 Pack Workspace 安全范围为空，无法执行 APP 身份/回收站、非 APP 活动对象、关系目标类型与工作区实时检查；请启用安全范围后在原 Run 重新校验。';checkpoint.parsed.issues.push(liveIssue('LIVE.SAFETY_SCOPE_UNAVAILABLE','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return withAiReview(failedLiveChecks(reason));}
-    try{const query=authorityRequest(checkpoint,context).query;const authority=await invoke(RETURN_OPERATIONS.authority,binding,{allowedWorkspaceIds:safety.workspaceIds,query});const byName=new Map((authority.workspaces||[]).map((item)=>[String(item.name).normalize('NFKC'),item.workspaceId]));const missing=query.workspaceNames.filter((name)=>!byName.has(String(name).normalize('NFKC')));if(missing.length){const reason=`Omnia 工作区实时不存在或不在安全范围：${missing.join(', ')}；因此 APP 身份/回收站、非 APP 活动对象与关系目标类型检查未执行。`;checkpoint.parsed.issues.push(liveIssue('LIVE.WORKSPACE_NOT_FOUND','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return withAiReview(failedLiveChecks(reason));}
+    const binding=context?.connectorBinding,safety=context?.safetyLock;if(!binding?.connectorId||Number(binding.sessionGeneration)<1||!binding.engagementId){const reason='当前没有可用的 Remote Connector binding，无法执行 APP 身份/回收站、非 APP 活动对象、关系目标类型与工作区实时检查；连接后可在原 Run 重试。';checkpoint.parsed.issues.push(liveIssue('LIVE.WORKSPACE_UNAVAILABLE','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));const checks=failedLiveChecks(reason);await reportLiveChecks(checks);return withAiReview(checks);}if(!Array.isArray(safety?.workspaceIds)||!safety.workspaceIds.length){const reason='当前 Pack Workspace 安全范围为空，无法执行 APP 身份/回收站、非 APP 活动对象、关系目标类型与工作区实时检查；请启用安全范围后在原 Run 重新校验。';checkpoint.parsed.issues.push(liveIssue('LIVE.SAFETY_SCOPE_UNAVAILABLE','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));const checks=failedLiveChecks(reason);await reportLiveChecks(checks);return withAiReview(checks);}
+    try{const query=authorityRequest(checkpoint,context).query;const authority=await invoke(RETURN_OPERATIONS.authority,binding,{allowedWorkspaceIds:safety.workspaceIds,query});const byName=new Map((authority.workspaces||[]).map((item)=>[String(item.name).normalize('NFKC'),item.workspaceId]));const missing=query.workspaceNames.filter((name)=>!byName.has(String(name).normalize('NFKC')));if(missing.length){const reason=`Omnia 工作区实时不存在或不在安全范围：${missing.join(', ')}；因此 APP 身份/回收站、非 APP 活动对象与关系目标类型检查未执行。`;checkpoint.parsed.issues.push(liveIssue('LIVE.WORKSPACE_NOT_FOUND','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));const checks=failedLiveChecks(reason);await reportLiveChecks(checks);return withAiReview(checks);}
+      const workspaceCheck={state:'passed',reason:`${query.workspaceNames.length} 个本次上传元素所属工作区已按当前 Pack 权威目录精确匹配。`};
+      await onCheck('workspace_live',workspaceCheck);
       checkpoint.liveIdentityResolutions={};
       let ownedRecoveries=0,creatable=0,nameConflicts=0,identityBlocks=0;
       for(const row of activeRows(checkpoint.parsed)){
@@ -1257,8 +1302,10 @@ function createFeatureWorker(dependencies) {
       const relationshipWarning=crossWorkspaceWarnings+externalWarnings>0;
       const relationshipReason=targetFailed?`存在 ${liveTargetFailures} 个未通过当前 Pack 精确身份校验的 APP 关系目标。`:`全部关系目标均已解析为当前 Pack 中唯一且活动的 APP；其中 ${externalWarnings} 个来自本次上传批次之外，${crossWorkspaceWarnings} 个跨工作区，仅作提醒。`;
       const inheritanceReason=raitFailed?'存在缺失/无效继承 RAIT，或 APP 来源未通过当前 Pack 的精确身份与 RAIT 校验。':mixedRaitWarnings?`${mixedRaitWarnings} 个元素关联的 APP 同时包含 Higher 与 Lower，已按 Higher 优先自动设为 Higher。`:'所有继承 RAIT 均来自当前 Pack 中精确验证的 APP。';
-      return withAiReview({omnia_id_conflicts:{state:conflictsFailed?'failed':'passed',reason:conflictReason},relationship_targets:{state:targetFailed?'failed':relationshipWarning?'warning':'passed',reason:relationshipReason},infrastructure_rait:{state:raitFailed?'failed':mixedRaitWarnings?'warning':'passed',reason:inheritanceReason},workspace_live:{state:'passed',reason:`${query.workspaceNames.length} 个本次上传元素所属工作区已按当前 Pack 权威目录精确匹配。`}});
-    }catch(error){const reason=`实时校验失败（APP 身份/回收站、非 APP 活动对象、关系目标类型或工作区检查未闭合；可在原 Run 重试）：${String(error.message||error)}`;checkpoint.parsed.issues.push(liveIssue('LIVE.VALIDATION_FAILED','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));return withAiReview(failedLiveChecks(reason));}
+      const checks={omnia_id_conflicts:{state:conflictsFailed?'failed':'passed',reason:conflictReason},relationship_targets:{state:targetFailed?'failed':relationshipWarning?'warning':'passed',reason:relationshipReason},infrastructure_rait:{state:raitFailed?'failed':mixedRaitWarnings?'warning':'passed',reason:inheritanceReason},workspace_live:workspaceCheck};
+      for(const checkId of ['omnia_id_conflicts','relationship_targets','infrastructure_rait'])await onCheck(checkId,checks[checkId]);
+      return withAiReview(checks);
+    }catch(error){const reason=`实时校验失败（APP 身份/回收站、非 APP 活动对象、关系目标类型或工作区检查未闭合；可在原 Run 重试）：${String(error.message||error)}`;checkpoint.parsed.issues.push(liveIssue('LIVE.VALIDATION_FAILED','global.workspace_live','contract_mismatch','blocking',reason,'workspace_live'));const checks=failedLiveChecks(reason);await reportLiveChecks(checks);return withAiReview(checks);}
   }
   async function buildReturnPreparation(checkpoint, context) {
     if(reviewBlocked(checkpoint.parsed,checkpoint.liveValidation||{})) fail('RETURN.REVIEW_BLOCKED','Canonical Review contains a failed or pending check; prepare-return is forbidden.');
@@ -1619,7 +1666,7 @@ function createFeatureWorker(dependencies) {
           && String(descriptor.traceId||'')===String(run.trace_id)
           && String(descriptor.artifactId||'')===String(run.source_artifact_id||'');
         if(resumable){
-          recoveredSurfacePatch=processingSurface(latest,'已恢复已确认的系统信息文件；后台校验将从尚未提交的 processing 阶段安全启动。');
+          recoveredSurfacePatch=processingSurface(latest,'已恢复已确认的系统信息文件；后台校验将从尚未提交的 processing 阶段安全启动。',checkpoint.validationProgress||null);
         }else{
           const revision=await store.call('transitionRun',{runId:String(run.run_id),expectedRevision:Number(run.state_revision),toState:'failed',eventType:'run.processing_recovery_rejected',error:'Persisted processing Run and staged plan identity drifted; background validation was not replayed.',details:{interruptedStage:'processing',stageState:String(checkpoint?.stageState||''),replay:false}});
           latest=await store.call('loadLatestRun',{});run=latest.run;const progress=progressSurface(latest);
@@ -2122,11 +2169,17 @@ function createFeatureWorker(dependencies) {
             // preflight evidence instead of issuing the identical remote read
             // a second time. The signed mutation handler's action-time checks
             // and the post-effect authoritative read-back remain unchanged.
+            const receiptBoundCreatePreflight=spec.claimCreateReservation===true;
+            if(receiptBoundCreatePreflight)await freezeRead(command.commandId,spec.preflightOperation,{...spec.preflightRequest,planDigest});
             before = spec.preflightResult === undefined
-              ? await invoke(spec.preflightOperation, binding, { ...spec.preflightRequest, planDigest })
+              ? await invoke(spec.preflightOperation, binding, { ...spec.preflightRequest, planDigest,
+                ...(receiptBoundCreatePreflight?{receiptContext:{runId,commandId:command.commandId}}:{}) })
               : spec.preflightResult;
             if (spec.acceptPreflight && !spec.acceptPreflight(before)) fail('RETURN.PREFLIGHT_BLOCKED', `Preflight blocked ${spec.targetKey}.`);
             await evidence(command.commandId, 'preflight', 'prepared', before, true);
+            if(receiptBoundCreatePreflight)await store.call('bindMutationReservationEvidence',{runId,commandId:command.commandId,
+              operationId:spec.preflightOperation,receiptId:String(before?.__operationReceiptId||''),
+              evidenceRequest:{connectorBinding:binding,...spec.preflightRequest,planDigest}});
           } catch (error) {
             await evidence(command.commandId, 'preflight', 'failed', { code: error.code || 'RETURN.PREFLIGHT_FAILED', message: error.message }, false, error.message);
             signalTerminal(error);throw error;
@@ -2278,7 +2331,8 @@ function createFeatureWorker(dependencies) {
                 ...(row.objectType==='Infrastructure'||row.objectType==='ITTool'?{typeId:row.subtypeId}:{}) };
               objectResult = await verifiedMutation({ targetKey: `object|${row.rowKey}`, target: row.objectTarget,
                 preflightOperation: RETURN_OPERATIONS.objectCreatePreflight, preflightRequest: { target: row.objectTarget, query: row.objectQuery },
-                acceptPreflight:(observed)=>observed.disposition==='create',
+                claimCreateReservation:true,
+                acceptPreflight:(observed)=>completeObjectCreateAbsence(observed,row.objectType),
                 reconcileOperation:RETURN_OPERATIONS.objectIdentityResolve,reconcileRequest:{target:row.objectTarget,query:row.objectQuery},
                 mutationOperation: RETURN_OPERATIONS.objectCreate, mutationPayload: payload, commandKind: 'create_object',
                 readOperation: RETURN_OPERATIONS.objectRead, readRequest: (response) => ({ target: row.objectTarget, objectId: responseId(response, 'created IT Element'),query:{externalId:row.elementId,objectType:row.objectType,...(row.objectType==='Application'?{description}:{subtypeId:row.subtypeId})} }),
@@ -2345,7 +2399,8 @@ function createFeatureWorker(dependencies) {
               readRequest: { target: graTarget, riskAssessmentId: graId,query:{entityId:objectId,name:row.graName,itElementType:row.objectType,inkContentId:row.content.inkContentId,typeId:row.content.typeId} }, verify: (value) => responseId(value, 'GRA read-back') === graId });
             else graResult = await verifiedMutation({ targetKey: `gra|${row.rowKey}`, target: graTarget,
               preflightOperation: RETURN_OPERATIONS.graPreflight, preflightRequest: graPreflightRequest,
-              acceptPreflight:(observed)=>observed.found===false,
+              claimCreateReservation:true,
+              acceptPreflight:completeGraCreateAbsence,
               mutationOperation: RETURN_OPERATIONS.graCreate, commandKind: 'create_gra', mutationPayload: {
                 inkContentId: row.content.inkContentId, typeId: row.content.typeId, facetId: row.workspaceId,
                 entityId: objectId, name: row.graName, engagementId: binding.engagementId
@@ -2738,7 +2793,24 @@ function createFeatureWorker(dependencies) {
       let compiled,output,unresolved;
       try{
         compiled = await compileInstance(parsed, descriptor, runId, traceId); output=compiled.output;
-        const checkpoint={...stagedPlan,planId:runId,runId,traceId,descriptor,parsed,stageState:'validated',reviewNavigation:'review',createdAt:stagedPlan.createdAt||new Date().toISOString(),updatedAt:new Date().toISOString()};checkpoint.liveValidation=await runReviewLiveValidation(checkpoint,input.context);checkpoint.planIr=await compilePlanIr(parsed,runId,checkpoint.liveValidation);
+        const checkpoint={...stagedPlan,planId:runId,runId,traceId,descriptor,parsed,stageState:'processing',reviewNavigation:'review',createdAt:stagedPlan.createdAt||new Date().toISOString(),updatedAt:new Date().toISOString(),validationProgress:{schemaVersion:'omnia.feature-validation-progress/v1',total:VALIDATION_CHECK_LABELS.length,results:[]}};
+        const validationResultIds=new Set();
+        const publishValidationCheck=async(itemId,result)=>{
+          if(validationResultIds.has(itemId))return;
+          const state=['passed','warning','failed','skipped'].includes(String(result?.state||''))?String(result.state):'failed';
+          const detail=String(result?.reason||result?.detail||'校验未返回有效结果。').slice(0,2000);
+          validationResultIds.add(itemId);
+          checkpoint.validationProgress.results.push({itemId,state,detail});
+          checkpoint.updatedAt=new Date().toISOString();
+          await store.call('savePlan',checkpoint);
+        };
+        const localValidation=validationPresentation(parsed,{}),localById=new Map(localValidation.progress.items.map((item)=>[item.itemId,item]));
+        for(const itemId of ['template_structure','required_fields','valid_values','unique_names','infrastructure_links','workspace_presence']){
+          const item=localById.get(itemId);await publishValidationCheck(itemId,{state:item?.state||'failed',detail:item?.detail||'本地校验结果缺失。'});
+        }
+        checkpoint.liveValidation=await runReviewLiveValidation(checkpoint,input.context,publishValidationCheck);
+        if(checkpoint.validationProgress.results.length!==VALIDATION_CHECK_LABELS.length)fail('VALIDATION.PROGRESS_INCOMPLETE','Validation finished without publishing every signed check result.');
+        checkpoint.planIr=await compilePlanIr(parsed,runId,checkpoint.liveValidation);checkpoint.stageState='validated';
         await store.call('recordFieldRevisions', { runId, templateInstanceId: compiled.templateInstanceId, fields: parsed.candidates });
         await store.call('recordIssues', { runId, issues: parsed.issues });
         await store.call('savePlan', checkpoint);
@@ -2754,4 +2826,4 @@ function createFeatureWorker(dependencies) {
 }
 
 module.exports = { createFeatureWorker, parseV8, zipEntries, V8_SHA256,AI_REVIEW_DISPLAY_LANGUAGE,AI_REVIEW_LANGUAGE_VERSION,isChineseAiReviewDisplayText,assertChineseAiReviewDisplayText,aiReviewItemUsesChineseDisplayText,assertAiReviewOutputUsesChineseDisplayText,deriveGraName,validationPresentation,reviewPresentation,reviewBlocked,freezeAppDataAvailability,resolveFrozenAppDataAvailability,exactApplicationSettingsIdentity,workflowSurface,uploadSurface,terminalRunReturnsToFreshUpload,normalizeRait,applyLiveVerifiedInfrastructureInheritance,applicationIdentityRequest,inspectApplicationIdentity,RETURN_OPERATIONS,
-  buildFrozenDependencyGraph,dependencyBlockedByFailure,returnExecutionPolicy,aiReviewEligibleRows,frozenStageNodes,freezePlanCapabilities,frozenReturnIntents,assertReturnPlanCapabilities,authorityContentNameFor,governedCatalogDescription,catalogIdentityEvidenceGaps,riskControlCatalogFingerprint,catalogControlMatches,unresolvedCatalogRelations,workflowNavigationActions,returnSurface,forceCancelReturnRun,closeRunForFreshStart };
+  buildFrozenDependencyGraph,dependencyBlockedByFailure,returnExecutionPolicy,createFifoOperationLimiter,completeObjectCreateAbsence,completeGraCreateAbsence,aiReviewEligibleRows,frozenStageNodes,freezePlanCapabilities,frozenReturnIntents,assertReturnPlanCapabilities,authorityContentNameFor,governedCatalogDescription,catalogIdentityEvidenceGaps,riskControlCatalogFingerprint,catalogControlMatches,unresolvedCatalogRelations,workflowNavigationActions,returnSurface,forceCancelReturnRun,closeRunForFreshStart };

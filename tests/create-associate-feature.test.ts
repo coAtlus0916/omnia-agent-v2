@@ -92,6 +92,13 @@ function correctiveGovernance(legacy:any):any {
   return governance;
 }
 
+function activateCreateFixture(database:CoreDatabase,version='0.1.0'):void{
+  database.db.prepare(`INSERT INTO feature_registry(feature_id,feature_version,lifecycle,package_digest,publisher_key_id,health,activated_at) VALUES('omnia.create-associate',?,'active',?,'test-key','healthy',?)`)
+    .run(version,`sha256:${'9'.repeat(64)}`,new Date().toISOString());
+  database.db.prepare(`INSERT INTO feature_activation_heads(feature_id,feature_version,activation_generation,runtime_enabled,runtime_reason,package_path,package_digest,updated_at) VALUES('omnia.create-associate',?,1,1,'','test-package',?,?)`)
+    .run(version,`sha256:${'9'.repeat(64)}`,new Date().toISOString());
+}
+
 test('returning Run exposes real force-cancel and restart controls, then closes by CAS without rolling back verified effects',async()=>{
   const runId='af8a6e87-4968-4a48-a183-ffa2190e92f3';
   const returnProgress=Array.from({length:88},(_item,index)=>({target_key:`target-${index}`,state:index<53?'verified':'frozen',command_state:index<53?'readback_verified':'pending'}));
@@ -164,9 +171,10 @@ test('hidden surface-reopen fresh start mirrors safe eligibility and closes the 
 });
 
 test('force-cancel terminal CAS blocks every later Return command and keeps restart available',()=>{
-  const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'omnia-force-cancel-return-'));const paths=resolveProductPaths(temporary);const database=new CoreDatabase(paths.database,cipher);const store=new FeatureRuntimeStore(database.db,paths);
+  const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'omnia-force-cancel-return-'));const paths=resolveProductPaths(temporary);const database=new CoreDatabase(paths.database,cipher);new FeaturePackageManager(database.db,paths);const store=new FeatureRuntimeStore(database.db,paths);
   const runId='af8a6e87-4968-4a48-a183-ffa2190e92f3',now=new Date().toISOString();const context={featureId:'omnia.create-associate',featureVersion:'0.1.0',allowMutation:true};
   try{
+    activateCreateFixture(database);
     database.db.prepare(`INSERT INTO feature_runs(run_id,trace_id,feature_id,feature_version,engagement_id,state,state_revision,source_artifact_id,template_version_id,output_artifact_id,plan_digest,last_error,created_at,updated_at) VALUES(?,?,'omnia.create-associate','0.1.0','','returning',7,'','','',?,'',?,?)`).run(runId,crypto.randomUUID(),'a'.repeat(64),now,now);
     const revision=store.call('transitionRun',{runId,expectedRevision:7,toState:'failed',eventType:'return.force_cancelled',error:'用户强制取消；已验证 53/88 项保持不变。',details:{verifiedTargets:53,totalTargets:88,remainingTargets:35,remoteRollback:false,mutationReplay:false}},context);
     assert.equal(revision,8);
@@ -819,11 +827,13 @@ test('signed core Operations enforce exact IT Element, GRA, and relationship pre
 test('Core Return store rejects forged verification, illegal transitions, authority drift, and incomplete success', () => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'omnia-return-store-'));
   const paths = resolveProductPaths(temporary); const database = new CoreDatabase(paths.database, cipher);
+  new FeaturePackageManager(database.db, paths);
   const store = new FeatureRuntimeStore(database.db, paths); const context = { featureId: 'omnia.create-associate', featureVersion: '0.1.0', allowMutation: true };
   const runId = '51515151-5151-4151-8151-515151515151'; const workspaceId = '52525252-5252-4252-8252-525252525252';
   const engagementId = '53535353-5353-4353-8353-535353535353'; const planDigest = 'a'.repeat(64); const now = new Date().toISOString();
   const binding = { connectorId: 'connector-1', sessionGeneration: 7, engagementId, authorityInstanceId: 'authority-1', tenantOrOrgId: 'tenant-1', packId: 'pack-1' };
   const authorityDigest = sha256(Buffer.from(canonicalJson({ ...binding, workspaceIds: [workspaceId] })));
+  activateCreateFixture(database);
   database.db.prepare(`UPDATE workspace_safety SET enabled=1,engagement_id=?,workspace_ids_json=?,state_version=2 WHERE singleton=1`).run(engagementId, JSON.stringify([workspaceId]));
   database.db.prepare(`INSERT INTO feature_runs(run_id,trace_id,feature_id,feature_version,engagement_id,state,state_revision,source_artifact_id,template_version_id,output_artifact_id,plan_digest,last_error,created_at,updated_at) VALUES(?,?,'omnia.create-associate','0.1.0',?,'returning',3,'','','',?,'',?,?)`)
     .run(runId, '54545454-5454-4454-8454-545454545454', engagementId, planDigest, now, now);
@@ -838,13 +848,14 @@ test('Core Return store rejects forged verification, illegal transitions, author
     const description=JSON.stringify({editorData:'<p>APP-1</p>',suggestionsData:[],trackChangesEnableFlagInEditor:false,plainText:'APP-1'}); const mutationRequest={name:'APP-1',number:'APP-1',workspaceId,itElementType:'Application',description};
     assert.throws(()=>store.call('prepareReturnCommand',{runId,planDigest,targetKind:'object',targetKey,operationId:'omnia.create-associate.object.create.v1',request:{...mutationRequest,number:'APP-DRIFT'},evidenceOperationIds:[evidenceOperationId],evidenceTargetIdentityKey:operationTargetIdentityKey,binding,workspaceIds:[workspaceId]},context),/commandIntentValid=false/);
     const command = store.call('prepareReturnCommand', { runId, planDigest, targetKind: 'object', targetKey, operationId: 'omnia.create-associate.object.create.v1', request: mutationRequest, evidenceOperationIds:[evidenceOperationId],evidenceTargetIdentityKey:operationTargetIdentityKey,binding, workspaceIds: [workspaceId] }, context) as any;
-    assert.throws(()=>store.call('prepareReturnCommand',{runId,planDigest,targetKind:'object',targetKey,operationId:'omnia.create-associate.object.create.v1',request:mutationRequest,evidenceOperationIds:[evidenceOperationId],evidenceTargetIdentityKey:operationTargetIdentityKey,binding,workspaceIds:[workspaceId]},context),/approved immutable intent|already claimed/);
+    const resumedCommand=store.call('prepareReturnCommand',{runId,planDigest,targetKind:'object',targetKey,operationId:'omnia.create-associate.object.create.v1',request:mutationRequest,evidenceOperationIds:[evidenceOperationId],evidenceTargetIdentityKey:operationTargetIdentityKey,binding,workspaceIds:[workspaceId]},context) as any;
+    assert.equal(resumedCommand.commandId,command.commandId,'an exact prepared command must resume instead of creating or rejecting a duplicate');
     assert.equal((database.db.prepare(`SELECT COUNT(*) AS count FROM feature_commands WHERE intent_id=?`).get(command.intentId) as any).count,1);
     const competingRun='67676767-6767-4767-8767-676767676767',competingPlan='e'.repeat(64),competingIntent='68686868-6868-4868-8868-686868686868';
     database.db.prepare(`INSERT INTO feature_runs(run_id,trace_id,feature_id,feature_version,engagement_id,state,state_revision,source_artifact_id,template_version_id,output_artifact_id,plan_digest,last_error,created_at,updated_at) VALUES(?,?,'omnia.create-associate','0.1.0',?,'returning',3,'','','',?,'',?,?)`).run(competingRun,'69696969-6969-4969-8969-696969696969',engagementId,competingPlan,now,now);
     database.db.prepare(`INSERT INTO feature_confirmations(confirmation_id,run_id,message_id,plan_digest,connector_id,session_generation,engagement_id,authority_instance_id,tenant_or_org_id,pack_id,safety_revision,credential_digest,preflight_digest,confirmation_token_digest,decision,actor_id,decision_at,consumed_command_id,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'approved','local-user',?,'',?,?)`).run('70707070-7070-4070-8070-707070707070',competingRun,`return:${competingRun}`,competingPlan,binding.connectorId,binding.sessionGeneration,engagementId,binding.authorityInstanceId,binding.tenantOrOrgId,binding.packId,2,authorityDigest,'f'.repeat(64),'1'.repeat(64),now,'2099-01-01T00:00:00.000Z',now);
     database.db.prepare(`INSERT INTO managed_content_intents(intent_id,run_id,plan_digest,target_kind,target_key,intended_revision_json,state,created_at,updated_at) VALUES(?,?,?,?,?,?,'frozen',?,?)`).run(competingIntent,competingRun,competingPlan,'object',targetKey,JSON.stringify({kind:'object',key:targetKey,workspace:workspaceId,objectType:'Application',externalId:'APP-1',description:'APP-1',disposition:'create',mutationOperationId:'omnia.create-associate.object.create.v1',operationTargetIdentityKey,evidenceOperationIds:[evidenceOperationId]}),now,now);
-    assert.throws(()=>store.call('prepareReturnCommand',{runId:competingRun,planDigest:competingPlan,targetKind:'object',targetKey,operationId:'omnia.create-associate.object.create.v1',request:mutationRequest,evidenceOperationIds:[evidenceOperationId],evidenceTargetIdentityKey:operationTargetIdentityKey,binding,workspaceIds:[workspaceId]},context),/durable mutation reservation/);
+    assert.throws(()=>store.call('prepareReturnCommand',{runId:competingRun,planDigest:competingPlan,targetKind:'object',targetKey,operationId:'omnia.create-associate.object.create.v1',request:mutationRequest,evidenceOperationIds:[evidenceOperationId],evidenceTargetIdentityKey:operationTargetIdentityKey,binding,workspaceIds:[workspaceId]},context),/owns an active create mutation/);
     const staleKey='object|row-stale',staleIdentity='target-object-row-stale',staleRequest={...mutationRequest,name:'APP-STALE',number:'APP-STALE',description:JSON.stringify({editorData:'<p>APP-STALE</p>',suggestionsData:[],trackChangesEnableFlagInEditor:false,plainText:'APP-STALE'})};
     const staleIntent=()=>JSON.stringify({kind:'object',key:staleKey,workspace:workspaceId,objectType:'Application',externalId:'APP-STALE',description:'APP-STALE',disposition:'create',mutationOperationId:'omnia.create-associate.object.create.v1',operationTargetIdentityKey:staleIdentity,evidenceOperationIds:[evidenceOperationId]});
     database.db.prepare(`INSERT INTO managed_content_intents(intent_id,run_id,plan_digest,target_kind,target_key,intended_revision_json,state,created_at,updated_at) VALUES(?,?,?,?,?,?,'frozen',?,?)`).run('71717171-7171-4171-8171-717171717171',runId,planDigest,'object',staleKey,staleIntent(),now,now);
@@ -856,6 +867,7 @@ test('Core Return store rejects forged verification, illegal transitions, author
     assert.throws(() => store.call('recordReturnEvidence', { runId, commandId: command.commandId, evidenceType: 'readback', commandState: 'readback_verified', payload: {verified:true}, verified: true }, context), /trusted Operation receipt/);
     assert.throws(() => store.call('recordReturnEvidence', { runId, commandId: command.commandId, evidenceType: 'commit', commandState: 'committed', payload: {}, verified: true }, context), /Illegal Return command transition/);
     store.call('recordReturnEvidence', { runId, commandId: command.commandId, evidenceType: 'preflight', commandState: 'prepared', payload: {}, verified: true }, context);
+    database.db.prepare(`UPDATE feature_mutation_reservations SET absence_receipt_id='fixture-authoritative-absence' WHERE owner_command_id=? AND lifecycle='active'`).run(command.commandId);
     store.call('recordReturnEvidence', { runId, commandId: command.commandId, evidenceType: 'request', commandState: 'submitted', payload: {}, verified: true }, context);
     store.call('recordReturnEvidence', { runId, commandId: command.commandId, evidenceType: 'commit', commandState: 'committed', payload: {}, verified: true }, context);
     const objectId='57575757-5757-4757-8757-575757575757';

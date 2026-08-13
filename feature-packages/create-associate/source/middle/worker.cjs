@@ -656,16 +656,22 @@ function workflowNavigationActions(latest,currentStepId){
   const intents=Array.isArray(latest?.returnProgress)?latest.returnProgress:[];
   const commandStarted=intents.filter((item)=>String(item.command_state||'pending')!=='pending'||['commanded','verified','uncertain','failed'].includes(String(item.state||''))).length;
   const uncertain=intents.filter((item)=>String(item.command_state||'')==='uncertain'||String(item.state||'')==='uncertain').length;
+  // A command in submitted/committed/verifying still has no conclusive
+  // read-only outcome, so the Core force-close gate refuses it just like an
+  // uncertain command. Mirror that exact gate here so the restart/force-cancel
+  // buttons never appear enabled for a Return the Core will reject.
+  const inFlight=intents.filter((item)=>['submitted','committed','verifying'].includes(String(item.command_state||''))).length;
   const stableRestart=['draft','acquiring','processing','needs_input','converting','validating_output','ready_for_review','waiting_confirmation','returning','verifying','succeeded','failed','cancelled','not_evaluable'].includes(state);
-  const forceCancellable=state==='returning'&&uncertain===0;
-  const restartEnabled=Boolean(run)&&stableRestart&&uncertain===0&&!alreadyRestarted;
+  const forceCancellable=state==='returning'&&uncertain===0&&inFlight===0;
+  const restartEnabled=Boolean(run)&&stableRestart&&uncertain===0&&inFlight===0&&!alreadyRestarted;
   const restartReason=!run?'当前没有需要重置的 Run。'
     :alreadyRestarted?'当前 Run 已保留审计并返回新的上传入口。'
       :forceCancellable?'先强制取消剩余回传调度，保留已写入并验证的 Omnia 数据与全部审计，再建立新的上传入口。'
         :restartEnabled?(state==='succeeded'||state==='failed'?'保留终态 Run、命令、回执和读回审计；下一次上传建立新 Run。':state==='verifying'?'结束剩余本地核验调度，保留所有命令、回执、读回和已验证远端写入；不回滚、不重放。':'CAS 结束当前流程并保留 Artifact、修订、确认和事件审计；下一次上传建立新 Run。')
         :state==='uncertain'?`存在 ${uncertain||commandStarted} 个结果不确定的命令；只能先执行只读核验，禁止重新开始。`
-          :['returning','verifying','reconciling'].includes(state)?`已有 ${commandStarted} 个命令进入写入或核验阶段；禁止取消或掩盖当前 Return。`
-            :'后台校验仍在运行；完成或失败关闭前禁止重新开始。';
+          :inFlight>0?`已有 ${inFlight} 个命令已提交写入但尚未得到结论；必须等待读回完成或核验，禁止取消或掩盖当前 Return。`
+            :['returning','verifying','reconciling'].includes(state)?`已有 ${commandStarted} 个命令进入写入或核验阶段；禁止取消或掩盖当前 Return。`
+              :'后台校验仍在运行；完成或失败关闭前禁止重新开始。';
   let previousEnabled=false;let previousReason='';
   if(currentStepId==='upload')previousReason='当前已是第一步，没有可返回的上一步。';
   else if(['needs_input','ready_for_review'].includes(state)){previousEnabled=true;previousReason='返回上传并保留当前 Run、Artifact、字段修订和排除状态。';}
@@ -673,6 +679,7 @@ function workflowNavigationActions(latest,currentStepId){
   else if(state==='waiting_confirmation')previousReason='冻结确认已经产生命令或回执，禁止返回上一步。';
   else if(state==='uncertain')previousReason=`存在 ${uncertain||commandStarted} 个结果不确定的命令；只能先执行只读核验。`;
   else if(forceCancellable){previousEnabled=true;previousReason=`强制停止剩余本地回传调度；已写入并验证的 ${intents.filter((item)=>String(item.state||'')==='verified'||['readback_verified','closed_not_applied'].includes(String(item.command_state||''))).length} 项不会回滚或重放。`;}
+  else if(inFlight>0)previousReason=`已有 ${inFlight} 个命令已提交写入但尚未得到结论；必须等待读回完成或核验，禁止返回上一步。`;
   else if(['returning','verifying','reconciling'].includes(state))previousReason=`已有 ${commandStarted} 个命令进入写入或核验阶段；禁止返回上一步。`;
   else if(['succeeded','failed','cancelled','not_evaluable'].includes(state))previousReason='当前 Run 已进入终态；可重新开始新上传，但不能改写既有流程历史。';
   else previousReason='后台校验仍在运行；完成前禁止返回上一步。';

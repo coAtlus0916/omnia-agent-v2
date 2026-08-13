@@ -146,6 +146,15 @@ test('hidden surface-reopen fresh start mirrors safe eligibility and closes the 
   const uncertainActions=worker.workflowNavigationActions({run:{run_id:'run-uncertain',state:'uncertain',state_revision:4},events:[],returnProgress:[{state:'uncertain',command_state:'uncertain'}]},'return');
   assert.equal(uncertainActions.find((item:any)=>item.actionId==='fresh-start-on-reopen').enabled,false);
 
+  // A command still in submitted/committed/verifying has no conclusive
+  // read-only outcome, so the Core force-close gate refuses it. The Surface
+  // must mirror that and not advertise restart/force-cancel as available.
+  const inFlightLatest:any={run:{run_id:'run-inflight',state:'returning',state_revision:9},events:[],returnProgress:[{state:'verified',command_state:'readback_verified'},{state:'submitted',command_state:'submitted'}]};
+  const inFlightActions=worker.workflowNavigationActions(inFlightLatest,'return');
+  assert.equal(inFlightActions.find((item:any)=>item.actionId==='restart-run').enabled,false,'restart must not appear enabled while a mutation is submitted without a conclusion');
+  assert.equal(inFlightActions.find((item:any)=>item.actionId==='back-to-upload').enabled,false,'force-cancel must not appear enabled while a mutation is submitted without a conclusion');
+  assert.match(inFlightActions.find((item:any)=>item.actionId==='restart-run').reason,/已提交写入但尚未得到结论/);
+
   let current={...latest.run};const calls:any[]=[];
   const store={call:async(method:string,input:any)=>{
     calls.push({method,input:structuredClone(input)});

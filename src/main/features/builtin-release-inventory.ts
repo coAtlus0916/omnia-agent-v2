@@ -147,13 +147,13 @@ export const COMPANY_LOOPBACK_CURRENT_FEATURE_RELEASE_INVENTORY: BuiltinFeatureR
     Object.freeze({
       delivery: 'shell-builtin-baseline',
       featureId: 'omnia.create-associate',
-      version: '0.2.135',
-      sequence: 137,
+      version: '0.2.146',
+      sequence: 148,
       sourceDirectory: 'create-associate',
-      filename: 'create-associate-0.2.135.ofp',
-      sourceRelativePath: 'feature-packages/create-associate/candidates/create-associate-0.2.135.ofp',
-      fileSha256: 'sha256:18d38abd14f0c7ec66a1600fac96aacc7d004cd4686d6508703fdaf13d12d969',
-      packageDigest: 'sha256:175536c2683c9856d92d57a676971ddc8467c78765f6440fa5ecb92f0d31bb20'
+      filename: 'create-associate-0.2.146.ofp',
+      sourceRelativePath: 'feature-packages/create-associate/candidates/create-associate-0.2.146.ofp',
+      fileSha256: 'sha256:ebcc175cfb148a29a69518a107a85091ba9af5654f64aa849810e5dca308677a',
+      packageDigest: 'sha256:42a97062e7f480ea9ef0bdc834dc8740ee85c94895b89454a5b1f974782f2958'
     }),
     Object.freeze({
       delivery: 'shell-builtin-baseline',
@@ -180,13 +180,13 @@ export const COMPANY_LOOPBACK_CURRENT_FEATURE_RELEASE_INVENTORY: BuiltinFeatureR
     Object.freeze({
       delivery: 'shell-builtin-baseline',
       featureId: 'omnia.workpaper-preparation',
-      version: '0.1.4',
-      sequence: 5,
+      version: '0.1.52',
+      sequence: 53,
       sourceDirectory: 'workpaper-preparation',
-      filename: 'workpaper-preparation-0.1.4.ofp',
-      sourceRelativePath: 'feature-packages/workpaper-preparation/candidates/workpaper-preparation-0.1.4.ofp',
-      fileSha256: 'sha256:b735bec9a6f4a09ca4efe95f44f7d6574e85117ad61282bd08eeb6075f8661b8',
-      packageDigest: 'sha256:0e0232a3b1514b0c3b9f28f996376cd5bd47246f57638807d233cd40bef64c3c'
+      filename: 'workpaper-preparation-0.1.52.ofp',
+      sourceRelativePath: 'feature-packages/workpaper-preparation/candidates/workpaper-preparation-0.1.52.ofp',
+      fileSha256: 'sha256:662cd856f301a1b42c437cbb3b2dabc9198b63b7d5e591c1b4031b4f5a741a4c',
+      packageDigest: 'sha256:1b905e81a6c2c248ebb17591bb101b2083a48726fc29bc1baef562035c9345b1'
     })
   ]),
   postInstallFeatures: Object.freeze([])

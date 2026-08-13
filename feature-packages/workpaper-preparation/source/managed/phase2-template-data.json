@@ -1,0 +1,306 @@
+{
+  "headers": [
+    "controlNumber",
+    "riskAssociationType",
+    "description",
+    "riskAssociationDescription",
+    "frequencyAndConsistency",
+    "levelOfAggregation",
+    "criteriaForInvestigation",
+    "dependentOnOtherControls",
+    "documentProcedureResults - TestOfDesign",
+    "designEffective",
+    "procedureTiming",
+    "procedureTimingRationale",
+    "frequencyOfPerformance",
+    "frequencyOfPerformanceExplanation",
+    "useRecommendedSampleSize",
+    "actualSampleSize",
+    "actualSampleSizeRationale",
+    "documentProcedureResults - OperatingEffectiveness程序1",
+    "documentProcedureResults - OperatingEffectiveness程序2",
+    "documentProcedureResults - OperatingEffectiveness程序3",
+    "documentProcedureResults - OperatingEffectiveness程序4",
+    "operatingEffectively"
+  ],
+  "directory": [
+    {
+      "code": "1.01",
+      "controlPoint": "AA通用",
+      "placeholder": "【系统名称】",
+      "example": "eg：金蝶系统"
+    },
+    {
+      "code": "1.02",
+      "controlPoint": "AA通用",
+      "placeholder": "【系统管理员名称】",
+      "example": "eg：李某"
+    },
+    {
+      "code": "1.03",
+      "controlPoint": "AA通用",
+      "placeholder": "【IT部门名称】",
+      "example": "eg：IT部"
+    },
+    {
+      "code": "1.04",
+      "controlPoint": "AA通用",
+      "placeholder": "【IT部门部长名称】",
+      "example": "eg：徐思思"
+    },
+    {
+      "code": "1.06",
+      "controlPoint": "AA通用",
+      "placeholder": "【审计期间开始日期】",
+      "example": "eg：2025/01/01"
+    },
+    {
+      "code": "1.07",
+      "controlPoint": "AA通用",
+      "placeholder": "【审计期间结束日期】",
+      "example": "eg：2025/08/31"
+    },
+    {
+      "code": "1.08",
+      "controlPoint": "AA通用",
+      "placeholder": "【抽样标准】",
+      "example": "eg：CSOX/ISA"
+    },
+    {
+      "code": "3.01",
+      "controlPoint": "APP.01",
+      "placeholder": "【历史执行情况01】",
+      "example": "eg：该控制本年首次测试or该控制在以前年度发现缺陷or该控制在以前年度未发现缺陷"
+    },
+    {
+      "code": "3.02",
+      "controlPoint": "APP.02",
+      "placeholder": "【历史执行情况02】",
+      "example": "eg：该控制本年首次测试or该控制在以前年度发现缺陷or该控制在以前年度未发现缺陷"
+    },
+    {
+      "code": "3.03",
+      "controlPoint": "APP.05",
+      "placeholder": "【历史执行情况05】",
+      "example": "eg：该控制本年首次测试or该控制在以前年度发现缺陷or该控制在以前年度未发现缺陷"
+    },
+    {
+      "code": "3.04",
+      "controlPoint": "APP.06",
+      "placeholder": "【历史执行情况06】",
+      "example": "eg：该控制本年首次测试or该控制在以前年度发现缺陷or该控制在以前年度未发现缺陷"
+    },
+    {
+      "code": "3.05",
+      "controlPoint": "APP.10",
+      "placeholder": "【历史执行情况10】",
+      "example": "eg：该控制本年首次测试or该控制在以前年度发现缺陷or该控制在以前年度未发现缺陷"
+    },
+    {
+      "code": "3.06",
+      "controlPoint": "APP.13",
+      "placeholder": "【历史执行情况13】",
+      "example": "eg：该控制本年首次测试or该控制在以前年度发现缺陷or该控制在以前年度未发现缺陷"
+    },
+    {
+      "code": "4.01",
+      "controlPoint": "APP.01",
+      "placeholder": "【01账号新增population】",
+      "example": "eg：15。审计期间新增账号数量"
+    },
+    {
+      "code": "4.04",
+      "controlPoint": "APP.01",
+      "placeholder": "【01权限新增population】",
+      "example": "eg：15。审计期间新增权限数量"
+    },
+    {
+      "code": "4.07",
+      "controlPoint": "APP.02",
+      "placeholder": "【02离职关闭population】",
+      "example": "eg：15。审计期间离职需关闭账号数量"
+    },
+    {
+      "code": "4.08",
+      "controlPoint": "APP.02",
+      "placeholder": "【02转岗关闭population】",
+      "example": "eg：15。审计期间转岗需关闭账号数量"
+    },
+    {
+      "code": "4.11",
+      "controlPoint": "APP.06",
+      "placeholder": "【06管理员population】",
+      "example": "eg：1。审计期间管理员账号数量"
+    },
+    {
+      "code": "4.12",
+      "controlPoint": "APP.10",
+      "placeholder": "【10系统变更population】",
+      "example": "eg：100。审计期间变更数量"
+    }
+  ],
+  "controls": [
+    {
+      "controlNumber": "APP.01 -系统ID",
+      "values": [
+        "APP.01 -系统ID",
+        "【RAWC01】",
+        "<p>管理层批准新用户及变更的用户访问权限的性质与范围，包括标准的应用系统用户组/角色、关键财务报告交易和职责分离。</p>",
+        "我们提出以下因素作出考虑:\n• The nature and materiality of misstatements that the control is intended to prevent or detect\n每个账户被指定给唯一的用户并在系统里设置逻辑安全策略。该控制为预防性控制，以防止用户对系统配置、算法及程序作出不当修改，影响计算机生成信息和/或自动化控制的可靠性。\n• The inherent risk associated with the related account(s) and assertion(s)\n该控制为信息技术一般层面控制，并不涉及特定账户及认定。 \n• Whether there have been changes in the volume or nature of transactions that might adversely affect control design or Interim Operating Effectiveness\n该控制自实施以来未发生过变更。\n• Whether the account has a history of errors\n【历史执行情况01】。\n• The effectiveness of entity-level controls that the auditor has tested, especially controls that monitor other controls\n有效执行，并未发现缺陷。\n• The nature of the control and the frequency with which it operates\n该控制为预防性自动化控制，且为按需发生，一经配置，即可生效。\n• The degree to which the control relies on the effectiveness of other controls (e.g., the control environment or information technology general controls)\n该控制不依赖其他控制的有效性。\n• The competence of the personnel who perform the control or monitor its performance and whether there have been changes in key personnel who perform the control or monitor its performance\n相关负责人均具有与岗位职责相匹配的能力，详见Summary中“Control Performer(s)部分。\n• Whether the control relies on performance by an individual or is automated (i.e., an automated control would generally be expected to be lower risk if relevant information technology general controls are effective);\n该控制为自动控制且集中管理。\n• The complexity of the control and the significance of the judgments that must be made in connection with its operation\n该控制并非复杂或频繁变更的控制，一经配置，即可生效。",
+        "Frequency：按需。当因工作需要，申请系统中开通或修改帐号权限时，需要先通过部门领导和IT部长审批，再由系统管理员在系统中创建用户帐号或修改帐号权限，每次申请都需要经过审核方可开通，该控制活动的频率合理。\nConsistency：公司员工账号申请必须向提交相关申请，经相关部门领导和IT部长审批确认后，由该系统管理员亲自创建和记录。实体关于该流程于审计年度未发生变化，基于上述考虑，该控制在审计期间得到一贯执行。",
+        "Aggregation：该控制针对权限申请员工需由部门领导和IT部长审批，系统新增/修改权限的操作实行集中管理，统一由系统管理员根据审批后的权限申请在系统中执行新增/修改账号。\nPredictability：申请人在申请后需要管理层审核确认申请职责是否授权合理并审核，若审核不通过，系统管理员将不会在系统中创建账号及更改权限，这一控制可合理保证用户账号权限被合理授权，这一预期符合我们应对该风险的需要。",
+        "N/A-这个控制属于预防性控制，因此该控制活动不涉及后续控制过程。",
+        "True",
+        "通过与【系统名称】管理员【系统管理员名称】进行访谈和现场观察，我们了解到：\n\n1.公司制定了【policy合集名称】等制度，对账户/权限新增流程进行了规定：\n【...】\n\n2.若员工需申请【系统名称】新账号，须遵循以下流程：\n【...】\n\n3.公司的权限变更流程与账号新增流程【一致。/不一致。权限新增具体流程为：】【...】\n\n4. 账户/权限新增处理由【系统名称】管理员【系统管理员名称】负责，审批由各业务部门领导和【IT部门名称】部长【IT部门部长名称】负责，已实现职责分离。\n\n5. 公司【不存在外部人员账户。/存在外部人员账户。外部人员账户/权限申请具体流程为：】【...】",
+        "",
+        "Apportion",
+        "ITAA于审计期末获取审计期间全量账户权限清单，该控制在【审计期间开始日期】-【审计期间结束日期】期间一贯运行，未发生控制设计及执行的变更，故我们采用按比例分配的策略执行抽样可以覆盖审计期间所有样本。",
+        "【01账号新增population】+【01权限新增population】",
+        "由于RAIT为【RAIT】，RAWC为【RAWC01】，样本总量为【01账号新增population】+【01权限新增population】，折算频率为【01账号新增频率】+【01权限新增频率】，我们抽取【01账号新增sample】+【01权限新增sample】个样本进行检查。 ",
+        "",
+        "",
+        "",
+        "【如果公司的权限变更流程与账号新增流程一致。采用下方描述：】\n公司的账号新增与权限新增流程相同，我们抽取了一例账号/权限新增样本进行了测试，其具体流程如下：\n【...（人名）在...（日期）申请开通新账号，该账号申请由...（部门名称）部门的...（人名+职位）在...（日期）审批通过，由系统管理员...（人名）在...（日期）确认开通。】\n我们确认该用户系统中的账户/权限新增申请得到适当审批且实际授予的账户/权限同用户申请的账户/权限一致，授予的账户/权限符合岗位职责，审批人和系统中授予权限的人之间保持了职责分离。\n\n对其他账号/权限新增审批样本，我们也测试了如下属性：\n• The user's access request was approved by appropriate management;\n• Requested access is consistent with access granted in the system;\n• Access granted is commensurate with the user's assigned duties \n• Segregation of duties is maintained between the approver and the person granting the access in the system.\n我们确认上述用户系统中的账户/权限新增申请得到适当审批且实际授予的账户/权限同用户申请的账户/权限一致，授予的账户/权限符合岗位职责，审批人和系统中授予权限的人之间保持了职责分离。\n\n未见异常，详见<OE.01>。\n\n【如果公司的权限变更流程与账号新增流程不一致。采用下方描述：】\n公司的账号新增与权限新增流程不相同，我们各抽取了一例账号新增和权限新增样本进行了测试，其具体流程如下：\n【（1）账号新增：...（人名）在...（日期）申请开通新账号，该账号申请由...（部门名称）部门的...（人名+职位）在...（日期）审批通过，由系统管理员...（人名）在...（日期）确认开通。\n（2）权限新增：...（人名）在...（日期）申请开通...（权限名称）权限，该账号权限申请由...（部门名称）部门的...（人名+职位）在...（日期）审批通过，由系统管理员...（人名）在...（日期）确认开通。】\n我们确认该用户系统中的账户/权限新增申请得到适当审批且实际授予的账户/权限同用户申请的账户/权限一致，授予的账户/权限符合岗位职责，审批人和系统中授予权限的人之间保持了职责分离。\n\n对其他账号/权限新增审批样本，我们也测试了如下属性：\n• The user's access request was approved by appropriate management;\n• Requested access is consistent with access granted in the system;\n• Access granted is commensurate with the user's assigned duties \n• Segregation of duties is maintained between the approver and the person granting the access in the system.\n我们确认上述用户系统中的账户/权限新增申请得到适当审批且实际授予的账户/权限同用户申请的账户/权限一致，授予的账户/权限符合岗位职责，审批人和系统中授予权限的人之间保持了职责分离。\n\n未见异常，详见<OE.01>。",
+        "",
+        "",
+        "",
+        ""
+      ]
+    },
+    {
+      "controlNumber": "APP.02 -系统ID",
+      "values": [
+        "APP.02 -系统ID",
+        "【RAWC02】",
+        "<p>及时删除或修改已离职和/或调职用户的访问权限。</p>",
+        "我们根据以下因素作出考虑:\n• The nature and materiality of misstatements that the control is intended to prevent or detect\n该控制是预防性的手动控制，其目的是确保离职及转岗用户账号被及时删除或禁用，该控制可以有效应对系统非授权访问和SOD风险，以防止用户不当地创建或修改财务交易或数据，导致计算机生成的信息无效、不完整或不正确。\n• The inherent risk associated with the related account(s) and assertion(s)\n该控制为信息技术一般层面控制，并不涉及特定账户及认定。 \n• Whether there have been changes in the volume or nature of transactions that might adversely affect control design or operating effectiveness\n该控制自实施以来未发生过变更。\n• Whether the account has a history of errors\n【历史执行情况02】。\n• The effectiveness of entity-level controls that the auditor has tested, especially controls that monitor other controls\n有效执行，并未发现缺陷。\n• The nature of the control and the frequency with which it operates\n该控制为预防性控制，由管理员按照申请单单独配置。\n• The degree to which the control relies on the effectiveness of other controls (e.g., the control environment or information technology general controls)\n该控制不依赖其他控制的有效性。\n• The competence of the personnel who perform the control or monitor its performance and whether there have been changes in key personnel who perform the control or monitor its performance\n相关负责人均具有与岗位职责相匹配的能力，详见Summary中“Control Performer(s)部分。\n• Whether the control relies on performance by an individual or is automated (i.e., an automated control would generally be expected to be lower risk if relevant information technology general controls are effective);\n该控制为手工控制且集中管理。\n• The complexity of the control and the significance of the judgments that must be made in connection with its operation\n该控制并非复杂或频繁变更的控制，一经配置，即可生效。\n ",
+        "Frequency：按需。当有员工离职/调职需要在系统中停用帐号权限时，通过部门主管审批核决后，由系统管理员在系统中停用用户帐号和权限。该控制频率能有效应对用户离职/调职相关权限停用和修改均被管理层授权。\nConsistency：实体关于该流程于审计年度未发生变化。基于上述考虑，该控制在审计期间得到一贯执行。",
+        "Aggregation：该控制针对各系统用户的账户/权限禁用，该控制由部门主管负责审批，IT部成员/系统管理员进行账户/权限关闭处理。该控制足以精确发现离职人员或转岗人员的权限是否被及时禁用，直接应对了相关信息技术风险。\nPredictability：普通员工若未完成OA系统中的离职交接，则无法完成离职流程。转岗人员的权限关闭，由部门主管和IT部长进行审批，审批通过后进行权限关闭。",
+        "N/A-这个控制属于预防性控制，因此该控制活动不涉及后续控制过程。",
+        "True",
+        "通过与【系统名称】管理员【系统管理员名称】进行访谈和现场观察，我们了解到：\n\n1.公司制定了【policy合集名称】等制度，对离职账户关闭进行了规定：\n【...】\n\n2.公司离职账户关闭，须遵循以下流程：\n【...】\n\n3.公司的转岗账户/权限关闭流程与离职账户关闭流程【一致。/不一致。转岗账户/权限关闭的具体流程为：】【...】",
+        "",
+        "Apportion",
+        "ITAA于审计期末获取审计期间全量账户权限清单、离职清单、转岗清单，该控制在【审计期间开始日期】-【审计期间结束日期】期间一贯运行，未发生控制设计及执行的变更，故我们采用按比例分配的策略执行抽样可以覆盖审计期间所有样本。\n",
+        "【02离职关闭population】+【02转岗关闭population】",
+        "1）全量进行离职员工账号禁用测试。共【02离职关闭population】位拥有【系统名称】账号的离职员工，故总量为【02离职关闭population】，样本量为【02离职关闭population】。\n2）转岗：由于RAIT为【RAIT】，RAWC为【RAWC02】，样本总量为【02转岗关闭population】，折算频率为【02转岗关闭频率】，我们抽取【02转岗关闭sample】个样本进行检查。",
+        "",
+        "",
+        "",
+        "我们抽取了一例离职账户关闭样本进行了测试，其具体流程如下：\n【...（人名）在...（日期）申请离职，该离职申请由...（部门名称）部门的...（人名+职位）在...（日期）审批通过，由系统管理员...（人名）在...（日期）确认关闭账户。】\n我们确认离职用户的【系统名称】账号已及时删除。\n\n对其他离职账户关闭样本，我们也测试了如下属性：\n• Access privileges for the terminated user are no longer active in the system.  Such access was removed, deleted or disabled in a timely manner (based on the effective date of the termination).\n我们确认上述离职用户的【系统名称】账号均已及时删除。\n\n未见异常，详见<OE.02>。",
+        "我们抽取了一例转岗账户/权限关闭样本进行了测试，其具体流程如下：\n【...（人名）在...（日期）申请转岗，需要关闭...（权限名称）权限。该转岗申请由...（部门名称）部门的...（人名+职位）在...（日期）审批通过，由系统管理员...（人名）在...（日期）确认关闭相关权限。】\n我们确认转岗用户的【系统名称】账号/权限已及时删除。\n\n对其他转岗账户/权限关闭样本，我们也测试了如下属性：\n• Access privileges for the terminated user are no longer active in the system.  Such access was removed, deleted or disabled in a timely manner (based on the effective date of the termination).\n我们确认上述转岗用户的【系统名称】账号/权限均已及时删除。\n\n未见异常，详见<OE.02>。",
+        "",
+        "",
+        ""
+      ]
+    },
+    {
+      "controlNumber": "APP.05 -系统ID",
+      "values": [
+        "APP.05 -系统ID",
+        "【RAWC05】",
+        "<p>通过唯一的用户 ID 和密码或其他方法进行身份验证，以此作为验证用户是否有权访问系统的机制。密码参数符合公司和 / 或行业标准 (例如 密码最短长度和复杂度，密码自动过期，账号锁定)。</p>",
+        "我们提出的以下因素作出考虑:\n• The nature and materiality of misstatements that the control is intended to prevent or detect -- \n该控制是预防性的自动控制，其目的是防止未经授权的用户访问系统。该控制直接应对了系统未恰当配置，该控制应对了系统未被充分配置，已通过使用密码或适当的认证机制来限制对正确授权和适当用户的系统访问。\n• Whether there have been changes in the volume or nature of transactions that might adversely affect the control’s design or operating effectiveness --\n该控制为信息技术一般层面控制，并不涉及特定账户及认定。 \n• Whether the account balance, class of transactions, or disclosure has a history of errors --\n【历史执行情况05】。\n• The effectiveness of entity-level controls, especially controls that monitor other controls -- \n 有效执行，并未发现缺陷。\n• The nature of the control and the frequency with which it operates -- \n该控制为预防性的自动控制，一经配置，一贯执行。\n• The degree to which the control relies on the effectiveness of other controls (e.g., the control environment or general IT controls) -- \n该控制不依赖其他控制的有效性。\n• The competence of the personnel who perform the control or monitor its performance and whether there have been changes in key personnel who perform the control or monitor its performance -- \n相关负责人均具有与岗位职责相匹配的能力，详见Summary中“Control Performer(s)部分。\n• Whether the control relies on performance by an individual or is automated --\n该控制为自动控制。\n• The complexity of the control and the significance of the judgments that must be made in connection with its operation -- \n该控制并非复杂或频繁变更的控制。",
+        "Frequency: 该控制为自动控制，用户每次登录均会执行控制，故频率为按需；\nConsistency: 该控制依赖系统限制用户的认证和授权及用户的密码复杂度，该控制能够一贯运用于用户的所有操作和所有用户的账户密码。我们认为该自动控制足以规避账户密码被攻破从而影响数据安全的风险。",
+        "Aggregation: 实体的逻辑安全策略设置实行集中控制，由IT部门统一在系统中设置，系统通过自动配置管理；\nPredictability: 帐户的安全设置均由公司IT运维团队进行设置和统一管理，该控制可合理保证各系统层面账号均被有效管理，这一预期符合我们对于该风险应对的需要。",
+        "N/A-这个控制属于预防性控制，因此该控制活动不涉及后续控制过程。",
+        "False",
+        "通过与【系统名称】管理员【系统管理员名称】进行访谈和现场观察，我们了解到：\n\n1.公司制定了【policy合集名称】等制度，对系统账号密码策略进行了规定：\n【...（主要关注密码长度要求、有效期要求、复杂性要求、是否可使用历史密码、输入错误密码锁定账户次数等参数）】\n\n2.实体采用的账号密码策略如下：\n【...（主要关注密码长度要求、有效期要求、复杂性要求、是否可使用历史密码、输入错误密码锁定账户次数等参数）】\n\n3.【系统名称】的密码策略及账号认证功能为全局性设置，所有账号均需遵循相同的认证控制，【系统名称】无针对不同类型账号实施不同认证控制的功能；\n\n4.实体【未开启MFA多因素认证。/已开启MFA多因素认证。MFA多因素认证方式为：】【...】",
+        "",
+        "Apportion",
+        "ITAA于审计期末获取审计期间适用的密码策略配置及截图，该控制在【审计期间开始日期】-【审计期间结束日期】期间一贯运行，未发生控制设计及执行的变更，故我们采用按比例分配的策略执行抽样可以覆盖审计期间所有样本。",
+        "1",
+        "由于RAIT为【RAIT】，RAWC为【RAWC05】，该控制性质为自动控制，样本总量为1，故抽取1个样本进行测试。",
+        "",
+        "",
+        "",
+        "我们现场观察并获取了【系统名称】密码策略截图，确认公司设定密码策略如下：\n【...（主要关注密码长度要求、有效期要求、复杂性要求、是否可使用历史密码、输入错误密码锁定账户次数等参数）】\n\n【如果图片上的密码策略与公司密码策略一致。采用下方描述：】\n上述密码策略执行有效，符合公司政策。\n\n未见异常，详见<OE.05>。\n\n【如果图片上的密码策略与公司密码策略不一致。采用下方描述：】\n上述密码策略不符合公司政策中对密码策略的要求。\n\n发现异常，详见<OE.05>。",
+        "【如果公司未开启MFA认证。采用下方描述：】\nN/A，公司未开启MFA认证。\n\n【如果公司开启MFA认证。采用下方描述：】\n公司已开启MFA多因素认证。【我们现场观察并确认MFA多因素认证方式为：】\n【...】\n上述密码策略执行有效，符合公司政策。\n\n未见异常，详见<OE.05>。",
+        "【如果公司没有默认账号。采用下方描述：】\nN/A，不存在此类账号\n\n【如果公司存在默认账号。采用下方描述：】\n【系统中存在默认账号...（默认账号名称），其修改时间为...（默认账号修改时间）。】\n\n未见异常，详见<OE.05>。",
+        "N/A，不存在此类账号",
+        ""
+      ]
+    },
+    {
+      "controlNumber": "APP.06 -系统ID",
+      "values": [
+        "APP.06 -系统ID",
+        "【RAWC06】",
+        "<p>特权级别访问 (例如安全管理员) 已获得授权并受到适当限制。</p>",
+        "我们提出的以下因素作出考虑:\n• The nature and materiality of misstatements that the control is intended to prevent or detect -- \n该控制是预防性的自动控制，其目的是应对未授权的用户使用超级管理员权限访问系统，授权与工作岗位职责不符，导致权责分离的风险。\n• Whether there have been changes in the volume or nature of transactions that might adversely affect the control’s design or operating effectiveness --\n该控制为信息技术一般层面控制，并不涉及特定账户及认定。 \n• Whether the account balance, class of transactions, or disclosure has a history of errors --\n【历史执行情况06】。\n• The effectiveness of entity-level controls, especially controls that monitor other controls -- \n 有效执行，并未发现缺陷。\n• The nature of the control and the frequency with which it operates -- \n该控制为预防性的自动控制，一经配置，一贯执行。\n• The degree to which the control relies on the effectiveness of other controls (e.g., the control environment or general IT controls) -- \n该控制不依赖其他控制的有效性。\n• The competence of the personnel who perform the control or monitor its performance and whether there have been changes in key personnel who perform the control or monitor its performance -- \n相关负责人均具有与岗位职责相匹配的能力，详见Summary中“Control Performer(s)部分。\n• Whether the control relies on performance by an individual or is automated --\n该控制为自动控制。\n• The complexity of the control and the significance of the judgments that must be made in connection with its operation -- \n该控制并非复杂或频繁变更的控制。",
+        "Frequency: \n该控制活动的频率是按需执行，系统特权账号均限制在授权人员，当IT部门相关人员发生岗位变动时才会变更，新增或变更特权账号的持有人需要通过公司领导的审批。该控制频率能有效应对特权级别访问权限未被合理授权的风险。\nConsistency:\n实体关于该控制活动在审计年度未发生变化，所有申请均遵从申请流程。基于上述考虑，该控制在审计期间得到一贯执行。",
+        "Aggregation：该控制针对系统特权级别访问权限执行，该控制由IT部门集中管理和负责审核，足以精确发现相关人员是否需要相关特权级别访问权限，且该权限之申请由公司管理层审批，从而确保特权级别访问权限均已适当分配，直接应对了相关信息技术风险。\nPredictability：普通员工若未经管理层审批确认，均无法获取特权账号之权限，由于特权级别访问权限分配实行集中管理，这一控制可合理保证所有特权账号均被合理授权，该预期符合我们应对该风险的需要。",
+        "N/A-这个控制属于预防性控制，因此该控制活动不涉及后续控制过程。",
+        "False",
+        "通过与【系统名称】管理员【系统管理员名称】进行访谈和现场观察，我们了解到：\n1.公司制定了【policy合集名称】等制度，对特权账户进行了规定：\n【...】\n2.目前实体有【06管理员population】个系统管理员账号，由【管理员持有人部门+名单】持有，用作日常运维和用户权限分配，考虑到组织架构和职能，其权限分配是合适的；\n3.系统目前【不存在外部账号，不存在共享账号。/存在外部账号和共享账号，持有情况如下：】【...】",
+        "",
+        "Apportion",
+        "ITAA于审计期末获取审计期间有效的管理员/特权账号清单及权限证据，该控制在【审计期间开始日期】-【审计期间结束日期】期间一贯运行，未发生控制设计及执行的变更，故我们采用按比例分配的策略执行抽样可以覆盖审计期间所有样本。",
+        "【06管理员population】",
+        "由于RAIT为【RAIT】，RAWC为【RAWC06】，该控制性质为自动控制，样本总量为【06管理员population】，对所有管理员账户进行检查。",
+        "",
+        "",
+        "",
+        "我们现场观察并获取了【系统名称】特权账号截图，确认公司共有【06管理员population】位管理员。我们对管理员账号测试了以下的属性：\n-根据管理层的询问，授予访问权限且该权限与用户职责相匹配\n-根据对其工作职能的检查，授予访问权限且该权限与用户职责相匹配\n-通用账户需要根据业务需求进行访问，并对账户进行适当的限制和控制\n\n我们确认【系统名称】的【06管理员population】个管理员账户，具体为【...（管理员账号名称）】，由【...（持有管理员账号的人员）】持有，我们确认管理员账号持有人的岗位与其持有的权限相符合。\n\n未见异常，详见<OE.06>。",
+        "",
+        "",
+        "",
+        ""
+      ]
+    },
+    {
+      "controlNumber": "APP.10 -系统ID",
+      "values": [
+        "APP.10 -系统ID",
+        "【RAWC10】",
+        "<p>在将应用程序变更移至生产环境之前，应对其进行适当的测试和批准。</p>",
+        "我们以下因素作出考虑:\n• The nature and materiality of misstatements that the control is intended to prevent or detect -- \n该控制是预防性控制，其目的是应对未经授权的变更从而影响系统数据的准确性及完整性的风险。\n• Whether there have been changes in the volume or nature of transactions that might adversely affect the control’s design or operating effectiveness --\n该控制自本审计年度实施以来未发生过变更。\n• Whether the account balance, class of transactions, or disclosure has a history of errors --\n该控制自实施以来未发生过变更。\n• Whether the account has a history of errors\n【历史执行情况10】。\n• The nature of the control and the frequency with which it operates -- \n该控制为预防性控制，且为按需发生，所有系统变更均需得到审批。\n• The degree to which the control relies on the effectiveness of other controls (e.g., the control environment or general IT controls) -- \n该控制不依赖其他控制的有效性。\n• The competence of the personnel who perform the control or monitor its performance and whether there have been changes in key personnel who perform the control or monitor its performance -- \n相关负责人均具有与岗位职责相匹配的能力，详见Summary中“Control Performer(s)部分。\n• Whether the control relies on performance by an individual or is automated --\n该控制为手动按需控制。\n• The complexity of the control and the significance of the judgments that must be made in connection with its operation -- \n该控制并非复杂或频繁变更的控制，系统变更审批权限授予合适的人员。",
+        "Frequency：按需，当系统变更时，由业务部门需求提出人验收测试后方可实施变更，该控制的执行频率可以有效防止对应用系统/程序作出不适当变更的信息技术风险，我们认为该控制的执行频率是恰当的。\nConsistency：平台变更需遵从系统变更管理流程，每次变更均遵从已定的程序变更流完成：变更需经过测试，上线前需IT部部长批准；在变更实施前，基于上述考虑，该控制在审计期间得到一贯执行。",
+        "Aggregation：该控制的精度限制系统每次升级和补丁安装及其他变更都需要经过测试，程序变更的控制均由系统管理员等人确认。\nPredictability：每次变更均遵从已定的程序变更流完成，这一控制能够规避系统被不恰当修改的风险，该预期符合我们应对该风险的需要。",
+        "N/A-这个控制属于预防性控制，因此该控制活动不涉及后续控制过程。",
+        "True",
+        "通过与【系统名称】管理员【系统管理员名称】进行访谈和现场观察，我们了解到：\n\n1.公司制定了【policy合集名称】等制度，对系统变更流程进行了规定：\n【...】\n\n2.实体采用的系统变更流程如下：\n【...】\n\n3.变更、测试、上线的审批【不】依赖其他工具软件，采用方式如下：\n【...】\n\n4.系统的变更均为手动流程，在变更过程中【未使用相关工具系统。/使用了相关工具系统。使用的变更工具系统为：】【...】；",
+        "",
+        "Apportion",
+        "ITAA于审计期末获取审计期间系统变更清单，该控制在【审计期间开始日期】-【审计期间结束日期】期间一贯运行，未发生控制设计及执行的变更，故我们采用按比例分配的策略执行抽样可以覆盖审计期间所有样本。",
+        "【10系统变更population】",
+        "由于RAIT为【RAIT】，RAWC为【RAWC10】，样本总量为【10系统变更population】，折算频率为【10系统变更频率】，我们抽取【10系统变更sample】个样本进行检查。",
+        "",
+        "",
+        "",
+        "我们抽取了一例系统变更样本进行了测试，其具体流程如下：\n【...（人名）在...（日期）申请...（系统变更内容），该变更申请由...（部门名称）部门的...（人名+职位）在...（日期）审批通过，由...（测试人员人名）进行测试，...（上线人员人名）在...（日期）部署上线。】\n我们确认该变更经过管理层审批，测试结果经确认，上线与开发、人员相分离。变更流程符合公司制度要求。\n\n对其他系统变更审批样本，我们也测试了如下属性：\n• Change was tested (system, UAT) prior to moving into production and appears appropriate based on the nature of the change;\n• Change was approved by appropriate management.\n我们确认上述系统变更均经过管理层审批，测试结果经确认，上线与开发、人员相分离。变更流程符合公司制度要求。\n\n未见异常，详见<OE.10>.",
+        "",
+        "",
+        "",
+        ""
+      ]
+    },
+    {
+      "controlNumber": "APP.13 -系统ID",
+      "values": [
+        "APP.13 -系统ID",
+        "【RAWC13】",
+        "<p>对应用程序生产环境进行变更的访问受到适当限制，并与开发环境隔离。</p>",
+        "我们根据以下因素作出考虑:\n• The nature and materiality of misstatements that the control is intended to prevent or detect -- \n该控制是预防性控制，其目的是应对生产系统和测试系统未进行分离，可能会发生系统变更时，直接导致生产环境出现异常进而影响系统数据的准确性及完整性的风险。\n• Whether there have been changes in the volume or nature of transactions that might adversely affect the control’s design or operating effectiveness --\n该控制自实施以来未发生过变更。\n• Whether the account balance, class of transactions, or disclosure has a history of errors --\n【历史执行情况13】。\n• The effectiveness of entity-level controls, especially controls that monitor other controls -- \n 有效执行，并未发现缺陷。\n• The nature of the control and the frequency with which it operates -- \n该控制为预防性控制，且为按需发生。\n• The degree to which the control relies on the effectiveness of other controls (e.g., the control environment or general IT controls) -- \n该控制不依赖其他控制的有效性。\n• The competence of the personnel who perform the control or monitor its performance and whether there have been changes in key personnel who perform the control or monitor its performance -- \n相关负责人均具有与岗位职责相匹配的能力，详见Summary中“Control Performer(s)部分。\n• Whether the control relies on performance by an individual or is automated --\n该控制为手动按需控制。\n• The complexity of the control and the significance of the judgments that must be made in connection with its operation -- \n该控制并非复杂或频繁变更的控制，系统已分别设置了开发环境、测试环境和生产环境。",
+        "Frequency:按需。该控制为与变更相关的访问权限控制，未经允许不会被授予生产环境的访问权限。\nConsistency：系统的开发、测试、生产环境的分离为物理划分，变更开发和发布权限的分离为访问控制，该控制截至本次现场审计期间并未更改，该控制在本审计期间得到一贯执行。",
+        "Aggregation:实体的系统测试及生产环境的分离适用于所有程序变更，属于自动控制，变更发布由系统管理员向生产环境进行程序变更移植。\nPredictability: 测试及生产环境的分离属于自动控制，仅有授权的用户才能登录至生产环境，可预期未测试通过的程序变更均不在生产环境上线。这一预期符合我们对该风险应对的需要。",
+        "N/A-这个控制属于预防性控制，因此该控制活动不涉及后续控制过程。",
+        "False",
+        "通过与【系统名称】管理员【系统管理员名称】进行访谈和现场观察，我们了解到：\n\n1.公司制定了【policy合集名称】等制度，对系统使用的开发环境、测试环境、生产环境等环境进行了规定：\n【...】\n\n2.【系统名称】【属于/不属于】公司外购系统，公司【IT部门名称】【拥有/未拥有】系统的源代码，变更由【IT部门/外部供应商】负责，具体流程如下：\n【...】\n\n3.【系统名称】【存在/不存在】测试环境。【测试环境与开发环境、生产环境相分离】【...】。\n4.系统的变更均为手动流程，在变更过程中【未使用相关工具系统。/使用了相关工具系统。使用的变更工具系统为：】【...】；\n5.【系统名称】开发环境、测试环境、生产环境的访问和变更权限持有情况如下：\n【...】",
+        "",
+        "Apportion",
+        "ITAA于审计期末获取审计期间变更清单，该控制在【审计期间开始日期】-【审计期间结束日期】期间一贯运行，未发生控制设计及执行的变更，故我们采用按比例分配的策略执行抽样可以覆盖审计期间所有样本。",
+        "1",
+        "由于RAIT为【RAIT】，RAWC为【RAWC13】，该控制性质为自动控制，样本总量为1，故抽取1个样本进行测试。",
+        "",
+        "",
+        "",
+        "N/A-询问系统管理员了解到在生产环境中实施变更需先经过测试及审批后才能部署，所有部署均由人工于服务器执行。则本控制点不适用。",
+        "我们现场观察并获取了【系统名称】变更上线的账号权限截图，确认公司系统变更上线的账号权限持有情况如下：\n【...（人名）持有具有部署权限的...（账号名称）。】\n\n我们针对上述账户权限持有情况进行了如下测试：\n-根据管理层的询问，授予访问权限且该权限与用户职责相匹配\n-根据对其工作职能的检查，授予访问权限且该权限与用户职责相匹配\n-通用账户需要根据业务需求进行访问，并对账户进行适当的限制和控制\n\n我们确认上述账户权限授权基于岗位职责，权责相符，授权合理。\n\n未见异常，详见<OE.13>。",
+        "我们通过对比各环境人员清单，确认人员情况如下：\n开发人员为【...】。\n测试人员为【...】。\n上线人员为【...】。\n\n我们确认不存在同一人员持有不同环境下复数账户权限的情况。实现了有效的权责分离，符合公司制度。\n\n未见异常，详见<OE.13>。",
+        "",
+        ""
+      ]
+    }
+  ]
+}

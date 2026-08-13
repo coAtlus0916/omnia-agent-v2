@@ -91,11 +91,13 @@ export class ConnectorNextGuardian {
   constructor(private readonly options: ConnectorNextGuardianOptions) {}
 
   async checkOnce(): Promise<{ status: 'no_offer' | 'updated' | 'blocked' | 'failed'; offerId?: string; pointer?: CurrentPointer; reason?: string }> {
-    const current = readCurrentPointer(this.options.paths.currentPointer);
-    const polled = await this.options.client.pollUpdate();
-    if (!polled.offer) return { status: 'no_offer' };
-    const { offerId, manifest } = polled.offer;
+    let offerId = '';
     try {
+      const current = readCurrentPointer(this.options.paths.currentPointer);
+      const polled = await this.options.client.pollUpdate();
+      if (!polled.offer) return { status: 'no_offer' };
+      ({ offerId } = polled.offer);
+      const { manifest } = polled.offer;
       const publicKey = this.options.publisherKeys[manifest.signingKeyId];
       if (!publicKey) throw new Error('CONNECTOR_NEXT.UPDATE_SIGNING_KEY_UNTRUSTED');
       verifyConnectorNextManifest(manifest, publicKey);
@@ -213,9 +215,16 @@ export class ConnectorNextGuardian {
       return { status: 'updated', offerId, pointer: next };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      try { await this.options.client.updateStatus(offerId, 'failed', { reason }); } catch { /* original failure remains authoritative */ }
-      this.options.logs.append('updater', 'error', 'update.failed', { offerId, reason });
-      return { status: 'failed', offerId, reason };
+      if (offerId) {
+        try { await this.options.client.updateStatus(offerId, 'failed', { reason }); } catch { /* original failure remains authoritative */ }
+        this.options.logs.append('updater', 'error', 'update.failed', { offerId, reason });
+        return { status: 'failed', offerId, reason };
+      }
+      // A control-plane poll failure is not an Agent lifecycle failure. The
+      // Updater loop will retain the healthy Agent and retry after its bounded
+      // delay instead of unwinding through finally and stopping the runtime.
+      this.options.logs.append('updater', 'error', 'update.poll_failed', { reason });
+      return { status: 'failed', reason };
     }
   }
 }

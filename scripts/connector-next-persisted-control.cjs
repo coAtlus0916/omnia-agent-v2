@@ -8,6 +8,15 @@ const { request: httpsRequest } = require('node:https');
 const fs = require('node:fs');
 const path = require('node:path');
 
+// This is a headless diagnostic helper. Its stdout consumer may intentionally
+// stop after reading a compact result (for example when a UI/tool truncates a
+// large log page). Treat that closed pipe as successful early consumption,
+// never as an Electron main-process error dialog.
+process.stdout.on('error', (error) => {
+  if (error && error.code === 'EPIPE') app.exit(0);
+  else throw error;
+});
+
 function canonical(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;

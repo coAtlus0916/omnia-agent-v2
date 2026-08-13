@@ -18,11 +18,13 @@ _PYTHON_ROOT = os.path.realpath(os.path.dirname(__file__))
 if _PYTHON_ROOT not in sys.path:
     sys.path.insert(0, _PYTHON_ROOT)
 
-from workpaper_workbook import build_phase2_workbook, parse_uploaded_workbook
+from workpaper_workbook import apply_replacement_fields, build_phase2_template, build_phase2_workbook, parse_uploaded_workbook
+from policy_extract import extract_policy_archive
+from policy_resolve import build_policy_index, extract_placeholders, retrieve_policy_snippets
 
 
 PROTOCOL = "omnia.python-sidecar-rpc/v1"
-CAPABILITIES = ["select_hidden_tab_controls", "build_hidden_tab_plan", "classify_control_observation", "build_phase2_workbook", "parse_uploaded_workbook"]
+CAPABILITIES = ["select_hidden_tab_controls", "build_hidden_tab_plan", "classify_control_observation", "build_phase2_workbook", "parse_uploaded_workbook", "build_phase2_template", "apply_replacement_fields", "extract_policy_archive", "build_policy_index", "retrieve_policy_snippets", "extract_placeholders"]
 CONTROL_SELECTION_INPUT_SCHEMA = "omnia.workpaper-control-selection-input/v1"
 CONTROL_SELECTION_OUTPUT_SCHEMA = "omnia.workpaper-control-selection/v1"
 INPUT_SCHEMA = "omnia.workpaper-hidden-tab-input/v1"
@@ -353,6 +355,18 @@ def serve() -> None:
                          if method == "build_phase2_workbook"
                          else parse_uploaded_workbook(message.get("payload"))
                          if method == "parse_uploaded_workbook"
+                         else build_phase2_template(message.get("payload"))
+                         if method == "build_phase2_template"
+                         else apply_replacement_fields(message.get("payload"))
+                         if method == "apply_replacement_fields"
+                         else extract_policy_archive(message.get("payload"))
+                         if method == "extract_policy_archive"
+                         else build_policy_index(message.get("payload"))
+                         if method == "build_policy_index"
+                         else retrieve_policy_snippets(message.get("payload"))
+                         if method == "retrieve_policy_snippets"
+                         else extract_placeholders(message.get("payload"))
+                         if method == "extract_placeholders"
                          else build_hidden_tab_plan(message.get("payload")))
                 write_frame({"schemaVersion": PROTOCOL, "type": "result", "requestId": request_id, "ok": True, "value": value})
             except PlannerError as error:

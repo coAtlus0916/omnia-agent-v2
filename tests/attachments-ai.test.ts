@@ -8,7 +8,7 @@ import { createTestContentCipher } from '../src/main/content-cipher.ts';
 import { AttachmentService } from '../src/main/services/attachment-service.ts';
 import { ChatService, _test as chatTest } from '../src/main/services/chat-service.ts';
 
-test('unsupported attachments are saved into chat before model delivery is honestly blocked', async (t) => {
+test('unreadable attachments are skipped with an honest delivery note while the message still sends', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-attachment-'));
   const database = new CoreDatabase(path.join(root, 'core.sqlite'), createTestContentCipher());
   t.after(() => {
@@ -38,18 +38,20 @@ test('unsupported attachments are saved into chat before model delivery is hones
   assert.match(raw.api_key_ciphertext, /^enc:v1:/);
   assert.equal(raw.api_key_ciphertext.includes('secret-that-must-not-be-plain'), false);
   const chat = new ChatService(database, async () => {
-    throw new Error('fetch must not run for a blocked attachment');
+    return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: '已收到文本。' } }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   });
   await chat.send({ content: '请看图片', attachmentIds: [staged[0]!.id] });
+  // The image cannot be read under text_only, so it is skipped with an honest
+  // delivery note; the text-only message still reaches the model.
   const blocked = database.getAttachment(staged[0]!.id)!;
   assert.equal(blocked.status, 'attached');
   assert.equal(blocked.modelDelivery, 'blocked');
   assert.match(blocked.error, /text_only/);
   const messages = database.listMessages(database.getChatSessionId());
-  assert.equal(messages.length, 1);
-  assert.equal(messages[0]?.status, 'failed');
+  assert.equal(messages.length, 2);
+  assert.equal(messages[0]?.status, 'delivered');
   assert.equal(messages[0]?.attachments[0]?.id, blocked.id);
-  assert.match(messages[0]?.error || '', /附件未送入模型/);
+  assert.equal(messages[1]?.content, '已收到文本。');
 });
 
 test('Provider SSRF guards reject literal private and link-local targets', () => {

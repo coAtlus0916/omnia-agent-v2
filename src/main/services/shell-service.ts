@@ -50,6 +50,15 @@ const CONNECT_TERMINAL_STATES = new Set<ConnectionSnapshot['status']>([
   'error'
 ]);
 
+const CONNECT_PASSIVE_RECONCILE_STATES = new Set<ConnectionSnapshot['status']>([
+  ...CONNECT_WAITING_STATES,
+  // A remote Agent can recover independently after a workstation restart or
+  // control-plane outage. Keep one passive status reconciliation in flight so
+  // the already-visible Shell observes that recovery without a Shell restart.
+  'connector_offline',
+  'error'
+]);
+
 interface RemoteLifecycleApi {
   inspectBridge(input: { bridgeUrl: string }): Promise<BridgePairingCapabilityInspection>;
   beginPairing(input: { bridgeUrl: string; requestNonce: string; replacementPairId?: string; currentToken?: string }): Promise<BridgePairingSessionResponse>;
@@ -742,7 +751,7 @@ export class ShellService {
       && !this.connectRunning
       && (!Number.isFinite(keepaliveNext) || keepaliveNext <= Date.now());
     if (
-      CONNECT_WAITING_STATES.has(this.connection.status)
+      CONNECT_PASSIVE_RECONCILE_STATES.has(this.connection.status)
       && !this.connectRunning
       && !this.pairingPollRunning
       && !this.pairingSecret

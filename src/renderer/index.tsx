@@ -588,11 +588,11 @@ function SettingsDialog({ snapshot, close, run, fail }: { snapshot: ShellSnapsho
         }} />
       <div className={`settings-main ${section === 'logs' ? 'logs-active' : ''}`} data-testid="settings-main-scroll">
         {section === 'ai' ? <section className="settings-section"><h3>AI 设置</h3>
-          <label>Provider<select value={provider} onChange={(event) => { const next = event.target.value as AiProviderKind; setProvider(next); if (next === 'deepseek') { setBaseUrl('https://api.deepseek.com'); setModel('deepseek-v4-flash'); setCapability('text_only'); } }}>
+          <label>Provider<select value={provider} onChange={(event) => { const next = event.target.value as AiProviderKind; setProvider(next); if (next === 'deepseek') { setBaseUrl('https://api.deepseek.com'); setModel('deepseek-v4-flash'); } }}>
             <option value="deepseek">DeepSeek</option><option value="custom">OpenAI-compatible Custom</option></select></label>
           <label>Base URL<input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} /></label>
           <label>Model<input value={model} onChange={(event) => setModel(event.target.value)} /></label>
-          <label>附件能力<select disabled={provider === 'deepseek'} value={capability} onChange={(event) => setCapability(event.target.value as AiAttachmentCapability)}>
+          <label>附件能力<select value={capability} onChange={(event) => setCapability(event.target.value as AiAttachmentCapability)}>
             <option value="text_only">仅文本</option><option value="images">图片</option><option value="images_and_text">图片与文本文件</option></select></label>
           <label>API Key<input type="password" autoComplete="off" value={apiKey} placeholder={ai.hasApiKey ? '已安全保存；留空表示不变更' : '尚未配置'} onChange={(event) => setApiKey(event.target.value)} /></label>
           <p className={`test-state ${ai.testStatus}`}>{ai.testMessage || '尚未测试连接。'}</p>

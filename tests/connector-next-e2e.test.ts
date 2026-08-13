@@ -178,7 +178,7 @@ test('Connector Next performs exact enrollment, durable read-only job, result an
   }
 });
 
-test('Connector Next drains an eight-job durable batch and reattaches the same result wait after a transient connection loss', async () => {
+test('Connector Next refills eight execution lanes while draining durable jobs and reattaches the same result wait after a transient connection loss', async () => {
   const f = await fixture();
   try {
     const enrollment = await f.control.createEnrollment(target);
@@ -190,12 +190,12 @@ test('Connector Next drains an eight-job durable batch and reattaches the same r
     const gate = new ConnectorNextRuntimeGate(paths.runtimeDatabase);
     const runtime = new ConnectorNextAgentRuntime({ client: agent, descriptor, logs, gate });
 
-    const queued = await Promise.all(Array.from({ length: 8 }, (_unused, index) =>
+    const queued = await Promise.all(Array.from({ length: 10 }, (_unused, index) =>
       f.control.enqueueSystemHealthRead(target, { batchIndex: index })));
     const drained = await runtime.runBatch(8);
-    assert.equal(drained.executedJobIds.length, 8);
+    assert.equal(drained.executedJobIds.length, 10, 'a drain turn must refill freed lanes instead of stopping at the original eight-job claim');
     assert.deepEqual(new Set(drained.executedJobIds), new Set(queued.map((item) => item.jobId)));
-    assert.equal((f.store.db.prepare(`SELECT COUNT(*) count FROM connector_next_jobs WHERE status='succeeded'`).get() as { count: number }).count, 8);
+    assert.equal((f.store.db.prepare(`SELECT COUNT(*) count FROM connector_next_jobs WHERE status='succeeded'`).get() as { count: number }).count, 10);
 
     const reconnectJob = await f.control.enqueueSystemHealthRead(target, { reconnect: true });
     let injected = false;
@@ -565,6 +565,57 @@ function updateArtifact(version: string, sequence: number, keyId: string, privat
   };
   return { value, bytes, manifest: signConnectorNextManifest(unsigned, privateKey) };
 }
+
+test('Updater contains a transient control-plane poll failure without stopping the active Agent host', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Omnia Connector Next updater poll-'));
+  const paths = connectorNextPaths({
+    installRoot: path.join(root, 'Omnia Connector Next install'),
+    dataRoot: path.join(root, 'Omnia Connector Next data')
+  });
+  const pointer = {
+    schemaVersion: 'omnia.connector-next-current/v1' as const,
+    slot: 'a' as const,
+    relativeRoot: 'a/current',
+    version: '0.1.39',
+    sequence: 41,
+    generation: 28,
+    manifestDigest: `sha256:${'a'.repeat(64)}`,
+    updatedAt: new Date().toISOString()
+  };
+  writeCurrentPointerAtomic(paths.currentPointer, pointer);
+  const logs = new ConnectorNextLogSpool(paths.logDatabase);
+  const gate = new ConnectorNextRuntimeGate(paths.runtimeDatabase);
+  let hostStops = 0;
+  const descriptor = connectorNextUpdaterDescriptor(target, pointer.version, pointer.sequence, pointer.generation);
+  const guardian = new ConnectorNextGuardian({
+    version: pointer.version,
+    client: {
+      pollUpdate: async () => { throw new Error('CONNECTOR_NEXT.HTTP_503'); },
+      updateStatus: async () => { throw new Error('updateStatus must not run without an offer identity'); }
+    } as any,
+    descriptor,
+    paths,
+    gate,
+    logs,
+    publisherKeys: {},
+    processHost: {
+      start: async () => undefined,
+      stop: async () => { hostStops += 1; },
+      isRunning: () => true
+    } as any,
+    persistActivatedState() { throw new Error('poll failure must not mutate active state'); }
+  });
+  try {
+    const result = await guardian.checkOnce();
+    assert.deepEqual(result, { status: 'failed', reason: 'CONNECTOR_NEXT.HTTP_503' });
+    assert.equal(hostStops, 0, 'a transient update poll failure must not stop the active Agent host');
+    assert.equal(logs.pending().at(-1)?.event, 'update.poll_failed');
+  } finally {
+    gate.close();
+    logs.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('server offer drives two consecutive signed online upgrades with process replacement and immutable generations', async () => {
   const f = await fixture();

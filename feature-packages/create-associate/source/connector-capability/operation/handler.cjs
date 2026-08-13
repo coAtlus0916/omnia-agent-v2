@@ -1203,7 +1203,7 @@ function createOperationHandler() {
         if(!['create_bootstrap','existing_with_token','recover_owned_create_bootstrap'].includes(query.mode))fail('IT Element settings readback mode is invalid.');
         const objectId=guid(query.objectId,'query.objectId'); const authoritativeResult=await readApplicationSettings(sdk,'object-settings-read','object-settings-workspace',objectId,frozen.workspaceId,'IT Element settings readback');
         const result=authoritativeResult;
-        return {verified:text(result.number||result.referenceNumber)===text(query.number)&&text(result.typeId)===text(query.typeId)&&result.isRelevant===query.isRelevant&&result.isDataAvailable===query.isDataAvailable,result:authoritativeResult};
+        return {verified:normalizedLabel(result.number||result.referenceNumber)===normalizedLabel(query.number)&&text(result.typeId)===text(query.typeId)&&result.isRelevant===query.isRelevant&&result.isDataAvailable===query.isDataAvailable,result:authoritativeResult};
       }
       if (operationId === 'omnia.create-associate.relation.preflight.v1' || operationId === 'omnia.create-associate.relation.reconcile.v1') {
         return relationshipRead(request, sdk);

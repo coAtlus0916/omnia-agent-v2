@@ -9,7 +9,7 @@ import {
   FEATURE_RUNTIME_STORE_PORT_POLICIES,
   FeatureRuntimeStore
 } from '../src/main/features/feature-runtime-store.js';
-import { _test as packageManagerTest } from '../src/main/features/package-manager.js';
+import { FeaturePackageManager, _test as packageManagerTest } from '../src/main/features/package-manager.js';
 import { resolveProductPaths } from '../src/main/paths.js';
 
 const cipher = { encrypt: (value: string) => value, decrypt: (value: string) => value };
@@ -64,6 +64,7 @@ test('signed Store port declarations fail closed before runtime dispatch and Cor
   const paths = resolveProductPaths(root);
   const database = new CoreDatabase(paths.database,cipher);
   try {
+    new FeaturePackageManager(database.db,paths);
     const store = new FeatureRuntimeStore(database.db,paths);
     assert.throws(
       () => store.call('undeclaredPrivateMethod',{}, {
@@ -71,6 +72,62 @@ test('signed Store port declarations fail closed before runtime dispatch and Cor
       }),
       (error: any) => error?.code === 'FEATURE.STORE_PORT_UNKNOWN'
     );
+  } finally {
+    database.close();
+    fs.rmSync(root,{recursive:true,force:true});
+  }
+});
+
+test('a finalize-pending active successor retains exact Store ownership of its source Run', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omnia-feature-store-finalize-pending-'));
+  const paths = resolveProductPaths(root);
+  const database = new CoreDatabase(paths.database,cipher);
+  try {
+    new FeaturePackageManager(database.db,paths);
+    const featureId = 'official.successor';
+    const sourceVersion = '1.0.0';
+    const targetVersion = '1.1.0';
+    const sourceDigest = `sha256:${'1'.repeat(64)}`;
+    const targetDigest = `sha256:${'2'.repeat(64)}`;
+    const sourceOperationDigest = `sha256:${'3'.repeat(64)}`;
+    const targetOperationDigest = `sha256:${'4'.repeat(64)}`;
+    const createdAt = new Date().toISOString();
+    const owned = seedRun(database,featureId,sourceVersion);
+    database.db.prepare(`
+      INSERT INTO feature_registry(
+        feature_id,feature_version,lifecycle,package_digest,publisher_key_id,health,activated_at
+      ) VALUES(?,?,'previous',?,'publisher','ready',?),
+              (?,?,'active',?,'publisher','operation_handoff_finalize_pending',?)
+    `).run(
+      featureId,sourceVersion,sourceDigest,createdAt,
+      featureId,targetVersion,targetDigest,createdAt
+    );
+    database.db.prepare(`
+      INSERT INTO feature_activation_heads(
+        feature_id,feature_version,activation_generation,runtime_enabled,runtime_reason,
+        package_path,package_digest,updated_at,documentation_path
+      ) VALUES(?,?,2,1,'','packages/target',?,?,'documentation/target')
+    `).run(featureId,targetVersion,targetDigest,createdAt);
+    database.db.prepare(`
+      INSERT INTO feature_operation_handoffs(
+        handoff_id,feature_id,source_feature_version,source_package_digest,
+        source_operation_package_digest,source_activation_generation,
+        target_feature_version,target_package_digest,target_operation_package_digest,
+        target_activation_generation,registration_token,replaced_package_digests_json,
+        phase,created_at,updated_at,last_error
+      ) VALUES(?,?,?,?,?,1,?,?,?,2,?,?,'finalize_pending',?,?,'')
+    `).run(
+      crypto.randomUUID(),featureId,sourceVersion,sourceDigest,sourceOperationDigest,
+      targetVersion,targetDigest,targetOperationDigest,'5'.repeat(64),
+      JSON.stringify([sourceOperationDigest]),createdAt,createdAt
+    );
+
+    const store = new FeatureRuntimeStore(database.db,paths);
+    const context = {featureId,featureVersion:targetVersion,allowMutation:false};
+    const latest = store.call('loadLatestRun',{},context) as any;
+    assert.equal(latest.run.run_id,owned.runId);
+    assert.doesNotThrow(() => store.call('loadReturnProgress',{runId:owned.runId},context),
+      'the active target must remain able to rebuild its durable source-Run projection before finalization');
   } finally {
     database.close();
     fs.rmSync(root,{recursive:true,force:true});

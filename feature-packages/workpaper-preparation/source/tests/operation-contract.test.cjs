@@ -188,7 +188,7 @@ test('direct update follows the recorded two-stage validation/PATCH flow and fin
   assert.deepEqual(patches[1].body, [
     { op: 'replace', path: '/usePreviousAuditEvidence', value: false },
     { op: 'replace', path: '/concurrencyTabId', value: 209 },
-    { op: 'replace', path: '/concurrencyTabUpdatedOn' },
+    { op: 'replace', path: '/concurrencyTabUpdatedOn', value: OE_UPDATED },
     { op: 'replace', path: '/isPurgeHiddenData', value: true }
   ]);
   const observed = await handler.run('omnia.workpaper.control.reconcile.v1', {
@@ -238,7 +238,7 @@ test('a closed Control without Tab 201 follows the recorded bootstrap, validate,
   assert.deepEqual(patches[2], [
     { op: 'replace', path: '/usePreviousAuditEvidence', value: false },
     { op: 'replace', path: '/concurrencyTabId', value: 209 },
-    { op: 'replace', path: '/concurrencyTabUpdatedOn' },
+    { op: 'replace', path: '/concurrencyTabUpdatedOn', value: OE_UPDATED },
     { op: 'replace', path: '/isPurgeHiddenData', value: true }
   ]);
 });

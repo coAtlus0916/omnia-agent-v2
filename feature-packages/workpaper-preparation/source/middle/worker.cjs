@@ -22,6 +22,9 @@ const OPERATIONS = Object.freeze({
 // Each field maps a frontend label to a writePath template; only non-readOnly,
 // non-Agent fields are user-editable workbook columns.
 const PHASE2_FIELDS = Object.freeze(typeof __PHASE2_FIELDS__ !== 'undefined' ? __PHASE2_FIELDS__ : []);
+// Phase 2 pre-filled template data (injected at packaging from the v4 template
+// contract): the placeholder directory and the six control-point row templates.
+const PHASE2_TEMPLATE = Object.freeze(typeof __PHASE2_TEMPLATE__ !== 'undefined' ? __PHASE2_TEMPLATE__ : { directory: [], headers: [], controls: [] });
 const WORKBOOK_IDENTITY_HEADERS = Object.freeze(['GRA 编号', 'GRA 名称', 'APP 名称', 'Control 编号', 'controlId', 'workItemId', 'workspaceId']);
 
 function valueKindRead(current, kind) {
@@ -94,6 +97,11 @@ function sameAuthority(current, frozen) {
     if (String(current[key]) !== String(frozen[key])) fail('WORKPAPER.AUTHORITY_DRIFT', `Current ${key} differs from the frozen authority.`);
   }
 }
+function sameRecoveryAuthority(current, frozen) {
+  for (const key of ['connectorId', 'engagementId', 'authorityInstanceId', 'tenantOrOrgId', 'packId']) {
+    if (String(current[key]) !== String(frozen[key])) fail('WORKPAPER.AUTHORITY_DRIFT', `Current ${key} differs from the frozen recovery authority.`);
+  }
+}
 function sameSafety(current, frozen) {
   if (Number(current.stateVersion) !== Number(frozen.stateVersion)
     || current.authorityObservationId !== frozen.authorityObservationId
@@ -101,6 +109,14 @@ function sameSafety(current, frozen) {
     || canonicalWorkpaperState(current.globalSectionIds) !== canonicalWorkpaperState(frozen.globalSectionIds)
     || canonicalWorkpaperState(current.globalWorkspaceIds) !== canonicalWorkpaperState(frozen.globalWorkspaceIds)) {
     fail('WORKPAPER.SAFETY_DRIFT', 'Current safety lock differs from the frozen plan.');
+  }
+}
+function sameRecoverySafety(current, frozen) {
+  sameRecoveryAuthority(current, frozen);
+  if (canonicalWorkpaperState(current.workspaceIds) !== canonicalWorkpaperState(frozen.workspaceIds)
+    || canonicalWorkpaperState(current.globalSectionIds) !== canonicalWorkpaperState(frozen.globalSectionIds)
+    || canonicalWorkpaperState(current.globalWorkspaceIds) !== canonicalWorkpaperState(frozen.globalWorkspaceIds)) {
+    fail('WORKPAPER.SAFETY_DRIFT', 'Current safety scope differs from the frozen recovery scope.');
   }
 }
 function credentialDigest(b, s) {
@@ -170,7 +186,7 @@ function observationState(value) {
   return state;
 }
 function createFeatureWorker(ports) {
-  const connector = ports && ports.connector; const store = ports && ports.store; const events = ports && ports.events;
+  const connector = ports && ports.connector; const store = ports && ports.store; const events = ports && ports.events; const ai = ports && ports.ai;
   if (!connector || typeof connector.invoke !== 'function' || !store || typeof store.call !== 'function' || !events || typeof events.emit !== 'function') {
     fail('WORKPAPER.PORTS_INVALID', 'Connector, Store and Event ports are required.');
   }
@@ -198,7 +214,20 @@ function createFeatureWorker(ports) {
     await store.call('savePlan', { schemaVersion: 'omnia.workpaper-current-pointer/v1', planId: CURRENT_POINTER, currentPlanId: plan.planId, updatedAt: plan.updatedAt });
     return plan;
   };
+  const openPlan = async () => {
+    const openRun = await store.call('loadOpenRun', {});
+    if (openRun && openRun.run_id) {
+      const recoveryPlan = await store.call('loadPlan', openRun.run_id);
+      if (!recoveryPlan) {
+        fail('WORKPAPER.RECOVERY_PLAN_MISSING', 'The nonterminal Workpaper Run has no exact durable recovery plan.');
+      }
+      return recoveryPlan;
+    }
+    return null;
+  };
   const current = async () => {
+    const recoveryPlan = await openPlan();
+    if (recoveryPlan) return recoveryPlan;
     const pointer = await store.call('loadPlan', CURRENT_POINTER);
     return pointer && pointer.currentPlanId ? store.call('loadPlan', pointer.currentPlanId) : null;
   };
@@ -223,41 +252,33 @@ function createFeatureWorker(ports) {
       : state === 'failed' ? '隐藏 Tab 打开未完成。'
         : state === 'uncertain' || state === 'pending_continuation' ? '存在结果不确定的命令；请先只读核验或继续未完成步骤。'
           : active ? '按 Control 逐项执行并核验。' : '等待选择元素。';
-    // Workpaper stages only exist once hidden tabs are terminal.
     const workpaperReady = state === 'completed';
-    const generateState = !workpaperReady ? 'pending'
-      : wpState ? 'completed' : 'current';
-    const generateDetail = !workpaperReady ? '等待隐藏 Tab 完成'
-      : wpState ? '控制底稿已生成' : '基于真实 Control 身份生成 Phase 2 底稿';
-    const downloadState = !wpState ? 'pending'
-      : wpState === 'generated' ? 'current' : 'completed';
-    const downloadDetail = !wpState ? '等待生成'
-      : wpState === 'generated' ? '下载后线下审核' : '底稿已下载审核';
-    const previewState = !wpState || wpState === 'generated' ? 'pending'
-      : wpState === 'previewed' ? 'completed' : 'completed';
-    const previewDetail = wpState === 'previewed' || (wpState && wpState !== 'generated') ? '变更预览已生成' : '上传已审核底稿后逐字段预览';
-    const writebackState = wpState === 'writeback_complete' ? 'completed'
+    // upload: the template is auto-generated once hidden tabs are terminal; the
+    // material step stays current while the template exists and materials are
+    // still being collected, then completes once resolutions are ready.
+    const uploadState = !wpState ? 'pending'
+      : ['resolved', 'writeback_complete', 'writeback_uncertain', 'writeback_noop'].includes(wpState) ? 'completed' : 'current';
+    const uploadDetail = !wpState ? '等待隐藏 Tab 完成'
+      : wpState && !['generated'].includes(wpState) ? '材料已上传并转化' : '下载填写件 + 上传填写件与制度资料';
+    // writeback: one explicit confirmation writes back to Omnia.
+    const writebackState = wpState === 'writeback_complete' || wpState === 'writeback_noop' ? 'completed'
       : wpState === 'writeback_uncertain' ? 'warning'
-        : wpState === 'writeback_noop' ? 'completed'
+        : wpState === 'resolved' ? 'current'
           : 'pending';
     const writebackDetail = wpState === 'writeback_complete' || wpState === 'writeback_noop' ? '写回已完成'
       : wpState === 'writeback_uncertain' ? '存在不确定写回，请只读核验'
-        : '确认后写回真实 Control 字段并读回核验';
+        : wpState === 'resolved' ? '材料已转化；确认后写回真实 Control 字段' : '等待材料上传与转化';
     const steps = [
       step('select', '选择元素', '选择 Generic Application GRA', active ? 'completed' : 'current'),
       step('open', '打开隐藏 Tab', openDetail, openState),
-      step('generate', '生成控制底稿', generateDetail, generateState),
-      step('download', '下载审核', downloadDetail, downloadState),
-      step('upload', '上传底稿', wpState && wpState !== 'generated' ? '已上传' : '等待上传', wpState && wpState !== 'generated' ? 'completed' : 'pending'),
-      step('preview', '预览变更', previewDetail, previewState),
-      step('writeback', '确认写回', writebackDetail, writebackState)
+      step('upload', '上传材料', uploadDetail, uploadState),
+      step('writeback', '确认回传', writebackDetail, writebackState)
     ];
-    const currentStepId = state === 'completed' && wpState === 'writeback_complete' ? 'writeback'
-      : state === 'completed' && wpState === 'writeback_uncertain' ? 'writeback'
-        : state === 'completed' && wpState === 'previewed' ? 'writeback'
-          : state === 'completed' && wpState === 'generated' ? 'download'
-            : state === 'completed' ? 'generate'
-              : active ? 'open' : 'select';
+    const currentStepId = wpState === 'writeback_complete' || wpState === 'writeback_noop' ? 'writeback'
+      : wpState === 'writeback_uncertain' ? 'writeback'
+        : wpState === 'resolved' ? 'writeback'
+          : wpState ? 'upload'
+            : workpaperReady ? 'upload' : active ? 'open' : 'select';
     return { revision: 1, currentStepId, steps };
   }
   const actionPatch = (plan) => {
@@ -279,24 +300,30 @@ function createFeatureWorker(ports) {
             : '结束当前流程并返回选择元素。';
     const generateEnabled = ['completed', 'uncertain', 'pending_continuation'].includes(state);
     const generateReason = generateEnabled ? '' : '只有已完成隐藏 Tab 打开并读回的计划才能生成控制底稿。';
-    const previewEnabled = Boolean(plan && plan.workpaper && plan.workpaper.state === 'generated');
-    const previewReason = previewEnabled ? '' : '请先生成控制底稿，再上传已审核的文件。';
-    const writebackEnabled = Boolean(plan && plan.workpaper && plan.workpaper.state === 'previewed'
-      && plan.workpaper.preview && plan.workpaper.preview.diffs.some((diff) => diff.changes.some((change) => change.state === 'changed')));
-    const writebackReason = writebackEnabled ? '' : '请先上传并预览出实际字段变更，再确认写回。';
+    const filledEnabled = Boolean(plan && plan.workpaper && plan.workpaper.state === 'generated');
+    const filledReason = filledEnabled ? '' : '请先完成控制底稿模板生成，再上传填写好的替换字段表。';
+    const policyEnabled = Boolean(plan && plan.workpaper && plan.workpaper.state === 'generated');
+    const policyReason = policyEnabled ? '' : '请先生成控制底稿模板，再上传制度资料。';
+    const writebackEnabled = Boolean(plan && plan.workpaper && plan.workpaper.state === 'resolved');
+    const writebackReason = writebackEnabled ? '' : '请先上传填写件与制度资料并完成系统转化，再确认回传。';
+    // Once the workpaper is generated, the Control catalog and hidden-Tab
+    // controls are no longer relevant. Collapse to the workpaper-stage actions.
+    const workpaperStage = Boolean(plan && plan.workpaper && plan.workpaper.state);
+    const wpState = plan && plan.workpaper ? plan.workpaper.state : null;
     return [
-      { actionId: 'bootstrap-workpaper-directory', enabled: false, reason: 'Initial authoritative APP GRA read has completed.' },
-      { actionId: 'refresh-workpaper-directory', enabled: directory, reason: directory ? '' : 'A frozen hidden-Tab plan is active.' },
-      { actionId: 'prepare-hidden-tabs', enabled: directory, reason: directory ? '' : 'A frozen hidden-Tab plan is active.' },
-      { actionId: 'cancel-hidden-tab-plan', enabled: state === 'pending_confirmation', reason: state === 'pending_confirmation' ? '' : 'Only an unconfirmed plan can be cancelled.' },
-      { actionId: 'confirm-hidden-tabs', enabled: pending, reason: pending ? '' : 'No frozen plan or reconciled continuation is awaiting confirmation.' },
-      { actionId: 'reconcile-hidden-tabs', enabled: uncertain,
+      { actionId: 'bootstrap-workpaper-directory', enabled: false, visible: !workpaperStage, reason: 'Initial authoritative APP GRA read has completed.' },
+      { actionId: 'refresh-workpaper-directory', enabled: directory, visible: !workpaperStage, reason: directory ? '' : 'A frozen hidden-Tab plan is active.' },
+      { actionId: 'prepare-hidden-tabs', enabled: directory, visible: !workpaperStage, reason: directory ? '' : 'A frozen hidden-Tab plan is active.' },
+      { actionId: 'cancel-hidden-tab-plan', enabled: state === 'pending_confirmation', visible: !workpaperStage, reason: state === 'pending_confirmation' ? '' : 'Only an unconfirmed plan can be cancelled.' },
+      { actionId: 'confirm-hidden-tabs', enabled: pending, visible: !workpaperStage, reason: pending ? '' : 'No frozen plan or reconciled continuation is awaiting confirmation.' },
+      { actionId: 'reconcile-hidden-tabs', enabled: uncertain, visible: !workpaperStage,
         label: state === 'pending_continuation' ? '确认继续未完成步骤' : '核验并继续未完成步骤',
         reason: uncertain ? '' : 'No uncertain Control command or reconciled continuation is available.' },
-      { actionId: 'generate-workpaper', enabled: generateEnabled, reason: generateReason },
-      { actionId: 'preview-workpaper', enabled: previewEnabled, reason: previewReason },
-      { actionId: 'confirm-writeback', enabled: writebackEnabled, reason: writebackReason },
-      { actionId: 'back-to-upload', enabled: backEnabled, reason: backReason },
+      { actionId: 'generate-workpaper', enabled: generateEnabled, visible: !wpState, presentation: 'background', reason: generateReason },
+      { actionId: 'upload-filled-workbook', enabled: filledEnabled, visible: wpState === 'generated', reason: filledReason },
+      { actionId: 'upload-policy', enabled: policyEnabled, visible: wpState === 'generated', reason: policyReason },
+      { actionId: 'confirm-writeback', enabled: writebackEnabled, visible: wpState === 'resolved', reason: writebackReason },
+      { actionId: 'back-to-upload', enabled: backEnabled, visible: !workpaperStage, reason: backReason },
       { actionId: 'restart-run', enabled: restartEnabled, reason: restartReason }
     ];
   };
@@ -363,13 +390,38 @@ function createFeatureWorker(ports) {
       statusMessage: `Generic APP GRA ${selectedGras.length} 个 · Control ${plan.counts.total} 个 · 待打开 ${plan.counts.toOpen} 个 · 状态 ${plan.state}`,
       scopes, items, selectedItemIds: [], search: '', artifacts, workflow: workflowSurface(plan), progress: planProgress(plan), actions: actionPatch(plan) };
   }
+  // A clean, minimal surface once the workpaper is generated: no Control
+  // catalog, only the downloaded artifact and the next-stage action. This is
+  // the "下载审核 / 上传 / 预览 / 确认写回" workspace after the hidden-Tab
+  // phase has completed.
+  function workpaperSurface(plan) {
+    const wp = plan.workpaper;
+    const artifact = wp ? [{
+      artifactId: wp.artifactId, kind: 'result', name: `workpaper-phase2-${plan.runId}.xlsx`,
+      sha256: wp.sha256, sizeBytes: wp.sizeBytes, available: true, reason: ''
+    }] : [];
+    const message = wp && wp.state === 'generated'
+      ? `填写件已生成：${plan.counts.total} 个 Control · ${wp.rowCount} 行。请下载填写件，填写“替换字段”sheet 后上传，并上传制度资料。`
+      : wp && wp.state === 'resolved'
+        ? '材料已转化；请确认后写回真实 Control 字段。'
+        : wp && wp.state === 'writeback_complete' ? '写回已完成并逐字段读回核验。'
+          : wp && wp.state === 'writeback_uncertain' ? '存在不确定写回；请只读核验，禁止盲目重放。'
+            : '控制底稿状态。';
+    return { schemaVersion: 'omnia.declarative-feature-surface-patch/v1', stateVersion: Number(plan.surfaceStateVersion || 1),
+      status: 'ready', statusMessage: message, scopes: [], items: [], selectedItemIds: [], search: '',
+      artifacts: artifact, workflow: workflowSurface(plan), clearFields: ['progress'], actions: actionPatch(plan) };
+  }
   async function readDirectory(context) {
     const { b, s } = contextAuthority(context);
     const raw = await invoke(OPERATIONS.directory, { connectorBinding: b, workspaceIds: s.workspaceIds });
     return { b, s, directory: normalizeDirectory(raw, b, s) };
   }
   async function refresh(context) {
-    try { return directorySurface((await readDirectory(context)).directory); }
+    try {
+      const recoveryPlan = await openPlan();
+      if (recoveryPlan) return recoveryPlan.workpaper ? workpaperSurface(recoveryPlan) : planSurface(recoveryPlan);
+      return directorySurface((await readDirectory(context)).directory);
+    }
     catch (error) {
       const issue = errorSummary(error);
       return { schemaVersion: 'omnia.declarative-feature-surface-patch/v1', status: 'error', statusMessage: `${issue.code}: ${issue.message}`,
@@ -582,154 +634,254 @@ function createFeatureWorker(ports) {
       fail('WORKPAPER.GENERATE_INVALID', '只有已完成隐藏 Tab 打开并读回的计划才能生成控制底稿。');
     }
     const { b, s } = contextAuthority(context); sameAuthority(b, plan.binding); sameSafety(s, plan.safety);
-    const editable = PHASE2_FIELDS.filter((field) => field.readOnly !== true && field.fillMode !== 'Agent 填写' && field.writePath);
-    if (!editable.length) fail('WORKPAPER.FIELD_CONTRACT_EMPTY', 'Phase 2 可写字段合同为空。');
-    const headers = workpaperHeaders();
-    const rows = [];
-    for (const control of plan.controls) {
-      const snapshot = await invoke(OPERATIONS.snapshot, { connectorBinding: b, ...controlRequest(control, control) });
-      if (!snapshot || snapshot.controlId !== control.controlId) fail('WORKPAPER.SNAPSHOT_DRIFT', `Control ${control.controlId} snapshot identity drifted.`);
-      rows.push(workpaperRow(control, snapshot));
+    if (!PHASE2_TEMPLATE.directory.length || !PHASE2_TEMPLATE.headers.length || !PHASE2_TEMPLATE.controls.length) {
+      fail('WORKPAPER.TEMPLATE_EMPTY', 'Phase 2 预置模板数据缺失。');
     }
-    if (!rows.length) fail('WORKPAPER.NO_CONTROLS', '当前计划没有可生成的 Control。');
+    // The pre-filled template is generated from the selected APP names, not
+    // from live Control field values. It carries the placeholder directory
+    // and the six control-point row templates (APP.01/02/05/06/10/13) with
+    // 【占位符】 left for the user + policy-AI resolution.
+    const systems = plan.selectedGras.map((item) => item.appName || item.appNumber).filter(text);
+    if (!systems.length) fail('WORKPAPER.NO_SYSTEMS', '当前计划没有可生成填写件的 APP。');
     const scope = workpaperScope(plan, { b, s });
-    const built = await planner().invoke('build_phase2_workbook', {
-      schemaVersion: 'omnia.workpaper-phase2-workbook/v1', headers, rows, scope
-    }, { runId: plan.runId });
-    if (!built || built.schemaVersion !== 'omnia.workpaper-phase2-workbook-result/v1'
+    const runId = plan.runId || plan.planId;
+    const built = await planner().invoke('build_phase2_template', {
+      schemaVersion: 'omnia.workpaper-phase2-workbook/v1', systems,
+      directory: PHASE2_TEMPLATE.directory, controlHeaders: PHASE2_TEMPLATE.headers,
+      controlRows: PHASE2_TEMPLATE.controls, scope
+    }, { runId });
+    if (!built || built.schemaVersion !== 'omnia.workpaper-phase2-template-result/v1'
       || !/^[0-9a-f]{64}$/u.test(built.sha256 || '') || !built.xlsxBase64) {
-      fail('WORKPAPER.WORKBOOK_INVALID', 'CPython 返回的控制底稿无效。');
+      fail('WORKPAPER.WORKBOOK_INVALID', 'CPython 返回的控制底稿模板无效。');
     }
     const artifact = await store.call('commitStandaloneArtifact', {
       kind: 'result', contentBase64: built.xlsxBase64,
       originalName: `workpaper-phase2-${plan.runId}.xlsx`,
       mediaType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      engagementId: b.engagementId, surfaceId: 'workpaper-preparation.workbench', sourceRef: 'workpaper-phase2-generated'
+      engagementId: b.engagementId, surfaceId: 'workpaper-preparation.workbench', sourceRef: 'workpaper-phase2-template'
     });
     if (!artifact || !artifact.artifactId || artifact.sha256 !== built.sha256) {
       fail('WORKPAPER.ARTIFACT_COMMIT_FAILED', '控制底稿 Artifact 提交失败或摘要漂移。');
     }
     plan.workpaper = {
       artifactId: artifact.artifactId, sha256: built.sha256, sizeBytes: built.sizeBytes,
-      semanticDigest: built.semanticDigest, rowCount: built.rowCount, headers,
-      scopeDigest: digest(scope), generatedAt: plan.updatedAt, state: 'generated'
+      semanticDigest: built.semanticDigest, rowCount: built.controlRowCount, headers: built.sheetNames,
+      scopeDigest: digest(scope), generatedAt: plan.updatedAt, state: 'generated',
+      systems
     };
     plan.surfaceStateVersion += 1; await save(plan);
     return plan;
   }
-  function workpaperEditableFields() {
-    return PHASE2_FIELDS.filter((field) => field.readOnly !== true && field.fillMode !== 'Agent 填写' && field.writePath);
-  }
-  function previewWorkpaperSurface(plan, diffs) {
-    // A read-only, per-field change preview. Each row maps to a Control with a
-    // source GRA, and each field shows old (live snapshot) vs new (uploaded).
-    const scopes = [{ id: 'preview:root', parentId: null, kind: 'section', level: 1, label: `${plan.counts.total} 个 Control`, parentLabel: '底稿编制', selected: true, initialExpanded: true, disabledReason: '' }];
-    const items = diffs.map((diff) => {
-      const changed = diff.changes.filter((change) => change.state === 'changed').length;
-      return { id: `preview:control:${diff.controlId}`, scopeId: 'preview:root', type: 'Control',
-        title: diff.controlNumber || diff.controlId,
-        subtitle: `${diff.graReferenceNumber || ''} · ${changed} 个字段变更 · ${diff.controlId}`,
-        selectable: false, disabledReason: '只读预览；确认后才写回。', concurrencyToken: diff.controlId };
-    });
-    return { schemaVersion: 'omnia.declarative-feature-surface-patch/v1', stateVersion: Number(plan.surfaceStateVersion || 1), status: 'ready',
-      statusMessage: `控制底稿预览：${diffs.length} 个 Control · 共 ${diffs.reduce((sum, diff) => sum + diff.changes.filter((change) => change.state === 'changed').length, 0)} 个字段变更`,
-      scopes, items, selectedItemIds: [], search: '',
-      workflow: workflowSurface(plan), progress: planProgress(plan), actions: actionPatch(plan) };
-  }
-  async function previewWorkpaper(plan, context, artifactDescriptor) {
+  async function uploadPolicy(plan, context, artifactDescriptor) {
     if (!plan || !plan.workpaper || plan.workpaper.state !== 'generated') {
-      fail('WORKPAPER.PREVIEW_INVALID', '请先生成控制底稿，再上传已审核的文件。');
+      fail('WORKPAPER.POLICY_INVALID', '请先生成控制底稿模板，再上传制度资料。');
     }
     const { b, s } = contextAuthority(context); sameAuthority(b, plan.binding); sameSafety(s, plan.safety);
+    const runId = plan.runId || plan.planId;
     if (!artifactDescriptor || artifactDescriptor.schemaVersion !== 'omnia.feature-artifact/v1'
       || artifactDescriptor.featureId !== FEATURE_ID || artifactDescriptor.kind !== 'source') {
-      fail('WORKPAPER.UPLOAD_IDENTITY', '上传文件身份无效；请重新选择已审核的控制底稿。');
+      fail('WORKPAPER.POLICY_IDENTITY', '制度压缩包身份无效；请重新选择。');
     }
     const bytes = await store.call('readArtifactBytes', { artifactId: artifactDescriptor.artifactId });
-    if (bytes.artifactId !== artifactDescriptor.artifactId || !bytes.contentBase64) {
-      fail('WORKPAPER.UPLOAD_BYTES', '上传文件字节不可用或身份漂移。');
+    if (!bytes || !bytes.contentBase64) fail('WORKPAPER.POLICY_BYTES', '制度压缩包字节不可用。');
+    const extraction = await planner().invoke('extract_policy_archive', {
+      schemaVersion: 'omnia.workpaper-policy-archive/v1', zipBase64: bytes.contentBase64
+    }, { runId });
+    if (!extraction || extraction.schemaVersion !== 'omnia.workpaper-policy-extraction/v1'
+      || !Array.isArray(extraction.documents)) {
+      fail('WORKPAPER.POLICY_EXTRACT', '制度压缩包文本提取失败。');
     }
-    const editable = workpaperEditableFields();
-    const parsed = await planner().invoke('parse_uploaded_workbook', {
-      schemaVersion: 'omnia.workpaper-phase2-workbook/v1', xlsxBase64: bytes.contentBase64,
-      expectedHeaders: plan.workpaper.headers
-    }, { runId: plan.runId });
-    if (!parsed || parsed.schemaVersion !== 'omnia.workpaper-phase2-workbook-parse-result/v1'
-      || parsed.rowCount !== plan.workpaper.rowCount || !Array.isArray(parsed.rows)) {
-      fail('WORKPAPER.UPLOAD_PARSE', '上传的控制底稿结构与冻结合同不一致。');
-    }
-    // Match each uploaded row back to its frozen Control using the exact
-    // four-tuple identity carried in the identity columns. Duplicate, ambiguous,
-    // or unprovable rows fail closed.
-    const identityIndex = new Map();
-    for (const [index, row] of parsed.rows.entries()) {
-      const controlId = text(row[WORKBOOK_IDENTITY_HEADERS.indexOf('controlId')]);
-      if (!controlId) fail('WORKPAPER.UPLOAD_IDENTITY_MISSING', `上传第 ${index + 2} 行缺少 Control 身份。`);
-      if (identityIndex.has(controlId)) fail('WORKPAPER.UPLOAD_IDENTITY_DUPLICATE', `上传出现重复 Control 身份 ${controlId}。`);
-      identityIndex.set(controlId, { index, row });
-    }
-    const expectedControlIds = new Set(plan.controls.map((control) => control.controlId));
-    for (const controlId of identityIndex.keys()) {
-      if (!expectedControlIds.has(controlId)) fail('WORKPAPER.UPLOAD_IDENTITY_UNKNOWN', `上传包含不在冻结计划中的 Control ${controlId}。`);
-    }
-    if (identityIndex.size !== expectedControlIds.size) fail('WORKPAPER.UPLOAD_COUNT_MISMATCH', '上传的 Control 数量与冻结计划不一致。');
-    // Build the per-field diff: uploaded value vs live snapshot value.
-    const diffs = [];
-    for (const control of plan.controls) {
-      const match = identityIndex.get(control.controlId);
-      const live = await invoke(OPERATIONS.snapshot, { connectorBinding: b, ...controlRequest(control, control) });
-      if (!live || live.controlId !== control.controlId) fail('WORKPAPER.SNAPSHOT_DRIFT', `Control ${control.controlId} 实时快照身份漂移。`);
-      const changes = editable.map((field, columnIndex) => {
-        const uploaded = text(match.row[WORKBOOK_IDENTITY_HEADERS.length + columnIndex]);
-        const current = valueKindRead(readFieldValue(live, field), field.valueKind);
-        const state = uploaded === current ? 'unchanged' : 'changed';
-        return { fieldKey: field.backendKey, frontendKey: field.frontendKey, current, uploaded, state };
-      });
-      diffs.push({ controlId: control.controlId, controlNumber: live.controlNumber,
-        graReferenceNumber: control.graReferenceNumber, changes });
-    }
-    plan.workpaper.preview = { diffs, uploadedSha256: bytes.sha256, state: 'previewed' };
-    plan.workpaper.state = 'previewed';
+    plan.workpaper.policy = {
+      documents: extraction.documents, skipped: extraction.skipped || [],
+      documentCount: extraction.documentCount, skippedCount: extraction.skippedCount,
+      uploadedSha256: bytes.sha256, state: 'extracted'
+    };
     plan.surfaceStateVersion += 1; await save(plan);
-    return previewWorkpaperSurface(plan, diffs);
+    // Uploading policy auto-triggers the AI resolution + template conversion.
+    return resolvePlaceholders(plan, context);
   }
-  function writebackChanges(diff) {
-    // Turn a preview diff's changed fields into signed write-back changes using
-    // the Phase 2 field contract (writePath template + valueKind + tab).
-    const byKey = new Map(PHASE2_FIELDS.map((field) => [field.backendKey, field]));
-    return diff.changes.filter((change) => change.state === 'changed').map((change) => {
-      const field = byKey.get(change.fieldKey);
-      if (!field || !field.writePath) fail('WORKPAPER.WRITEBACK_FIELD', `字段 ${change.fieldKey} 没有可写的 Phase 2 合同。`);
-      return { writePath: field.writePath, value: change.uploaded, valueKind: field.valueKind,
-        concurrencyTab: field.concurrencyTab || 201, phaseType: field.phaseType };
-    });
-  }
-  async function confirmWriteback(plan, context) {
-    if (!plan || !plan.workpaper || plan.workpaper.state !== 'previewed' || !plan.workpaper.preview) {
-      fail('WORKPAPER.WRITEBACK_INVALID', '请先上传并预览控制底稿变更，再确认写回。');
+  // Parse the user-filled 替换字段 sheet back into replacement values. The
+  // uploaded template must still match the frozen system scope; the returned
+  // placeholder→value map is applied to TestOfDesign text during resolution.
+  async function applyReplacementFields(plan, context, artifactDescriptor) {
+    if (!plan || !plan.workpaper || plan.workpaper.state !== 'generated') {
+      fail('WORKPAPER.REPLACEMENT_INVALID', '请先生成填写件模板，再上传填写好的替换字段表。');
     }
     const { b, s } = contextAuthority(context); sameAuthority(b, plan.binding); sameSafety(s, plan.safety);
-    const changedControls = plan.workpaper.preview.diffs.filter((diff) => diff.changes.some((change) => change.state === 'changed'));
-    if (!changedControls.length) {
-      plan.workpaper.state = 'writeback_noop';
+    const runId = plan.runId || plan.planId;
+    if (!artifactDescriptor || artifactDescriptor.schemaVersion !== 'omnia.feature-artifact/v1'
+      || artifactDescriptor.featureId !== FEATURE_ID || artifactDescriptor.kind !== 'source') {
+      fail('WORKPAPER.REPLACEMENT_IDENTITY', '填写件身份无效；请重新选择。');
+    }
+    const bytes = await store.call('readArtifactBytes', { artifactId: artifactDescriptor.artifactId });
+    if (!bytes || !bytes.contentBase64) fail('WORKPAPER.REPLACEMENT_BYTES', '填写件字节不可用。');
+    const replacement = await planner().invoke('apply_replacement_fields', {
+      schemaVersion: 'omnia.workpaper-replacement-input/v1', xlsxBase64: bytes.contentBase64
+    }, { runId });
+    if (!replacement || replacement.schemaVersion !== 'omnia.workpaper-replacement/v1'
+      || !Array.isArray(replacement.replacements) || !Array.isArray(replacement.systems)) {
+      fail('WORKPAPER.REPLACEMENT_PARSE', '填写件替换字段解析失败。');
+    }
+    // Prove the uploaded template still matches the frozen system scope.
+    const expectedSystems = [...plan.workpaper.systems].sort();
+    const uploadedSystems = [...replacement.systems].sort();
+    if (canonicalWorkpaperState(expectedSystems) !== canonicalWorkpaperState(uploadedSystems)) {
+      fail('WORKPAPER.REPLACEMENT_SCOPE_DRIFT', '填写件的系统范围与冻结合同不一致。');
+    }
+    plan.workpaper.replacement = {
+      replacements: replacement.replacements, uploadedSha256: bytes.sha256, state: 'filled'
+    };
+    plan.surfaceStateVersion += 1; await save(plan);
+    return plan;
+  }
+  // Apply the user-filled 替换字段 values to a Control's TestOfDesign text.
+  // System-level placeholders (controlPoint === 'AA通用') replace every row;
+  // control-point placeholders (controlPoint === 'APP.xx') replace only the
+  // matching control point. Empty values are never substituted.
+  function applyReplacementValues(sourceText, system, controlNumber, replacements) {
+    let output = sourceText;
+    for (const item of replacements || []) {
+      if (String(item.system || '') !== String(system || '')) continue;
+      const point = String(item.controlPoint || '');
+      if (point !== 'AA通用' && !(point && String(controlNumber || '').startsWith(point))) continue;
+      const placeholder = String(item.placeholder || '');
+      const value = String(item.value || '');
+      if (!placeholder || !value) continue;
+      output = output.split(placeholder).join(value);
+    }
+    return output;
+  }
+  // Resolve 【placeholder】 occurrences in the generated Controls TestOfDesign
+  // text using the extracted policy snippets. Only evidence_supported values
+  // are filled; missing_evidence / ambiguous stay empty (never invented).
+  async function resolvePlaceholders(plan, context) {
+    if (!plan || !plan.workpaper || plan.workpaper.state !== 'generated' || !plan.workpaper.policy) {
+      fail('WORKPAPER.RESOLVE_INVALID', '请先上传制度资料，再生成底稿内容。');
+    }
+    const runId = plan.runId || plan.planId;
+    if (!ai || typeof ai.review !== 'function') {
+      // AI unavailable is a warning, not a business failure: leave placeholders
+      // empty and continue without blocking the workpaper.
+      plan.workpaper.resolution = { state: 'ai_unavailable', message: 'AI 端口不可用；占位符保留为空，未生成内容。' };
       plan.surfaceStateVersion += 1; await save(plan);
       return plan;
     }
+    const policyIndex = await planner().invoke('build_policy_index', {
+      schemaVersion: 'omnia.workpaper-policy-index-input/v1', documents: plan.workpaper.policy.documents
+    }, { runId });
+    if (!policyIndex || policyIndex.schemaVersion !== 'omnia.workpaper-policy-index/v1' || !policyIndex.chunks) {
+      fail('WORKPAPER.POLICY_INDEX', '制度索引构建失败。');
+    }
+    const resolutions = [];
+    const replacements = plan.workpaper.replacement && plan.workpaper.replacement.replacements;
+    for (const row of plan.workpaper.systems.flatMap((system) => PHASE2_TEMPLATE.controls.map((c) => ({ system, control: c })))) {
+      const controlNumber = String(row.control.controlNumber || '').replace('系统ID', row.system);
+      let sourceText = String((row.control.values || [])[8] || '').replace('系统ID', row.system);
+      // User-filled replacement values (替换字段) are applied first, so the
+      // remaining 【placeholders】 left for the policy AI are only the
+      // evidence-class ones (【...】, 【policy合集名称】, etc.).
+      sourceText = applyReplacementValues(sourceText, row.system, controlNumber, replacements);
+      if (!sourceText.includes('【')) continue;
+      const placeholders = await planner().invoke('extract_placeholders', {
+        schemaVersion: 'omnia.workpaper-placeholder-input/v1', controlNumber,
+        sourceField: 'documentProcedureResults - TestOfDesign', sourceText
+      }, { runId });
+      if (!placeholders || !placeholders.placeholders || !placeholders.placeholders.length) continue;
+      const snippets = await planner().invoke('retrieve_policy_snippets', {
+        schemaVersion: 'omnia.workpaper-policy-retrieve-input/v1', index: policyIndex,
+        control: { controlNumber, description: String((row.control.values || [])[2] || ''), documentProcedureResults: sourceText }
+      }, { runId });
+      if (!snippets || !snippets.snippets || !snippets.snippets.length) {
+        // No relevant policy evidence: every placeholder is missing_evidence.
+        resolutions.push({ controlNumber, placeholders: placeholders.placeholders.map((p) => ({
+          placeholderId: p.placeholderId, state: 'missing_evidence', value: '', evidenceRefs: [], reason: '未检索到相关制度片段。' })) });
+        continue;
+      }
+      const instructions = [
+        '你是 IT 审计专家。只能根据给出的制度片段为已列出的占位符给出 resolution。',
+        '不得重写原文；不得编造人名、日期、系统、流程或审计结论。',
+        '每个 placeholderId 恰好返回一次。只有 state=evidence_supported 时 value 才能非空，且必须引用至少一个给出的 snippetId。',
+        '资料不足用 missing_evidence；无法唯一判断用 ambiguous；这两种 value 必须是空字符串。',
+        'evidenceRefs 只能使用给出的 snippetId。严格返回 {"resolutions":[...]}，每项含 placeholderId/state/value/evidenceRefs/reason。'
+      ].join(' ');
+      let result;
+      try {
+        result = await ai.review({ schemaVersion: 'omnia.feature-ai-review-request/v1',
+          capabilityId: 'phase2-policy-resolution/v1', runId, instructions,
+          input: { control: { controlNumber, sourceField: 'documentProcedureResults - TestOfDesign', originalTestOfDesign: sourceText },
+            placeholders: placeholders.placeholders, policySnippets: snippets.snippets } });
+      } catch (error) {
+        resolutions.push({ controlNumber, placeholders: placeholders.placeholders.map((p) => ({
+          placeholderId: p.placeholderId, state: 'missing_evidence', value: '', evidenceRefs: [], reason: `AI 调用失败：${text(error.message)}` })) });
+        continue;
+      }
+      const output = result && result.output;
+      const res = Array.isArray(output && output.resolutions) ? output.resolutions : [];
+      const byId = new Map(res.map((item) => [String(item.placeholderId), item]));
+      resolutions.push({ controlNumber, placeholders: placeholders.placeholders.map((p) => {
+        const r = byId.get(p.placeholderId);
+        if (!r || !['evidence_supported', 'missing_evidence', 'ambiguous'].includes(String(r.state))) {
+          return { placeholderId: p.placeholderId, state: 'missing_evidence', value: '', evidenceRefs: [], reason: 'AI 返回缺失或无效。' };
+        }
+        return { placeholderId: p.placeholderId, state: String(r.state), value: String(r.value || ''), evidenceRefs: Array.isArray(r.evidenceRefs) ? r.evidenceRefs.map(String) : [], reason: String(r.reason || '') };
+      }) });
+    }
+    plan.workpaper.resolution = { state: 'resolved', resolutions, resolvedAt: new Date().toISOString() };
+    plan.workpaper.state = 'resolved';
+    plan.surfaceStateVersion += 1; await save(plan);
+    return plan;
+  }
+  // Apply resolutions back into the source text by exact frozen offsets.
+  function applyResolutions(sourceText, resolutions) {
+    let output = sourceText;
+    const byId = new Map((Array.isArray(resolutions) ? resolutions : []).map((item) => [String(item.placeholderId), item]));
+    const occurrences = [...byId.values()].filter((item) => Number.isInteger(item.index)).sort((a, b) => b.index - a.index);
+    for (const resolution of occurrences) {
+      const original = String(resolution.originalPlaceholder || '');
+      if (output.slice(resolution.index, resolution.index + original.length) !== original) continue;
+      const replacement = resolution.state === 'evidence_supported' ? String(resolution.value || '') : '';
+      output = output.slice(0, resolution.index) + replacement + output.slice(resolution.index + original.length);
+    }
+    return output;
+  }
+  async function confirmWriteback(plan, context) {
+    if (!plan || !plan.workpaper || plan.workpaper.state !== 'resolved' || !plan.workpaper.resolution) {
+      fail('WORKPAPER.WRITEBACK_INVALID', '请先上传填写件与制度资料并完成系统转化，再确认回传。');
+    }
+    const { b, s } = contextAuthority(context); sameAuthority(b, plan.binding); sameSafety(s, plan.safety);
+    // For each Control, apply the resolved placeholders to the TestOfDesign text
+    // and write the resulting documentProcedureResults back to Omnia.
     plan.workpaper.writeback = { startedAt: new Date().toISOString(), outcomes: [] };
-    for (const diff of changedControls) {
-      const control = plan.controls.find((item) => item.controlId === diff.controlId);
-      if (!control) fail('WORKPAPER.WRITEBACK_CONTROL', `Control ${diff.controlId} 不在冻结计划中。`);
-      const changes = writebackChanges(diff);
+    for (const control of plan.controls) {
+      const resolution = (plan.workpaper.resolution.resolutions || []).find((item) => item.controlNumber === control.controlNumber);
+      if (!resolution || !resolution.placeholders || !resolution.placeholders.length) {
+        plan.workpaper.writeback.outcomes.push({ controlId: control.controlId, state: 'noop', reason: '无占位符需写回' });
+        continue;
+      }
+      // Read the live Control to resolve the procedure id and current value.
+      const snapshot = await invoke(OPERATIONS.snapshot, { connectorBinding: b, ...controlRequest(control, control) });
+      if (!snapshot || snapshot.controlId !== control.controlId) fail('WORKPAPER.SNAPSHOT_DRIFT', `Control ${control.controlId} 实时快照身份漂移。`);
+      const procedure = (snapshot.procedures || []).find((item) => item.phaseType === 'TestOfDesign');
+      const currentText = procedure ? procedure.documentProcedureResults : '';
+      const finalText = applyResolutions(currentText, resolution.placeholders);
+      if (finalText === currentText) {
+        plan.workpaper.writeback.outcomes.push({ controlId: control.controlId, state: 'noop', reason: '占位符已解析，无实际变更' });
+        continue;
+      }
+      const field = PHASE2_FIELDS.find((item) => item.backendKey === 'gitcNonDetailedTestingProcedures[phaseType=TestOfDesign].documentProcedureResults');
+      if (!field || !field.writePath) fail('WORKPAPER.WRITEBACK_FIELD', 'TestOfDesign 字段没有可写的 Phase 2 合同。');
+      const changes = [{ writePath: field.writePath, value: finalText, valueKind: 'editor',
+        concurrencyTab: field.concurrencyTab || 201, phaseType: 'TestOfDesign' }];
       let outcome;
       try {
         const result = await invoke(OPERATIONS.writeback, {
           connectorBinding: b, ...controlRequest(control, control),
-          command: { payload: { controlId: diff.controlId, changes } }
+          command: { payload: { controlId: control.controlId, changes } }
         });
         const allConfirmed = Array.isArray(result.ledger) && result.ledger.every((entry) => entry.confirmed === true);
-        outcome = { controlId: diff.controlId, state: allConfirmed ? 'succeeded' : 'uncertain', ledger: result.ledger };
+        outcome = { controlId: control.controlId, state: allConfirmed ? 'succeeded' : 'uncertain', ledger: result.ledger };
       } catch (error) {
-        outcome = { controlId: diff.controlId, state: 'uncertain', code: errorSummary(error).code, message: errorSummary(error).message };
+        outcome = { controlId: control.controlId, state: 'uncertain', code: errorSummary(error).code, message: errorSummary(error).message };
       }
       plan.workpaper.writeback.outcomes.push(outcome);
       plan.surfaceStateVersion += 1; await save(plan);
@@ -876,10 +1028,12 @@ function createFeatureWorker(ports) {
   }
   async function reconcile(plan, context) {
     if (!plan || plan.state !== 'uncertain' || !plan.uncertain) fail('WORKPAPER.RECONCILE_INVALID', 'No uncertain Control command is available.');
-    const { b, s } = contextAuthority(context); sameAuthority(b, plan.binding); sameSafety(s, plan.safety);
+    const { b, s } = contextAuthority(context); sameRecoveryAuthority(b, plan.binding); sameRecoverySafety(s, plan.safety);
     const step = plan.steps.find((item) => item.stepId === plan.uncertain.stepId);
     if (!step) fail('WORKPAPER.RECONCILE_INVALID', 'Uncertain Control is absent from the frozen plan.');
-    const latest = await store.call('loadLatestRun', {}); const run = latest && latest.run ? latest.run : latest;
+    const openRun = await store.call('loadOpenRun', {});
+    const latest = openRun ? null : await store.call('loadLatestRun', {});
+    const run = openRun || (latest && latest.run ? latest.run : latest);
     if (!run || text(run.run_id) !== plan.runId || !['uncertain','reconciling'].includes(text(run.state))) {
       fail('WORKPAPER.RUN_DRIFT', 'Core Run is not in the matching uncertain/reconciling recovery state.');
     }
@@ -930,7 +1084,9 @@ function createFeatureWorker(ports) {
       }
       await project(plan, step, commandId, b, observed);
     }
-    const after = await store.call('loadLatestRun', {}); const afterRun = after && after.run ? after.run : after;
+    const afterOpenRun = await store.call('loadOpenRun', {});
+    const afterLatest = afterOpenRun ? null : await store.call('loadLatestRun', {});
+    const afterRun = afterOpenRun || (afterLatest && afterLatest.run ? afterLatest.run : afterLatest);
     await store.call('transitionRun', { runId: plan.runId, expectedRevision: Number(afterRun.state_revision), toState: 'returning', eventType: 'workpaper.hidden_tab_reconcile_resolved' });
     await persistOutcome(plan, step, 'succeeded', 'reconciled_readback', null, commandId);
     delete plan.uncertain; delete plan.partialRecovery; return execute(plan, context);
@@ -953,15 +1109,19 @@ function createFeatureWorker(ports) {
     }
     if (input.actionId === 'generate-workpaper') {
       const generated = await generateWorkpaper(plan, context);
-      return { surfacePatch: planSurface(generated) };
-    }
-    if (input.actionId === 'preview-workpaper') {
-      const preview = await previewWorkpaper(plan, context, input.payload && input.payload.artifact);
-      return { surfacePatch: preview };
+      return { surfacePatch: workpaperSurface(generated) };
     }
     if (input.actionId === 'confirm-writeback') {
       const written = await confirmWriteback(plan, context);
-      return { surfacePatch: planSurface(written) };
+      return { surfacePatch: workpaperSurface(written) };
+    }
+    if (input.actionId === 'upload-policy') {
+      const uploaded = await uploadPolicy(plan, context, input.payload && input.payload.artifact);
+      return { surfacePatch: workpaperSurface(uploaded) };
+    }
+    if (input.actionId === 'upload-filled-workbook') {
+      const filled = await applyReplacementFields(plan, context, input.payload && input.payload.artifact);
+      return { surfacePatch: workpaperSurface(filled) };
     }
     if (!plan) fail('WORKPAPER.PLAN_NOT_FOUND', 'Current hidden-Tab plan was not found.');
     let result;

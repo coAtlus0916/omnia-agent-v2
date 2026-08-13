@@ -36,6 +36,9 @@ function returnAuthorityBinding(value: unknown, label: string): Record<string, a
   const binding = object(value, label);
   return { ...binding, tenantOrOrgId: String(binding.tenantOrOrgId || '') };
 }
+function normalizedExternalIdentity(value: unknown): string {
+  return String(value || '').normalize('NFKC').replace(/\s+/gu, ' ').trim().toLocaleLowerCase('en-US');
+}
 function canonical(value: unknown): string {
   if (value === null || ['boolean', 'string', 'number'].includes(typeof value)) return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -101,6 +104,7 @@ export const FEATURE_RUNTIME_STORE_PORT_POLICIES: Readonly<Record<string, Featur
   commitStandaloneArtifact: { permission: 'local_write', owner: 'feature_context' },
   recordTemplateMetadata: { permission: 'local_write', owner: 'current_run' },
   loadLatestRun: { permission: 'read', owner: 'feature_context' },
+  loadOpenRun: { permission: 'read', owner: 'feature_context' },
   createMutationRun: { permission: 'local_write', owner: 'feature_context' },
   transitionRun: { permission: 'local_write', owner: 'current_run' },
   recordFieldRevisions: { permission: 'local_write', owner: 'current_run' },
@@ -364,7 +368,7 @@ export class FeatureRuntimeStore {
         FROM lineage l
         JOIN feature_operation_handoffs h
           ON h.feature_id=? AND h.source_feature_version=l.feature_version
-        WHERE h.phase='finalized'
+        WHERE h.phase IN ('finalize_pending','finalized')
       )
       SELECT 1
       FROM lineage l
@@ -414,7 +418,7 @@ export class FeatureRuntimeStore {
         FROM lineage l
         JOIN feature_operation_handoffs h
           ON h.feature_id=? AND h.source_feature_version=l.feature_version
-        WHERE h.phase='finalized'
+        WHERE h.phase IN ('finalize_pending','finalized')
       )
       SELECT 1 FROM lineage WHERE feature_version=? LIMIT 1
     `).get(runId, featureId, featureId, featureVersion));
@@ -690,6 +694,7 @@ export class FeatureRuntimeStore {
     if (method === 'commitStandaloneArtifact') return this.commitStandaloneArtifact(input, context);
     if (method === 'recordTemplateMetadata') return this.recordTemplateMetadata(input, context);
     if (method === 'loadLatestRun') return this.loadLatestRun(context);
+    if (method === 'loadOpenRun') return this.loadOpenRun(context);
     if (method === 'createMutationRun') return this.createMutationRun(input, context);
     if (method === 'transitionRun') return this.transitionRun(input, context);
     if (method === 'recordFieldRevisions') return this.recordFieldRevisions(input, context);
@@ -1267,11 +1272,12 @@ export class FeatureRuntimeStore {
 
   private proveOwnedCreatedObject(input: unknown, context: FeatureWorkerPortContext): Record<string, unknown> {
     const request=object(input,'Owned created object proof'); const objectId=String(request.objectId||'').toLowerCase();
-    const workspaceId=String(request.workspaceId||'').toLowerCase(); const externalId=String(request.externalId||'').normalize('NFC').trim();
+    const workspaceId=String(request.workspaceId||'').toLowerCase(); const externalId=String(request.externalId||'').normalize('NFKC').replace(/\s+/gu,' ').trim();
+    const externalIdentity=normalizedExternalIdentity(externalId);
     const expectedObjectType=String(request.expectedObjectType||'');
     const binding=returnAuthorityBinding(request.connectorBinding,'Owned created object current binding');
     if(!/^[A-Za-z][A-Za-z0-9._ -]{1,127}$/u.test(expectedObjectType))throw new Error('Owned created object proof requires one exact object type.');
-    if(!objectId||!workspaceId||!externalId||!binding.connectorId||Number(binding.sessionGeneration)<1||!binding.engagementId||!binding.authorityInstanceId||!binding.packId)throw new Error('Owned created object proof request is incomplete.');
+    if(!objectId||!workspaceId||!externalIdentity||!binding.connectorId||Number(binding.sessionGeneration)<1||!binding.engagementId||!binding.authorityInstanceId||!binding.packId)throw new Error('Owned created object proof request is incomplete.');
     const safety=this.core.prepare(`SELECT enabled,engagement_id,workspace_ids_json FROM workspace_safety WHERE singleton=1`).get() as {enabled:number;engagement_id:string;workspace_ids_json:string}|undefined;
     const allowed=safety?JSON.parse(safety.workspace_ids_json) as string[]:[];
     if(!safety||safety.enabled!==1||safety.engagement_id!==binding.engagementId||!allowed.includes(workspaceId))throw new Error('Owned created object proof is outside the current exact safety scope.');
@@ -1299,12 +1305,12 @@ export class FeatureRuntimeStore {
         ||String(row.pack_id)!==String(binding.packId)||String(row.confirmation_engagement_id)!==String(binding.engagementId))return false;
       const intended=JSON.parse(String(row.intended_revision_json||'{}')) as Record<string,unknown>;
       if(intended.kind!=='object'||intended.objectType!==expectedObjectType||intended.disposition!=='create'
-        ||String(intended.workspace||'').toLowerCase()!==workspaceId||String(intended.externalId||'').normalize('NFC').trim()!==externalId
+        ||String(intended.workspace||'').toLowerCase()!==workspaceId||normalizedExternalIdentity(intended.externalId)!==externalIdentity
         ||!String(intended.mutationOperationId||'')||String(intended.mutationOperationId)!==String(row.operation_id))return false;
       const payload=JSON.parse(String(row.payload_json||'{}')) as Record<string,unknown>;
       const committedId=String(payload.id||payload.itElementId||payload.applicationId||'').toLowerCase();
       return String(payload.engagementId||'')===String(binding.engagementId)&&committedId===objectId
-        &&String(payload.number||payload.referenceNumber||payload.name||'').normalize('NFC').trim()===externalId;
+        &&normalizedExternalIdentity(payload.number||payload.referenceNumber||payload.name)===externalIdentity;
     });
     if(matches.length===1){
       const match=matches[0]!;
@@ -1503,6 +1509,24 @@ export class FeatureRuntimeStore {
       FROM managed_content_intents i WHERE i.run_id=? ORDER BY i.created_at,i.intent_id
     `).all(String(run.run_id));
     return { run, issues, artifacts, events, returnProgress };
+  }
+
+  private loadOpenRun(context: FeatureWorkerPortContext): Record<string, unknown> | null {
+    const candidates = this.core.prepare(`
+      SELECT *
+      FROM feature_runs
+      WHERE feature_id=?
+        AND state NOT IN ('succeeded','failed','cancelled','not_evaluable')
+      ORDER BY updated_at DESC,created_at DESC,rowid DESC
+    `).all(context.featureId) as Array<Record<string, unknown>>;
+    const owned = candidates.filter((run) => this.currentActivationOwnsRun(String(run.run_id || ''), context));
+    if (owned.length > 1) {
+      throw new AppError(
+        'FEATURE.OPEN_RUN_AMBIGUOUS',
+        'More than one nonterminal Run belongs to the active Feature lineage; recovery must remain fail-closed.'
+      );
+    }
+    return owned[0] || null;
   }
 
   private readArtifactBytes(input: unknown, context: FeatureWorkerPortContext): Record<string, unknown> {
@@ -3716,7 +3740,13 @@ export class FeatureRuntimeStore {
             AND partial.evidence_type='reconcile' AND partial.verified=1
             AND json_extract(partial.payload_json,'$.outcome')='partial_applied'
         ) AS has_partial_evidence,
-        i.intended_revision_json,f.credential_digest,f.authority_instance_id,f.tenant_or_org_id,f.pack_id,f.engagement_id
+        i.intended_revision_json,f.credential_digest,f.connector_id,f.session_generation,f.safety_revision,
+        f.authority_instance_id,f.tenant_or_org_id,f.pack_id,f.engagement_id,
+        EXISTS(
+          SELECT 1 FROM feature_command_evidence verified
+          WHERE verified.command_id=c.command_id AND verified.run_id=c.run_id
+            AND verified.verified=1 AND verified.evidence_type IN ('readback','reconcile')
+        ) AS has_verified_evidence
       FROM feature_commands c
       JOIN feature_runs r ON r.run_id=c.run_id
       JOIN managed_content_intents i ON i.intent_id=c.intent_id AND i.run_id=c.run_id AND i.plan_digest=c.plan_digest
@@ -3734,6 +3764,16 @@ export class FeatureRuntimeStore {
     })).digest('hex');
     const intended = row ? JSON.parse(String(row.intended_revision_json)) as Record<string, unknown> : {};
     const digest = crypto.createHash('sha256').update(canonical(evidenceRequest)).digest('hex');
+    const exactFrozenAuthority = row !== undefined && authorityDigest === String(row.credential_digest);
+    const safeReadOnlySessionRebind = row !== undefined
+      && String(row.state) === 'uncertain'
+      && Number(row.has_verified_evidence) === 0
+      && String(binding.connectorId) === String(row.connector_id)
+      && String(binding.engagementId) === String(row.engagement_id)
+      && String(binding.authorityInstanceId) === String(row.authority_instance_id)
+      && String(binding.tenantOrOrgId) === String(row.tenant_or_org_id)
+      && String(binding.packId) === String(row.pack_id)
+      && workspaceIds.includes(String(target.workspaceId || ''));
     if (!row || (!['prepared','committed','uncertain'].includes(String(row.state))
         && !(String(row.state)==='readback_verified' && Number(row.has_partial_evidence)===1))
       || !(JSON.parse(String(row.evidence_operation_ids_json)) as string[]).includes(operationId)
@@ -3741,7 +3781,7 @@ export class FeatureRuntimeStore {
       || (intended.operationTargetIdentityMode !== 'resolved_relation' && String(target.targetIdentityKey || '') !== String(intended.operationTargetIdentityKey || ''))
       || String(target.workspaceId || '') !== String(intended.workspace || '')
       || !workspaceIds.includes(String(target.workspaceId || ''))
-      || authorityDigest !== String(row.credential_digest)
+      || (!exactFrozenAuthority && !safeReadOnlySessionRebind)
       || String(binding.authorityInstanceId || '') !== String(row.authority_instance_id)
       || String(binding.tenantOrOrgId || '') !== String(row.tenant_or_org_id)
       || String(binding.packId || '') !== String(row.pack_id)
@@ -3814,12 +3854,17 @@ export class FeatureRuntimeStore {
     if (receiptRequired) {
       const receipt = this.core.prepare(`
         SELECT o.*,c.plan_digest AS command_plan_digest,c.evidence_operation_ids_json,c.evidence_target_identity_key,
-          c.evidence_request_digest,i.target_key,c.state AS command_state,
+          c.evidence_request_digest,i.target_key,i.intended_revision_json,c.state AS command_state,
           c.connector_request_id AS source_connector_request_id,
           c.connector_execution_generation AS source_connector_execution_generation,
           c.connector_session_generation AS source_connector_session_generation,
           c.connector_id AS source_connector_id,c.connector_operation_package_digest AS source_operation_package_digest,
           c.connector_feature_version AS source_feature_version,c.operation_id AS source_operation_id,
+          EXISTS(
+            SELECT 1 FROM feature_command_evidence verified
+            WHERE verified.command_id=c.command_id AND verified.run_id=c.run_id
+              AND verified.verified=1 AND verified.evidence_type IN ('readback','reconcile')
+          ) AS has_verified_evidence,
           EXISTS(
             SELECT 1 FROM connector_delivery_requests source_delivery
             WHERE source_delivery.request_id=c.connector_request_id
@@ -3839,6 +3884,34 @@ export class FeatureRuntimeStore {
       `).get(receiptId, commandId, runId, context.featureId, context.featureVersion) as Record<string, any> | undefined;
       const payloadReceiptId = payload && typeof payload === 'object' && !Array.isArray(payload)
         ? String((payload as Record<string, unknown>).__operationReceiptId || '') : '';
+      const receiptWorkspaceIds = receipt ? JSON.parse(String(receipt.workspace_ids_json)) as string[] : [];
+      const receiptAuthorityDigest = receipt ? crypto.createHash('sha256').update(canonical({
+        connectorId: receipt.connector_id,
+        sessionGeneration: Number(receipt.session_generation),
+        engagementId: receipt.engagement_id,
+        authorityInstanceId: receipt.authority_instance_id,
+        tenantOrOrgId: receipt.tenant_or_org_id,
+        packId: receipt.pack_id,
+        workspaceIds: receiptWorkspaceIds
+      })).digest('hex') : '';
+      const exactFrozenReceiptAuthority = receipt !== undefined
+        && String(receipt.authority_digest) === String(receipt.credential_digest)
+        && String(receipt.connector_id) === String(receipt.confirmation_connector_id)
+        && Number(receipt.session_generation) === Number(receipt.confirmation_session_generation)
+        && String(receipt.engagement_id) === String(receipt.confirmation_engagement_id)
+        && String(receipt.authority_instance_id) === String(receipt.confirmation_authority_instance_id)
+        && String(receipt.tenant_or_org_id) === String(receipt.confirmation_tenant_or_org_id)
+        && String(receipt.pack_id) === String(receipt.confirmation_pack_id);
+      const safeReadOnlySessionRebind = receipt !== undefined
+        && String(receipt.command_state) === 'uncertain'
+        && Number(receipt.has_verified_evidence) === 0
+        && String(receipt.authority_digest) === receiptAuthorityDigest
+        && String(receipt.connector_id) === String(receipt.confirmation_connector_id)
+        && String(receipt.engagement_id) === String(receipt.confirmation_engagement_id)
+        && String(receipt.authority_instance_id) === String(receipt.confirmation_authority_instance_id)
+        && String(receipt.tenant_or_org_id) === String(receipt.confirmation_tenant_or_org_id)
+        && String(receipt.pack_id) === String(receipt.confirmation_pack_id)
+        && receiptWorkspaceIds.includes(String(JSON.parse(String(receipt.intended_revision_json || '{}')).workspace || ''));
       if (
         !receipt || payloadReceiptId !== receiptId
         || String(receipt.plan_digest) !== String(receipt.command_plan_digest)
@@ -3846,13 +3919,7 @@ export class FeatureRuntimeStore {
         || !(JSON.parse(String(receipt.evidence_operation_ids_json)) as string[]).includes(String(receipt.operation_id))
         || String(receipt.target_identity_key) !== String(receipt.evidence_target_identity_key)
         || String(receipt.request_digest) !== String(receipt.evidence_request_digest)
-        || String(receipt.authority_digest) !== String(receipt.credential_digest)
-        || String(receipt.connector_id) !== String(receipt.confirmation_connector_id)
-        || Number(receipt.session_generation) !== Number(receipt.confirmation_session_generation)
-        || String(receipt.engagement_id) !== String(receipt.confirmation_engagement_id)
-        || String(receipt.authority_instance_id) !== String(receipt.confirmation_authority_instance_id)
-        || String(receipt.tenant_or_org_id) !== String(receipt.confirmation_tenant_or_org_id)
-        || String(receipt.pack_id) !== String(receipt.confirmation_pack_id)
+        || (!exactFrozenReceiptAuthority && !safeReadOnlySessionRebind)
         || !/^sha256:[0-9a-f]{64}$/u.test(String(receipt.operation_package_digest))
         || crypto.createHash('sha256').update(canonical(receiptPayload)).digest('hex') !== String(receipt.response_digest)
         || canonical(JSON.parse(String(receipt.response_json))) !== canonical(receiptPayload)
@@ -3954,14 +4021,33 @@ export class FeatureRuntimeStore {
     const safety = this.core.prepare(`SELECT workspace_ids_json FROM workspace_safety WHERE singleton=1`).get() as {workspace_ids_json:string};
     const workspaceIds = JSON.parse(safety.workspace_ids_json) as string[];
     const authorityDigest = crypto.createHash('sha256').update(canonical({ connectorId:binding.connectorId,sessionGeneration:Number(binding.sessionGeneration),engagementId:binding.engagementId,authorityInstanceId:binding.authorityInstanceId,tenantOrOrgId:binding.tenantOrOrgId,packId:binding.packId,workspaceIds })).digest('hex');
-    const currentConfirmation = this.core.prepare(`SELECT credential_digest,connector_id,session_generation,authority_instance_id,tenant_or_org_id,pack_id,engagement_id FROM feature_confirmations WHERE run_id=? AND plan_digest=? AND decision='approved' AND credential_digest=? ORDER BY created_at DESC LIMIT 1`).get(runId, command.plan_digest, authorityDigest) as Record<string,any>|undefined;
+    const currentConfirmation = this.core.prepare(`SELECT credential_digest,connector_id,session_generation,authority_instance_id,tenant_or_org_id,pack_id,engagement_id FROM feature_confirmations WHERE run_id=? AND plan_digest=? AND decision='approved' ORDER BY created_at DESC LIMIT 1`).get(runId, command.plan_digest) as Record<string,any>|undefined;
     const workspaceId = String(request.workspaceId || ''); const projectionKind = String(request.projectionKind || ''); const occurredAt = now();
     const intended = JSON.parse(command.intended_revision_json) as Record<string, any>;
-    if (!currentConfirmation || currentConfirmation.credential_digest !== authorityDigest
-      || currentConfirmation.connector_id !== binding.connectorId || Number(currentConfirmation.session_generation) !== Number(binding.sessionGeneration)
-      || currentConfirmation.authority_instance_id !== binding.authorityInstanceId
-      || currentConfirmation.tenant_or_org_id !== binding.tenantOrOrgId || currentConfirmation.pack_id !== binding.packId
-      || currentConfirmation.engagement_id !== binding.engagementId || !workspaceIds.includes(workspaceId)
+    const projectionReceiptWorkspaceIds = JSON.parse(String(evidence.workspace_ids_json)) as string[];
+    const exactFrozenProjectionAuthority = Boolean(currentConfirmation)
+      && currentConfirmation!.credential_digest === authorityDigest
+      && currentConfirmation!.connector_id === binding.connectorId
+      && Number(currentConfirmation!.session_generation) === Number(binding.sessionGeneration)
+      && currentConfirmation!.authority_instance_id === binding.authorityInstanceId
+      && currentConfirmation!.tenant_or_org_id === binding.tenantOrOrgId
+      && currentConfirmation!.pack_id === binding.packId
+      && currentConfirmation!.engagement_id === binding.engagementId;
+    const safeReadOnlyProjectionRebind = Boolean(currentConfirmation)
+      && String(evidence.authority_digest) === authorityDigest
+      && String(evidence.connector_id) === String(binding.connectorId)
+      && Number(evidence.session_generation) === Number(binding.sessionGeneration)
+      && String(evidence.authority_instance_id) === String(binding.authorityInstanceId)
+      && String(evidence.tenant_or_org_id) === String(binding.tenantOrOrgId)
+      && String(evidence.pack_id) === String(binding.packId)
+      && String(evidence.engagement_id) === String(binding.engagementId)
+      && currentConfirmation!.connector_id === binding.connectorId
+      && currentConfirmation!.authority_instance_id === binding.authorityInstanceId
+      && currentConfirmation!.tenant_or_org_id === binding.tenantOrOrgId
+      && currentConfirmation!.pack_id === binding.packId
+      && currentConfirmation!.engagement_id === binding.engagementId
+      && projectionReceiptWorkspaceIds.includes(workspaceId);
+    if ((!exactFrozenProjectionAuthority && !safeReadOnlyProjectionRebind) || !workspaceIds.includes(workspaceId)
       || intended.workspace !== workspaceId || intended.key !== command.target_key || intended.kind !== command.target_kind
       || projectionKind !== (['relation','risk_control'].includes(command.target_kind) ? 'relation' : 'object')) {
       throw new Error('Projection differs from the frozen authority scope or intended target.');
@@ -3982,7 +4068,7 @@ export class FeatureRuntimeStore {
         ? Object.fromEntries(Object.entries(request.payload as Record<string, unknown>).filter(([key]) => key !== '__operationReceiptId'))
         : request.payload;
     const evidenceOperationIds = JSON.parse(String(command.evidence_operation_ids_json)) as string[];
-    const receiptWorkspaceIds = JSON.parse(String(evidence.workspace_ids_json)) as string[];
+    const receiptWorkspaceIds = projectionReceiptWorkspaceIds;
     const sourceAuthorityDigest = crypto.createHash('sha256').update(canonical({
       connectorId:String(evidence.connector_id),sessionGeneration:Number(evidence.session_generation),engagementId:String(evidence.engagement_id),
       authorityInstanceId:String(evidence.authority_instance_id),tenantOrOrgId:String(evidence.tenant_or_org_id),packId:String(evidence.pack_id),workspaceIds:receiptWorkspaceIds

@@ -12,9 +12,9 @@ import { resolveProductPaths } from '../src/main/paths.js';
 import { canonicalConnectorResponse, connectorResultDigest } from '../src/shared/connector-delivery.js';
 
 const repository = path.resolve(import.meta.dirname, '..');
-const featurePackage = path.join(repository, 'feature-packages/delete-elements/candidates/delete-elements-0.1.2.ofp');
+const featurePackage = path.join(repository, 'feature-packages/delete-elements/candidates/delete-elements-0.2.1.ofp');
 const featureId = 'omnia.delete-elements';
-const featureVersion = '0.1.2';
+const featureVersion = '0.2.1';
 const operationId = 'omnia.delete.scope.read.v1';
 const connectorId = 'connector-delivery-test';
 const sessionGeneration = 19;
@@ -106,7 +106,7 @@ test('PackageManager abandons only exact missing read delivery and never replays
           schemaVersion: 'omnia.connector-delivery-witness/v1',
           requestId,
           resultDigest: connectorResultDigest(wireResponse),
-          sessionGeneration,
+          sessionGeneration: Number(input.deliveryContext.sessionGeneration),
           executionGeneration
         }
       };
@@ -148,7 +148,8 @@ test('PackageManager abandons only exact missing read delivery and never replays
     runId: string,
     commandId: string,
     purpose: 'readback'|'mutation',
-    preparedOperationId = operationId
+    preparedOperationId = operationId,
+    preparedSessionGeneration = sessionGeneration
   ) => {
     const now = new Date().toISOString();
     database.db.prepare(`
@@ -157,9 +158,9 @@ test('PackageManager abandons only exact missing read delivery and never replays
         connector_id,session_generation,purpose,state,wire_result_digest,execution_generation,created_at,updated_at
       ) VALUES(?,?,?,?,?,?,?,?,?,?,'prepared','','',?,?)
     `).run(requestId, featureId, featureVersion, preparedOperationId, operationDigest, runId, commandId,
-      connectorId, sessionGeneration, purpose, now, now);
+      connectorId, preparedSessionGeneration, purpose, now, now);
   };
-  const invokeReceiptRead = (runId: string, commandId: string) => connectorInvoke({
+  const invokeReceiptRead = (runId: string, commandId: string, currentSessionGeneration = sessionGeneration) => connectorInvoke({
     schemaVersion: 'omnia.operation-invocation/v1',
     featureId,
     featureVersion,
@@ -167,7 +168,7 @@ test('PackageManager abandons only exact missing read delivery and never replays
     operationPackageDigest: operationDigest,
     mutationAuthorized: false,
     request: {
-      connectorBinding: { connectorId, sessionGeneration },
+      connectorBinding: { connectorId, sessionGeneration: currentSessionGeneration },
       receiptContext: { runId, commandId }
     }
   }, context);
@@ -340,6 +341,22 @@ test('PackageManager abandons only exact missing read delivery and never replays
     connectorId,
     sessionGeneration
   });
+
+  const staleReadRequestId = '66666666-6666-4666-8666-666666666666';
+  const statusCallsBeforeStaleRead = deliveryStatusRequests.length;
+  insertPrepared(staleReadRequestId, 'run-stale-read', 'command-stale-read', 'readback', operationId, sessionGeneration - 1);
+  await assert.rejects(invokeReceiptRead('run-stale-read', 'command-stale-read'), /receipt|command|evidence/i);
+  assert.equal(deliveryStatusRequests.length, statusCallsBeforeStaleRead);
+  const staleOriginal = database.db.prepare(`SELECT abandoned_at FROM connector_delivery_requests WHERE request_id=?`)
+    .get(staleReadRequestId) as { abandoned_at: string };
+  assert.ok(Date.parse(staleOriginal.abandoned_at) > 0);
+  const staleReplacement = database.db.prepare(`
+    SELECT request_id,state,session_generation FROM connector_delivery_requests
+    WHERE run_id='run-stale-read' AND command_id='command-stale-read' AND request_id<>?
+  `).get(staleReadRequestId) as { request_id: string; state: string; session_generation: number };
+  assert.notEqual(staleReplacement.request_id, staleReadRequestId);
+  assert.equal(staleReplacement.state, 'witnessed');
+  assert.equal(staleReplacement.session_generation, sessionGeneration);
 
   const outboxRequestId = String(replacement.request_id);
   const now = new Date().toISOString();

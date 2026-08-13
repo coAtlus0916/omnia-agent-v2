@@ -1,4 +1,12 @@
-﻿# 0.2.142 / sequence 144
+﻿# 0.2.144 / sequence 146
+
+Version 0.2.144 keeps every mutation, read-back, frozen-plan, and receipt boundary unchanged while reducing Return preparation latency. Independent per-GRA read-only review preflights and independent relation preflights now use the existing bounded eight-lane scheduler; results are restored to frozen plan order before the signed preflight digest is computed, so concurrency cannot change the deterministic plan identity.
+
+## 0.2.143 / sequence 145
+
+Version 0.2.143 completes owned-create Application recovery after a Pack-normalized external identity is reconciled. Empty Application settings bootstrap and its signed read-back now use the same NFKC, whitespace, and case-insensitive identity comparison as object reconciliation, while object ID, Workspace, object type, authority, and ownership proof remain exact.
+
+## 0.2.142 / sequence 144
 
 Version 0.2.142 restores exact read-only recovery and normal-path throughput for the current Return batch. Application read-back compares Pack-normalized external identities, cross-Workspace relations bind both frozen Workspace authorities and exact receipt-backed endpoints, verified relation heads advance to the latest revision while retaining prior revision history, durable Connector ACK delivery no longer serializes unrelated operations, and disposable UI progress checkpoints are coalesced while Core command/evidence ledgers remain durable per target.
 

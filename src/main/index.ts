@@ -31,6 +31,7 @@ import { FeaturePackageManager } from './features/package-manager.js';
 import { installBuiltinFeaturePackages } from './features/builtin-features.js';
 import { builtinFeatureReleaseInventoryForProfile } from './features/builtin-release-inventory.js';
 import type { FeatureActionRequest, FeatureArtifactBytesInputRequest, FeatureArtifactInputRequest } from '../shared/feature-contracts.js';
+import { packArchive } from './feature-artifact-archive.js';
 import { SurfaceWindowManager } from './services/surface-window-manager.js';
 import { InteractionLogService, type InteractionDescriptor } from './services/interaction-log-service.js';
 import type { InteractionLogQuery } from '../shared/interaction-log-contracts.js';
@@ -165,6 +166,29 @@ async function createWindow(): Promise<void> {
     surfaceWindows = null;
     mainWindow = null;
   });
+}
+
+function collectDirectoryFiles(dirPath: string, extensions: string[], maxFiles = 200): Array<{ absolutePath: string; relativePath: string }> {
+  const root = path.resolve(dirPath);
+  const result: Array<{ absolutePath: string; relativePath: string }> = [];
+  const allowed = new Set(extensions.map((ext) => ext.toLowerCase()));
+  const walk = (current: string): void => {
+    if (result.length >= maxFiles) return;
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      if (result.length >= maxFiles) return;
+      const absolute = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        walk(absolute);
+      } else if (entry.isFile()) {
+        const ext = path.extname(entry.name).slice(1).toLowerCase();
+        if (allowed.has(ext)) {
+          result.push({ absolutePath: absolute, relativePath: path.relative(root, absolute).split(path.sep).join('/') });
+        }
+      }
+    }
+  };
+  walk(root);
+  return result;
 }
 
 function registerIpc(service: ShellService, packages: FeaturePackageManager, logs: InteractionLogService): void {
@@ -305,19 +329,50 @@ function registerIpc(service: ShellService, packages: FeaturePackageManager, log
   register('surface:choose-feature-input', async (event, input: FeatureArtifactInputRequest) => {
       if (!surfaceWindows) throw new Error('Feature Surface host is not ready.');
       surfaceWindows.authorizeArtifactInput(event.sender.id, input);
+      const engagementId = service.snapshot().connection.engagementId || '';
+      const extensions = input.accept.map((value) => value.slice(1));
+      if (input.directory === true) {
+        const selected = await dialog.showOpenDialog({
+          title: '选择制度资料文件夹',
+          properties: ['openDirectory', 'multiSelections']
+        });
+        if (selected.canceled || !selected.filePaths.length) return null;
+        const files = selected.filePaths.flatMap((dirPath) => collectDirectoryFiles(dirPath, extensions));
+        if (!files.length) return null;
+        const archiveBytes = packArchive(files.map((file) => ({ name: file.relativePath, bytes: fs.readFileSync(file.absolutePath) })));
+        return packages.importArtifactBytes({ ...input, engagementId }, `policy-materials-${Date.now()}.zip`, archiveBytes);
+      }
+      if (input.multiple === true) {
+        const selected = await dialog.showOpenDialog({
+          title: '选择制度资料文件',
+          properties: ['openFile', 'multiSelections'],
+          filters: [{ name: 'Feature input', extensions }]
+        });
+        if (selected.canceled || !selected.filePaths.length) return null;
+        if (selected.filePaths.length === 1) {
+          return packages.importArtifact({ ...input, engagementId }, selected.filePaths[0]!);
+        }
+        const files = selected.filePaths.map((filePath) => ({ absolutePath: filePath, relativePath: path.basename(filePath) }));
+        const archiveBytes = packArchive(files.map((file) => ({ name: file.relativePath, bytes: fs.readFileSync(file.absolutePath) })));
+        return packages.importArtifactBytes({ ...input, engagementId }, `policy-materials-${Date.now()}.zip`, archiveBytes);
+      }
       const selected = await dialog.showOpenDialog({
         title: '选择 Feature 输入文件',
         properties: ['openFile'],
-        filters: [{ name: 'Feature input', extensions: input.accept.map((value) => value.slice(1)) }]
+        filters: [{ name: 'Feature input', extensions }]
       });
       if (selected.canceled || selected.filePaths.length !== 1) return null;
-      return packages.importArtifact({ ...input, engagementId: service.snapshot().connection.engagementId || '' }, selected.filePaths[0]!);
+      return packages.importArtifact({ ...input, engagementId }, selected.filePaths[0]!);
   });
   register('surface:import-feature-input-bytes', async (event, input: FeatureArtifactBytesInputRequest) => {
       if (!surfaceWindows) throw new Error('Feature Surface host is not ready.');
       surfaceWindows.authorizeArtifactInput(event.sender.id, input);
+      const engagementId = service.snapshot().connection.engagementId || '';
+      if (Array.isArray(input.files) && input.files.length) {
+        return packages.importArtifactArchive({ ...input, engagementId }, input.files);
+      }
       const bytes = input.bytes instanceof Uint8Array ? input.bytes : new Uint8Array(input.bytes as ArrayBuffer);
-      return packages.importArtifactBytes({ ...input, engagementId: service.snapshot().connection.engagementId || '' }, input.name, bytes);
+      return packages.importArtifactBytes({ ...input, engagementId }, input.name, bytes);
   });
   register('surface:save-feature-managed-asset', async (event, input: { featureId: string; featureVersion: string; actionId: string; memberPath: string }) => {
       if (!surfaceWindows) throw new Error('Feature Surface host is not ready.');
@@ -489,8 +544,12 @@ app.whenReady().then(async () => {
   await featurePackages.initializeRuntime();
   shell = new ShellService(database, connector, chat, attachments, featurePackages, {}, {}, interactionLogs);
   registerIpc(shell, featurePackages, interactionLogs);
-  await shell.initialize();
+  // The local Shell surface must not be gated by a remote status request.
+  // ShellService starts from its durable cached/offline snapshot, so it is
+  // safe to render immediately and let initialize reconcile Connector Next
+  // in the background of the already-visible window.
   await createWindow();
+  await shell.initialize();
   if (startupRecovery && mainWindow && !mainWindow.isDestroyed()) {
     void dialog.showMessageBox(mainWindow, {
       type: 'warning',

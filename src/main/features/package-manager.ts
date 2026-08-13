@@ -14,6 +14,7 @@ import type {
 } from '../../shared/feature-contracts.js';
 import { AppError } from '../../shared/errors.js';
 import { connectorResultDigest } from '../../shared/connector-delivery.js';
+import { packArchive } from '../feature-artifact-archive.js';
 import type { ProductPaths } from '../paths.js';
 import type { ConnectionSnapshot, WorkspaceSafetySnapshot } from '../../shared/contracts.js';
 import type { ConnectorTransport } from '../connector/connector-transport.js';
@@ -1926,7 +1927,10 @@ function validateSurface(value: unknown, manifest: FeatureManifest): Declarative
         throw new Error('Declarative Feature action input is invalid.');
       }
       if (action.input.kind === 'open_file') {
-        exactKeys(action.input, ['kind', 'accept', 'label'], 'Declarative Feature action input');
+        const openFileKeys = ['kind', 'accept', 'label'];
+        if (Object.hasOwn(action.input, 'multiple')) openFileKeys.push('multiple');
+        if (Object.hasOwn(action.input, 'directory')) openFileKeys.push('directory');
+        exactKeys(action.input, openFileKeys, 'Declarative Feature action input');
         if (
           !Array.isArray(action.input.accept)
           || action.input.accept.length < 1
@@ -1935,6 +1939,8 @@ function validateSurface(value: unknown, manifest: FeatureManifest): Declarative
           || typeof action.input.label !== 'string'
           || action.input.label.length < 1
           || action.input.label.length > 80
+          || (Object.hasOwn(action.input, 'multiple') && typeof action.input.multiple !== 'boolean')
+          || (Object.hasOwn(action.input, 'directory') && typeof action.input.directory !== 'boolean')
         ) throw new Error('Declarative Feature action input fields are invalid.');
       } else if (action.input.kind === 'toggle') {
         const toggleKeys = ['kind', 'fieldKey', 'label', 'defaultValue'];
@@ -3115,7 +3121,7 @@ export class FeaturePackageManager {
       : declaration?.mode === 'frozen_input_finalize'
         ? String(legacy.state) === 'processing'
         : declaration?.mode === 'authoritative_reconcile_continue'
-          ? ((String(legacy.state) === 'uncertain' && inFlight === 1 && uncertain === 1)
+          ? ((['uncertain','reconciling'].includes(String(legacy.state)) && inFlight === 1 && uncertain === 1)
             || (['uncertain','reconciling','returning'].includes(String(legacy.state)) && inFlight === 0 && uncertain === 0 && resolvedPartial === 1))
         : false;
     if (!declaration || !declaration.sourceFeatureVersions.includes(String(legacy.feature_version))
@@ -3146,7 +3152,7 @@ export class FeaturePackageManager {
       : declaration?.mode === 'frozen_input_finalize'
         ? String(legacy.state) === 'processing'
         : declaration?.mode === 'authoritative_reconcile_continue'
-          ? ((String(legacy.state) === 'uncertain' && inFlight === 1 && uncertain === 1)
+          ? ((['uncertain','reconciling'].includes(String(legacy.state)) && inFlight === 1 && uncertain === 1)
             || (['uncertain','reconciling','returning'].includes(String(legacy.state)) && inFlight === 0 && uncertain === 0 && resolvedPartial === 1))
         : false;
     if (!declaration || !declaration.sourceFeatureVersions.includes(String(legacy.feature_version))
@@ -3167,6 +3173,24 @@ export class FeaturePackageManager {
   importArtifactBytes(request: FeatureArtifactInputRequest, name: string, bytes: Uint8Array): FeatureArtifactDescriptor {
     if (!(bytes instanceof Uint8Array)) throw new AppError('FEATURE.ARTIFACT_BYTES_INVALID', 'Dropped Feature input bytes are invalid.');
     return this.importArtifactContent(request, name, Buffer.from(bytes), 'renderer-drag-drop');
+  }
+
+  importArtifactArchive(
+    request: FeatureArtifactInputRequest,
+    files: Array<{ name: string; relativePath: string; bytes: Uint8Array }>
+  ): FeatureArtifactDescriptor {
+    if (!Array.isArray(files) || files.length < 1 || files.length > 200) {
+      throw new AppError('FEATURE.ARTIFACT_BYTES_INVALID', 'Feature archive input must contain 1..200 files.');
+    }
+    const entries = files.map((file) => {
+      const name = String(file.relativePath || file.name || '').replaceAll('\\', '/').replace(/^\/+/, '');
+      if (!name || name.includes('..')) throw new AppError('FEATURE.ARTIFACT_NAME_INVALID', 'Feature archive member name is invalid.');
+      const bytes = Buffer.from(file.bytes instanceof Uint8Array ? file.bytes : new Uint8Array(file.bytes as ArrayBuffer));
+      return { name, bytes };
+    });
+    const archiveName = `policy-materials-${new Date().toISOString().replace(/[:.]/gu, '-')}.zip`;
+    const archiveBytes = packArchive(entries);
+    return this.importArtifactContent(request, archiveName, archiveBytes, 'renderer-drag-drop');
   }
 
   private importArtifactContent(
@@ -4610,6 +4634,18 @@ export class FeaturePackageManager {
                 throw new AppError('REMOTE.DELIVERY_CONTRACT_UNAVAILABLE', 'Remote Connector does not support durable Operation delivery witnesses.');
               }
               const recoverExisting = async (existing: Record<string, unknown>) => {
+                // A read-only response is bound to the Pack session that
+                // actually executed it.  If Pack was reconnected since the
+                // request was prepared, do not attach that old witness to the
+                // new frozen request/authority.  Supersede it transactionally
+                // below and issue a fresh read-only request.  Mutations retain
+                // their original identity and are never replayed here.
+                if (String(existing.purpose) !== 'mutation'
+                  && (String(existing.connector_id) !== String(deliveryBinding!.connectorId)
+                    || Number(existing.session_generation) !== Number(deliveryBinding!.sessionGeneration))) {
+                  abandonReadOnlyRequestId = String(existing.request_id);
+                  return false;
+                }
                 if (!this.runtime!.connector.deliveryStatus) throw new AppError(
                   'REMOTE.DELIVERY_STATUS_UNAVAILABLE', 'Connector cannot recover the prior durable Operation response.'
                 );
@@ -4910,6 +4946,11 @@ export class FeaturePackageManager {
                       AND partial.evidence_type='reconcile' AND partial.verified=1
                       AND json_extract(partial.payload_json,'$.outcome')='partial_applied'
                   ) AS has_partial_evidence,
+                  EXISTS(
+                    SELECT 1 FROM feature_command_evidence verified
+                    WHERE verified.command_id=c.command_id AND verified.run_id=c.run_id
+                      AND verified.verified=1 AND verified.evidence_type IN ('readback','reconcile')
+                  ) AS has_verified_evidence,
                   i.target_key,i.intended_revision_json,
                   f.credential_digest,f.connector_id,f.session_generation,f.engagement_id,
                   f.authority_instance_id,f.tenant_or_org_id,f.pack_id,
@@ -4944,6 +4985,24 @@ export class FeaturePackageManager {
               const targetIdentityKey = String(target?.targetIdentityKey || '');
               const workspaceId = String(target?.workspaceId || '');
               const exactRequestDigest = crypto.createHash('sha256').update(canonicalJson(operationRequest)).digest('hex');
+              const exactFrozenReceiptAuthority = authorityDigest === String(receiptRow.credential_digest)
+                && String(receiptBinding?.connectorId) === String(receiptRow.connector_id)
+                && Number(receiptBinding?.sessionGeneration) === Number(receiptRow.session_generation)
+                && String(receiptBinding?.engagementId) === String(receiptRow.engagement_id)
+                && String(receiptBinding?.authorityInstanceId || '') === String(receiptRow.authority_instance_id)
+                && String(receiptBinding?.tenantOrOrgId || '') === String(receiptRow.tenant_or_org_id)
+                && String(receiptBinding?.packId || '') === String(receiptRow.pack_id)
+                && Number(receiptRow.state_version) === Number(receiptRow.safety_revision);
+              const safeReadOnlySessionRebind = String(receiptRow.state) === 'uncertain'
+                && Number(receiptRow.has_verified_evidence) === 0
+                && String(receiptBinding?.connectorId) === String(receiptRow.connector_id)
+                && String(receiptBinding?.engagementId) === String(receiptRow.engagement_id)
+                && String(receiptBinding?.authorityInstanceId || '') === String(receiptRow.authority_instance_id)
+                && String(receiptBinding?.tenantOrOrgId || '') === String(receiptRow.tenant_or_org_id)
+                && String(receiptBinding?.packId || '') === String(receiptRow.pack_id)
+                && Number(receiptRow.enabled) === 1
+                && String(receiptRow.safety_engagement_id) === String(receiptRow.engagement_id)
+                && allowedWorkspaceIds.includes(workspaceId);
               if (
                 !receiptBinding || !targetIdentityKey || !workspaceId
                 || !(JSON.parse(String(receiptRow.evidence_operation_ids_json)) as string[]).includes(operationId)
@@ -4951,16 +5010,9 @@ export class FeaturePackageManager {
                 || (intended.operationTargetIdentityMode !== 'resolved_relation' && targetIdentityKey !== String(intended.operationTargetIdentityKey || ''))
                 || !String(receiptRow.evidence_request_digest)
                 || exactRequestDigest !== String(receiptRow.evidence_request_digest)
-                || authorityDigest !== String(receiptRow.credential_digest)
-                || String(receiptBinding.connectorId) !== String(receiptRow.connector_id)
-                || Number(receiptBinding.sessionGeneration) !== Number(receiptRow.session_generation)
-                || String(receiptBinding.engagementId) !== String(receiptRow.engagement_id)
-                || String(receiptBinding.authorityInstanceId || '') !== String(receiptRow.authority_instance_id)
-                || String(receiptBinding.tenantOrOrgId || '') !== String(receiptRow.tenant_or_org_id)
-                || String(receiptBinding.packId || '') !== String(receiptRow.pack_id)
+                || (!exactFrozenReceiptAuthority && !safeReadOnlySessionRebind)
                 || Number(receiptRow.enabled) !== 1
                 || String(receiptRow.safety_engagement_id) !== String(receiptRow.engagement_id)
-                || Number(receiptRow.state_version) !== Number(receiptRow.safety_revision)
                 || !allowedWorkspaceIds.includes(workspaceId)
                 || String(intended.workspace || '') !== workspaceId
               ) throw new AppError('FEATURE.RECEIPT_AUTHORITY_DRIFT', 'Authoritative receipt scope differs from the frozen authority, safety, or target identity.');
@@ -5885,7 +5937,8 @@ export class FeaturePackageManager {
             ...declared,
             enabled: patch.enabled === true,
             reason: typeof patch.reason === 'string' ? patch.reason : declared.reason,
-            label: typeof patch.label === 'string' && patch.label ? patch.label : declared.label
+            label: typeof patch.label === 'string' && patch.label ? patch.label : declared.label,
+            ...(typeof patch.visible === 'boolean' ? { visible: patch.visible } : {})
           } : declared;
         })
         : surface.actions;

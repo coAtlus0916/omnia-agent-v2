@@ -11,13 +11,13 @@ const companyCurrent = process.argv.includes('--company-current');
 const profile = companyCurrent ? 'company-loopback-current' : 'create-associate-only';
 const shellVersion = String(JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version);
 const expectedFeatures = companyCurrent ? [
-  ['omnia.create-associate', '0.2.135'],
+  ['omnia.create-associate', '0.2.146'],
   ['omnia.recording', '0.4.21'],
   ['omnia.delete-elements', '0.3.31'],
-  ['omnia.workpaper-preparation', '0.1.4']
+  ['omnia.workpaper-preparation', '0.1.52']
 ] : [['omnia.create-associate', '0.2.123']];
 const artifactName = companyCurrent
-  ? `Omnia-Agent-v5-${shellVersion}-Company-Loopback-Portable-20260812-r1`
+  ? `Omnia-Agent-v5-${shellVersion}-Company-Loopback-Portable-20260813-r1`
   : `Omnia-Agent-v5-${shellVersion}-Create-Associate-0.2.123-Connector-Next-Portable`;
 const artifactsRoot = path.join(root, 'artifacts');
 const target = path.join(artifactsRoot, artifactName);
@@ -193,7 +193,7 @@ try {
     ''
   ].join('\r\n'), 'utf8');
   const featureSummary = companyCurrent
-    ? '内置 Feature：新建与关联 0.2.135、底稿编制 0.1.4、录制 0.4.21、删除元素 0.3.31。'
+    ? '内置 Feature：新建与关联 0.2.146、底稿编制 0.1.52、录制 0.4.21、删除元素 0.3.31。'
     : '内置 Feature：新建与关联 0.2.123。';
   const instructions = [
     'Omnia Agent v5 + Connector Next 本地便携版',

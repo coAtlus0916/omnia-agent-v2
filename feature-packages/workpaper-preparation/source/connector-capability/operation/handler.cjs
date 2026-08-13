@@ -628,10 +628,20 @@ function createOperationHandler() {
       await invokeMutationStep(sdk, 'WORKPAPER.PRIOR_EVIDENCE_VALIDATE_FAILED', 'validate-hidden-data', { controlId }, [
         { op: 'replace', path: '/usePreviousAuditEvidence', value: false }
       ]);
+      // The recording proves a fresh Control removes /concurrencyTabUpdatedOn
+      // in the Tab 209 prior-evidence PATCH (the OE stage already consumed the
+      // token). A stale partial Control, however, still carries a live Tab 209
+      // token read back from the authoritative Control; writing without it is
+      // rejected as "Tab level concurrency exception". Carry the exact live
+      // token when present, and only fall back to the recorded no-token form
+      // when the authoritative read-back reports no Tab 209 token.
+      const liveOeToken = live.oeConcurrency && text(live.oeConcurrency.updatedOn);
       await invokeMutationStep(sdk, 'WORKPAPER.PRIOR_EVIDENCE_PATCH_FAILED', 'open-hidden-tab', { controlId }, [
         { op: 'replace', path: '/usePreviousAuditEvidence', value: false },
         { op: 'replace', path: '/concurrencyTabId', value: CONTROL_OE_TAB_ID },
-        { op: 'replace', path: '/concurrencyTabUpdatedOn' },
+        ...(liveOeToken
+          ? [{ op: 'replace', path: '/concurrencyTabUpdatedOn', value: liveOeToken }]
+          : [{ op: 'replace', path: '/concurrencyTabUpdatedOn' }]),
         { op: 'replace', path: '/isPurgeHiddenData', value: true }
       ]);
       return { controlId, accepted: true, mutation: 'planningOperatingEffectivenessTesting=true;planningCommonControlTesting=false;usePreviousAuditEvidence=false' };

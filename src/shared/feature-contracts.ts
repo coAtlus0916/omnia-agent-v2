@@ -122,6 +122,10 @@ export type DeclarativeFeatureActionInput =
     kind: 'open_file';
     accept: string[];
     label: string;
+    /** Allow selecting multiple files (native dialog + drag-drop). */
+    multiple?: boolean;
+    /** Allow selecting a folder; the folder is recursively collected into one archive. */
+    directory?: boolean;
   }
   | {
     /** A backend-owned boolean setting submitted with this action's payload. */
@@ -319,6 +323,9 @@ export interface FeatureArtifactInputRequest {
   surfaceId: string;
   actionId: string;
   accept: string[];
+  /** Declared on the action; drives native dialog multi-select / directory pick. */
+  multiple?: boolean;
+  directory?: boolean;
   /** Main-process authority scope; Renderer input is ignored and overwritten at the IPC boundary. */
   engagementId?: string;
 }
@@ -326,6 +333,8 @@ export interface FeatureArtifactInputRequest {
 export interface FeatureArtifactBytesInputRequest extends FeatureArtifactInputRequest {
   name: string;
   bytes: Uint8Array;
+  /** Batch drop of multiple files/folders; the main process packs them into one archive. */
+  files?: Array<{ name: string; relativePath: string; bytes: Uint8Array }>;
 }
 
 export interface FeatureMessageCard {

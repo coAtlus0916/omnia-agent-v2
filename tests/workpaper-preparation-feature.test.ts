@@ -173,6 +173,7 @@ test('Feature multi-GRA batch reaches one exact mutation and receipt-backed proj
     order.push(`store:${method}`);
     if (method === 'savePlan') { plans.set(input.planId, JSON.parse(JSON.stringify(input))); return true; }
     if (method === 'loadPlan') return plans.get(input) || null;
+    if (method === 'loadOpenRun') return null;
     if (method === 'createMutationRun') return { runId: 'run-1', stateRevision: 1 };
     if (method === 'prepareReturnIntent') return { planDigest: 'a'.repeat(64), confirmationId: 'confirm-1', confirmationToken: 'token-1', stateVersion: 1, expiresAt: '2099-01-01T00:00:00.000Z' };
     if (method === 'approveReturnIntent') return { runId: 'run-1', stateRevision: 3 };
@@ -249,6 +250,7 @@ test('two-step workflow rail drives back-to-upload and restart-run navigation', 
   const store = { async call(method: string, input: any) {
     if (method === 'savePlan') { plans.set(input.planId, JSON.parse(JSON.stringify(input))); return true; }
     if (method === 'loadPlan') return plans.get(input) || null;
+    if (method === 'loadOpenRun') return null;
     if (method === 'createMutationRun') return { runId: 'run-1', stateRevision: 1 };
     if (method === 'prepareReturnIntent') return { planDigest: 'a'.repeat(64), confirmationId: 'confirm-1', confirmationToken: 'token-1', stateVersion: 1, expiresAt: '2099-01-01T00:00:00.000Z' };
     if (method === 'returnRunToReview') { runState.state = 'ready_for_review'; return { stateRevision: runState.state_revision + 1 }; }
@@ -355,6 +357,7 @@ test('partial hidden-Tab effect reconciles into pending_continuation and resumes
     order.push(`store:${method}`);
     if (method === 'savePlan') { plans.set(input.planId, JSON.parse(JSON.stringify(input))); return true; }
     if (method === 'loadPlan') return plans.get(input) || null;
+    if (method === 'loadOpenRun') return null;
     if (method === 'createMutationRun') return { runId: 'run-1', stateRevision: 1 };
     if (method === 'prepareReturnIntent') return { planDigest: 'a'.repeat(64), confirmationId: 'confirm-1', confirmationToken: 'token-1', stateVersion: 1, expiresAt: '2099-01-01T00:00:00.000Z' };
     if (method === 'approveReturnIntent') { approveCount += 1; return { runId: 'run-1', stateRevision: 3 }; }

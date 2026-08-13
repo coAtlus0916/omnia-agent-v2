@@ -107,6 +107,10 @@ def read_zip_parts(data: bytes) -> dict[str, bytes]:
     infos = archive.infolist()
     require(0 < len(infos) <= MAX_ENTRIES, "WORKBOOK.ZIP_ENTRY_LIMIT", f"XLSX must contain 1..{MAX_ENTRIES} parts.")
     for info in infos:
+        # Directory entries (ExcelJS writes empty `_rels/`, `xl/` folders) carry
+        # no payload and are not OOXML parts. Skip them before name validation.
+        if info.is_dir() or info.filename.endswith("/"):
+            continue
         name = _safe_part_name(info.filename)
         require(name not in parts, "WORKBOOK.DUPLICATE_PART", f"Duplicate OOXML part: {name}.")
         require(not (info.flag_bits & 0x1), "WORKBOOK.ENCRYPTED_PART", f"Encrypted OOXML part is unsupported: {name}.")

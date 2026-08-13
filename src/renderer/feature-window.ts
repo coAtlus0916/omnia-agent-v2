@@ -728,7 +728,11 @@ function render(): void {
       ? 'return'
       : surface.review ? 'review' : 'default';
   const visibleReview = activeLayer === 'review' ? surface.review : undefined;
-  const selectionBrowser = !visibleReview ? renderSelectionBrowser() : '';
+  // A selection browser belongs to the first workflow step only. Once the
+  // workflow advances (open/upload/writeback), the left catalog framework must
+  // not linger — the worker returns empty scopes/items at those stages.
+  const isSelectionStep = !workflow || workflow.currentStepId === workflow.steps[0]?.stepId;
+  const selectionBrowser = !visibleReview && isSelectionStep ? renderSelectionBrowser() : '';
   const hasSelectionBrowser = Boolean(selectionBrowser);
   const fixedFooterSplit = selectionBrowserUsesFixedFooter(surface.selectionBrowser);
   const restartAction = surface.actions.find((action) => isActionVisible(action) && action.presentation === 'restart');
@@ -742,7 +746,6 @@ function render(): void {
     return activeLayer === 'upload' ? action.presentation === 'upload' : action.presentation !== 'upload';
   }).map((action) => actionControl(action)).join('') : '';
   const recorder = renderRecorder();
-  const sourceArtifact = [...(surface.artifacts || [])].reverse().find((artifact) => artifact.kind === 'source');
   const artifacts = (surface.artifacts || []).filter((artifact) => artifact.kind !== 'source').map((artifact) => `<div class="artifact"><span><strong>${esc(artifact.name)}</strong><small>sha256:${esc(artifact.sha256.slice(0, 12))}… · ${artifact.sizeBytes} bytes</small></span>${artifact.available ? `<button data-download="${esc(artifact.artifactId)}">下载</button>` : `<em>${esc(artifact.reason)}</em>`}</div>`).join('');
   const editors = !visibleReview ? (surface.editors || []).map((editor) => `<label class="editor"><span>${esc(editor.label)}</span>${editor.inputKind === 'enum'
     ? `<select data-editor="${esc(editor.issueId)}" data-field="${esc(editor.fieldKey)}" data-revision="${editor.expectedRevision}">${editor.allowedValues.map((value) => `<option value="${esc(value)}" ${value === editor.currentValue ? 'selected' : ''}>${esc(value)}</option>`).join('')}</select>`
@@ -752,10 +755,24 @@ function render(): void {
     ? `<div class="check capsule ${esc(item.state)}" data-progress-item="${esc(item.itemId)}" style="--capsule-progress:${item.percent}%"><div><strong>${esc(item.label)}</strong><small data-progress-count>${item.completed}/${item.total}</small></div></div>`
     : `<div class="check ${esc(item.state)}" data-progress-item="${esc(item.itemId)}"><span data-progress-item-state>${esc(item.state)}</span><div><strong>${esc(item.label)}</strong><small data-progress-detail>${esc(item.detail)}</small></div></div>`).join('')}</div></section>` : '';
   const issues = !visibleReview ? (surface.issues || []).map((issue) => `<div class="issue ${esc(issue.severity)}"><strong>${esc(issue.scope === 'global' ? '全局' : issue.scope === 'element' ? `元素 ${issue.elementId}` : '字段')}</strong><span>${esc(issue.message)}</span></div>`).join('') : '';
-  const inputAction = activeLayer === 'upload' || !visibleReview ? surface.actions.find((action) => isActionVisible(action) && action.input?.kind === 'open_file') : undefined;
-  const drop = inputAction ? `<section class="drop-zone ${sourceArtifact ? 'has-source' : ''}" data-drop-action="${esc(inputAction.actionId)}" tabindex="0">${sourceArtifact
-    ? `<strong>${esc(sourceArtifact.name)}</strong><span>${sourceArtifact.sizeBytes} bytes · ${esc(sourceArtifact.reason || '待确认上传')}</span><small>点击或拖入另一个非空 .xlsx 文件可替换</small>`
-    : `<strong>上传 .xlsx 资料</strong><span>点击“${esc(inputAction.label)}”选择，或将第一个非空 .xlsx 文件拖到这里</span>`}</section>` : '';
+  const inputActions = activeLayer === 'upload' || !visibleReview
+    ? surface.actions.filter((action) => isActionVisible(action) && action.input?.kind === 'open_file')
+    : [];
+  const inputAction = inputActions[0];
+  const sourceArtifact = inputActions.length === 1
+    ? [...(surface.artifacts || [])].reverse().find((artifact) => artifact.kind === 'source')
+    : undefined;
+  const drop = inputActions.map((action) => {
+    const input = action.input?.kind === 'open_file' ? action.input : undefined;
+    const acceptLabel = (input?.accept || []).join(' / ');
+    const multiHint = input?.directory === true
+      ? '点击选择文件夹，或拖入多个文件/整个文件夹'
+      : input?.multiple === true ? '点击选择多个文件，或拖入文件/文件夹' : '点击选择，或将文件拖到这里';
+    if (action === inputAction && sourceArtifact) {
+      return `<section class="drop-zone has-source" data-drop-action="${esc(action.actionId)}" tabindex="0"><strong>${esc(sourceArtifact.name)}</strong><span>${sourceArtifact.sizeBytes} bytes · ${esc(sourceArtifact.reason || '待确认上传')}</span><small>点击或拖入另一个非空文件可替换</small></section>`;
+    }
+    return `<section class="drop-zone" data-drop-action="${esc(action.actionId)}" tabindex="0"><strong>${esc(input?.label || '上传资料')}</strong><span>${esc(multiHint)}（${esc(acceptLabel)}）</span></section>`;
+  }).join('');
   const review = visibleReview ? renderReview(visibleReview) : '';
   const compactReturn = activeLayer === 'return';
   const header = hasSelectionBrowser ? '' : compactReturn
@@ -774,7 +791,7 @@ function render(): void {
   renderedError = errorMessage;
   renderedPendingActionId = pendingActionId;
   renderHostToolbar();
-  bindInteractions(inputAction);
+  bindInteractions();
   syncBusyState();
   scheduleBackgroundActions();
 }
@@ -819,7 +836,13 @@ async function chooseAndStageInput(inputAction: DeclarativeFeatureAction): Promi
   setBusy(true);
   let artifact;
   try {
-    artifact = await window.featureSurface.chooseInput({featureId: surface.featureId, featureVersion: surface.featureVersion, surfaceId: surface.surfaceId, actionId: inputAction.actionId, accept: inputAction.input.accept});
+    const input = inputAction.input;
+    artifact = await window.featureSurface.chooseInput({
+      featureId: surface.featureId, featureVersion: surface.featureVersion, surfaceId: surface.surfaceId,
+      actionId: inputAction.actionId, accept: input.accept,
+      ...(input.multiple !== undefined ? { multiple: input.multiple } : {}),
+      ...(input.directory !== undefined ? { directory: input.directory } : {})
+    });
   } catch (error) {
     errorMessage = error instanceof Error ? error.message : '文件导入失败';
   } finally {
@@ -829,7 +852,7 @@ async function chooseAndStageInput(inputAction: DeclarativeFeatureAction): Promi
   else renderIfChanged();
 }
 
-function bindInteractions(inputAction: DeclarativeFeatureAction | undefined): void {
+function bindInteractions(): void {
   root.querySelectorAll<HTMLInputElement>('input[name=selection]').forEach((input) => input.addEventListener('change', () => {
     if (!surface) return;
     if (!surface.selectionBrowser) {
@@ -980,29 +1003,87 @@ function bindInteractions(inputAction: DeclarativeFeatureAction | undefined): vo
     catch (error) { errorMessage = error instanceof Error ? error.message : '下载失败'; }
     finally { setBusy(false); renderIfChanged(); }
   }));
-  const dropZone = root.querySelector<HTMLElement>('[data-drop-action]');
-  if (dropZone && inputAction && inputAction.input?.kind === 'open_file') {
-    const fileInput = inputAction.input;
-    dropZone.addEventListener('click', () => void chooseAndStageInput(inputAction));
+  root.querySelectorAll<HTMLElement>('[data-drop-action]').forEach((dropZone) => {
+    const actionId = dropZone.dataset.dropAction || '';
+    const action = surface?.actions.find((candidate) => candidate.actionId === actionId);
+    if (!action || action.input?.kind !== 'open_file') return;
+    const fileInput = action.input;
+    const accepts = (fileInput.accept || []).map((ext) => ext.replace(/^\./, '').toLocaleLowerCase('en-US'));
+    const allowMultiple = fileInput.multiple === true || fileInput.directory === true;
+    dropZone.addEventListener('click', () => void chooseAndStageInput(action));
     dropZone.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); void chooseAndStageInput(inputAction); }
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); void chooseAndStageInput(action); }
     });
     dropZone.addEventListener('dragover', (event) => { event.preventDefault(); dropZone.classList.add('dragging'); });
     dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragging'));
     dropZone.addEventListener('drop', async (event) => {
       event.preventDefault(); dropZone.classList.remove('dragging');
       if (!surface || busy) return;
-      const file = [...(event.dataTransfer?.files || [])].find((candidate) => candidate.size > 0 && candidate.name.toLocaleLowerCase('en-US').endsWith('.xlsx'));
-      if (!file) { errorMessage = '请拖入第一个非空 .xlsx 文件。'; render(); return; }
+      const collected = await collectDroppedFiles(event.dataTransfer, accepts, allowMultiple);
+      if (!collected.length) { errorMessage = `请拖入符合要求的文件（${fileInput.accept.join(' / ')}）。`; render(); return; }
       setBusy(true);
       try {
-        const artifact = await window.featureSurface.importInputBytes({featureId: surface.featureId, featureVersion: surface.featureVersion, surfaceId: surface.surfaceId, actionId: inputAction.actionId, accept: fileInput.accept, name: file.name, bytes: new Uint8Array(await file.arrayBuffer())});
-        setBusy(false);
-        await invoke(inputAction.actionId, {artifact});
+        if (collected.length === 1 && !fileInput.directory) {
+          const first = collected[0]!;
+          const artifact = await window.featureSurface.importInputBytes({featureId: surface.featureId, featureVersion: surface.featureVersion, surfaceId: surface.surfaceId, actionId: action.actionId, accept: fileInput.accept, name: first.name, bytes: first.bytes});
+          await invoke(action.actionId, {artifact});
+        } else {
+          const artifact = await window.featureSurface.importInputBytes({featureId: surface.featureId, featureVersion: surface.featureVersion, surfaceId: surface.surfaceId, actionId: action.actionId, accept: fileInput.accept, name: collected[0]!.name, bytes: collected[0]!.bytes, files: collected});
+          await invoke(action.actionId, {artifact});
+        }
       } catch (error) { errorMessage = error instanceof Error ? error.message : '文件导入失败'; }
       finally { setBusy(false); renderIfChanged(); }
     });
+  });
+}
+
+interface DroppedFile { name: string; relativePath: string; bytes: Uint8Array; }
+
+function matchesAccept(name: string, accepts: string[]): boolean {
+  const lower = name.toLocaleLowerCase('en-US');
+  return accepts.some((ext) => lower.endsWith(`.${ext}`));
+}
+
+async function collectDroppedFiles(dataTransfer: DataTransfer | null, accepts: string[], allowMultiple: boolean, maxFiles = 200): Promise<DroppedFile[]> {
+  if (!dataTransfer) return [];
+  const result: DroppedFile[] = [];
+  const items = [...(dataTransfer.items || [])];
+  const entries: Array<{ entry: FileSystemEntry; relativePath: string }> = [];
+  for (const item of items) {
+    const entry = (item as { webkitGetAsEntry?: () => FileSystemEntry | null }).webkitGetAsEntry?.();
+    if (entry) entries.push({ entry, relativePath: '' });
+    else {
+      const file = item.getAsFile();
+      if (file && file.size > 0 && matchesAccept(file.name, accepts)) {
+        result.push({ name: file.name, relativePath: file.name, bytes: new Uint8Array(await file.arrayBuffer()) });
+      }
+    }
   }
+  const readDir = (dirEntry: FileSystemDirectoryEntry): Promise<Array<{ entry: FileSystemEntry; relativePath: string }>> =>
+    new Promise((resolve) => {
+      const reader = dirEntry.createReader();
+      const all: Array<{ entry: FileSystemEntry; relativePath: string }> = [];
+      const readBatch = () => reader.readEntries((batch) => {
+        if (!batch.length) return resolve(all);
+        all.push(...batch.map((child) => ({ entry: child, relativePath: `${dirEntry.fullPath.replace(/^\/+/, '')}/${child.name}`.replace(/^\/+/, '') })));
+        readBatch();
+      }, () => resolve(all));
+      readBatch();
+    });
+  const walk = async (entry: FileSystemEntry, relativePath: string): Promise<void> => {
+    if (result.length >= maxFiles) return;
+    if (entry.isFile) {
+      const file = await new Promise<File>((resolve, reject) => (entry as FileSystemFileEntry).file(resolve, reject));
+      if (file.size > 0 && matchesAccept(file.name, accepts)) {
+        result.push({ name: file.name, relativePath: relativePath || file.name, bytes: new Uint8Array(await file.arrayBuffer()) });
+      }
+    } else if (entry.isDirectory && allowMultiple) {
+      const children = await readDir(entry as FileSystemDirectoryEntry);
+      for (const child of children) await walk(child.entry, child.relativePath);
+    }
+  };
+  for (const { entry, relativePath } of entries) await walk(entry, relativePath);
+  return result;
 }
 
 async function invoke(actionId: string, payload: Record<string, unknown>): Promise<void> {

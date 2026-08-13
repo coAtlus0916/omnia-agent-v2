@@ -580,7 +580,7 @@ function unsetApplicationSettings(detail){
     &&Array.isArray(detail?.concurrencyTabs)&&detail.concurrencyTabs.length===0;
 }
 function exactApplicationSettingsIdentity(detail,objectId,externalId){
-  const normalized=(value)=>String(value||'').normalize('NFC').trim();
+  const normalized=(value)=>String(value||'').normalize('NFKC').replace(/\s+/gu,' ').trim().toLocaleLowerCase('en-US');
   return normalized(detail?.id||detail?.itElementId||detail?.applicationId).toLowerCase()===String(objectId).toLowerCase()
     &&normalized(detail?.number||detail?.referenceNumber)===normalized(externalId)
     &&normalized(detail?.name||detail?.displayName)===normalized(externalId);
@@ -1468,7 +1468,7 @@ function createFeatureWorker(dependencies) {
       }
     }
     const normalized=(value)=>String(value||'').normalize('NFKC').replace(/\s+/gu,' ').trim();
-    for(const row of rowsPrepared){
+    preflights.push(...await runBoundedIndependent(rowsPrepared,RETURN_DEFAULT_CONCURRENCY,async(row)=>{
       const rowTargets=targets.filter((item)=>item.rowKey===row.rowKey);
       const rowPreview={rowKey:row.rowKey,elementId:row.elementId,workspaceId:row.workspaceId,changes:[]};
       rowPreview.changes.push({targetKey:`object|${row.rowKey}`,disposition:row.identityDisposition,current:row.objectId||'absent',desired:`${row.objectType}/${row.elementId}`,operationId:RETURN_OPERATIONS.objectCreate,evidenceOperationIds:row.kind==='APP'?[RETURN_OPERATIONS.objectIdentityResolve,RETURN_OPERATIONS.objectRead]:[RETURN_OPERATIONS.objectRead]});
@@ -1567,16 +1567,21 @@ function createFeatureWorker(dependencies) {
           rowPreview.changes.push({targetKey:evalIntent.key,disposition:evaluation.status===evalIntent.value?'reuse':'submit',current:evaluation.status,desired:evalIntent.value,operationId:evalIntent.mutationOperationId,evidenceOperationId:evalIntent.evidenceOperationIds[0]});
         }
       }else for(const intent of rowTargets.filter((item)=>!item.key.startsWith('object|')&&!item.key.startsWith('gra|')&&item.kind!=='relation'&&!item.key.startsWith('object-settings|'))) rowPreview.changes.push({targetKey:intent.key,disposition:'post-create-resolution',current:'not-readable-before-gra-create',desired:intent.value||intent.plainText||intent.relationId||intent.fieldId||intent.kind,operationId:intent.mutationOperationId,evidenceOperationIds:intent.evidenceOperationIds});
-      preflights.push(rowPreview);
-    }
-    for(const intent of targets.filter((item)=>item.kind==='relation')){
+      return rowPreview;
+    }));
+    const relationPreviews=await runBoundedIndependent(targets.filter((item)=>item.kind==='relation'),RETURN_DEFAULT_CONCURRENCY,async(intent)=>{
       const source=rowsPrepared.find((item)=>`object|${item.rowKey}`===intent.sourceObjectTargetKey); const targetRow=rowsPrepared.find((item)=>`object|${item.rowKey}`===intent.targetObjectTargetKey);
-      const preview=preflights.find((item)=>item.rowKey===intent.rowKey);
       const targetObjectId=targetRow?.objectId||intent.resolvedTargetObjectId;
       if(source?.objectId&&targetObjectId){const target={targetIdentityKey:`relation|${intent.workspace}|${intent.targetWorkspace}|${source.objectId}|${targetObjectId}|${intent.relationType}`,workspaceId:intent.workspace}; intent.resolvedOperationTargetIdentityKey=target.targetIdentityKey;
         const observed=await invoke(RETURN_OPERATIONS.relationPreflight,context.connectorBinding,{target,query:{associationType:intent.relationType,itElementId:source.objectId,associatingEntityId:targetObjectId,sourceWorkspaceId:intent.workspace,targetWorkspaceId:intent.targetWorkspace}});
-        preview.changes.push({targetKey:intent.key,disposition:observed.associated===true&&observed.inconsistent===false?'reuse':'associate',current:observed,desired:{sourceObjectId:source.objectId,targetObjectId,sourceWorkspaceId:intent.workspace,targetWorkspaceId:intent.targetWorkspace,relationType:intent.relationType},operationId:intent.mutationOperationId,evidenceOperationId:intent.evidenceOperationIds[0]});
-      }else preview.changes.push({targetKey:intent.key,disposition:'post-create-resolution',current:'source-or-target-object-not-yet-created',desired:{sourceObjectTargetKey:intent.sourceObjectTargetKey,targetObjectTargetKey:intent.targetObjectTargetKey,relationType:intent.relationType},operationId:intent.mutationOperationId,evidenceOperationId:intent.evidenceOperationIds[0]});
+        return{rowKey:intent.rowKey,change:{targetKey:intent.key,disposition:observed.associated===true&&observed.inconsistent===false?'reuse':'associate',current:observed,desired:{sourceObjectId:source.objectId,targetObjectId,sourceWorkspaceId:intent.workspace,targetWorkspaceId:intent.targetWorkspace,relationType:intent.relationType},operationId:intent.mutationOperationId,evidenceOperationId:intent.evidenceOperationIds[0]}};
+      }
+      return{rowKey:intent.rowKey,change:{targetKey:intent.key,disposition:'post-create-resolution',current:'source-or-target-object-not-yet-created',desired:{sourceObjectTargetKey:intent.sourceObjectTargetKey,targetObjectTargetKey:intent.targetObjectTargetKey,relationType:intent.relationType},operationId:intent.mutationOperationId,evidenceOperationId:intent.evidenceOperationIds[0]}};
+    });
+    for(const item of relationPreviews){
+      const preview=preflights.find((candidate)=>candidate.rowKey===item.rowKey);
+      if(!preview)fail('RETURN.RELATION_PREVIEW_ROW_MISSING',`Frozen relation preview row is missing: ${item.rowKey}.`);
+      preview.changes.push(item.change);
     }
     assertReturnPlanCapabilities(planIr.rows,rowsPrepared);
     return { authority, rows: rowsPrepared, targets, preflights };
@@ -1893,10 +1898,21 @@ function createFeatureWorker(dependencies) {
             return{surfacePatch:returnSurface(finalizedLatest,'',checkpoint.execution)};
           }
         }
-        const current = await buildReturnPreparation(checkpoint, input.context);
-        assertReturnPlanCapabilities(checkpoint.planIr?.rows,current.rows);
-        const currentPreflightDigest = digest(Buffer.from(canonical({ authority: current.authority, preflights: current.preflights })));
-        if (input.actionId === 'confirm-return' && currentPreflightDigest !== checkpoint.preflightDigest) fail('RETURN.PREFLIGHT_CHANGED', 'Authority, object identity, or GRA preflight changed before confirmation.');
+        // Confirmation still re-reads and freezes the complete batch snapshot.
+        // A resumed Return already has that immutable confirmation plus Core's
+        // exact binding/safety authority. Repeating every row/relation preflight
+        // before each Continue duplicated hundreds of remote reads; every
+        // remaining mutation below still performs its own action-time exact
+        // preflight and authoritative read-back.
+        let executionRows = checkpoint.returnPlan.rows;
+        let currentPreflightDigest = checkpoint.preflightDigest;
+        if (input.actionId === 'confirm-return') {
+          const current = await buildReturnPreparation(checkpoint, input.context);
+          assertReturnPlanCapabilities(checkpoint.planIr?.rows,current.rows);
+          executionRows = current.rows;
+          currentPreflightDigest = digest(Buffer.from(canonical({ authority: current.authority, preflights: current.preflights })));
+          if (currentPreflightDigest !== checkpoint.preflightDigest) fail('RETURN.PREFLIGHT_CHANGED', 'Authority, object identity, or GRA preflight changed before confirmation.');
+        }
         if(input.actionId==='confirm-return'&&Number(checkpoint.confirmation.stateVersion)!==1) fail('RETURN.CONFIRMATION_VERSION_INVALID','The frozen confirmation state version is invalid.');
         const approved = input.actionId === 'confirm-return' ? await store.call('approveReturnIntent', {
           confirmationId: input.payload?.confirmationId||checkpoint.confirmation.confirmationId, confirmationToken: checkpoint.confirmation.confirmationToken,
@@ -2237,7 +2253,7 @@ function createFeatureWorker(dependencies) {
             provenance: { rowKey: row.rowKey, targetKey }, payload: result.observed });
         }
         try {
-          const ordered = [...current.rows];
+          const ordered = [...executionRows];
           const executionModes = new Map();
           await runCoreDependencyRows(ordered,async(row)=>{
             let objectId = row.objectId;
@@ -2737,5 +2753,5 @@ function createFeatureWorker(dependencies) {
   });
 }
 
-module.exports = { createFeatureWorker, parseV8, zipEntries, V8_SHA256,AI_REVIEW_DISPLAY_LANGUAGE,AI_REVIEW_LANGUAGE_VERSION,isChineseAiReviewDisplayText,assertChineseAiReviewDisplayText,aiReviewItemUsesChineseDisplayText,assertAiReviewOutputUsesChineseDisplayText,deriveGraName,validationPresentation,reviewPresentation,reviewBlocked,freezeAppDataAvailability,resolveFrozenAppDataAvailability,workflowSurface,uploadSurface,terminalRunReturnsToFreshUpload,normalizeRait,applyLiveVerifiedInfrastructureInheritance,applicationIdentityRequest,inspectApplicationIdentity,RETURN_OPERATIONS,
+module.exports = { createFeatureWorker, parseV8, zipEntries, V8_SHA256,AI_REVIEW_DISPLAY_LANGUAGE,AI_REVIEW_LANGUAGE_VERSION,isChineseAiReviewDisplayText,assertChineseAiReviewDisplayText,aiReviewItemUsesChineseDisplayText,assertAiReviewOutputUsesChineseDisplayText,deriveGraName,validationPresentation,reviewPresentation,reviewBlocked,freezeAppDataAvailability,resolveFrozenAppDataAvailability,exactApplicationSettingsIdentity,workflowSurface,uploadSurface,terminalRunReturnsToFreshUpload,normalizeRait,applyLiveVerifiedInfrastructureInheritance,applicationIdentityRequest,inspectApplicationIdentity,RETURN_OPERATIONS,
   buildFrozenDependencyGraph,dependencyBlockedByFailure,returnExecutionPolicy,aiReviewEligibleRows,frozenStageNodes,freezePlanCapabilities,frozenReturnIntents,assertReturnPlanCapabilities,authorityContentNameFor,governedCatalogDescription,catalogIdentityEvidenceGaps,riskControlCatalogFingerprint,catalogControlMatches,unresolvedCatalogRelations,workflowNavigationActions,returnSurface,forceCancelReturnRun,closeRunForFreshStart };

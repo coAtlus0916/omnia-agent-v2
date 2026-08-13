@@ -89,6 +89,17 @@ function durableFailureResult(
 export class ConnectorNextAgentRuntime {
   constructor(private readonly options: ConnectorNextAgentRuntimeOptions) {}
 
+  private async claimJobs(maximum: number, waitMs: number): Promise<Awaited<ReturnType<ConnectorNextAgentClient['pollJobs']>>['jobs']> {
+    try {
+      const pollLeaseId = this.options.gate.begin(`ocn3.poll.${randomUUID()}`, 'read_only');
+      try { return (await this.options.client.pollJobs(maximum, waitMs)).jobs; }
+      finally { this.options.gate.complete(pollLeaseId); }
+    } catch (error) {
+      if (error instanceof Error && error.message === 'CONNECTOR_NEXT.ADMISSION_CLOSED') return [];
+      throw error;
+    }
+  }
+
   private async executeWithDeadline(
     job: NonNullable<Awaited<ReturnType<ConnectorNextAgentClient['pollJob']>>['job']>,
     effective: 'read_only' | 'mutation'
@@ -162,20 +173,40 @@ export class ConnectorNextAgentRuntime {
     const concurrency = Number.isInteger(maxConcurrency) ? Math.max(1, Math.min(8, maxConcurrency)) : 8;
     let flushedLogs = 0;
     try { flushedLogs = await this.options.logs.flush(this.options.client); } catch { /* durable rows remain for retry */ }
-    let jobs: Awaited<ReturnType<ConnectorNextAgentClient['pollJobs']>>['jobs'] = [];
-    try {
-      const pollLeaseId = this.options.gate.begin(`ocn3.poll.${randomUUID()}`, 'read_only');
-      // Completion events are process-local while the durable queue is shared
-      // by all control-plane instances. Bound cross-process pickup latency to
-      // 100ms so normal work is not paced by a one-second idle long poll.
-      try { jobs = (await this.options.client.pollJobs(concurrency, 100)).jobs; }
-      finally { this.options.gate.complete(pollLeaseId); }
-    } catch (error) {
-      if (!(error instanceof Error) || error.message !== 'CONNECTOR_NEXT.ADMISSION_CLOSED') throw error;
+    const executedJobIds: string[] = [];
+    const active = new Set<Promise<void>>();
+    let firstError: unknown;
+    // Bound one drain turn so SIGTERM/update checks return to the outer loop,
+    // while still avoiding the old eight-job straggler barrier. A completed
+    // slot is refilled from the durable queue without waiting for every other
+    // job in the original claim to finish.
+    const maximumJobsPerDrain = 64;
+    let claimed = 0;
+    while ((active.size > 0 || claimed < maximumJobsPerDrain) && firstError === undefined) {
+      const capacity = Math.min(concurrency - active.size, maximumJobsPerDrain - claimed);
+      if (capacity > 0) {
+        // Completion events are process-local while the durable queue is shared
+        // by all control-plane instances. Bound cross-process pickup latency to
+        // 100ms so a newly freed lane can accept dependent work immediately.
+        const jobs = await this.claimJobs(capacity, 100);
+        for (const job of jobs) {
+          claimed += 1;
+          let task!: Promise<void>;
+          task = this.executeJob(job)
+            .then((jobId) => { if (jobId) executedJobIds.push(jobId); })
+            .catch((error) => { if (firstError === undefined) firstError = error; })
+            .finally(() => { active.delete(task); });
+          active.add(task);
+        }
+        if (jobs.length > 0) continue;
+      }
+      if (active.size === 0) break;
+      await Promise.race(active);
     }
-    const executed = await Promise.all(jobs.map((job) => this.executeJob(job)));
+    if (active.size > 0) await Promise.all(active);
+    if (firstError !== undefined) throw firstError;
     try { flushedLogs += await this.options.logs.flush(this.options.client); } catch { /* retry next loop */ }
-    return { executedJobIds: executed.filter((jobId): jobId is string => Boolean(jobId)), flushedLogs };
+    return { executedJobIds, flushedLogs };
   }
 
   async runOnce(): Promise<{ executedJobId?: string; flushedLogs: number }> {

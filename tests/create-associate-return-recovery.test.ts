@@ -16,6 +16,10 @@ const handlerPath = path.resolve(import.meta.dirname, '..', 'feature-packages', 
 const { createOperationHandler } = require(handlerPath) as {
   createOperationHandler(): { run(operationId: string, request: unknown, sdk: unknown): Promise<Record<string, unknown>> };
 };
+const workerPath = path.resolve(import.meta.dirname, '..', 'feature-packages', 'create-associate', 'source', 'middle', 'worker.cjs');
+const { exactApplicationSettingsIdentity } = require(workerPath) as {
+  exactApplicationSettingsIdentity(detail: unknown, objectId: string, externalId: string): boolean;
+};
 const cipher = { encrypt: (value: string) => value, decrypt: (value: string) => value };
 const sha256 = (value: string): string => crypto.createHash('sha256').update(value).digest('hex');
 
@@ -42,6 +46,28 @@ test('Application read-back accepts Pack-normalized external identity without we
   assert.equal(result.id, objectId);
   assert.equal(result.workspaceId, workspaceId);
   assert.equal(result.number, 'ORACLE EBS');
+  assert.equal(exactApplicationSettingsIdentity({
+    id: objectId, number: 'ORACLE EBS', name: 'Oracle EBS'
+  }, objectId, 'Oracle EBS'), true);
+  assert.equal(exactApplicationSettingsIdentity({
+    id: objectId, number: 'ORACLE EBS', name: 'Different Application'
+  }, objectId, 'Oracle EBS'), false);
+
+  const settings = await createOperationHandler().run('omnia.create-associate.object-settings.reconcile.v1', {
+    target: { targetIdentityKey: 'Application settings|Oracle EBS', workspaceId },
+    query: { objectId, typeId: 'GenericApplication', isRelevant: true, isDataAvailable: false, number: 'Oracle EBS', mode: 'recover_owned_create_bootstrap' }
+  }, {
+    binding: { engagementId: '44444444-4444-4444-8444-444444444444' },
+    invokeStep: async (stepId: string) => {
+      if (stepId === 'object-settings-read') return {
+        id: objectId, workItemId, number: 'ORACLE EBS', name: 'Oracle EBS', itElementType: 'Application',
+        typeId: 'GenericApplication', isRelevant: true, isDataAvailable: false, concurrencyTabs: []
+      };
+      if (stepId === 'object-settings-workspace') return [{ facetId: workspaceId }];
+      throw new Error(`Unexpected settings step ${stepId}`);
+    }
+  });
+  assert.equal(settings.verified, true);
 });
 
 function ensureHandoffLedger(database: CoreDatabase): void {
@@ -66,6 +92,63 @@ function ensureHandoffLedger(database: CoreDatabase): void {
     );
   `);
 }
+
+test('owned-create proof accepts Pack-normalized external identity while preserving exact authority and object scope', () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'omnia-create-owned-proof-'));
+  const paths = resolveProductPaths(temporary); const database = new CoreDatabase(paths.database, cipher);
+  ensureHandoffLedger(database);
+  const store = new FeatureRuntimeStore(database.db, paths);
+  const featureVersion = '0.2.142'; const now = new Date().toISOString();
+  const runId = '11111111-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const intentId = '22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const commandId = '33333333-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const evidenceId = '44444444-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const engagementId = '55555555-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const workspaceId = '66666666-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const objectId = '77777777-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const planDigest = 'a'.repeat(64);
+  const binding = {
+    connectorId: 'connector-next-owned-proof', sessionGeneration: 12, engagementId,
+    authorityInstanceId: 'authority-owned-proof', tenantOrOrgId: 'tenant-owned-proof', packId: 'pack-owned-proof'
+  };
+  const context = { featureId: 'omnia.create-associate', featureVersion, allowMutation: false };
+  try {
+    database.db.prepare(`UPDATE workspace_safety SET enabled=1,engagement_id=?,workspace_ids_json=?,state_version=2 WHERE singleton=1`)
+      .run(engagementId, JSON.stringify([workspaceId]));
+    database.db.prepare(`INSERT INTO feature_runs(run_id,trace_id,feature_id,feature_version,engagement_id,state,state_revision,source_artifact_id,template_version_id,output_artifact_id,plan_digest,last_error,created_at,updated_at) VALUES(?,?,'omnia.create-associate',?,?,'returning',2,'','','',?,'',?,?)`)
+      .run(runId, '88888888-bbbb-4bbb-8bbb-bbbbbbbbbbbb', featureVersion, engagementId, planDigest, now, now);
+    database.db.prepare(`INSERT INTO managed_content_intents(intent_id,run_id,plan_digest,target_kind,target_key,intended_revision_json,state,created_at,updated_at) VALUES(?,?,?,'object','object|oracle-ebs',?,'verified',?,?)`)
+      .run(intentId, runId, planDigest, JSON.stringify({
+        kind: 'object', objectType: 'Application', disposition: 'create', workspace: workspaceId,
+        externalId: 'Oracle EBS', mutationOperationId: 'omnia.create-associate.object.create.v1'
+      }), now, now);
+    database.db.prepare(`INSERT INTO feature_commands(command_id,run_id,intent_id,operation_id,idempotency_key,plan_digest,request_digest,evidence_operation_ids_json,evidence_target_identity_key,evidence_request_digest,state,commit_point_at,submitted_at,completed_at,last_error,created_at) VALUES(?,?,?,'omnia.create-associate.object.create.v1',?,?,?,'[]','','','readback_verified',?,'','','',?)`)
+      .run(commandId, runId, intentId, sha256(commandId), planDigest, sha256('oracle-ebs-request'), now, now);
+    database.db.prepare(`INSERT INTO feature_command_evidence(evidence_id,command_id,run_id,evidence_type,evidence_digest,receipt_id,verified,payload_json,occurred_at) VALUES(?,?,?,'commit',?,'',1,?,?)`)
+      .run(evidenceId, commandId, runId, sha256('oracle-ebs-commit'), JSON.stringify({
+        id: objectId, engagementId, number: 'ORACLE EBS'
+      }), now);
+    database.db.prepare(`INSERT INTO feature_confirmations(confirmation_id,run_id,message_id,plan_digest,connector_id,session_generation,engagement_id,authority_instance_id,tenant_or_org_id,pack_id,safety_revision,credential_digest,preflight_digest,confirmation_token_digest,decision,actor_id,decision_at,consumed_command_id,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'approved','local-user',?,'',?,?)`)
+      .run('99999999-bbbb-4bbb-8bbb-bbbbbbbbbbbb', runId, `return:${runId}`, planDigest,
+        binding.connectorId, 9, engagementId, binding.authorityInstanceId, binding.tenantOrOrgId, binding.packId,
+        2, 'b'.repeat(64), 'c'.repeat(64), 'd'.repeat(64), now, '2099-01-01T00:00:00.000Z', now);
+
+    const proven = store.call('proveOwnedCreatedObject', {
+      objectId, workspaceId, externalId: 'Oracle EBS', expectedObjectType: 'Application', connectorBinding: binding
+    }, context) as Record<string, unknown>;
+    assert.equal(proven.proven, true);
+    assert.equal(proven.commandId, commandId);
+    assert.equal(proven.objectId, objectId);
+    assert.equal(proven.sourceSessionGeneration, 9);
+    assert.equal(proven.currentSessionGeneration, 12);
+    assert.throws(() => store.call('proveOwnedCreatedObject', {
+      objectId, workspaceId: 'aaaaaaaa-bbbb-4bbb-8bbb-bbbbbbbbbbbb', externalId: 'Oracle EBS',
+      expectedObjectType: 'Application', connectorBinding: binding
+    }, context), /outside the current exact safety scope/u);
+  } finally {
+    database.close(); fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
 
 test('cross-Workspace relation commands bind both frozen authorities and verified relation heads advance without losing history', () => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'omnia-create-relation-recovery-'));

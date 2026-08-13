@@ -478,6 +478,25 @@ test('background restart recovery passively advances an existing waiting target'
   });
 });
 
+test('background recovery passively observes an independently restarted Connector Next Agent', async () => {
+  await fixture(async (shell, _database, adapter) => {
+    (shell as any).connection = connectionState(adapter.connection, 'connector_offline');
+    adapter.loadSequence = [connectionState(adapter.connection, 'waiting_pack')];
+    const loadCalls = adapter.loadCalls;
+
+    await (shell as any).backgroundTick();
+    for (let index = 0; index < 20 && adapter.loadCalls === loadCalls; index += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(adapter.loadCalls, loadCalls + 1);
+    assert.equal(shell.snapshot().connection.status, 'waiting_pack');
+    assert.equal(shell.snapshot().connection.connecting, false);
+    assert.equal(adapter.connectCalls, 0, 'passive recovery must not start or replay a Pack connect action');
+  });
+});
+
 test('passive waiting_authorization never projects an active Connect attempt', async () => {
   await fixture(async (shell, database, adapter) => {
     bindRemoteFixture(database);

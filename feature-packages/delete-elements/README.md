@@ -1,6 +1,8 @@
 # 删除元素 Feature 包
 
-当前源码版本：`0.3.17 / sequence 26`
+当前源码版本：`0.3.32`
+
+0.3.32 把 IT Element 删除预检从全 Pack Tool 扫描改为按 `getBlockingRelationships` 定向解析关系端点：每个关系 blocker 通过精确 partner detail + facet mapping 补全 `objectType`/`workspaceId`，不再随 Pack 内 Tool 数量线性变慢；并允许只选中关系一端（如仅 DB 或仅 APP）：解除关系并删除选中侧，未选中侧保留。Worker 为每次 Connector Operation 增加有界响应窗口，只读超时失败关闭、mutation 超时进入 `uncertain` 且绝不重放。反向 Tool 查询字段与真实 Omnia 合同仍需 canary 复核。
 
 0.3.17 移除旧 0.3.14 pending 计划一次性迁移时最后残留的 Comments 终态投影。迁移仍精确调用一次 Core `returnRunToReview` 和一次 Run 关闭，不增加任何 Operation 调用，也不提交 mutation；action 只返回状态为 `cancelled`、进度为 `skipped` 的 Delete Feature Surface patch。历史 0.3.14 Comments 卡由 package-manager 的 activation-head `feature_version` join 过滤，不由 0.3.17 新写终态卡清理。
 

@@ -19,6 +19,8 @@ Information、GRA、APP、DB、OS、DCNO、TOOL 可进入选择。Infrastructure
 3. 删除 DB、OS、DCNO、TOOL、Information。
 4. 最后删除 APP。
 
+关系端点不必同时选中：只选中 APP 或只选中 DB/OS/DCNO/TOOL 时，Worker 解除该关系并删除选中侧对象，未选中侧对象保留。每个关系 blocker 端点都在只读预检中通过精确 partner detail + facet mapping 补全 `objectType`/`workspaceId`，使编译器能冻结自包含的关系边；端点身份缺失、歧义或 Workspace 漂移仍失败关闭。
+
 每个对象、GRA 或关系组步骤都有独立 Core intent、command、Operation receipt 与 readback。关系组读回出现部分边、单/双向冲突或缺端点时不算完成；GRA readback 缺少任一冻结子项的 deleted/absent 证明时也不算完成。两者都进入 `uncertain`，只读 reconcile 可继续核验，但绝不会再次发送 mutation。
 
 全部图步骤终止后，Worker 必须再次读取当前 Connector authority 与真实 Pack catalog，并证明所有 `succeeded` 对象不再出现。终验保存时间、catalog digest 和 absent identity 列表；矛盾、读取失败或 authority/safety 漂移会进入 `final_catalog` 只读核验状态，不会重放已提交 mutation。

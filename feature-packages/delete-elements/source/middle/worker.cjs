@@ -19,6 +19,7 @@ const OPERATIONS = Object.freeze({
 const CATALOG_TYPES = Object.freeze(['Information', 'GRA', 'APP', 'DB', 'OS', 'DCNO', 'TOOL']);
 const MUTATION_TYPES = Object.freeze(['Information', 'GRA', 'APP', 'DB', 'OS', 'DCNO', 'TOOL']);
 const INTERACTIVE_CATALOG_TIMEOUT_MS = 90_000;
+const CONNECTOR_INVOKE_TIMEOUT_MS = 120_000;
 const PLAN_PREFLIGHT_CONCURRENCY = 8;
 const PLAN_PREPARATION_BATCH_SIZE = 8;
 const TYPE_DISABLED_REASONS = Object.freeze({});
@@ -50,6 +51,14 @@ async function settlePreparationBatch(values, mapper) {
   const failedIndex = settled.findIndex((result) => result.status === 'rejected');
   if (failedIndex >= 0) throw settled[failedIndex].reason;
   return settled.map((result) => result.value);
+}
+function withInvokeTimeout(promise) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(Object.assign(new Error('Connector Operation exceeded the bounded response window.'), { code: 'DELETE.CONNECTOR_TIMEOUT' })), CONNECTOR_INVOKE_TIMEOUT_MS);
+    if (typeof timer.unref === 'function') timer.unref();
+  });
+  return Promise.race([promise, timeout]).finally(() => { if (timer) clearTimeout(timer); });
 }
 function binding(value) {
   if (!value || typeof value !== 'object') fail('DELETE.BINDING_REQUIRED', 'Connector binding is required.');
@@ -85,6 +94,7 @@ function errorSummary(error) {
 function catalogFailureMessage(failure) {
   if (failure.code === 'DELETE.CATALOG_TIMEOUT') return '真实权威目录读取超过 90 秒，已停止界面等待。请确认 Connector 与 Pack 页面在线后点击“刷新”；系统不会展示旧目录或假数据。';
   if (failure.code === 'DELETE.CATALOG_BUSY') return '上一轮真实权威目录读取仍在收尾，未启动第二轮并发读取。请稍后点击“刷新”。';
+  if (failure.code === 'DELETE.CONNECTOR_TIMEOUT') return 'Connector Operation 超过有界响应窗口，已停止等待。请确认 Connector 与 Pack 页面在线后重试；不会自动重放任何已提交的删除。';
   return `${failure.code}: ${failure.message}`;
 }
 function frozenSafetyMatches(current, frozen) {
@@ -124,7 +134,7 @@ function createFeatureWorker(ports) {
     if (!scheduler) scheduler = createPythonSidecarBridge({ timeoutMs: 120000 });
     return scheduler;
   };
-  const invoke = (operationId, request) => connector.invoke({ schemaVersion: 'omnia.operation-invocation/v1', featureId: FEATURE_ID, featureVersion: FEATURE_VERSION, operationId, request });
+  const invoke = (operationId, request) => withInvokeTimeout(connector.invoke({ schemaVersion: 'omnia.operation-invocation/v1', featureId: FEATURE_ID, featureVersion: FEATURE_VERSION, operationId, request }));
   const save = (plan) => store.call('savePlan', { ...plan, updatedAt: new Date().toISOString() });
   const load = (runId) => store.call('loadPlan', String(runId || ''));
   const credentialDigest = (b, s) => digest({ connectorId: b.connectorId, sessionGeneration: b.sessionGeneration, engagementId: b.engagementId,
@@ -196,7 +206,8 @@ function createFeatureWorker(ports) {
     }
     if (!Array.isArray(value.blockers) || !Array.isArray(value.relations)) fail('DELETE.PREFLIGHT_INVALID', 'Preflight blockers or relation graph are unavailable.');
     const relations = value.relations.map(normalizeRelation).sort((left, right) => canonical(left).localeCompare(canonical(right)));
-    const blockers = value.blockers.map((blocker) => ({ type: String(blocker.type || ''), id: String(blocker.id || ''), workItemId: String(blocker.workItemId || ''), location: String(blocker.location || '') }))
+    const blockers = value.blockers.map((blocker) => ({ type: String(blocker.type || ''), id: String(blocker.id || ''), workItemId: String(blocker.workItemId || ''),
+      objectType: String(blocker.objectType || ''), workspaceId: String(blocker.workspaceId || ''), location: String(blocker.location || '') }))
       .sort((left, right) => canonical(left).localeCompare(canonical(right)));
     return { objectId: selected.objectId, informationId: selected.informationId, objectType: selected.objectType, workItemId: selected.workItemId,
       workspaceIds, updatedAt: requiredText(value.updatedAt, 'preflight.updatedAt'), riskAssessmentId: String(value.riskAssessmentId || ''), blockers, relations,
@@ -403,11 +414,6 @@ function createFeatureWorker(ports) {
     if (['ittool', 'tool'].includes(type)) return 'TOOL';
     return 'UNKNOWN';
   }
-  function relationRequest(type, source, targetValue) {
-    return { relationType: type, sourceObjectId: source.objectId, targetObjectId: targetValue.objectId,
-      sourceObjectType: source.objectType, targetObjectType: targetValue.objectType, sourceWorkItemId: source.workItemId,
-      targetWorkItemId: targetValue.workItemId, sourceWorkspaceId: source.workspace, targetWorkspaceId: targetValue.workspace };
-  }
   function relationGroupKey(type, sourceObjectId, targetObjectIds) {
     return `${type}|${sourceObjectId}|group:${digest(uniqueSorted(targetObjectIds))}`;
   }
@@ -464,17 +470,18 @@ function createFeatureWorker(ports) {
     const allowedEdges = new Map(); const allowedGra = new Map();
     const addEdge = (edge) => {
       if (!edge || !['InfrastructureApplication', 'ItToolApplication'].includes(edge.relationType)) fail('DELETE.PREPARATION_COMPILER_OUTPUT_INVALID', 'Compiled relation type is not allowlisted.');
-      const source = selectedById.get(edge.sourceObjectId); const targetValue = selectedById.get(edge.targetObjectId);
-      if (!source || !targetValue || source.workspace !== targetValue.workspace
-        || edge.sourceObjectType !== source.objectType || edge.targetObjectType !== targetValue.objectType
-        || edge.sourceWorkItemId !== source.workItemId || edge.targetWorkItemId !== targetValue.workItemId
-        || edge.sourceWorkspaceId !== source.workspace || edge.targetWorkspaceId !== targetValue.workspace) {
-        fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', 'Compiled relation evidence contains an extra or drifted endpoint.');
-      }
-      const validPair = edge.relationType === 'InfrastructureApplication' && ['DB', 'OS', 'DCNO'].includes(source.objectType) && targetValue.objectType === 'APP'
-        || edge.relationType === 'ItToolApplication' && source.objectType === 'TOOL' && targetValue.objectType === 'APP';
+      if (edge.sourceWorkspaceId !== edge.targetWorkspaceId) fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', 'Compiled relation edge crosses Workspace.');
+      const validPair = edge.relationType === 'InfrastructureApplication' && ['DB', 'OS', 'DCNO'].includes(edge.sourceObjectType) && edge.targetObjectType === 'APP'
+        || edge.relationType === 'ItToolApplication' && edge.sourceObjectType === 'TOOL' && edge.targetObjectType === 'APP';
       if (!validPair) fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', 'Compiled relation endpoint types are invalid.');
-      const key = relationKey(edge.relationType, source.objectId, targetValue.objectId); const existing = allowedEdges.get(key);
+      for (const prefix of ['source', 'target']) {
+        const selected = selectedById.get(edge[`${prefix}ObjectId`]);
+        if (selected && (selected.objectType !== edge[`${prefix}ObjectType`] || selected.workspace !== edge[`${prefix}WorkspaceId`]
+          || (edge[`${prefix}WorkItemId`] && selected.workItemId !== edge[`${prefix}WorkItemId`]))) {
+          fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', 'Compiled relation endpoint conflicts with the selected endpoint.');
+        }
+      }
+      const key = relationKey(edge.relationType, edge.sourceObjectId, edge.targetObjectId); const existing = allowedEdges.get(key);
       if (existing && canonical(existing) !== canonical(edge)) fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', 'Compiled relation evidence conflicts by identity.');
       allowedEdges.set(key, edge);
     };
@@ -490,25 +497,28 @@ function createFeatureWorker(ports) {
       }
       for (const blocker of preflight.blockers) {
         const kind = blockerKind(blocker); if (kind === 'GRA') continue;
-        if (selected.objectType === 'APP' && kind === 'INFRASTRUCTURE') {
-          const source = selectedById.get(blocker.id); if (!source) fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', 'Compiled blocker endpoint is absent.');
-          if (blocker.workItemId && blocker.workItemId !== source.workItemId) fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', 'Compiled blocker Work Item identity drifted.');
-          addEdge(relationRequest('InfrastructureApplication', source, selected)); continue;
+        const selectedEndpoint = { objectId: selected.objectId, objectType: selected.objectType,
+          workItemId: selected.workItemId, workspaceId: selected.workspace };
+        const resolved = selectedById.get(blocker.id);
+        const blockerEndpoint = resolved
+          ? { objectId: resolved.objectId, objectType: resolved.objectType, workItemId: resolved.workItemId, workspaceId: resolved.workspace }
+          : { objectId: blocker.id, objectType: blocker.objectType || '', workItemId: blocker.workItemId || '', workspaceId: blocker.workspaceId || '' };
+        if (resolved && blocker.workItemId && blocker.workItemId !== resolved.workItemId) {
+          fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', 'Compiled blocker Work Item identity drifted.');
         }
-        if (['DB', 'OS', 'DCNO'].includes(selected.objectType) && kind === 'APPLICATION') {
-          const targetValue = selectedById.get(blocker.id); if (!targetValue) fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', 'Compiled blocker endpoint is absent.');
-          if (blocker.workItemId && blocker.workItemId !== targetValue.workItemId) fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', 'Compiled blocker Work Item identity drifted.');
-          addEdge(relationRequest('InfrastructureApplication', selected, targetValue)); continue;
+        if (!resolved && !(blockerEndpoint.objectType && blockerEndpoint.workspaceId && blockerEndpoint.workItemId)) {
+          fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', 'Compiled blocker endpoint lacks an exact frozen identity.');
         }
-        if ((selected.objectType === 'APP' && kind === 'TOOL') || (selected.objectType === 'TOOL' && kind === 'APPLICATION')) {
-          const blockerEndpoint = selectedById.get(blocker.id);
-          if (!blockerEndpoint || blocker.workItemId && blocker.workItemId !== blockerEndpoint.workItemId) fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', 'Compiled blocker endpoint identity drifted.');
-          const sourceId = selected.objectType === 'TOOL' ? selected.objectId : blocker.id;
-          const targetId = selected.objectType === 'APP' ? selected.objectId : blocker.id;
-          if (!allowedEdges.has(relationKey('ItToolApplication', sourceId, targetId))) fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', 'Compiled Tool/Application blocker has no authoritative edge.');
-          continue;
-        }
-        fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', 'Compiled blocker direction is invalid.');
+        let relationType; let source; let target;
+        if (selected.objectType === 'APP' && kind === 'INFRASTRUCTURE') { relationType = 'InfrastructureApplication'; source = blockerEndpoint; target = selectedEndpoint; }
+        else if (['DB', 'OS', 'DCNO'].includes(selected.objectType) && kind === 'APPLICATION') { relationType = 'InfrastructureApplication'; source = selectedEndpoint; target = blockerEndpoint; }
+        else if (selected.objectType === 'APP' && kind === 'TOOL') { relationType = 'ItToolApplication'; source = blockerEndpoint; target = selectedEndpoint; }
+        else if (selected.objectType === 'TOOL' && kind === 'APPLICATION') { relationType = 'ItToolApplication'; source = selectedEndpoint; target = blockerEndpoint; }
+        else fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', 'Compiled blocker direction is invalid.');
+        addEdge({ relationType, sourceObjectId: source.objectId, sourceObjectType: source.objectType,
+          sourceWorkItemId: source.workItemId, sourceWorkspaceId: source.workspaceId,
+          targetObjectId: target.objectId, targetObjectType: target.objectType,
+          targetWorkItemId: target.workItemId, targetWorkspaceId: target.workspaceId });
       }
     }
     const expectedGraSeeds = [...allowedGra.values()].sort((left, right) => left.key.localeCompare(right.key));
@@ -517,27 +527,37 @@ function createFeatureWorker(ports) {
     if (canonical(value.graSeeds) !== canonical(expectedGraSeeds) || canonical(value.derivedGraSeeds) !== canonical(expectedDerived)) {
       fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', 'Managed Python GRA seed set, Workspace, order, or affected targets drifted.');
     }
-    const consumedEdges = new Set(); const relationDescriptors = value.relationDescriptors.map((compiled, index) => {
+    const consumedEdges = new Set();
+    const selfContainedEndpoint = (value, label) => {
+      if (!value || typeof value !== 'object' || !value.objectId || !value.objectType || !value.workItemId || !value.workspace) {
+        fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', `Compiled relation group ${label} is not self-contained.`);
+      }
+      return value;
+    };
+    const expectedAffected = (source, targetValues) => uniqueSorted([source, ...targetValues]
+      .filter((endpoint) => selectedById.has(endpoint.objectId)).map((endpoint) => targetKey(endpoint)));
+    const relationDescriptors = value.relationDescriptors.map((compiled, index) => {
       if (!compiled || typeof compiled !== 'object' || !['InfrastructureApplication', 'ItToolApplication'].includes(compiled.relationType)
         || !Array.isArray(compiled.targets) || !compiled.targets.length || compiled.targets.length > plan.targets.length
         || !Array.isArray(compiled.affectedTargetKeys)) fail('DELETE.PREPARATION_COMPILER_OUTPUT_INVALID', 'Compiled relation group is invalid.');
-      const source = selectedById.get(String(compiled.source && compiled.source.objectId || ''));
-      const targetValues = compiled.targets.map((item) => selectedById.get(String(item && item.objectId || '')));
-      if (!source || targetValues.some((item) => !item) || compiled.workspace !== source.workspace
-        || canonical(compiled.source) !== canonical({ objectId: source.objectId, objectType: source.objectType, workItemId: source.workItemId, workspace: source.workspace })
-        || compiled.targets.some((item, targetIndex) => canonical(item) !== canonical({ objectId: targetValues[targetIndex].objectId,
-          objectType: targetValues[targetIndex].objectType, workItemId: targetValues[targetIndex].workItemId, workspace: targetValues[targetIndex].workspace }))) {
-        fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', 'Compiled relation group contains a drifted endpoint.');
-      }
+      const source = selfContainedEndpoint(compiled.source, 'source');
+      if (source.workspace !== compiled.workspace) fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', 'Compiled relation group source Workspace drifted.');
+      const targetValues = compiled.targets.map((item) => selfContainedEndpoint(item, 'target'));
       const targetObjectIds = targetValues.map((item) => item.objectId);
       if (canonical(targetObjectIds) !== canonical(uniqueSorted(targetObjectIds))
         || compiled.key !== relationGroupKey(compiled.relationType, source.objectId, targetObjectIds)
-        || canonical(compiled.affectedTargetKeys) !== canonical(uniqueSorted([targetKey(source), ...targetValues.map(targetKey)]))) {
+        || canonical(compiled.affectedTargetKeys) !== canonical(expectedAffected(source, targetValues))) {
         fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', 'Compiled relation group key, order, or affected target set drifted.');
       }
       for (const targetValue of targetValues) {
         const edgeKey = relationKey(compiled.relationType, source.objectId, targetValue.objectId);
-        if (!allowedEdges.has(edgeKey) || consumedEdges.has(edgeKey)) fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', 'Compiled relation group added or duplicated an edge.');
+        const allowedEdge = allowedEdges.get(edgeKey);
+        if (!allowedEdge || consumedEdges.has(edgeKey)) fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', 'Compiled relation group added or duplicated an edge.');
+        const allowedSource = { objectId: allowedEdge.sourceObjectId, objectType: allowedEdge.sourceObjectType, workItemId: allowedEdge.sourceWorkItemId, workspace: allowedEdge.sourceWorkspaceId };
+        const allowedTarget = { objectId: allowedEdge.targetObjectId, objectType: allowedEdge.targetObjectType, workItemId: allowedEdge.targetWorkItemId, workspace: allowedEdge.targetWorkspaceId };
+        if (canonical(allowedSource) !== canonical(source) || canonical(allowedTarget) !== canonical(targetValue)) {
+          fail('DELETE.PREPARATION_COMPILER_IDENTITY_DRIFT', 'Compiled relation group endpoint identity drifted.');
+        }
         consumedEdges.add(edgeKey);
       }
       if (index > 0) {
@@ -583,9 +603,8 @@ function createFeatureWorker(ports) {
       compilationDigest: preparation.compilationDigest }, plan, preparation.objectPreflights || []);
   }
   function enrichRelationDescriptor(plan, compiled) {
-    const selectedById = new Map(plan.targets.map((item) => [item.objectId, item])); const source = selectedById.get(compiled.source.objectId);
-    const targetValues = compiled.targets.map((item) => selectedById.get(item.objectId));
-    if (!source || targetValues.some((item) => !item)) fail('DELETE.PREPARATION_CHECKPOINT_INVALID', 'Compiled relation endpoint is missing from the frozen plan.');
+    const source = compiled.source; const targetValues = compiled.targets;
+    if (!source || !Array.isArray(targetValues) || !targetValues.length) fail('DELETE.PREPARATION_CHECKPOINT_INVALID', 'Compiled relation endpoint is missing.');
     const operations = OPERATIONS.relations[compiled.relationType]; const request = relationGroupRequest(compiled.relationType, source, targetValues);
     return { key: compiled.key, workspace: source.workspace, objectType: compiled.relationType, source, targetValues, operations, request,
       operationTarget: { targetIdentityKey: compiled.key, workspaceId: source.workspace }, affectedTargetKeys: compiled.affectedTargetKeys };

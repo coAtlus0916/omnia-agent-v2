@@ -156,6 +156,31 @@ function blockingRows(value, ownerId) {
   return normalized.some((item) => !item.id || !item.workItemId) || new Set(identities).size !== identities.length
     ? [{ type: 'unknown-contract', id: '', workItemId: '' }] : normalized;
 }
+function relationBlockerKind(value) {
+  const kind = text(value).toLowerCase();
+  if (kind === 'infrastructure') return 'INFRASTRUCTURE';
+  if (kind === 'application') return 'APPLICATION';
+  if (kind === 'ittool' || kind === 'tool') return 'TOOL';
+  return '';
+}
+async function enrichRelationBlocker(sdk, blocker) {
+  // A relationship blocker from getBlockingRelationships names the other endpoint by
+  // entityId + workItemId but not by precise object type or workspace. Resolve both
+  // through the signed partner detail + facet mapping so the signed compiler can freeze
+  // a self-contained relation edge without a full-Pack Tool scan.
+  const objectId = id(blocker.id);
+  if (!objectId) fail('Relation blocker has no canonical endpoint ID.');
+  const detail = await sdk.invokeStep('preflight-partner-detail', { objectId });
+  const workItemId = id(detail && (detail.workItemId || detail.applicationWorkItemId || detail.infrastructureWorkItemId || detail.itToolWorkItemId));
+  const preciseType = objectKind(detail, {});
+  if (id(detail && (detail.id || detail.itElementId)) !== objectId || !preciseType || !workItemId || deleted(detail)) {
+    fail('Relation blocker endpoint identity, type, or Work Item is missing, changed, or deleted.');
+  }
+  const mapping = await sdk.invokeStep('preflight-partner-facet-mapping', { workItemId });
+  const workspaces = workspaceIds(mapping);
+  if (workspaces.length !== 1) fail('Relation blocker endpoint has no exact Workspace.');
+  return { ...blocker, objectType: preciseType, workspaceId: workspaces[0], workItemId };
+}
 async function mapLimit(values, concurrency, mapper) {
   if (!Array.isArray(values) || values.length > 2000) fail('Authoritative catalog exceeds the signed 2000 item bound.');
   const result = new Array(values.length); let cursor = 0;
@@ -310,19 +335,6 @@ async function readItElement(sdk, indexed, stepPrefix = 'it-element', requestedW
     name: text(detail.name || detail.displayName || indexed.name), updatedAt: text(detail.updatedAt || detail.updatedOn || indexed.updatedAt || indexed.updatedOn),
     workspaceIds: workspaceIds(mapping), blockers: blockingRows(blocking, objectId), relations: [],
     riskAssessmentId: id(detail.riskAssessmentId || detail.graId || indexed.riskAssessmentId || indexed.graId), detail, deleted: false };
-}
-async function readPreflightToolIdentity(sdk, indexed) {
-  const objectId = id(indexed && (indexed.objectId || indexed.id || indexed.itElementId || indexed.toolId));
-  if (!objectId) fail('Tool directory row has no canonical ID.');
-  const detail = await sdk.invokeStep('preflight-tool-detail', { objectId });
-  const workItemId = id(detail && (detail.workItemId || detail.itToolWorkItemId) || indexed && indexed.workItemId);
-  if (id(detail && (detail.id || detail.itElementId)) !== objectId || objectKind(detail, indexed) !== 'TOOL' || !workItemId || deleted(detail)) {
-    fail('Tool relation discovery identity is missing, changed, or deleted.');
-  }
-  const mapping = await sdk.invokeStep('preflight-tool-facet-mapping', { workItemId }); const workspaces = workspaceIds(mapping);
-  if (workspaces.length !== 1) fail('Tool relation discovery has no exact Workspace.');
-  return { objectId, workItemId, objectType: 'TOOL', workspaceIds: workspaces, relations: [], blockers: [],
-    updatedAt: text(detail.updatedOn || detail.updatedAt), detail, deleted: false };
 }
 function relationKey(type, sourceId, targetId) { return `${type}|${sourceId}|${targetId}`; }
 function relationGroupKey(type, sourceId, targetIds) { return `${type}|${sourceId}|group:${digest([...targetIds].sort())}`; }
@@ -601,31 +613,13 @@ function createOperationHandler() {
       return { informationId, objectId: informationId, objectType: 'Information', workspaceIds: [workspaceId], deleted: deleted(detailResult.value) };
     }
     if (operationId === 'omnia.delete.it-element.preflight.v1') {
-      const allTools = await searchAll(sdk, 'preflight-tool-search', 'name', { itElementType: 'ITTool' });
       const target = await readItElement(sdk, request.target || request, 'it-element');
-      const toolTargets = target.objectType === 'TOOL' ? [target]
-        : await mapLimit(allTools, 4, (item) => readPreflightToolIdentity(sdk, item));
-      const candidates = target.objectType === 'TOOL' ? [target] : [...toolTargets, target];
-      const discovered = (await discoverToolRelations(sdk, candidates, { search: 'preflight-tool-relation-search' }))
-        .filter((edge) => edge.sourceObjectId === target.objectId || edge.targetObjectId === target.objectId);
-      const relations = [];
-      for (const edge of discovered) {
-        // Pack's Tool/Application search can return the .NET empty GUID for an
-        // Application Workspace. That is an absent identity, not an exact one.
-        // Resolve the endpoint through its detail + facet mapping before the
-        // signed Feature freezes the relation graph.
-        if (edge.targetWorkItemId && omniaGuid(edge.targetWorkspaceId)) { relations.push(edge); continue; }
-        const detail = await sdk.invokeStep('preflight-partner-detail', { objectId: edge.targetObjectId });
-        const targetWorkItemId = id(detail && (detail.workItemId || detail.applicationWorkItemId));
-        if (id(detail && (detail.id || detail.itElementId)) !== edge.targetObjectId || objectKind(detail) !== 'APP' || deleted(detail) || !targetWorkItemId) {
-          fail('Tool/Application preflight could not freeze the Application endpoint identity.');
-        }
-        const mapping = await sdk.invokeStep('preflight-partner-facet-mapping', { workItemId: targetWorkItemId }); const workspaces = workspaceIds(mapping);
-        if (workspaces.length !== 1) fail('Tool/Application preflight Application endpoint has no exact Workspace.');
-        relations.push({ ...edge, targetWorkItemId, targetWorkspaceId: workspaces[0] });
+      const blockers = [];
+      for (const blocker of target.blockers) {
+        blockers.push(relationBlockerKind(blocker.type) ? await enrichRelationBlocker(sdk, blocker) : blocker);
       }
       return { objectId: target.objectId, objectType: target.objectType, workItemId: target.workItemId, workspaceIds: target.workspaceIds,
-        updatedAt: target.updatedAt, blockers: target.blockers, riskAssessmentId: target.riskAssessmentId, relations };
+        updatedAt: target.updatedAt, blockers, riskAssessmentId: target.riskAssessmentId, relations: [] };
     }
     if (operationId === 'omnia.delete.it-element.direct.v1') {
       const payload = request.command && request.command.payload; const objectId = id(payload && payload.objectId); const objectType = text(payload && payload.objectType);

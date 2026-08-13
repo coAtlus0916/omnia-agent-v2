@@ -23,6 +23,8 @@ Final catalog closure is a durable read-only phase: before its first authoritati
 
 `InfrastructureApplication + ItToolApplication → GRA cascade → DB/OS/DCNO/TOOL/Information → APP`
 
+关系端点不必同时选中。只选中 APP 或只选中 DB/OS/DCNO/TOOL 时，编译器按自包含端点身份（对象预检里由精确 partner detail + facet mapping 补全 `objectType`/`workspaceId`）冻结一条关系边，`affectedTargetKeys` 只含选中侧 targetKey；调度器据此解除关系并删除选中侧，未选中侧不产生 object 步骤。端点身份缺失或歧义失败关闭。
+
 目录读取成功后，Store 以 `catalog:${credentialDigest}` 保存两分钟有效快照；开始计划只读取并精确验证其 schema、Connector binding、安全锁 revision、expiry 和目标 identity，不再次调用 heavy catalog Operation。它先创建 Core `ready_for_review` Run 和 `omnia.delete-plan/v5` 的 `preparing` checkpoint。隐藏的 `continue-delete-plan-preparation` 是非 mutation background action，每个 Surface revision 只运行一次、每次只处理一种最多 8 项的对象、派生 GRA 或关系组 preflight。批次使用 all-settled 边界等待所有只读请求结束；只有全成功才一次保存结果和游标。失败只保存错误与原游标，显式 `retry-delete-plan-preparation` 重做同一批。最后单独一次 finalization 构造 graph/intent 并调用一次 `prepareReturnIntent`。mutation 执行仍固定并发 1。
 
 确认提交 Core 前对 `{step key, full preflight, scheduleGraph}` 做 canonical digest 比较，之后每一步在 mutation 前执行针对性预检。pre-submit 已知失败只跳过其依赖后继，独立子图继续，任一 submitted/committed/readback/projection 不确定则立即停止整个批次。关系 readback 必须携带真实 `relationType/sourceObjectId/targetObjectIds`，逐端点证明完整冻结集合不存在；GRA readback 必须返回与冻结快照同一集合、同一排序和同一 digest。

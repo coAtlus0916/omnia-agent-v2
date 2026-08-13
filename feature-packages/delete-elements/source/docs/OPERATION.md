@@ -12,7 +12,7 @@ Omnia identity 只按规范、非零 .NET GUID 校验，不误加 RFC UUID versi
 
 - 权威目录：scope、Information collection、GRA `RiskFactorEvaluation` Work Item + `commonAccounts` 双索引与 assessment detail、Application/Infrastructure/ITTool search、对象 detail、Facet mapping、blocking relationships，以及 Tool→APP 的 `associatedWithITToolId + itElementType=Application` 搜索。Infrastructure/Network 规范化为 DCNO，保留精确 subtype 身份进入通用 IT Element 合同；明确的其他 Infrastructure subtype 仅被排除，缺失或模糊类型仍失败关闭。
 - Information：preflight、softdelete、detail reconcile。
-- APP/DB/OS/DCNO/TOOL：同一个参数化 IT Element preflight、softdelete、detail reconcile；DCNO 必须读回精确 Infrastructure/Network，不借用 OS subtype。
+- APP/DB/OS/DCNO/TOOL：同一个参数化 IT Element preflight、softdelete、detail reconcile；DCNO 必须读回精确 Infrastructure/Network，不借用 OS subtype。preflight 不再全 Pack 扫描 Tool，而是按 `getBlockingRelationships` 返回的关系 blocker，通过精确 partner detail + facet mapping 补全每个关系端点的 objectType/workspaceId/workItemId，再交由编译器冻结自包含关系边；端点身份缺失、歧义或 Workspace 漂移失败关闭。
 - GRA：v4 真实合同的 assessment detail、`RiskFactorEvaluation` Work Item relationship、`validate-riskfactor-evaluation?op=Delete`，加 create-associate 已验证的 Risk catalog、Control catalog、Risk detail；mutation 仍只有一次既有 `PATCH .../softdelete`，之后只做只读 reconcile。
 - `InfrastructureApplication`：source 与完整、排序、去重的 APP 目标集合 identity/Workspace、source tab 602、逐目标双向 search、一次批量 `relation-disassociate`、逐目标双向 reconcile。
 - `ItToolApplication`：Tool 与完整、排序、去重的 APP 目标集合 identity/Work Item/Workspace、Tool tab 802、一次批量 `relation-disassociate`、逐目标 Tool→APP authoritative search reconcile。

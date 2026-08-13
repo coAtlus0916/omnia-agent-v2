@@ -234,10 +234,6 @@ function operationDescriptors() {
         { stepId: 'it-element-detail', method: 'GET', routeTemplate: '/rapr/v0/engagements/{engagementId}/itelement/{objectId}', bodyMode: 'none' },
         { stepId: 'it-element-facet-mapping', method: 'GET', routeTemplate: '/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}', bodyMode: 'none' },
         { stepId: 'it-element-blocking-relationships', method: 'POST', routeTemplate: '/rapr/v0/engagements/{engagementId}/itelement/getBlockingRelationships', bodyMode: 'object_id_array' },
-        { stepId: 'preflight-tool-search', method: 'POST', routeTemplate: '/rapr/v0/engagements/{engagementId}/itelement/search', bodyMode: 'signed_json' },
-        { stepId: 'preflight-tool-detail', method: 'GET', routeTemplate: '/rapr/v0/engagements/{engagementId}/itelement/{objectId}', bodyMode: 'none' },
-        { stepId: 'preflight-tool-facet-mapping', method: 'GET', routeTemplate: '/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}', bodyMode: 'none' },
-        { stepId: 'preflight-tool-relation-search', method: 'POST', routeTemplate: '/rapr/v0/engagements/{engagementId}/itelement/search', bodyMode: 'signed_json' },
         { stepId: 'preflight-partner-detail', method: 'GET', routeTemplate: '/rapr/v0/engagements/{engagementId}/itelement/{objectId}', bodyMode: 'none' },
         { stepId: 'preflight-partner-facet-mapping', method: 'GET', routeTemplate: '/work/v1/engagements/{engagementId}/WorkItemFacetMapping/workitem/{workItemId}', bodyMode: 'none' }
       ]
@@ -419,7 +415,9 @@ async function buildVersion(version, sequence) {
       }, null, 2))
     ]
   });
-  const versionNote = version === '0.3.31'
+  const versionNote = version === '0.3.32'
+    ? '0.3.32 将 IT Element 删除预检从全 Pack Tool 扫描改为按 getBlockingRelationships 定向解析关系端点（精确 detail + facet mapping 补全 objectType/workspaceId），删除 APP/DB/OS/DCNO/TOOL 不再随 Pack 内 Tool 数量线性变慢；并允许只选中关系一端（如仅 DB 或仅 APP）：解除关系并删除选中侧，未选中侧保留。Worker 为每次 Connector Operation 增加有界响应窗口，超时只读失败关闭、mutation 进入 uncertain 且不重放。'
+    : version === '0.3.31'
     ? '0.3.31 将目录重新读取动作改为用户可理解的“刷新”，并将执行进度标题从内部术语“冻结删除图”改为“删除中”；删除合同、确认、mutation 与 readback 语义不变。'
     : version === '0.3.30'
     ? '0.3.30 将 Tool/Application 搜索返回的 .NET 空 Workspace GUID 视为缺失身份，并在只读预检中通过精确 Application detail 与 facet mapping 补齐后才冻结关系图；不放宽端点、Work Item 或 Workspace 校验。'
@@ -582,7 +580,7 @@ process.stdout.write('omnia.delete-elements package self-test passed\\n');
     version,
     sequence,
     displayName: '删除元素',
-    minimumShellVersion: ['0.3.16', '0.3.17', '0.3.18', '0.3.19', '0.3.20', '0.3.21', '0.3.22', '0.3.23', '0.3.24', '0.3.25', '0.3.26', '0.3.27', '0.3.28', '0.3.29', '0.3.30', '0.3.31'].includes(version) ? '0.4.15' : ['0.3.0', '0.3.1', '0.3.2', '0.3.3', '0.3.4', '0.3.5', '0.3.6', '0.3.7', '0.3.8', '0.3.9', '0.3.10', '0.3.11', '0.3.12', '0.3.13', '0.3.14', '0.3.15'].includes(version) ? '0.4.14' : ['0.2.0','0.2.1'].includes(version) ? '0.4.12' : version === '0.1.5' ? '0.4.10' : '0.4.0',
+    minimumShellVersion: ['0.3.16', '0.3.17', '0.3.18', '0.3.19', '0.3.20', '0.3.21', '0.3.22', '0.3.23', '0.3.24', '0.3.25', '0.3.26', '0.3.27', '0.3.28', '0.3.29', '0.3.30', '0.3.31', '0.3.32'].includes(version) ? '0.4.15' : ['0.3.0', '0.3.1', '0.3.2', '0.3.3', '0.3.4', '0.3.5', '0.3.6', '0.3.7', '0.3.8', '0.3.9', '0.3.10', '0.3.11', '0.3.12', '0.3.13', '0.3.14', '0.3.15'].includes(version) ? '0.4.14' : ['0.2.0','0.2.1'].includes(version) ? '0.4.12' : version === '0.1.5' ? '0.4.10' : '0.4.0',
     requiredIsolation: 'process',
     storeNamespace: 'delete_elements',
     migrationPath: 'backend/migrations/001.json',
@@ -809,5 +807,5 @@ process.stdout.write('omnia.delete-elements package self-test passed\\n');
 }
 
 const results = [];
-results.push(await buildVersion('0.3.31', 1786522815131));
+results.push(await buildVersion('0.3.32', 1786632995691));
 for (const result of results) console.log(`${path.relative(root, result.filename)} ${result.digest}`);

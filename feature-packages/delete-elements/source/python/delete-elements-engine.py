@@ -151,6 +151,8 @@ def normalize_preparation_preflight(raw: Any, target: dict[str, Any]) -> dict[st
             "kind": kind,
             "id": preparation_text(raw_blocker.get("id"), "blocker.id", 500),
             "workItemId": optional_text(raw_blocker.get("workItemId"), "blocker.workItemId", 500),
+            "objectType": optional_text(raw_blocker.get("objectType"), "blocker.objectType", 32),
+            "workspaceId": optional_text(raw_blocker.get("workspaceId"), "blocker.workspaceId", 500),
         }
         identity = f"{kind}|{blocker['id']}"
         existing = blocker_by_identity.get(identity)
@@ -198,24 +200,32 @@ def compile_delete_preparation(payload: Any) -> dict[str, Any]:
     preflights = [normalize_preparation_preflight(raw, targets[index]) for index, raw in enumerate(raw_preflights)]
 
     edge_by_key: dict[str, dict[str, Any]] = {}
+
+    def register_edge(edge: dict[str, Any]) -> None:
+        relation_type = edge["relationType"]
+        if edge["sourceWorkspaceId"] != edge["targetWorkspaceId"]:
+            raise SchedulerError("DELETE.PREPARATION_GRAPH_INVALID", "Relation edge crosses Workspace.")
+        valid_pair = ((relation_type == "InfrastructureApplication"
+                       and edge["sourceObjectType"] in INFRASTRUCTURE_TYPES and edge["targetObjectType"] == "APP")
+                      or (relation_type == "ItToolApplication"
+                          and edge["sourceObjectType"] == "TOOL" and edge["targetObjectType"] == "APP"))
+        if not valid_pair:
+            raise SchedulerError("DELETE.PREPARATION_GRAPH_INVALID", "Relation endpoint types are outside the signed compiler.")
+        for prefix in ("source", "target"):
+            selected = target_by_id.get(edge[f"{prefix}ObjectId"])
+            if selected is not None and (selected["objectType"] != edge[f"{prefix}ObjectType"]
+                    or selected["workspace"] != edge[f"{prefix}WorkspaceId"]
+                    or (edge[f"{prefix}WorkItemId"] and selected["workItemId"] != edge[f"{prefix}WorkItemId"])):
+                raise SchedulerError("DELETE.PREPARATION_GRAPH_INVALID", "Relation endpoint identity conflicts with the selected endpoint.")
+        key = relation_edge_key(edge)
+        existing = edge_by_key.get(key)
+        if existing is not None and existing != edge:
+            raise SchedulerError("DELETE.PREPARATION_GRAPH_INVALID", "Relation identity contains conflicting evidence.")
+        edge_by_key[key] = edge
+
     for preflight in preflights:
         for edge in preflight["relations"]:
-            source = target_by_id.get(edge["sourceObjectId"])
-            target = target_by_id.get(edge["targetObjectId"])
-            if source is None or target is None:
-                raise SchedulerError("DELETE.PREPARATION_GRAPH_INCOMPLETE", "Relation requires every endpoint in the explicit selection.")
-            valid_pair = ((edge["relationType"] == "InfrastructureApplication" and source["objectType"] in INFRASTRUCTURE_TYPES and target["objectType"] == "APP")
-                          or (edge["relationType"] == "ItToolApplication" and source["objectType"] == "TOOL" and target["objectType"] == "APP"))
-            if (not valid_pair or source["workspace"] != target["workspace"]
-                    or edge["sourceObjectType"] != source["objectType"] or edge["targetObjectType"] != target["objectType"]
-                    or edge["sourceWorkItemId"] != source["workItemId"] or edge["targetWorkItemId"] != target["workItemId"]
-                    or edge["sourceWorkspaceId"] != source["workspace"] or edge["targetWorkspaceId"] != target["workspace"]):
-                raise SchedulerError("DELETE.PREPARATION_GRAPH_INVALID", "Relation evidence conflicts with selected endpoint identity or Workspace.")
-            key = relation_edge_key(edge)
-            existing = edge_by_key.get(key)
-            if existing is not None and existing != edge:
-                raise SchedulerError("DELETE.PREPARATION_GRAPH_INVALID", "Relation identity contains conflicting evidence.")
-            edge_by_key[key] = edge
+            register_edge(edge)
 
     gra_seed_by_key: dict[str, dict[str, Any]] = {}
     for index, selected in enumerate(targets):
@@ -231,45 +241,34 @@ def compile_delete_preparation(payload: Any) -> dict[str, Any]:
             kind = blocker["kind"]
             if kind == "GRA":
                 continue
+            selected_endpoint = {"objectId": selected["objectId"], "objectType": selected["objectType"],
+                                 "workItemId": selected["workItemId"], "workspaceId": selected["workspace"]}
+            resolved = target_by_id.get(blocker["id"])
+            if resolved is not None:
+                blocker_endpoint = {"objectId": resolved["objectId"], "objectType": resolved["objectType"],
+                                    "workItemId": resolved["workItemId"], "workspaceId": resolved["workspace"]}
+                if blocker["workItemId"] and blocker["workItemId"] != resolved["workItemId"]:
+                    raise SchedulerError("DELETE.PREPARATION_GRAPH_INVALID", "Blocker Work Item identity conflicts with the selected endpoint.")
+            else:
+                blocker_endpoint = {"objectId": blocker["id"], "objectType": blocker["objectType"],
+                                    "workItemId": blocker["workItemId"], "workspaceId": blocker["workspaceId"]}
+                if not (blocker_endpoint["objectType"] and blocker_endpoint["workspaceId"] and blocker_endpoint["workItemId"]):
+                    raise SchedulerError("DELETE.PREPARATION_GRAPH_INCOMPLETE", "Blocking endpoint lacks an exact frozen identity.")
             if selected["objectType"] == "APP" and kind == "INFRASTRUCTURE":
-                source = target_by_id.get(blocker["id"])
-                if source is None or source["objectType"] not in INFRASTRUCTURE_TYPES:
-                    raise SchedulerError("DELETE.PREPARATION_GRAPH_INCOMPLETE", "Infrastructure/Application blocker requires both exact endpoints.")
-                if blocker["workItemId"] and blocker["workItemId"] != source["workItemId"]:
-                    raise SchedulerError("DELETE.PREPARATION_GRAPH_INVALID", "Infrastructure blocker Work Item identity conflicts with the selected endpoint.")
-                generated = {"relationType": "InfrastructureApplication", "sourceObjectId": source["objectId"],
-                             "targetObjectId": selected["objectId"], "sourceObjectType": source["objectType"],
-                             "targetObjectType": selected["objectType"], "sourceWorkItemId": source["workItemId"],
-                             "targetWorkItemId": selected["workItemId"], "sourceWorkspaceId": source["workspace"],
-                             "targetWorkspaceId": selected["workspace"]}
-                if source["workspace"] != selected["workspace"]:
-                    raise SchedulerError("DELETE.PREPARATION_GRAPH_INVALID", "Infrastructure/Application blocker crosses Workspace.")
-                edge_by_key[relation_edge_key(generated)] = generated
+                relation_type, source, target = "InfrastructureApplication", blocker_endpoint, selected_endpoint
             elif selected["objectType"] in INFRASTRUCTURE_TYPES and kind == "APPLICATION":
-                target = target_by_id.get(blocker["id"])
-                if target is None or target["objectType"] != "APP":
-                    raise SchedulerError("DELETE.PREPARATION_GRAPH_INCOMPLETE", "Infrastructure/Application blocker requires both exact endpoints.")
-                if blocker["workItemId"] and blocker["workItemId"] != target["workItemId"]:
-                    raise SchedulerError("DELETE.PREPARATION_GRAPH_INVALID", "Application blocker Work Item identity conflicts with the selected endpoint.")
-                generated = {"relationType": "InfrastructureApplication", "sourceObjectId": selected["objectId"],
-                             "targetObjectId": target["objectId"], "sourceObjectType": selected["objectType"],
-                             "targetObjectType": target["objectType"], "sourceWorkItemId": selected["workItemId"],
-                             "targetWorkItemId": target["workItemId"], "sourceWorkspaceId": selected["workspace"],
-                             "targetWorkspaceId": target["workspace"]}
-                if selected["workspace"] != target["workspace"]:
-                    raise SchedulerError("DELETE.PREPARATION_GRAPH_INVALID", "Infrastructure/Application blocker crosses Workspace.")
-                edge_by_key[relation_edge_key(generated)] = generated
-            elif ((selected["objectType"] == "APP" and kind == "TOOL")
-                  or (selected["objectType"] == "TOOL" and kind == "APPLICATION")):
-                source_id = selected["objectId"] if selected["objectType"] == "TOOL" else blocker["id"]
-                target_id = selected["objectId"] if selected["objectType"] == "APP" else blocker["id"]
-                blocker_endpoint = target_by_id.get(blocker["id"])
-                if blocker_endpoint is None or (blocker["workItemId"] and blocker["workItemId"] != blocker_endpoint["workItemId"]):
-                    raise SchedulerError("DELETE.PREPARATION_GRAPH_INVALID", "Tool/Application blocker identity conflicts with the selected endpoint.")
-                if f"ItToolApplication|{source_id}|{target_id}" not in edge_by_key:
-                    raise SchedulerError("DELETE.PREPARATION_GRAPH_INCOMPLETE", "Tool/Application blocker lacks authoritative relation evidence.")
+                relation_type, source, target = "InfrastructureApplication", selected_endpoint, blocker_endpoint
+            elif selected["objectType"] == "APP" and kind == "TOOL":
+                relation_type, source, target = "ItToolApplication", blocker_endpoint, selected_endpoint
+            elif selected["objectType"] == "TOOL" and kind == "APPLICATION":
+                relation_type, source, target = "ItToolApplication", selected_endpoint, blocker_endpoint
             else:
                 raise SchedulerError("DELETE.PREPARATION_GRAPH_UNSUPPORTED", "Blocker direction is outside the signed graph compiler.")
+            register_edge({"relationType": relation_type,
+                           "sourceObjectId": source["objectId"], "sourceObjectType": source["objectType"],
+                           "sourceWorkItemId": source["workItemId"], "sourceWorkspaceId": source["workspaceId"],
+                           "targetObjectId": target["objectId"], "targetObjectType": target["objectType"],
+                           "targetWorkItemId": target["workItemId"], "targetWorkspaceId": target["workspaceId"]})
 
     grouped_edges: dict[str, list[dict[str, Any]]] = {}
     for edge in sorted(edge_by_key.values(), key=canonical):
@@ -279,17 +278,19 @@ def compile_delete_preparation(payload: Any) -> dict[str, Any]:
     for owner in sorted(grouped_edges):
         edges = grouped_edges[owner]
         first = edges[0]
-        source = target_by_id[first["sourceObjectId"]]
-        target_ids = sorted(set(edge["targetObjectId"] for edge in edges))
-        target_values = [target_by_id[target_id] for target_id in target_ids]
-        key = relation_group_key(first["relationType"], source["objectId"], target_ids)
+        source = {"objectId": first["sourceObjectId"], "objectType": first["sourceObjectType"],
+                  "workItemId": first["sourceWorkItemId"], "workspace": first["sourceWorkspaceId"]}
+        target_by_object_id: dict[str, dict[str, str]] = {}
+        for edge in edges:
+            target_by_object_id[edge["targetObjectId"]] = {"objectId": edge["targetObjectId"], "objectType": edge["targetObjectType"],
+                                                           "workItemId": edge["targetWorkItemId"], "workspace": edge["targetWorkspaceId"]}
+        target_values = [target_by_object_id[target_id] for target_id in sorted(target_by_object_id)]
+        key = relation_group_key(first["relationType"], source["objectId"], [target["objectId"] for target in target_values])
+        affected = {target_key(target_by_id[endpoint["objectId"]])
+                    for endpoint in [source, *target_values] if endpoint["objectId"] in target_by_id}
         relation_descriptors.append({
             "key": key, "relationType": first["relationType"], "workspace": source["workspace"],
-            "source": {"objectId": source["objectId"], "objectType": source["objectType"],
-                       "workItemId": source["workItemId"], "workspace": source["workspace"]},
-            "targets": [{"objectId": target["objectId"], "objectType": target["objectType"],
-                         "workItemId": target["workItemId"], "workspace": target["workspace"]} for target in target_values],
-            "affectedTargetKeys": sorted(set([target_key(source), *[target_key(target) for target in target_values]])),
+            "source": source, "targets": target_values, "affectedTargetKeys": sorted(affected),
         })
     gra_seeds = [gra_seed_by_key[key] for key in sorted(gra_seed_by_key)]
     selected_gra_keys = {f"GRA|{target['workspace']}|{target['objectId']}" for target in targets if target["objectType"] == "GRA"}

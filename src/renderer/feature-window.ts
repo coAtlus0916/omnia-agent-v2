@@ -1020,18 +1020,22 @@ function bindInteractions(): void {
       if (!surface || busy) return;
       const collected = await collectDroppedFiles(event.dataTransfer, accepts, allowMultiple);
       if (!collected.length) { errorMessage = `请拖入符合要求的文件（${fileInput.accept.join(' / ')}）。`; render(); return; }
+      // `invoke` returns immediately while `busy` is set, so the file bytes and
+      // the staging action must not share a busy window. Import the bytes first,
+      // release busy, then invoke the staging action exactly like the picker path.
+      let artifact;
       setBusy(true);
       try {
         if (collected.length === 1 && !fileInput.directory) {
           const first = collected[0]!;
-          const artifact = await window.featureSurface.importInputBytes({featureId: surface.featureId, featureVersion: surface.featureVersion, surfaceId: surface.surfaceId, actionId: action.actionId, accept: fileInput.accept, name: first.name, bytes: first.bytes});
-          await invoke(action.actionId, {artifact});
+          artifact = await window.featureSurface.importInputBytes({featureId: surface.featureId, featureVersion: surface.featureVersion, surfaceId: surface.surfaceId, actionId: action.actionId, accept: fileInput.accept, name: first.name, bytes: first.bytes});
         } else {
-          const artifact = await window.featureSurface.importInputBytes({featureId: surface.featureId, featureVersion: surface.featureVersion, surfaceId: surface.surfaceId, actionId: action.actionId, accept: fileInput.accept, name: collected[0]!.name, bytes: collected[0]!.bytes, files: collected});
-          await invoke(action.actionId, {artifact});
+          artifact = await window.featureSurface.importInputBytes({featureId: surface.featureId, featureVersion: surface.featureVersion, surfaceId: surface.surfaceId, actionId: action.actionId, accept: fileInput.accept, name: collected[0]!.name, bytes: collected[0]!.bytes, files: collected});
         }
       } catch (error) { errorMessage = error instanceof Error ? error.message : '文件导入失败'; }
-      finally { setBusy(false); renderIfChanged(); }
+      finally { setBusy(false); }
+      if (artifact) await invoke(action.actionId, {artifact});
+      else renderIfChanged();
     });
   });
 }

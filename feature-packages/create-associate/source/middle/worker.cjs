@@ -1048,25 +1048,37 @@ function createFeatureWorker(dependencies) {
     fail('RETURN.RISK_CONTROL_CATALOG_SETTLING_TIMEOUT', `Generated Risk/Control catalog remained incomplete after ${attempts} bounded reads (${waitedMs}ms passive wait, ${Date.now()-startedAt}ms elapsed); risks=${Number(diagnostics.acceptedRisks??catalog?.risks?.length??0)}, controls=${Number(diagnostics.acceptedControls??catalog?.controls?.length??0)}, missing=${missing.map((item) => item.relationId).join(', ')}, controlIdentitySamples=${JSON.stringify(identitySamples)}.`);
   }
   async function waitForGeneratedRiskIdentities(connectorBinding,row,riskAssessmentId,intents){
-    const maxSettlingMs=120_000;const maxReads=40;const startedAt=Date.now();let attempts=0;let waitedMs=0;let missing=intents;
+    const maxSettlingMs=120_000;const maxReads=40;const startedAt=Date.now();let attempts=0;let waitedMs=0;
+    // A generated Risk that already resolved is stable for the rest of this
+    // bounded settle window; only still-missing intents need re-reading. This
+    // avoids re-preflighting every already-found intent on each backoff round.
+    // The signed patch operation still performs its own action-time exact
+    // identity/updatedOn check, so reusing a resolved settle read is not an
+    // authority short-cut.
+    const resolved=new Map();let pending=intents;
     const jitterSeed=parseInt(digest(Buffer.from(canonical({riskAssessmentId,rowKey:row.rowKey,risks:intents.map((item)=>item.riskNumber)}))).slice(0,8),16);
     while(attempts<maxReads){
       if(attempts>0&&Date.now()-startedAt>=maxSettlingMs)break;
       attempts+=1;
-      const results=await Promise.all(intents.map(async(intent)=>{
+      const results=await Promise.all(pending.map(async(intent)=>{
         const target={targetIdentityKey:intent.operationTargetIdentityKey,workspaceId:row.workspaceId};
         const observed=await invoke(RETURN_OPERATIONS.riskClassificationPreflight,connectorBinding,{target,query:{riskAssessmentId,riskName:intent.riskName,riskId:intent.resolvedRisk?.riskId||'',classification:intent.value}});
         return {intent,observed};
       }));
-      missing=results.filter((item)=>item.observed?.found!==true).map((item)=>item.intent);
-      if(!missing.length)return new Map(results.map((item)=>[item.intent.key,item.observed.risk]));
+      const nextMissing=[];
+      for(const item of results){
+        if(item.observed?.found===true)resolved.set(item.intent.key,item.observed.risk);
+        else nextMissing.push(item.intent);
+      }
+      pending=nextMissing;
+      if(!pending.length)return resolved;
       const remainingMs=maxSettlingMs-(Date.now()-startedAt);if(remainingMs<=0||attempts>=maxReads)break;
       const exponentialMs=Math.min(5_000,Math.round(750*(1.55**(attempts-1))));
       const jitterRatio=0.85+(((jitterSeed+attempts*2654435761)>>>0)%301)/1000;
       const delayMs=Math.min(remainingMs,Math.max(250,Math.round(exponentialMs*jitterRatio)));
       await boundedDelay(delayMs);waitedMs+=delayMs;
     }
-    fail('RETURN.RISK_IDENTITY_SETTLING_TIMEOUT',`Generated Risk identities remained incomplete after ${attempts} bounded reads (${waitedMs}ms passive wait, ${Date.now()-startedAt}ms elapsed); missing=${missing.map((item)=>item.riskNumber).join(', ')}.`);
+    fail('RETURN.RISK_IDENTITY_SETTLING_TIMEOUT',`Generated Risk identities remained incomplete after ${attempts} bounded reads (${waitedMs}ms passive wait, ${Date.now()-startedAt}ms elapsed); missing=${pending.map((item)=>item.riskNumber).join(', ')}.`);
   }
   async function waitForEvaluationComplete(connectorBinding, request) {
     let observed = null;

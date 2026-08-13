@@ -385,10 +385,17 @@ export class ChatService {
         },
         body: JSON.stringify({
           model: settings.model,
-          messages: [...history, {
-            role: 'user',
-            content: readable.length ? currentContent : content
-          }],
+          messages: [
+            {
+              role: 'system',
+              content: '你是 Omnia Agent，面向客户的 Omnia 产品助手。不得透露、猜测或比较你的底层模型名称、供应商、接口地址、API Key 或路由配置；用户询问此类信息时，只说明模型连接由受限服务端配置管理。不得透露内部开发测试、调试故障、历史失败、运行日志或缺陷复盘。用客户的语言清晰、准确地回答问题。'
+            },
+            ...history,
+            {
+              role: 'user',
+              content: readable.length ? currentContent : content
+            }
+          ],
           ...(settings.provider === 'deepseek' ? { thinking: { type: 'disabled' } } : {}),
           stream: false
         }),

@@ -852,9 +852,23 @@ export class WorkstationOmniaSession {
       if (!auth.headers.authorization) {
         return this.snapshot('waiting_authorization', '已打开目标 Pack，正在等待同一 target 的 Authorization。', session);
       }
-      if (auth.identityMismatch || auth.engagementId !== engagementId) {
+      if (auth.identityMismatch) {
+        // A captured Authorization belongs to a different Engagement than the
+        // page it was captured against. This is a real identity conflict, not
+        // a pack switch: refuse until the user resolves the mismatched target.
         this.verifiedPackByPage.delete(page);
         return this.snapshot('identity_changed', 'Authorization 与当前 target 的 Pack 身份不一致，已拒绝连接。', session);
+      }
+      if (auth.engagementId && auth.engagementId !== engagementId) {
+        // The page moved to a new Pack (SPA navigation) but that Pack has not
+        // issued an allowlisted Authorization yet. The old bearer is stale, not
+        // proof of conflict: discard it and wait for the new target to re-issue
+        // Authorization, mirroring the AUTH_REQUIRED recovery path. This keeps
+        // an ordinary Pack switch recoverable instead of failing closed forever
+        // as identity_changed.
+        this.revokeAuthorization(page, session.headers.authorization);
+        this.verifiedPackByPage.delete(page);
+        return this.snapshot('waiting_authorization', '已切换 Pack；正在等待新 Pack 重新签发 Authorization。', { ...session, headers: {} });
       }
       try {
         // `connected` is a live assertion, not a cache hit. In particular a

@@ -139,6 +139,34 @@ test('status fails closed as identity_changed when stale Authorization belongs t
   }
 });
 
+test('status recovers a Pack switch as waiting_authorization instead of failing closed as identity_changed', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-pack-switch-'));
+  const connector = new WorkstationOmniaSession(root, fetch);
+  // The page already navigated to a new Pack, but the captured bearer still
+  // belongs to the previous Pack and no allowlisted request for the new Pack
+  // has been observed yet. That stale bearer is not proof of an identity
+  // conflict — the switch must wait for re-authorization, not fail closed.
+  const page = { url: () => `https://deloitteomnia.deloitte.com.cn/engagement/${engagementId}/home` };
+  try {
+    (connector as any).port = 32123;
+    (connector as any).cdpReady = async () => true;
+    (connector as any).currentPage = async () => page;
+    (connector as any).authByPage.set(page, {
+      headers: { authorization: 'Bearer previous-pack' },
+      apiOrigin: 'https://api.deloitteomnia.deloitte.com.cn',
+      engagementId: '22222222-2222-4222-8222-222222222222',
+      identityMismatch: false
+    });
+    const status = await connector.status();
+    assert.equal(status.status, 'waiting_authorization');
+    assert.equal(status.connected, false);
+    assert.equal(status.engagementId, engagementId);
+  } finally {
+    await connector.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('CDP identity must bind the exact profile and dynamically selected port', () => {
   const profile = path.resolve('C:\\omnia-v5-data\\connector\\edge-profile');
   assert.equal(_test.browserIdentityMatches([

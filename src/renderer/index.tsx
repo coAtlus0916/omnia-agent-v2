@@ -296,12 +296,28 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
   const [query, setQuery] = useState('');
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [reloadNotice, setReloadNotice] = useState('');
-  useEffect(() => {
-    setSelected(new Set(snapshot.safety.workspaceIds));
-    setGlobalEnabled(snapshot.safety.globalEnabled);
-    setGlobalSections(new Set(snapshot.safety.globalSectionIds));
-  }, [snapshot.safety.stateVersion]);
   const directory = snapshot.workspaceDirectory.observation;
+  // A safety lock is bound to one Pack. After a Pack switch the old lock is
+  // invalid for the current connection, so its Workspace selection must not seed
+  // the picker with stale IDs; the new Pack stays fail-closed until the user
+  // selects its Workspaces and saves a fresh binding.
+  const packChangedFor = (value: ShellSnapshot) => value.safety.enabled
+    && value.connection.connected
+    && value.safety.engagementId !== value.connection.engagementId;
+  const packChanged = packChangedFor(snapshot);
+  const draftForSnapshot = (value: ShellSnapshot) => packChangedFor(value)
+    ? { selected: new Set<string>(), globalEnabled: false, globalSections: new Set<string>() }
+    : {
+        selected: new Set(value.safety.workspaceIds),
+        globalEnabled: value.safety.globalEnabled,
+        globalSections: new Set(value.safety.globalSectionIds)
+      };
+  useEffect(() => {
+    const draft = draftForSnapshot(snapshot);
+    setSelected(draft.selected);
+    setGlobalEnabled(draft.globalEnabled);
+    setGlobalSections(draft.globalSections);
+  }, [snapshot.safety.stateVersion, snapshot.connection.engagementId]);
   const rebindableGenerationChange = snapshot.safety.enabled
     && snapshot.connection.connected
     && snapshot.safety.connectorId === snapshot.connection.connectorId
@@ -311,9 +327,10 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
     && snapshot.safety.packId === String(snapshot.connection.packId || '')
     && snapshot.safety.sessionGeneration !== Number(snapshot.connection.sessionGeneration || 0);
   const replaceDraftFromSnapshot = (latest: ShellSnapshot) => {
-    setSelected(new Set(latest.safety.workspaceIds));
-    setGlobalEnabled(latest.safety.globalEnabled);
-    setGlobalSections(new Set(latest.safety.globalSectionIds));
+    const draft = draftForSnapshot(latest);
+    setSelected(draft.selected);
+    setGlobalEnabled(draft.globalEnabled);
+    setGlobalSections(draft.globalSections);
   };
   const save = (enabled: boolean) => run('safety', async () => {
     setReloadNotice('');
@@ -356,6 +373,17 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
       setReloadNotice('安全锁已由另一窗口更新，本次重绑没有保存；已重新读取最新安全锁。');
       return latest;
     }
+  });
+  // Only a valid same-Pack binding can be re-verified. After a Pack switch the
+  // old lock is bound to another engagement, so "rebind" is impossible; the
+  // user must author a fresh lock from the current Pack's live directory. This
+  // keeps the old binding intact in Core (fail-closed) while discarding the
+  // stale picker draft and resetting global-lock state.
+  const clearSafetyForCurrentPack = () => run('safety-clear-pack', async () => {
+    const latest = await window.omnia.getSnapshot();
+    replaceDraftFromSnapshot(latest);
+    setReloadNotice('已切换 Pack。请按当前 Pack 重新勾选 Workspace 后再保存安全锁；旧 Pack 的安全锁仍保留为失效关闭。');
+    return latest;
   });
   const reloadSafety = () => run('safety-reload', async () => {
     const latest = await window.omnia.getSnapshot();
@@ -425,6 +453,7 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
       <div className="button-row no-border">
         <button type="button" onClick={reloadSafety} title="丢弃本窗口未保存的选择，并读取 Core 中最新的安全锁状态">重新读取安全锁</button>
         <button type="button" onClick={() => run('workspaces', () => window.omnia.refreshWorkspaceDirectory())} disabled={!snapshot.connection.connected}>刷新 Workspace</button>
+        {packChanged ? <button type="button" onClick={clearSafetyForCurrentPack} title="当前 Pack 已变化，旧安全锁对本 Pack 无效；清除旧选择并从当前 Pack 的 Workspace 重新勾选">重新配置安全锁</button> : null}
       </div>
     </div>
     {!directory ? <p className="reason">{snapshot.workspaceDirectory.reason}</p> : <div className="safety-picker">
@@ -457,8 +486,8 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
       </aside>
     </div>}
     {reloadNotice ? <p className="reason">{reloadNotice}</p> : null}
-    <div className="safety-footer"><div><strong>{selected.size}</strong> 个显式 Workspace{snapshot.safety.enabled ? ' · 当前安全锁已启用' : ''}</div><div className="button-row no-border">
-      <button type="button" className="primary" disabled={!selected.size || !directory || (globalEnabled && (!globalSections.size || !globalMembershipCount))} onClick={() => save(true)}>{snapshot.safety.enabled ? '保存安全锁' : '保存并启用'}</button>
+    <div className="safety-footer"><div><strong>{selected.size}</strong> 个显式 Workspace{packChanged ? ' · 已切换 Pack，旧锁对本 Pack 无效' : snapshot.safety.enabled ? ' · 当前安全锁已启用' : ''}</div><div className="button-row no-border">
+      <button type="button" className="primary" disabled={!selected.size || !directory || (globalEnabled && (!globalSections.size || !globalMembershipCount))} onClick={() => save(true)}>{packChanged ? '保存并启用新安全锁' : snapshot.safety.enabled ? '保存安全锁' : '保存并启用'}</button>
       {snapshot.safety.enabled ? <button type="button" onClick={() => save(false)}>关闭安全锁</button> : null}</div></div>
     {snapshot.safety.invalidReason ? <p className="reason error">{snapshot.safety.invalidReason}</p> : null}
   </section>;

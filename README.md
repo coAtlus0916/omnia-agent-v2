@@ -4,20 +4,24 @@ Omnia Agent v5 是 Windows Shell、独立 Feature 包和 Connector Next 的工�
 
 ## 公司电脑本地便携版
 
-最新自包含候选包见 [v0.4.15-company-loopback-r1](https://github.com/coAtlus0916/omnia-agent-v2/releases/tag/v0.4.15-company-loopback-r1)。完整解压后双击 `Start Omnia Agent v5.cmd`；Shell 会自动在本机启动 Connector Next Server 与 Agent 并连接 `127.0.0.1`，不经过远程 Connector 服务器。
+仓库当前可验证的公开 Tag 为 [v0.4.15-company-loopback-r1](https://github.com/coAtlus0916/omnia-agent-v2/releases/tag/v0.4.15-company-loopback-r1)。完整解压后双击 `Start Omnia Agent v5.cmd`；Shell 会自动在本机启动 Connector Next Server 与 Agent 并连接 `127.0.0.1`，不经过远程 Connector 服务器。
+
+本工作区另有一份 2026-08-13 生成、尚未由当前 Git Tag 表示的本地 `0.4.18` 自包含产物。其冻结内置集合为：Create & Associate `0.2.146 / sequence 148`、Recording `0.4.21 / sequence 34`、Delete Elements `0.3.31 / sequence 1786522815131`、Workpaper Preparation `0.1.52 / sequence 53`。本地产物不能自动解释为已经公开发布或已经通过当前源码的真实 Pack canary。
 
 ## 当前源码状态
 
-Shell 源码版本是 `0.4.15`。四个官方 Feature 的构建脚本当前指向：
+状态基线：`integration/remote@9ab6d5f`，2026-08-13。Shell 源码版本是 `0.4.18`，唯一 Connector 实现为 Connector Next v3。四个官方 Feature 的构建入口当前指向：
 
-| Feature | 源码候选 | sequence | 当前验收状态 |
-|---|---:|---:|---|
-| `omnia.create-associate` | `0.2.134` | 136 | 当前公司便携包已内置；完整 live acceptance 仍 pending |
-| `omnia.delete-elements` | `0.3.21` | 30 | 源码候选；公司便携包保留已接受基线 `0.2.1` |
-| `omnia.recording` | `0.4.20` | 33 | 当前公司便携包已内置；现场录制链已完成 |
-| `omnia.workpaper-preparation` | `0.1.4` | 5 | 源码候选；当前公司便携包不内置 |
+| Feature | 当前构建身份 | 当前事实与验收边界 |
+|---|---:|---|
+| `omnia.create-associate` | `0.2.150 / sequence 152` | HEAD 已包含在途 mutation 重启门禁和包身份提升；本地存在未跟踪候选，但它不是发布记录，当前精确 digest 的安装验证与完整 live acceptance 仍 pending。 |
+| `omnia.delete-elements` | `0.3.31 / sequence 1786522815131` | 已进入 2026-08-13 本地 `0.4.18` 便携产物；当前精确 digest 的完整真实删除 canary 不能由历史版本继承。 |
+| `omnia.recording` | `0.4.21 / sequence 34` | 已进入 2026-08-13 本地 `0.4.18` 便携产物；历史现场录制证据不自动覆盖当前精确 digest。 |
+| `omnia.workpaper-preparation` | `0.1.58 / sequence 59` | HEAD 已包含单表模板、写回胶囊和一步选择流程；本地存在未跟踪候选，但尚无发布记录或当前精确 digest 的 live acceptance。 |
 
-这些是源码候选，不表示已安装、已推广或已在授权 Omnia Pack 通过。历史版本的候选、hash 和 canary 只证明对应历史产物。
+当前 `company-loopback-current` 内置清单仍冻结 Create & Associate `0.2.146`，便携构建脚本要求 `0.2.149`，而 Feature HEAD 已是 `0.2.150`；三者不一致，新的公司便携构建必须先收敛单一清单。已有 `0.4.18` 本地产物仍以其自己的 `release-manifest.json` 为不可变事实，不能被后来源码重新解释。
+
+上述“构建身份”“本地产物”和“真实 canary”是三个不同状态。候选文件、自动化测试、历史 hash 或历史 canary 都不能替代当前精确源码和 digest 的验收。
 
 四 Feature 的独立性不变量、历史审计问题和当前关闭证据见 [四 Feature 独立性审计](docs/architecture/FEATURE_INDEPENDENCE.md)。自动化通过不替代未完成的当前版本 live acceptance。
 
@@ -47,7 +51,7 @@ npm run package:recording-feature
 node scripts/package-workpaper-preparation-feature.mjs
 ```
 
-Workpaper 目前没有 `package.json` script；直接 Node 命令是当前事实，不代表四包发布工作流已统一。
+Workpaper 目前没有 `package.json` script；直接 Node 命令是当前事实，不代表四包发布工作流已统一。开发中工作树没有冻结前，不应运行发布打包命令或覆盖任何历史候选。
 
 Shell 与 Connector Next 的候选命令：
 

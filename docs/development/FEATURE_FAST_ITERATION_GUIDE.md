@@ -3,7 +3,7 @@
 状态：Accepted workflow / implementation gaps noted  
 依据：[ADR-0031](../adr/0031-fast-local-feature-iteration-and-automated-integrity.md)
 
-> 2026-08-03 Connector 更新：标题中的“本地快速迭代”指本地开发工作流，不表示 Shell Local Connector。v5 正式 Connector 链路为 Remote-only，见 [ADR-0035](../adr/0035-remote-only-connector-and-link-code-pairing.md)；本文旧版 Local/Remote Operation host 清单不再授权 Local 产品路径。
+> 2026-08-13 Connector 更新：标题中的“本地快速迭代”指本地开发工作流，不表示 Shell Local Connector。v5 当前唯一 Connector 产品为 [Connector Next v3](../architecture/CONNECTOR_NEXT.md)；本文旧版 Local/Remote Operation host 清单不再授权旧 Local 或 Bridge 产品路径。company loopback 只是相同 Connector Next 协议的本机部署 profile，不是 fallback。
 
 ## 1. 目标
 
@@ -83,16 +83,16 @@ Windows 强隔离认证不属于上述任何一层的必需前置步骤。进程
 
 人工 `Get-FileHash`、把 SHA 复制进普通开发记录、每改一次文档就手工对比所有文件，都不是日常完成条件。历史验收报告中已有的 SHA 表是当次集中证据，不是今后每次开发的模板。
 
-## 5. 当前实现差距
+## 5. 当前实现差距（2026-08-13）
 
-当前包管理器已经能安装、升级、回滚并投影文档，但尚没有通用 Feature Worker supervisor/action router，也没有把签名 Operation 包装载进 Remote Connector host。“删除元素”0.1.0/0.1.1 因而只能测试包生命周期和 Worker 合同，不能测试真实 Omnia 删除。
+通用 Feature Worker supervisor/action router、Store/Event/Connector/AI ports、声明式 Surface、签名 Operation host、durable Connector Next delivery 和 Operation handoff ledger 已存在；不能再把它们写成尚未实现的平台前置。
 
-下一轮平台实现应按顺序补齐：
+当前真实差距是：
 
-1. 通用 Worker 启动、Store/Event/Connector ports 和 action/message-card 路由；
-2. `runtimeEnabled` 改为按真实依赖健康判定，移除硬编码的 `blocked_isolation_and_canary`；
-3. Remote Connector Operation host 的签名模块装载与 capability 报告；
-4. Remote Connector Operation 的独立下发、side-by-side、回滚与 capability 报告；
-5. 在用户授权的当前 Omnia 环境执行第一次真实读/写 canary。
+1. 下一次发布冻结前，重新执行四 Feature 共存、升级、失败升级、回滚、Worker crash、Connector reconnect 和恶意跨包矩阵；2026-08-10 独立性审计的行号与部分结论已漂移。
+2. 收敛 `company-loopback-current` inventory 的 Create `0.2.146`、便携脚本期望的 `0.2.149` 与 Feature HEAD `0.2.150` 三方差异；不得绕过 exact identity 检查。
+3. Create & Associate HEAD 已提升为 `0.2.150 / sequence 152`，但本地未跟踪候选仍须完成确定性核验、隔离安装和当前 digest canary；验证前不得晋升或发布。
+4. Workpaper HEAD 已提升为 `0.1.58 / sequence 59`，本地存在未跟踪候选且仍缺对应 npm script；先完成定向验证、隔离安装和真实产物/结构验收，再进入发布流程。
+5. 对每个当前精确 Feature/Operation digest，在授权的 Omnia/Pack 完成其声明范围内的真实 canary；未验证能力继续失败关闭。
 
-第 1–4 项接通后即可直接安装测试，不增加 Windows 强隔离认证步骤。第 5 项只决定对应真实 Omnia 行为是否已验证。
+这些差距不授权引入第二套 Worker、Connector 或打包链。Feature-only 修改继续复用现有平台边界；平台合同没有真实缺口时不修改 Shell/Connector Core。

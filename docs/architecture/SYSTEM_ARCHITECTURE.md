@@ -1,6 +1,6 @@
 # Omnia Agent v5 系统架构
 
-状态：实现现状与目标边界（2026-08-10）
+状态：实现现状与目标边界（2026-08-13）
 
 产品版本：Shell 源码 `0.4.18`
 传输决策：Remote-only；无 Local Connector fallback
@@ -48,14 +48,9 @@ Core 共享表只应保存通用控制面事实。业务 Schema、Feature 专属
 
 正常目标序列是：验签并落不可变候选 → 校验迁移/导航/Operation → 启动候选 Worker → 远端 Operation prepare/commit → CAS 切换 head → 停旧 Worker → finalize。启动或交接失败时旧 head 和旧 Worker 保持权威。
 
-当前实现已有 durable Operation handoff ledger、activation-head CAS、按 Feature 的 supervisor map，以及 mutation Worker 超时/退出后的 fail-closed recovery。它们是良好基础，但仍有以下未闭环边界：
+当前实现已有 durable Operation handoff ledger、activation-head CAS、按 Feature 的 supervisor map、Runtime `storePorts` 声明检查，以及 mutation Worker 超时/退出后的 fail-closed recovery。2026-08-10 独立性审计指出的 Operation 交接、回滚、私有迁移和共享资源 owner 问题在分支上已有后续修改，但尚未对 2026-08-13 精确工作树重新执行完整四 Feature 共存、升级、失败升级、回滚和恶意跨包矩阵。
 
-- 无 resource-owner 的 Operation 升级会先换 Core head，首次业务调用才向 Connector 注册；旧注册存在时可能被 Connector 拒绝。
-- resource-owner 兼容规则要求 sequence 增加且 capability fingerprint 完全相同，阻止正常 handler 演进，并使回滚到旧 sequence 不可达。
-- Feature 私有迁移目前只有 `version=1` 的建表语义，且在候选 activation 事务前直接作用于 live Store。
-- Runtime `storePorts` 尚未作为调用 allowlist 执行，部分共享 Store 写入口没有完整 Feature owner 校验。
-
-因此当前不能把“可安装候选”表述为“可独立升级、回滚和持久恢复”。
+因此当前仍不能从“代码存在”或“可安装候选”推导出“当前版本已独立升级、回滚和持久恢复”。发布冻结前必须刷新独立性审计的代码证据和行号，并以精确候选执行完整矩阵。
 
 ## 4. 安全与业务边界
 
@@ -66,14 +61,14 @@ Core 共享表只应保存通用控制面事实。业务 Schema、Feature 专属
 
 ## 5. 当前官方 Feature 源码候选
 
-| Feature | 源码候选 | sequence | 当前说明 |
+| Feature | 当前构建身份 | sequence | 当前说明 |
 |---|---:|---:|---|
-| `omnia.create-associate` | `0.2.103` | 105 | 包脚本与候选测试存在；当前版本 live acceptance pending |
-| `omnia.delete-elements` | `0.3.20` | 29 | 包脚本与候选测试存在；当前版本 live acceptance pending |
-| `omnia.recording` | `0.4.19` | 32 | 包脚本与候选测试存在；当前版本 live acceptance pending |
-| `omnia.workpaper-preparation` | `0.1.3` | 4 | 直接 Node 包脚本存在；npm 发布入口与当前版本 live acceptance pending |
+| `omnia.create-associate` | `0.2.150` | 152 | HEAD 已包含在途 mutation 重启门禁和包身份提升；本地未跟踪候选不是发布证据，当前精确 digest 的安装验证与 live acceptance pending。 |
+| `omnia.delete-elements` | `0.3.31` | 1786522815131 | 构建脚本与本地便携内置产物存在；当前精确 digest live acceptance pending。 |
+| `omnia.recording` | `0.4.21` | 34 | 构建脚本与本地便携内置产物存在；当前精确 digest live acceptance pending。 |
+| `omnia.workpaper-preparation` | `0.1.58` | 59 | HEAD 已包含单表模板、写回胶囊和一步选择流程；直接 Node 打包入口存在，npm 发布入口仍缺失，本地未跟踪候选尚未形成发布或 live acceptance 证据。 |
 
-“源码候选”仅指当前构建脚本中的版本常量，不表示已安装、已推广或已在授权 Pack 通过。
+“构建身份”仅指脚本当前会声明的包身份，不表示源码已经冻结、候选可重现、已安装、已推广或已在授权 Pack 通过。工作树修改与既有同版本候选不一致时，历史候选保持不可变，源码必须提升版本/sequence 后才能重新打包。
 
 ## 6. 相关合同
 

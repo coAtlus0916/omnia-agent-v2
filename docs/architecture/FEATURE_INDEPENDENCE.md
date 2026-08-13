@@ -2,6 +2,8 @@
 
 审计时间：2026-08-10
 
+> 2026-08-13 状态说明：本页保留为 2026-08-10 的完整审计快照。其后 `integration/remote` 已修改 Package Manager、Runtime Store、builtin release inventory 和四个 Feature，原行号及部分 P0/P1 结论已漂移；当前源码版本和发行阻断见 [系统架构](SYSTEM_ARCHITECTURE.md)、[Feature 包总览](../implementation/FEATURE_PACKAGE_CATALOG.md)与[文档中心](../README.md)。下一次候选冻结前必须重新执行完整审计，不能把本页旧行号或曾经关闭的测试直接当作 2026-08-13 精确工作树的通过证据。
+
 范围：`omnia.create-associate`、`omnia.delete-elements`、`omnia.recording`、`omnia.workpaper-preparation`
 结论：**未满足独立开发、打包、安装、激活、回滚、运行和持久化的发布门禁。** Connector/Bridge 的通用边界基本成立，但 Core Store、Operation 交接、发布清单和测试矩阵仍有阻断项。
 

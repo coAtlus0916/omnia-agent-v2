@@ -98,11 +98,23 @@ async function validateModelAttachment(
 }
 
 export class ChatService {
+  private changeListener: (() => void) | null = null;
+
   constructor(
     private readonly database: CoreDatabase,
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly interactionLogs?: InteractionLogService
   ) {}
+
+  /** The Shell registers a listener so the user message can be shown the
+   * moment it is persisted, then refreshed again once the model replies. */
+  setChangeListener(listener: (() => void) | null): void {
+    this.changeListener = listener;
+  }
+
+  private notifyChange(): void {
+    this.changeListener?.();
+  }
 
   private providerInteraction<T>(action: string, operationId: string, callback: () => Promise<T>, options: {
     surface?: string;
@@ -310,8 +322,11 @@ export class ChatService {
     });
     const settings = this.database.getAiSettings();
     const ready = Boolean(settings.baseUrl && settings.model && settings.apiKey);
-    const userMessage = this.database.createMessage({ sessionId, role: 'user', content, status: 'sending' });
+    const userMessage = this.database.createMessage({ sessionId, role: 'user', content, status: 'stored' });
     this.database.attachToMessage(sessionId, userMessage.id, ids);
+    // The user message is persisted and must appear immediately, before the
+    // model round-trip that may take many seconds.
+    this.notifyChange();
     let readable: typeof attachments = attachments;
     if (ready) {
       // Attachments that the current provider cannot read are skipped with an
@@ -341,6 +356,7 @@ export class ChatService {
       if (skipped.length && !readable.length && !content) {
         const detail = skipped.map((item) => item.reason).join('；');
         this.database.updateMessage(userMessage.id, 'failed', `所有附件均无法送入模型：${detail}`.slice(0, 1000));
+        this.notifyChange();
         return;
       }
     }
@@ -350,6 +366,7 @@ export class ChatService {
         'provider_unavailable',
         'AI Provider 尚未完整配置；消息和附件已安全保存，但未送入任何模型。'
       );
+      this.notifyChange();
       return;
     }
     try {
@@ -415,6 +432,7 @@ export class ChatService {
         content: assistantContent,
         status: 'delivered'
       });
+      this.notifyChange();
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : '未知错误';
@@ -422,6 +440,7 @@ export class ChatService {
         this.database.updateAttachmentDelivery(item.id, 'unconfirmed', '请求失败，无法确认 Provider 是否已接收该附件。');
       }
       this.database.updateMessage(userMessage.id, 'failed', `AI Provider 请求失败：${detail}`.slice(0, 1000));
+      this.notifyChange();
     }
   }
 }

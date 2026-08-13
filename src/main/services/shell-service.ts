@@ -151,6 +151,7 @@ export class ShellService {
       if (this.connection.connecting || this.pairingPollRunning || this.pairingSecret) return;
       this.scheduleTransportReconcile();
     }) || null;
+    this.chat.setChangeListener(() => this.emitChanged());
   }
 
   private scheduleTransportReconcile(): void {
@@ -726,7 +727,10 @@ export class ShellService {
     this.database.updateKeepalive({
       enabled,
       enabledAt: enabled ? (this.database.getKeepalive().enabledAt || now) : '',
-      nextAttemptAt: enabled ? now : ''
+      nextAttemptAt: enabled ? now : '',
+      // A stale failure must not outlive the keepalive it belongs to: turning
+      // keepalive off clears it, otherwise the bar keeps showing "保活失败".
+      lastError: enabled ? this.database.getKeepalive().lastError : ''
     });
     this.emitChanged();
     if (enabled) await this.runKeepalive();

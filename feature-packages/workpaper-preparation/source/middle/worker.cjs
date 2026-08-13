@@ -8,6 +8,7 @@ const FEATURE_VERSION = '__FEATURE_VERSION__';
 const CURRENT_POINTER = 'workpaper:current';
 const MAX_BATCH_GRAS = 50;
 const MAX_BATCH_CONTROLS = 2000;
+const OPEN_CONCURRENCY = 6;
 const OPERATIONS = Object.freeze({
   directory: 'omnia.workpaper.directory.read.v1',
   controls: 'omnia.workpaper.controls.read.v1',
@@ -920,86 +921,142 @@ function createFeatureWorker(ports) {
     plan.outcomes.sort((left, right) => left.stepId.localeCompare(right.stepId));
     await save(plan); return value;
   }
-  async function markUncertain(plan, step, commandId, phase, error, observed = null) {
-    const failure = errorSummary(error);
+  // Execute a single Control's frozen hidden-Tab intent to completion without
+  // mutating the shared plan or transitioning the Core Run. Returns a lane
+  // result the caller merges under a serialized recorder. A Control is
+  // independent of every other Control, so one drifted row must not block the
+  // rest of the batch.
+  async function executeStep(plan, step, b, s) {
+    const existing = plan.outcomes.find((item) => item.stepId === step.stepId);
+    if (existing && existing.state === 'succeeded') return { step, terminal: 'succeeded', phase: 'already_applied', commandId: existing.commandId || '' };
+    let before;
     try {
-      if (phase !== 'projection') await store.call('recordReturnEvidence', { runId: plan.runId, commandId,
-        evidenceType: 'commit', commandState: 'uncertain', payload: { phase, code: failure.code }, error: failure.message });
-    } catch {}
-    try { await store.call('finishReturn', { runId: plan.runId, outcome: 'uncertain', error: `${failure.code}: ${failure.message}` }); } catch {}
-    plan.state = 'uncertain'; plan.uncertain = { controlId: step.controlId, stepId: step.stepId, commandId, phase, failure,
-      ...(observed ? { observed } : {}) };
-    await persistOutcome(plan, step, 'uncertain', phase, error, commandId); return plan;
+      before = await currentPreflight(step, b, plan.planDigest, plan.runId);
+      const partialRecovery = plan.partialRecovery && plan.partialRecovery.stepId === step.stepId
+        && plan.partialRecovery.observedDigest === digest(observationState(before));
+      if (!before.openVerified && digest(observationState(before)) !== step.preflightDigest && !partialRecovery) {
+        fail('WORKPAPER.PREFLIGHT_DRIFT', `Control state changed before mutation: ${step.controlId}`);
+      }
+    } catch (error) {
+      return { step, terminal: 'failed', phase: 'preflight', error, commandId: '' };
+    }
+    const intent = { kind: 'field', key: step.stepId, workspace: step.workspaceId };
+    let command;
+    try {
+      command = await store.call('prepareDeletionCommand', { runId: plan.runId, planDigest: plan.planDigest,
+        targetKind: intent.kind, targetKey: intent.key, workspaceId: step.workspaceId, binding: b, workspaceIds: s.workspaceIds,
+        operationId: OPERATIONS.direct, request: step.mutationPayload, evidenceOperationIds: [OPERATIONS.reconcile], evidenceTargetIdentityKey: step.stepId });
+    } catch (error) {
+      return { step, terminal: 'failed', phase: 'command_prepare', error, commandId: '' };
+    }
+    const readRequest = await freezeReconcile(plan, step, command.commandId, b);
+    if (!before.openVerified) {
+      try {
+        await store.call('recordReturnEvidence', { runId: plan.runId, commandId: command.commandId,
+          evidenceType: 'request', commandState: 'submitted', payload: { operationId: OPERATIONS.direct } });
+      } catch (error) {
+        await store.call('recordReturnEvidence', { runId: plan.runId, commandId: command.commandId,
+          evidenceType: 'request', commandState: 'failed', payload: { code: errorSummary(error).code }, error: errorSummary(error).message });
+        return { step, terminal: 'failed', phase: 'before_mutation', error, commandId: command.commandId };
+      }
+      let response;
+      try {
+        response = await invoke(OPERATIONS.direct, { connectorBinding: b, target: operationTarget(step), planDigest: plan.planDigest,
+          ...controlRequest(step, step),
+          command: { commandId: command.commandId, idempotencyKey: command.idempotencyKey, payload: step.mutationPayload } });
+      } catch (error) {
+        return { step, terminal: 'uncertain', phase: 'submitted', error, commandId: command.commandId };
+      }
+      try {
+        await store.call('recordReturnEvidence', { runId: plan.runId, commandId: command.commandId,
+          evidenceType: 'commit', commandState: 'committed', payload: response });
+      } catch (error) {
+        return { step, terminal: 'uncertain', phase: 'committed', error, commandId: command.commandId };
+      }
+    }
+    let observed;
+    try {
+      observed = await invoke(OPERATIONS.reconcile, { ...readRequest, receiptContext: { runId: plan.runId, commandId: command.commandId } });
+      const classification = await classifyObservation(observed, selectedIdentity(step), step, plan.runId);
+      if (classification.outcome !== 'applied') fail('WORKPAPER.READBACK_PENDING', 'Readback does not yet prove the complete recorded hidden-Tab state.');
+      await store.call('recordReturnEvidence', { runId: plan.runId, commandId: command.commandId,
+        evidenceType: before.openVerified ? 'reconcile' : 'readback', commandState: 'readback_verified', payload: observed,
+        receiptId: observed.__operationReceiptId });
+    } catch (error) {
+      return { step, terminal: 'uncertain', phase: 'readback', error, commandId: command.commandId };
+    }
+    try { await project(plan, step, command.commandId, b, observed); }
+    catch (error) {
+      return { step, terminal: 'uncertain', phase: 'projection', error, commandId: command.commandId, observed };
+    }
+    return { step, terminal: 'succeeded', phase: before.openVerified ? 'already_applied' : 'readback_verified', commandId: command.commandId };
   }
   async function execute(plan, context) {
     const { b, s } = contextAuthority(context); sameAuthority(b, plan.binding); sameSafety(s, plan.safety);
     await store.call('validateReturnAuthority', { runId: plan.runId, connectorBinding: b, safetyLock: s });
     plan.state = 'executing'; delete plan.uncertain; await save(plan);
-    for (const step of plan.steps) {
-      const existing = plan.outcomes.find((item) => item.stepId === step.stepId);
-      if (existing && existing.state === 'succeeded') continue;
-      let before;
-      try {
-        before = await currentPreflight(step, b, plan.planDigest, plan.runId);
-        const partialRecovery = plan.partialRecovery && plan.partialRecovery.stepId === step.stepId
-          && plan.partialRecovery.observedDigest === digest(observationState(before));
-        if (!before.openVerified && digest(observationState(before)) !== step.preflightDigest && !partialRecovery) {
-          fail('WORKPAPER.PREFLIGHT_DRIFT', `Control state changed before mutation: ${step.controlId}`);
-        }
-      } catch (error) {
-        await persistOutcome(plan, step, 'failed', 'preflight', error);
-        await store.call('finishReturn', { runId: plan.runId, outcome: 'failed', error: `${errorSummary(error).code}: ${errorSummary(error).message}` });
-        plan.state = 'failed'; return save(plan);
-      }
-      const intent = { kind: 'field', key: step.stepId, workspace: step.workspaceId };
-      let command;
-      try {
-        command = await store.call('prepareDeletionCommand', { runId: plan.runId, planDigest: plan.planDigest,
-          targetKind: intent.kind, targetKey: intent.key, workspaceId: step.workspaceId, binding: b, workspaceIds: s.workspaceIds,
-          operationId: OPERATIONS.direct, request: step.mutationPayload, evidenceOperationIds: [OPERATIONS.reconcile], evidenceTargetIdentityKey: step.stepId });
-      } catch (error) {
-        await persistOutcome(plan, step, 'failed', 'command_prepare', error);
-        await store.call('finishReturn', { runId: plan.runId, outcome: 'failed', error: `${errorSummary(error).code}: ${errorSummary(error).message}` });
-        plan.state = 'failed'; return save(plan);
-      }
-      const readRequest = await freezeReconcile(plan, step, command.commandId, b);
-      if (!before.openVerified) {
+
+    // Bounded worker pool. Lanes run the expensive Connector HTTP round-trips
+    // concurrently; the shared plan is only touched through the serialized
+    // recorder below, and the single Core Run transition is deferred to the end.
+    const steps = plan.steps;
+    const results = new Array(steps.length);
+    let cursor = 0;
+    let recordTail = Promise.resolve();
+    const lane = async () => {
+      for (;;) {
+        const index = cursor++;
+        if (index >= steps.length) return;
+        let result;
         try {
-          await store.call('recordReturnEvidence', { runId: plan.runId, commandId: command.commandId,
-            evidenceType: 'request', commandState: 'submitted', payload: { operationId: OPERATIONS.direct } });
+          result = await executeStep(plan, steps[index], b, s);
         } catch (error) {
-          await store.call('recordReturnEvidence', { runId: plan.runId, commandId: command.commandId,
-            evidenceType: 'request', commandState: 'failed', payload: { code: errorSummary(error).code }, error: errorSummary(error).message });
-          await persistOutcome(plan, step, 'failed', 'before_mutation', error, command.commandId);
-          await store.call('finishReturn', { runId: plan.runId, outcome: 'failed', error: `${errorSummary(error).code}: ${errorSummary(error).message}` });
-          plan.state = 'failed'; return save(plan);
+          result = { step: steps[index], terminal: 'uncertain', phase: 'unknown', error, commandId: '', observed: null };
         }
-        let response;
-        try {
-          response = await invoke(OPERATIONS.direct, { connectorBinding: b, target: operationTarget(step), planDigest: plan.planDigest,
-            ...controlRequest(step, step),
-            command: { commandId: command.commandId, idempotencyKey: command.idempotencyKey, payload: step.mutationPayload } });
-        } catch (error) { return markUncertain(plan, step, command.commandId, 'submitted', error); }
-        try {
-          await store.call('recordReturnEvidence', { runId: plan.runId, commandId: command.commandId,
-            evidenceType: 'commit', commandState: 'committed', payload: response });
-        } catch (error) { return markUncertain(plan, step, command.commandId, 'committed', error); }
+        results[index] = result;
+        const value = result;
+        recordTail = recordTail.catch(() => undefined).then(async () => {
+          const step = value.step;
+          if (value.terminal === 'succeeded') await persistOutcome(plan, step, 'succeeded', value.phase, null, value.commandId || '');
+          else if (value.terminal === 'failed') await persistOutcome(plan, step, 'failed', value.phase, value.error, value.commandId || '');
+          else await persistOutcome(plan, step, 'uncertain', value.phase, value.error, value.commandId || '');
+        });
       }
-      let observed;
-      try {
-        observed = await invoke(OPERATIONS.reconcile, { ...readRequest, receiptContext: { runId: plan.runId, commandId: command.commandId } });
-        const classification = await classifyObservation(observed, selectedIdentity(step), step, plan.runId);
-        if (classification.outcome !== 'applied') fail('WORKPAPER.READBACK_PENDING', 'Readback does not yet prove the complete recorded hidden-Tab state.');
-        await store.call('recordReturnEvidence', { runId: plan.runId, commandId: command.commandId,
-          evidenceType: before.openVerified ? 'reconcile' : 'readback', commandState: 'readback_verified', payload: observed,
-          receiptId: observed.__operationReceiptId });
-      } catch (error) { return markUncertain(plan, step, command.commandId, 'readback', error); }
-      try { await project(plan, step, command.commandId, b, observed); }
-      catch (error) { return markUncertain(plan, step, command.commandId, 'projection', error, observed); }
-      await persistOutcome(plan, step, 'succeeded', before.openVerified ? 'already_applied' : 'readback_verified', null, command.commandId);
+    };
+    await Promise.all(Array.from({ length: Math.min(steps.length, OPEN_CONCURRENCY) }, () => lane()));
+    await recordTail;
+
+    // Resolve the authoritative terminal state in frozen step order. An unknown
+    // mutation effect (uncertain) outranks a clean failure because it must be
+    // reconciled read-only before any further action.
+    let terminal = 'succeeded';
+    let firstUncertain = null;
+    for (const result of results) {
+      if (!result) continue;
+      if (result.terminal === 'uncertain') { terminal = 'uncertain'; if (!firstUncertain) firstUncertain = result; }
+      else if (result.terminal === 'failed' && terminal === 'succeeded') terminal = 'failed';
     }
-    await store.call('finishReturn', { runId: plan.runId, outcome: 'succeeded' });
-    plan.state = 'completed'; return save(plan);
+    if (terminal === 'uncertain') {
+      const failure = errorSummary(firstUncertain.error);
+      if (firstUncertain.phase !== 'projection' && firstUncertain.commandId) {
+        try {
+          await store.call('recordReturnEvidence', { runId: plan.runId, commandId: firstUncertain.commandId,
+            evidenceType: 'commit', commandState: 'uncertain', payload: { phase: firstUncertain.phase, code: failure.code }, error: failure.message });
+        } catch {}
+      }
+      plan.uncertain = { controlId: firstUncertain.step.controlId, stepId: firstUncertain.step.stepId,
+        commandId: firstUncertain.commandId, phase: firstUncertain.phase, failure,
+        ...(firstUncertain.observed ? { observed: firstUncertain.observed } : {}) };
+      await store.call('finishReturn', { runId: plan.runId, outcome: 'uncertain', error: `${failure.code}: ${failure.message}` });
+      plan.state = 'uncertain';
+    } else if (terminal === 'failed') {
+      await store.call('finishReturn', { runId: plan.runId, outcome: 'failed', error: 'One or more Controls failed before a verified read-back.' });
+      plan.state = 'failed';
+    } else {
+      await store.call('finishReturn', { runId: plan.runId, outcome: 'succeeded' });
+      plan.state = 'completed';
+    }
+    return save(plan);
   }
   async function confirm(plan, context, expectedStateVersion) {
     if (!plan || !['pending_confirmation','pending_continuation'].includes(plan.state)) {

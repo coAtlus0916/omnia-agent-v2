@@ -13,7 +13,6 @@ import type {
 } from '../shared/feature-contracts.js';
 import { buildFeatureNavigationTree, type FeatureNavigationGroupNode } from '../shared/feature-navigation.js';
 import { SurfaceHost, type SurfaceInstance } from './surface-host.js';
-import type { InteractionLogEntry, InteractionLogPage, InteractionLogTrace, InteractionPlane, InteractionSeverity } from '../shared/interaction-log-contracts.js';
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const formatTime = (value: string) => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—';
@@ -77,15 +76,15 @@ function GlobalSessionBar({ snapshot, run, fail, openSafety, openConnection, bus
       aria-pressed={keepalive.enabled} disabled={!connection.connected && !keepalive.enabled}
       title={connection.connected ? (keepalive.enabled ? '关闭保活' : '开启保活') : '连接 Pack 后才能开启保活'}
       onClick={() => run('keepalive', () => window.omnia.setKeepalive(!keepalive.enabled))}>A</button>
-    <div className="pack-identity" title={connection.engagementName || 'Pack identity 尚未读取'}>
-      <span className="pack-label">Pack</span>
-      <strong>{connection.engagementName || '未读取'}</strong>
-    </div>
     <button type="button" className={`safety-indicator ${snapshot.safety.enabled && snapshot.safety.validForCurrentConnection ? 'locked' : ''}`}
       aria-label={safetyNeedsAttention ? '安全锁需要重新验证' : '安全锁设置'}
       title={snapshot.safety.enabled ? (snapshot.safety.invalidReason || '安全锁已启用') : '安全锁未启用'}
       onClick={openSafety}>{safetyNeedsAttention ? '⚠' : '▣'}</button>
-    {keepalive.lastError ? <span className="session-error" role="status" title={keepalive.lastError}>保活失败</span> : null}
+    <div className="pack-identity" title={connection.engagementName || 'Pack identity 尚未读取'}>
+      <span className="pack-label">Pack</span>
+      <strong>{connection.engagementName || '未读取'}</strong>
+    </div>
+    {keepalive.enabled && keepalive.lastError ? <span className="session-error" role="status" title={keepalive.lastError}>保活失败</span> : null}
     <span className="session-spacer" />
     <ScaleControl snapshot={snapshot} fail={fail} />
   </header>;
@@ -289,7 +288,7 @@ function TabStrip({ snapshot, host, activeTab, activateFeature, activateComments
   </nav>;
 }
 
-function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
+function SafetyPanel({ snapshot, run, close }: { snapshot: ShellSnapshot; run: Run; close(): void }) {
   const [selected, setSelected] = useState<Set<string>>(new Set(snapshot.safety.workspaceIds));
   const [globalEnabled, setGlobalEnabled] = useState(snapshot.safety.globalEnabled);
   const [globalSections, setGlobalSections] = useState<Set<string>>(new Set(snapshot.safety.globalSectionIds));
@@ -335,6 +334,7 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
         workspaceIds: [...selected],
         expectedStateVersion: snapshot.safety.stateVersion
       });
+      close();
       return latest;
     } catch (error) {
       const code = String((error as Error & { code?: string })?.code || '');
@@ -415,13 +415,18 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
   const globalMembershipCount = directory?.workspaces.filter((workspace) => globalSections.has(workspace.parentSectionId)).length || 0;
   const authoritativeMembershipAvailable = Boolean(directory?.workspaces.some((workspace) => workspace.parentSectionId && knownSectionIds.has(workspace.parentSectionId)));
   return <section className="safety-workbench" aria-label="安全锁设置">
-    {snapshot.safety.enabled && !snapshot.safety.validForCurrentConnection ? <div className="reason error" role="status">
-      <strong>{snapshot.connection.connected ? '安全锁需要重新验证' : 'Remote Connector / Pack 未连接'}</strong>
-      <p>{snapshot.safety.invalidReason}</p>
-      {recovery === 'rebind' ? <button type="button" className="primary" onClick={rebindExistingSafety}>
-        重新验证并重绑安全锁
-      </button> : null}
-    </div> : null}
+    {snapshot.safety.enabled && !snapshot.safety.validForCurrentConnection ? (
+      recovery === 'reconfigure' ? <div className="reason" role="status">
+        <strong>已切换 Pack，请重新配置安全锁</strong>
+        <p>旧安全锁绑定的是另一个 Pack，已保留为失效关闭；请在下方按当前 Pack 重新勾选 Workspace 后保存。</p>
+      </div> : <div className="reason error" role="status">
+        <strong>{snapshot.connection.connected ? '安全锁需要重新验证' : 'Remote Connector / Pack 未连接'}</strong>
+        <p>{snapshot.safety.invalidReason}</p>
+        {recovery === 'rebind' ? <button type="button" className="primary" onClick={rebindExistingSafety}>
+          重新验证并重绑安全锁
+        </button> : null}
+      </div>
+    ) : null}
     <div className={`global-safety-card ${globalEnabled ? 'enabled' : ''}`}>
       <div className="global-safety-heading"><div><h3>全局安全锁</h3><p>仅约束删除目标的关联 Workspace；显式选择的 Workspace 始终优先。所在部分必须来自 Omnia 权威关系。</p></div>
         <label className="safety-switch" title={!authoritativeMembershipAvailable ? 'Omnia 未返回可核验的 Section 成员关系，不能启用全局安全锁' : ''}><input type="checkbox" checked={globalEnabled} disabled={!authoritativeMembershipAvailable && !globalEnabled} onChange={(event) => {
@@ -482,68 +487,7 @@ function SafetyPanel({ snapshot, run }: { snapshot: ShellSnapshot; run: Run }) {
     <div className="safety-footer"><div><strong>{selected.size}</strong> 个显式 Workspace{recovery === 'reconfigure' ? ' · 已切换 Pack，旧锁对本 Pack 无效' : snapshot.safety.enabled ? ' · 当前安全锁已启用' : ''}</div><div className="button-row no-border">
       <button type="button" className="primary" disabled={!selected.size || !directory || (globalEnabled && (!globalSections.size || !globalMembershipCount))} onClick={() => save(true)}>{recovery === 'reconfigure' ? '保存并启用新安全锁' : snapshot.safety.enabled ? '保存安全锁' : '保存并启用'}</button>
       {snapshot.safety.enabled ? <button type="button" onClick={() => save(false)}>关闭安全锁</button> : null}</div></div>
-    {snapshot.safety.invalidReason ? <p className="reason error">{snapshot.safety.invalidReason}</p> : null}
-  </section>;
-}
-
-function InteractionLogPanel() {
-  const [severity, setSeverity] = useState<'' | InteractionSeverity>('');
-  const [plane, setPlane] = useState<'' | InteractionPlane>('');
-  const [period, setPeriod] = useState('24');
-  const [search, setSearch] = useState('');
-  const [page, setPage] = useState<InteractionLogPage>({ entries: [], hasMore: false });
-  const [selected, setSelected] = useState<InteractionLogTrace | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const refresh = useCallback(() => {
-    setLoading(true); setError('');
-    const hours = Number(period);
-    void window.omnia.queryInteractionLogs({
-      severity, plane, interactionId: search.trim(), limit: 200,
-      ...(hours > 0 ? { since: new Date(Date.now() - hours * 3_600_000).toISOString() } : {})
-    }).then((next) => {
-      setPage(next);
-      if (selected && !next.entries.some((entry) => entry.traceId === selected.traceId)) setSelected(null);
-    }).catch((reason) => setError(reason instanceof Error ? reason.message : '日志查询失败。')).finally(() => setLoading(false));
-  }, [severity, plane, period, search, selected?.traceId]);
-  useEffect(refresh, [severity, plane, period]);
-  const openTrace = (entry: InteractionLogEntry) => {
-    setError('');
-    void window.omnia.getInteractionTrace(entry.traceId).then(setSelected)
-      .catch((reason) => setError(reason instanceof Error ? reason.message : '日志详情查询失败。'));
-  };
-  const active = selected?.entries.find((entry) => entry.phase === 'failure') || selected?.entries.at(-1) || null;
-  return <section className="interaction-log-panel" aria-label="交互日志">
-    <div className="log-toolbar">
-      <label>级别<select value={severity} onChange={(event) => setSeverity(event.target.value as '' | InteractionSeverity)}><option value="">全部</option><option value="error">错误</option><option value="info">信息</option></select></label>
-      <label>层<select value={plane} onChange={(event) => setPlane(event.target.value as '' | InteractionPlane)}><option value="">全部</option><option value="surface">Surface</option><option value="middle">Middle</option><option value="core">Core</option><option value="connector">Connector</option></select></label>
-      <label>时间<select value={period} onChange={(event) => setPeriod(event.target.value)}><option value="1">1 小时</option><option value="24">24 小时</option><option value="168">7 天</option><option value="336">14 天</option></select></label>
-      <label className="log-search">交互 ID<input value={search} maxLength={128} placeholder="interaction / trace / parent ID" onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') refresh(); }} /></label>
-      <button type="button" onClick={refresh} disabled={loading}>{loading ? '查询中…' : '查询'}</button>
-    </div>
-    {error ? <p className="reason error log-query-error">{error}</p> : null}
-    <div className="log-content">
-      <div className="log-list" role="list" aria-label="日志列表">
-        {page.entries.map((entry) => <button type="button" role="listitem" key={entry.eventId} className={selected?.traceId === entry.traceId ? 'active' : ''} onClick={() => openTrace(entry)}>
-          <time>{formatTime(entry.timestamp)}</time><span className={`log-result ${entry.phase}`}>{entry.phase === 'failure' ? '失败' : entry.phase === 'success' ? '成功' : '进行中'}</span>
-          <strong>{entry.plane} / {entry.component}</strong><span>{entry.action}</span>
-          <code>{entry.errorCode || entry.failurePoint || '—'}</code>
-        </button>)}
-        {!page.entries.length && !loading ? <p className="reason">当前筛选条件下没有日志。</p> : null}
-        {page.hasMore ? <p className="reason">结果超过 200 条，请缩小时间或 ID 范围。</p> : null}
-      </div>
-      <div className="log-detail" aria-label="日志详情">
-        {!active ? <p className="reason">选择一条日志查看同一 trace 的完整阶段。</p> : <>
-          <dl><dt>Trace ID</dt><dd><code>{active.traceId}</code></dd><dt>Interaction ID</dt><dd><code>{active.interactionId}</code></dd>
-            <dt>结果 / 耗时</dt><dd>{active.phase} / {active.durationMs} ms</dd><dt>层 / 组件</dt><dd>{active.plane} / {active.component}</dd>
-            <dt>操作</dt><dd>{active.surface} / {active.action}</dd><dt>错误码</dt><dd><code>{active.errorCode || '—'}</code></dd>
-            <dt>失败点</dt><dd><code>{active.failurePoint || '—'}</code></dd><dt>消息</dt><dd>{active.message || '—'}</dd>
-            <dt>业务关联</dt><dd><code>{[active.runId, active.commandId, active.requestId, active.operationId].filter(Boolean).join(' / ') || '—'}</code></dd></dl>
-          <h4>Trace 阶段</h4><ol>{selected!.entries.map((entry) => <li key={entry.eventId}><time>{formatTime(entry.timestamp)}</time> {entry.plane}/{entry.component} · {entry.action} · {entry.phase}{entry.failurePoint ? ` · ${entry.failurePoint}` : ''}</li>)}</ol>
-          <h4>脱敏详情</h4><pre>{JSON.stringify(active.details, null, 2)}</pre>
-        </>}
-      </div>
-    </div>
+    {snapshot.safety.invalidReason && recovery !== 'reconfigure' ? <p className="reason error">{snapshot.safety.invalidReason}</p> : null}
   </section>;
 }
 
@@ -563,14 +507,13 @@ function SafetyDialog({ snapshot, close, run }: { snapshot: ShellSnapshot; close
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
     <section className="safety-dialog" role="dialog" aria-modal="true" aria-label="安全锁工作台" data-testid="safety-dialog">
       <header><div><h2>安全锁</h2><p>以当前 Pack 的精确 Workspace Facet ID 锁定目标，并用权威所在部分限制删除关联。</p></div><button type="button" onClick={close}>关闭</button></header>
-      <div className="safety-dialog-body"><SafetyPanel snapshot={snapshot} run={run} /></div>
+      <div className="safety-dialog-body"><SafetyPanel snapshot={snapshot} run={run} close={close} /></div>
     </section>
   </div>;
 }
 
 function SettingsDialog({ snapshot, close, run, fail }: { snapshot: ShellSnapshot; close(): void; run: Run; fail(message: string): void }) {
   const ai = snapshot.settings.ai;
-  const [section, setSection] = useState<'ai' | 'logs'>('ai');
   const [provider, setProvider] = useState<AiProviderKind>(ai.provider);
   const [baseUrl, setBaseUrl] = useState(ai.baseUrl);
   const [model, setModel] = useState(ai.model);
@@ -582,8 +525,7 @@ function SettingsDialog({ snapshot, close, run, fail }: { snapshot: ShellSnapsho
     <section className="settings-dialog" role="dialog" aria-modal="true" aria-label="设置" data-testid="settings-dialog">
       <header><h2>设置</h2><div className="header-actions"><ScaleControl snapshot={snapshot} fail={fail} /><button type="button" onClick={close}>关闭</button></div></header>
       <div className="settings-columns" style={{ gridTemplateColumns: `${settingsBasis / 100}% 7px minmax(0, 1fr)` }}><nav className="settings-nav" aria-label="设置导航" data-testid="settings-nav-scroll">
-        <button type="button" className={section === 'ai' ? 'active' : ''} onClick={() => setSection('ai')}>AI 设置</button>
-        <button type="button" className={section === 'logs' ? 'active' : ''} onClick={() => setSection('logs')}>日志</button>
+        <button type="button" className="active">AI 设置</button>
       </nav><div className="settings-splitter" role="separator" aria-orientation="vertical" aria-label="调整设置导航宽度"
         aria-valuemin={1600} aria-valuemax={3600} aria-valuenow={settingsBasis} tabIndex={0}
         onDoubleClick={() => run('settings-layout-reset', () => window.omnia.saveSettingsLayout({ settingsNavigationBasisPoints: 2200, expectedStateVersion: snapshot.settingsLayout.stateVersion }))}
@@ -608,8 +550,8 @@ function SettingsDialog({ snapshot, close, run, fail }: { snapshot: ShellSnapsho
           };
           window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
         }} />
-      <div className={`settings-main ${section === 'logs' ? 'logs-active' : ''}`} data-testid="settings-main-scroll">
-        {section === 'ai' ? <section className="settings-section"><h3>AI 设置</h3>
+      <div className="settings-main" data-testid="settings-main-scroll">
+        <section className="settings-section"><h3>AI 设置</h3>
           <label>Provider<select value={provider} onChange={(event) => { const next = event.target.value as AiProviderKind; setProvider(next); if (next === 'deepseek') { setBaseUrl('https://api.deepseek.com'); setModel('deepseek-v4-flash'); } }}>
             <option value="deepseek">DeepSeek</option><option value="custom">OpenAI-compatible Custom</option></select></label>
           <label>Base URL<input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} /></label>
@@ -620,8 +562,7 @@ function SettingsDialog({ snapshot, close, run, fail }: { snapshot: ShellSnapsho
           <p className={`test-state ${ai.testStatus}`}>{ai.testMessage || '尚未测试连接。'}</p>
           <div className="button-row no-border"><button type="button" className="primary" onClick={() => run('save-ai', () => window.omnia.saveAiSettings({ provider, baseUrl, model, attachmentCapability: capability, ...(apiKey ? { apiKey } : {}), expectedStateVersion: ai.stateVersion }))}>保存 AI 设置</button>
             <button type="button" disabled={!ai.hasApiKey && !apiKey} onClick={() => run('test-ai', () => window.omnia.testAiProvider())}>测试连接</button></div>
-        </section> : null}
-        {section === 'logs' ? <InteractionLogPanel /> : null}
+        </section>
       </div></div>
     </section>
   </div>;

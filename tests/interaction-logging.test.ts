@@ -86,16 +86,12 @@ test('startup recovery closes interrupted starts and retention deletes expired t
   assert.equal((database.db.prepare("SELECT COUNT(*) AS count FROM interaction_logs WHERE interaction_id='interaction-old'").get() as any).count, 0);
 });
 
-test('settings exposes a real query-backed log menu with independent scroll and no clear/export action', () => {
+test('settings hides the log menu but keeps the query IPC for agent-side export', () => {
   const renderer = fs.readFileSync(path.resolve(import.meta.dirname, '../src/renderer/index.tsx'), 'utf8');
-  const styles = fs.readFileSync(path.resolve(import.meta.dirname, '../src/renderer/styles.css'), 'utf8');
   const preload = fs.readFileSync(path.resolve(import.meta.dirname, '../src/preload/index.ts'), 'utf8');
-  assert.match(renderer, />日志<\/button>/u);
-  assert.match(renderer, /queryInteractionLogs/u);
-  assert.match(renderer, /getInteractionTrace/u);
-  assert.match(renderer, /级别[\s\S]*层[\s\S]*时间[\s\S]*交互 ID/u);
-  assert.doesNotMatch(renderer, /清空日志|导出日志/u);
-  assert.match(styles, /\.settings-dialog\s*\{[\s\S]*width:\s*860px;[\s\S]*height:\s*680px;/u);
-  assert.match(styles, /\.log-list, \.log-detail \{[^}]*overflow: auto/u);
+  assert.doesNotMatch(renderer, />日志<\/button>/u);
+  assert.doesNotMatch(renderer, /queryInteractionLogs/u);
+  assert.doesNotMatch(renderer, /getInteractionTrace/u);
   assert.match(preload, /shell:query-interaction-logs/u);
+  assert.match(preload, /shell:get-interaction-trace/u);
 });

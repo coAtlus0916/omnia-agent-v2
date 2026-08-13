@@ -21,6 +21,7 @@ if _PYTHON_ROOT not in sys.path:
 from workpaper_workbook import apply_replacement_fields, build_phase2_template, build_phase2_workbook, parse_uploaded_workbook
 from policy_extract import extract_policy_archive
 from policy_resolve import build_policy_index, extract_placeholders, retrieve_policy_snippets
+from errors import EngineError
 
 
 PROTOCOL = "omnia.python-sidecar-rpc/v1"
@@ -427,6 +428,12 @@ def serve() -> None:
             except PlannerError as error:
                 write_frame({"schemaVersion": PROTOCOL, "type": "result", "requestId": request_id, "ok": False,
                              "error": {"code": error.code, "message": str(error)}})
+            except EngineError as error:
+                write_frame({"schemaVersion": PROTOCOL, "type": "result", "requestId": request_id, "ok": False,
+                             "error": {"code": error.code, "message": error.message}})
+            except Exception as error:  # noqa: BLE001 - never let an unexpected error crash the sidecar
+                write_frame({"schemaVersion": PROTOCOL, "type": "result", "requestId": request_id, "ok": False,
+                             "error": {"code": "PYTHON.PLANNER_FAILED", "message": str(error)}})
         else:
             raise PlannerError("PYTHON.MESSAGE_DENIED", "RPC message type is denied.")
 

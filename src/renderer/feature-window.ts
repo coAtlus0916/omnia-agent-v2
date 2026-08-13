@@ -737,8 +737,8 @@ function render(): void {
   const restartAction = surface.actions.find((action) => isActionVisible(action) && action.presentation === 'restart');
   const previousAction = surface.actions.find((action) => isActionVisible(action) && action.actionId === 'back-to-upload');
   const railNavigation = `<div class="workflow-navigation">${restartAction ? actionControl(restartAction, 'class="workflow-restart"') : ''}${previousAction ? actionControl(previousAction, 'class="workflow-previous"') : ''}</div>`;
-  const items = !visibleReview && !surface.selectionBrowser ? surface.items.map((item) => `<label class="item ${item.selectable ? '' : 'disabled'}"><input type="radio" name="selection" value="${esc(item.id)}" ${surface!.selectedItemIds.includes(item.id) ? 'checked' : ''} ${item.selectable ? '' : 'disabled'}><span><strong>${esc(item.title)}</strong><small>${esc(item.subtitle)}</small></span><em>${esc(item.type)}</em></label>`).join('') : '';
-  const actions = !visibleReview && !surface.recorder && !surface.selectionBrowser ? surface.actions.filter((action) => {
+  const items = !visibleReview && !hasSelectionBrowser ? surface.items.map((item) => `<label class="item ${item.selectable ? '' : 'disabled'}"><input type="radio" name="selection" value="${esc(item.id)}" ${surface!.selectedItemIds.includes(item.id) ? 'checked' : ''} ${item.selectable ? '' : 'disabled'}><span><strong>${esc(item.title)}</strong><small>${esc(item.subtitle)}</small></span><em>${esc(item.type)}</em></label>`).join('') : '';
+  const actions = !visibleReview && !surface.recorder && !hasSelectionBrowser ? surface.actions.filter((action) => {
     if (!isActionVisible(action)) return false;
     if (['restart', 'file_input', 'background'].includes(action.presentation || '')) return false;
     if (activeLayer === 'return') return action.presentation === 'return' && action.enabled;
@@ -757,17 +757,15 @@ function render(): void {
   const inputActions = activeLayer === 'upload' || !visibleReview
     ? surface.actions.filter((action) => isActionVisible(action) && action.input?.kind === 'open_file')
     : [];
-  const inputAction = inputActions[0];
-  const sourceArtifact = inputActions.length === 1
-    ? [...(surface.artifacts || [])].reverse().find((artifact) => artifact.kind === 'source')
-    : undefined;
+  const sourceArtifacts = [...(surface.artifacts || [])].filter((artifact) => artifact.kind === 'source');
   const drop = inputActions.map((action) => {
     const input = action.input?.kind === 'open_file' ? action.input : undefined;
     const acceptLabel = (input?.accept || []).join(' / ');
     const multiHint = input?.directory === true
       ? '点击选择文件夹，或拖入多个文件/整个文件夹'
       : input?.multiple === true ? '点击选择多个文件，或拖入文件/文件夹' : '点击选择，或将文件拖到这里';
-    if (action === inputAction && sourceArtifact) {
+    const sourceArtifact = sourceArtifacts.find((artifact) => (artifact as { actionId?: string }).actionId === action.actionId);
+    if (sourceArtifact) {
       return `<section class="drop-zone has-source" data-drop-action="${esc(action.actionId)}" tabindex="0"><strong>${esc(sourceArtifact.name)}</strong><span>${sourceArtifact.sizeBytes} bytes · ${esc(sourceArtifact.reason || '待确认上传')}</span><small>点击或拖入另一个非空文件可替换</small></section>`;
     }
     return `<section class="drop-zone" data-drop-action="${esc(action.actionId)}" tabindex="0"><strong>${esc(input?.label || '上传资料')}</strong><span>${esc(multiHint)}（${esc(acceptLabel)}）</span></section>`;
@@ -780,7 +778,7 @@ function render(): void {
   const pendingContent = pending
     ? `<section class="surface-layer ${pending.returnLayer ? 'return-layer' : 'default-layer'}" data-surface-layer="${esc(pending.workflowStepId)}" data-pending-action="${esc(pending.actionId)}">${header}<section class="progress-panel" role="status" aria-live="polite"><div class="check pending"><span>PENDING</span><div><strong>${esc(pending.title)}</strong><small>${esc(pending.message)}</small></div></div></section>${pending.returnLayer ? progress : ''}</section>`
     : '';
-  const layerContent = pendingContent || (activeLayer === 'upload' && inputAction
+  const layerContent = pendingContent || (activeLayer === 'upload' && inputActions.length
     ? `<section class="surface-layer upload-layer" data-surface-layer="upload">${header}<div class="upload-card"><h2>上传资料</h2><p class="state">选择或拖入官方 .xlsx 只会暂存文件；点击“确认上传”后才进入校验。</p>${drop}${artifacts ? `<div class="artifacts">${artifacts}</div>` : ''}${actions ? `<div class="actions">${actions}</div>` : ''}</div></section>`
     : `<section class="surface-layer ${activeLayer === 'review' ? 'review-layer' : activeLayer === 'return' ? 'return-layer' : 'default-layer'}${hasSelectionBrowser ? ' catalog-priority-layer' : ''}" data-surface-layer="${activeLayer}">${header}${selectionBrowser}${recorder}${progress}${issues ? `<section class="issues">${issues}</section>` : ''}${review}${items ? `<div class="items">${items}</div>` : ''}${editors ? `<div class="editors">${editors}</div>` : ''}${artifacts ? `<div class="artifacts">${artifacts}</div>` : ''}${actions ? `<div class="actions">${actions}</div>` : ''}</section>`);
   root.innerHTML = `<div class="feature-root-content${fixedFooterSplit ? ' fixed-footer-split-root' : ''}">${errorMessage ? `<p class="error page-error" role="alert">${esc(errorMessage)}</p>` : ''}<div class="feature-layout ${hasWorkflowRail ? 'has-workflow' : 'no-workflow'}${fixedFooterSplit ? ' fixed-footer-split-workbench' : ''}">${hasWorkflowRail ? `<nav class="workflow-rail" aria-label="步骤"><ol>${steps}</ol>${railNavigation}</nav>` : ''}<section class="operation-pane">${layerContent}</section></div></div>`;

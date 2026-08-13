@@ -167,7 +167,7 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
     control: '77777777-7777-7777-7777-777777777777', controlWork: '88888888-8888-8888-8888-888888888888',
     oe: '99999999-9999-9999-9999-999999999999'
   };
-  const opened = new Set<string>(); const directRequests: any[] = []; const order: string[] = []; const plans = new Map<string, any>();
+  const opened = new Set<string>(); const directRequests: any[] = []; const writebackRequests: any[] = []; const order: string[] = []; const plans = new Map<string, any>();
   const binding = { connectorId: 'connector-1', sessionGeneration: 2, engagementId: ids.engagement,
     authorityInstanceId: 'authority-1', tenantOrOrgId: '', packId: 'pack-1' };
   const safety = { enabled: true, validForCurrentConnection: true, globalEnabled: false, globalSectionIds: [], globalWorkspaceIds: [],
@@ -196,7 +196,7 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
     if (input.operationId.endsWith('open-hidden-tab.v1')) { directRequests.push(input.request); opened.add(input.request.controlId); return { accepted: true }; }
     if (input.operationId.endsWith('control.reconcile.v1')) return { ...preflight(true), outcome: 'applied', __operationReceiptId: 'receipt-1' };
     if (input.operationId.endsWith('phase2.snapshot.read.v1')) return snapshot();
-    if (input.operationId.endsWith('phase2.writeback.v1')) return { controlId: ids.control, accepted: true, ledger: [{ path: 'x', valueKind: 'editor', confirmed: true }] };
+    if (input.operationId.endsWith('phase2.writeback.v1')) { writebackRequests.push(input.request); return { controlId: ids.control, accepted: true, ledger: [{ path: 'x', valueKind: 'editor', confirmed: true }] } };
     throw new Error(`unexpected operation ${input.operationId}`);
   } };
   const store = { async call(method: string, input: any) {
@@ -211,7 +211,9 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
     if (method === 'prepareDeletionCommand') return { commandId: 'command-1', idempotencyKey: crypto.randomUUID() };
     if (method === 'recordReturnEvidence') return { evidenceId: crypto.randomUUID() };
     if (method === 'commitStandaloneArtifact') return { artifactId: 'artifact-1', sha256: crypto.createHash('sha256').update(Buffer.from(input.contentBase64, 'base64')).digest('hex') };
-    if (method === 'readArtifactBytes') return { contentBase64: emptyZipBase64(), sha256: 'zip-sha' };
+    if (method === 'readArtifactBytes') return { contentBase64: emptyZipBase64(), sha256: 'zip-sha', runId: 'run-1', originalName: 'policy.zip', sizeBytes: 0 };
+    if (method === 'openPythonArtifactHandle') return { handleId: 'handle-1', runId: input.runId, path: path.resolve(repository, '.codex-tmp', 'template-test2.xlsx'), sha256: 'a'.repeat(64), sizeBytes: 0 };
+    if (method === 'releasePythonArtifactHandles') return true;
     throw new Error(`unexpected store method ${method}`);
   } };
   const workerModule = require(path.join(source, 'middle', 'worker.cjs'));
@@ -229,21 +231,47 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
     assert.equal(actionById(selectedPlan.surfacePatch).get('upload-filled-workbook').enabled, true);
     assert.equal(opened.size, 0, 'selecting must not open any hidden Tab');
     // Simulate policy resolution to `resolved`: the plan moves straight to
-    // resolved with no placeholders to write.
+    // resolved with no placeholders to write. Resolution now needs BOTH the
+    // filled workbook and the policy archive; the upload that lands second
+    // triggers it. Seed the replacement so the policy upload converges.
     let current: any = null; for (const value of plans.values()) { if (value.schemaVersion === 'omnia.workpaper-plan/v1') current = value; }
     assert.ok(current, 'a workpaper plan must be saved');
     current.workpaper.policy = { documents: [], state: 'extracted' };
+    current.workpaper.replacement = { replacements: [], state: 'filled' };
     await store.call('savePlan', current);
     const uploaded = await worker.handleAction({ actionId: 'upload-policy', expectedStateVersion: 3,
       payload: { artifact: { schemaVersion: 'omnia.feature-artifact/v1', featureId: 'omnia.workpaper-preparation', kind: 'source', artifactId: 'artifact-1' } },
       context: { connectorBinding: binding, safetyLock: safety } });
-    assert.equal(uploaded.surfacePatch.workflow.currentStepId, 'writeback');
-    // Step 3: confirm-writeback opens the hidden Tab then writes back.
-    const written = await worker.handleAction({ actionId: 'confirm-writeback', expectedStateVersion: 4,
+    assert.equal(uploaded.surfacePatch.workflow.currentStepId, 'upload');
+    assert.equal(actionById(uploaded.surfacePatch).get('next-to-writeback').enabled, true);
+    assert.equal(actionById(uploaded.surfacePatch).get('confirm-writeback').enabled, false);
+    // Step 3: 下一步 advances to the writeback step; confirm-writeback is
+    // enabled only after that transition.
+    const advanced = await worker.handleAction({ actionId: 'next-to-writeback', expectedStateVersion: 4,
+      context: { connectorBinding: binding, safetyLock: safety } });
+    assert.equal(advanced.surfacePatch.workflow.currentStepId, 'writeback');
+    assert.equal(actionById(advanced.surfacePatch).get('confirm-writeback').enabled, true);
+    // Seed a resolved row whose final text differs from the live snapshot so
+    // the write-back loop must emit a real PATCH (not a no-op skip). The
+    // controlNumber code APP.01 matches the single read-back Control.
+    current = null; for (const value of plans.values()) { if (value.schemaVersion === 'omnia.workpaper-plan/v1') current = value; }
+    assert.ok(current, 'an awaiting-writeback plan must be saved');
+    current.workpaper.resolution = { state: 'resolved', resolutions: [{
+      controlNumber: 'APP.01 - 系统A', resolvedText: '写回后的完整 TestOfDesign 文本', placeholders: [
+        { placeholderId: 'ph-1', originalPlaceholder: '【政策名称】', index: 0, state: 'evidence_supported', value: '写回后的完整', evidenceRefs: [], reason: '' }
+      ]
+    }], resolvedAt: new Date().toISOString() };
+    await store.call('savePlan', current);
+    // Step 4: confirm-writeback opens the hidden Tab then writes back.
+    const written = await worker.handleAction({ actionId: 'confirm-writeback', expectedStateVersion: 5,
       context: { connectorBinding: binding, safetyLock: safety } });
     assert.equal(written.surfacePatch.workflow.currentStepId, 'writeback');
     assert.equal(opened.size, 1, 'confirm-writeback must open the hidden Tab');
     assert.equal(directRequests.length, 1);
+    assert.equal(writebackRequests.length, 1, 'writeback must emit exactly one PATCH');
+    const patchChanges = writebackRequests[0]?.command?.payload?.changes;
+    assert.ok(Array.isArray(patchChanges) && patchChanges.length === 1, 'writeback PATCH must carry one change');
+    assert.equal(patchChanges[0].value, '写回后的完整 TestOfDesign 文本', 'writeback PATCH must carry the assembled resolved text');
   } finally {
     await worker.shutdown();
     for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }

@@ -5,8 +5,8 @@ import path from 'node:path';
 const root = path.resolve(import.meta.dirname, '..');
 const source = path.join(root, 'feature-packages', 'workpaper-preparation', 'source');
 const output = path.join(root, 'feature-packages', 'workpaper-preparation', 'candidates');
-const version = '0.1.58';
-const sequence = 59;
+const version = '0.1.66';
+const sequence = 67;
 const signingRoot = process.env.OMNIA_V5_SIGNING_ROOT || path.join(process.env.USERPROFILE || '', '.omnia-agent-v5', 'signing');
 const featurePrivateKey = await readFile(path.join(signingRoot, 'feature-ed25519-private.pem'), 'utf8');
 const operationPrivateKey = await readFile(path.join(signingRoot, 'operation-ed25519-private.pem'), 'utf8');
@@ -139,7 +139,8 @@ const runtimeContract = {
   errors: ['WORKPAPER.*', 'PYTHON.*', 'CONNECTOR.RESPONSE_LOST'],
   storePorts: ['savePlan', 'loadPlan', 'createMutationRun', 'prepareReturnIntent', 'approveReturnIntent', 'validateReturnAuthority',
     'prepareDeletionCommand', 'freezeReturnEvidenceSpec', 'recordReturnEvidence', 'projectVerifiedReturn',
-    'loadLatestRun', 'loadOpenRun', 'transitionRun', 'finishReturn', 'commitStandaloneArtifact', 'readArtifactBytes'],
+    'loadLatestRun', 'loadOpenRun', 'transitionRun', 'finishReturn', 'commitStandaloneArtifact', 'readArtifactBytes',
+    'openPythonArtifactHandle', 'releasePythonArtifactHandles'],
   pythonSidecar: { schemaVersion: 'omnia.python-sidecar-runtime/v1', implementation: 'cpython', version: '3.13.14', architecture: 'win32-x64',
     protocol: 'omnia.python-sidecar-rpc/v1', bridgePath: 'middle/workpaper-preparation-python-bridge.cjs', entryPath: 'python/workpaper-preparation-engine.py', members: ['python/canonical.py', 'python/errors.py', 'python/ooxml.py', 'python/policy_extract.py', 'python/policy_resolve.py', 'python/workpaper-preparation-engine.py', 'python/workpaper_workbook.py'],
     maxFrameBytes: 1024 * 1024, heartbeatIntervalMs: 5000, heartbeatTimeoutMs: 15000 }
@@ -164,6 +165,7 @@ const actions = [
   { actionId: 'select-elements', label: '下一步', effect: 'local_state_write', enabled: true, reason: '', selectionMode: 'multiple', dependencies: ['remote_connector', 'safety_lock'] },
   { actionId: 'upload-filled-workbook', label: '上传填写好的替换字段表', effect: 'local_state_write', enabled: false, reason: '请先生成填写件，再上传填写好的替换字段表。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock'], input: { kind: 'open_file', accept: ['.xlsx', '.xlsm'], label: '选择填写好的替换字段表' } },
   { actionId: 'upload-policy', label: '上传制度资料', effect: 'local_state_write', enabled: false, reason: '请先生成填写件模板，再上传制度资料。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock'], input: { kind: 'open_file', accept: ['.zip', '.docx', '.xlsx', '.xlsm', '.pdf'], multiple: true, directory: true, label: '选择制度资料（压缩包/文件/文件夹）' } },
+  { actionId: 'next-to-writeback', label: '下一步', effect: 'local_state_write', enabled: false, reason: '请先上传填写件与制度资料，再进入确认回传。', presentation: 'upload', selectionMode: 'none', dependencies: [] },
   { actionId: 'confirm-writeback', label: '确认回传', effect: 'omnia_mutation', enabled: false, reason: '请先上传填写件与制度资料并完成系统转化，再确认回传。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock'] },
   { actionId: 'restart-run', label: '强制结束流程', effect: 'local_state_write', enabled: false, reason: '当前没有可结束的流程。', presentation: 'restart', selectionMode: 'none', dependencies: [] }
 ];

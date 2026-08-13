@@ -204,7 +204,12 @@ function createFeatureWorker(ports) {
   };
   const openPlan = async () => {
     const openRun = await store.call('loadOpenRun', {});
-    if (openRun && openRun.run_id) {
+    // Only a mutation Run (hidden-Tab Return) is a durable recovery target. A
+    // source-artifact intake Run (`acquiring`/`draft`/`needs_input`/…) is
+    // created by the Shell for every uploaded file and carries no Workpaper
+    // plan; it must never be mistaken for an interrupted mutation.
+    const recoveryStates = ['waiting_confirmation', 'returning', 'verifying', 'uncertain', 'reconciling'];
+    if (openRun && openRun.run_id && recoveryStates.includes(String(openRun.state))) {
       const recoveryPlan = await store.call('loadPlan', openRun.run_id);
       if (!recoveryPlan) {
         fail('WORKPAPER.RECOVERY_PLAN_MISSING', 'The nonterminal Workpaper Run has no exact durable recovery plan.');
@@ -234,25 +239,28 @@ function createFeatureWorker(ports) {
     // writeback capsules, not as a standalone step.
     const writebackDone = ['writeback_complete', 'writeback_noop'].includes(wpState);
     const writebackUncertain = wpState === 'writeback_uncertain';
-    const resolved = wpState === 'resolved';
-    const uploadDone = resolved || writebackDone || writebackUncertain;
+    const awaitingWriteback = wpState === 'awaiting_writeback';
+    const uploadDone = awaitingWriteback || writebackDone || writebackUncertain;
     const selectState = !wpState ? 'current' : 'completed';
     const uploadState = !wpState ? 'pending' : uploadDone ? 'completed' : 'current';
     const uploadDetail = !wpState ? '等待选择元素'
       : wpState === 'generated' ? '下载填写件、上传填写件与制度资料'
-        : '材料已上传并转化';
+        : '材料已上传；点击下一步进入确认回传';
     const writebackState = writebackDone ? 'completed'
       : writebackUncertain ? 'warning'
-        : resolved ? 'current' : 'pending';
+        : awaitingWriteback ? 'current' : 'pending';
     const writebackDetail = writebackDone ? '写回已完成'
       : writebackUncertain ? '存在不确定写回，请只读核验'
-        : resolved ? '激活 OE Tab、读回 Control 并写回' : '等待材料上传与转化';
+        : awaitingWriteback ? '激活 OE Tab、读回 Control 并写回' : '等待材料上传与转化';
     const steps = [
       step('select', '选择元素', '选择 Generic Application GRA', selectState),
       step('upload', '上传材料', uploadDetail, uploadState),
       step('writeback', '确认回传', writebackDetail, writebackState)
     ];
-    const currentStepId = writebackDone || writebackUncertain || resolved ? 'writeback'
+    // Materials upload never advances the workflow; only the explicit 下一步
+    // (next-to-writeback) moves onto the writeback step once both inputs are
+    // present.
+    const currentStepId = writebackDone || writebackUncertain || awaitingWriteback ? 'writeback'
       : wpState ? 'upload' : 'select';
     return { revision: 1, currentStepId, steps };
   }
@@ -261,7 +269,8 @@ function createFeatureWorker(ports) {
     const wpState = wp ? wp.state : null;
     const directory = !wpState;
     const generated = wpState === 'generated';
-    const resolved = wpState === 'resolved';
+    const materialsReady = generated && Boolean(wp && wp.policy) && Boolean(wp && wp.replacement);
+    const awaitingWriteback = wpState === 'awaiting_writeback';
     const writebackUncertain = wpState === 'writeback_uncertain';
     return [
       { actionId: 'bootstrap-workpaper-directory', enabled: false, visible: false, reason: 'Initial authoritative APP GRA read has completed.' },
@@ -269,7 +278,8 @@ function createFeatureWorker(ports) {
       { actionId: 'select-elements', enabled: directory, visible: directory, reason: directory ? '' : '填写件模板已生成。' },
       { actionId: 'upload-filled-workbook', enabled: generated, visible: generated, reason: generated ? '' : '请先生成填写件模板，再上传填写好的替换字段表。' },
       { actionId: 'upload-policy', enabled: generated, visible: generated, reason: generated ? '' : '请先生成填写件模板，再上传制度资料。' },
-      { actionId: 'confirm-writeback', enabled: resolved, visible: resolved || writebackUncertain, reason: resolved ? '' : '请先上传填写件与制度资料并完成系统转化，再确认回传。' },
+      { actionId: 'next-to-writeback', enabled: materialsReady, visible: materialsReady, reason: materialsReady ? '' : '请先上传填写件与制度资料，再进入确认回传。' },
+      { actionId: 'confirm-writeback', enabled: awaitingWriteback, visible: awaitingWriteback || writebackUncertain, reason: awaitingWriteback ? '' : '请先进入确认回传步骤。' },
       { actionId: 'restart-run', enabled: Boolean(wpState), reason: wpState ? '结束当前流程并返回选择元素。' : '当前没有可结束的流程。' }
     ];
   };
@@ -343,7 +353,17 @@ function createFeatureWorker(ports) {
   function writebackProgress(plan) {
     const wp = plan.workpaper;
     const wb = wp && wp.writeback;
-    if (!wb || !Array.isArray(wb.capsules)) return null;
+    // Before the user clicks 确认回传 (resolved state), show the three empty
+    // capsules so the writeback step's layout is visible ahead of progress.
+    if (!wb || !Array.isArray(wb.capsules)) {
+      const pendingCapsules = [
+        { itemId: 'activate-oe', label: '激活 OE Tab', state: 'pending', detail: '等待回传' },
+        { itemId: 'readback', label: '读回 Control', state: 'pending', detail: '等待回传' },
+        { itemId: 'writeback', label: '写回 Control', state: 'pending', detail: '等待回传' }
+      ].map((c) => ({ ...c, completed: 0, total: 0, percent: 0 }));
+      return { label: '确认回传', completed: 0, total: 0, percent: 0, state: 'pending',
+        message: '点击“确认回传”开始激活 OE Tab、读回 Control 并写回。', items: pendingCapsules };
+    }
     const capsules = wb.capsules.map((capsule) => ({
       itemId: capsule.capsuleId, label: capsule.label, state: capsule.state, detail: capsule.detail || '',
       completed: Number(capsule.completed || 0), total: Number(capsule.total || 0),
@@ -358,24 +378,39 @@ function createFeatureWorker(ports) {
   }
   function workpaperSurface(plan) {
     const wp = plan.workpaper;
-    const artifact = wp ? [{
-      artifactId: wp.artifactId, kind: 'result', name: `workpaper-phase2-${plan.runId}.xlsx`,
-      sha256: wp.sha256, sizeBytes: wp.sizeBytes, available: true, reason: ''
-    }] : [];
+    const wpState = wp ? wp.state : null;
+    // The template download belongs to the upload step only; the writeback
+    // step shows the capsule progress, never the template artifact.
+    const showTemplate = !wp || wpState === 'generated';
+    const artifacts = [];
+    if (wp && showTemplate) {
+      artifacts.push({ artifactId: wp.artifactId, kind: 'result', name: `workpaper-phase2-${plan.runId}.xlsx`,
+        sha256: wp.sha256, sizeBytes: wp.sizeBytes, available: true, reason: '' });
+    }
+    // Surface the uploaded source files (填写件 / 制度) so the drop zone can
+    // show their names after import. The matching upload actionId lets the
+    // renderer bind each source file to its own drop zone.
+    if (wp && wp.sources) {
+      for (const source of wp.sources) {
+        artifacts.push({ artifactId: source.artifactId, kind: 'source', name: source.name,
+          sha256: source.sha256, sizeBytes: source.sizeBytes, available: true, reason: source.reason || '',
+          ...(source.actionId ? { actionId: source.actionId } : {}) });
+      }
+    }
     const message = !wp
       ? `已选择 ${plan.selectedGras.length} 个 Generic Application GRA；生成填写件模板后开始填写。`
-      : wp && wp.state === 'generated'
-        ? `填写件已生成：${wp.rowCount} 行。请下载填写件，填写“替换字段”sheet 后上传，并上传制度资料。`
-        : wp && wp.state === 'resolved'
-          ? '材料已转化；确认后将激活 OE Tab、读回 Control 并写回。'
-          : wp && wp.state === 'writeback_complete' ? '写回已完成并逐字段读回核验。'
-            : wp && wp.state === 'writeback_uncertain' ? '存在不确定写回；请只读核验，禁止盲目重放。'
+      : wpState === 'generated'
+        ? `填写件已生成：${wp.rowCount} 行。请下载填写件，填写”替换字段”sheet 后上传，并上传制度资料。`
+        : wpState === 'awaiting_writeback'
+          ? '请点击”确认回传”激活 OE Tab、读回 Control 并写回。'
+          : wpState === 'writeback_complete' ? '写回已完成并逐字段读回核验。'
+            : wpState === 'writeback_uncertain' ? '存在不确定写回；请只读核验，禁止盲目重放。'
               : '控制底稿状态。';
-    const progress = (wp && (wp.state === 'resolved' || wp.state === 'writeback_complete' || wp.state === 'writeback_uncertain'))
+    const progress = (wp && (wpState === 'awaiting_writeback' || wpState === 'writeback_complete' || wpState === 'writeback_uncertain'))
       ? writebackProgress(plan) : null;
     return { schemaVersion: 'omnia.declarative-feature-surface-patch/v1', stateVersion: Number(plan.surfaceStateVersion || 1),
       status: 'ready', statusMessage: message, scopes: [], items: [], selectedItemIds: [], search: '',
-      artifacts: artifact, workflow: workflowSurface(plan),
+      artifacts, workflow: workflowSurface(plan),
       ...(progress ? { progress } : { clearFields: ['progress'] }), actions: actionPatch(plan) };
   }
   async function readDirectory(context) {
@@ -546,6 +581,23 @@ function createFeatureWorker(ports) {
     await store.call('savePlan', { schemaVersion: 'omnia.workpaper-current-pointer/v1', planId: CURRENT_POINTER,
       currentPlanId: '', updatedAt: new Date().toISOString() });
   }
+  // The Shell creates an `acquiring` intake Run for every uploaded source
+  // artifact. Once this Feature has read the bytes and parsed them into its
+  // own durable plan, that intake Run is dead weight — close it so it never
+  // surfaces as an ambiguous nonterminal recovery target.
+  async function closeSourceIntakeRun(bytes) {
+    const runId = bytes && bytes.runId;
+    if (!runId) return;
+    try {
+      const latest = await store.call('loadLatestRun', {});
+      const run = latest && latest.run ? latest.run : latest;
+      if (run && String(run.run_id) === String(runId)
+        && ['draft', 'acquiring', 'processing', 'needs_input'].includes(String(run.state))) {
+        await store.call('transitionRun', { runId: String(runId), expectedRevision: Number(run.state_revision),
+          toState: 'cancelled', eventType: 'workpaper.source_intake_closed', error: 'Source artifact was parsed into the durable Workpaper plan.' });
+      }
+    } catch { /* intake closure is best-effort; never fail the upload */ }
+  }
   async function forceEnd(plan, context) {
     if (plan) {
       const latest = await store.call('loadLatestRun', {}); const run = latest && latest.run ? latest.run : latest;
@@ -659,6 +711,17 @@ function createFeatureWorker(ports) {
     plan.surfaceStateVersion += 1; await save(plan);
     return plan;
   }
+  // Record an uploaded source file on the plan so the surface can render its
+  // name in the matching drop zone after import.
+  function recordSourceFile(plan, artifactDescriptor, bytes, reason, actionId) {
+    if (!Array.isArray(plan.workpaper.sources)) plan.workpaper.sources = [];
+    const existing = plan.workpaper.sources.find((item) => item.artifactId === artifactDescriptor.artifactId);
+    const entry = { artifactId: artifactDescriptor.artifactId,
+      name: bytes.originalName || '已上传文件',
+      sha256: bytes.sha256 || '', sizeBytes: bytes.sizeBytes || 0, reason: reason || '' };
+    if (actionId) entry.actionId = actionId;
+    if (existing) Object.assign(existing, entry); else plan.workpaper.sources.push(entry);
+  }
   async function uploadPolicy(plan, context, artifactDescriptor) {
     if (!plan || !plan.workpaper || plan.workpaper.state !== 'generated') {
       fail('WORKPAPER.POLICY_INVALID', '请先生成控制底稿模板，再上传制度资料。');
@@ -671,21 +734,28 @@ function createFeatureWorker(ports) {
     }
     const bytes = await store.call('readArtifactBytes', { artifactId: artifactDescriptor.artifactId });
     if (!bytes || !bytes.contentBase64) fail('WORKPAPER.POLICY_BYTES', '制度压缩包字节不可用。');
+    // Large archives exceed the RPC frame ceiling; hand the Python sidecar a
+    // Core-managed file handle instead of an inline base64 payload.
+    const handle = await store.call('openPythonArtifactHandle', { runId: bytes.runId, artifactId: artifactDescriptor.artifactId });
     const extraction = await planner().invoke('extract_policy_archive', {
-      schemaVersion: 'omnia.workpaper-policy-archive/v1', zipBase64: bytes.contentBase64
+      schemaVersion: 'omnia.workpaper-policy-archive/v1', zipPath: handle.path
     }, { runId });
     if (!extraction || extraction.schemaVersion !== 'omnia.workpaper-policy-extraction/v1'
       || !Array.isArray(extraction.documents)) {
       fail('WORKPAPER.POLICY_EXTRACT', '制度压缩包文本提取失败。');
     }
+    await store.call('releasePythonArtifactHandles', { handleIds: [handle.handleId] });
+    await closeSourceIntakeRun(bytes);
+    recordSourceFile(plan, artifactDescriptor, bytes, '制度资料', 'upload-policy');
     plan.workpaper.policy = {
       documents: extraction.documents, skipped: extraction.skipped || [],
       documentCount: extraction.documentCount, skippedCount: extraction.skippedCount,
       uploadedSha256: bytes.sha256, state: 'extracted'
     };
     plan.surfaceStateVersion += 1; await save(plan);
-    // Uploading policy auto-triggers the AI resolution + template conversion.
-    return resolvePlaceholders(plan, context);
+    // Uploading materials never advances the workflow; resolution runs only on
+    // the explicit 下一步 transition once both inputs are present.
+    return plan;
   }
   // Parse the user-filled 替换字段 sheet back into replacement values. The
   // uploaded template must still match the frozen system scope; the returned
@@ -709,6 +779,8 @@ function createFeatureWorker(ports) {
       || !Array.isArray(replacement.replacements) || !Array.isArray(replacement.systems)) {
       fail('WORKPAPER.REPLACEMENT_PARSE', '填写件替换字段解析失败。');
     }
+    await closeSourceIntakeRun(bytes);
+    recordSourceFile(plan, artifactDescriptor, bytes, '填写件', 'upload-filled-workbook');
     // Prove the uploaded template still matches the frozen system scope.
     const expectedSystems = [...plan.workpaper.systems].sort();
     const uploadedSystems = [...replacement.systems].sort();
@@ -754,21 +826,34 @@ function createFeatureWorker(ports) {
       return plan;
     }
     if (!Array.isArray(plan.workpaper.policy.documents) || plan.workpaper.policy.documents.length === 0) {
-      // No indexable policy text (e.g. all scanned PDFs were skipped) is a
-      // warning, not a failure: every placeholder stays empty as missing_evidence.
-      plan.workpaper.resolution = { state: 'resolved', resolutions: [], resolvedAt: new Date().toISOString() };
-      plan.workpaper.state = 'resolved';
-      plan.surfaceStateVersion += 1; await save(plan);
-      return plan;
+      // No indexable policy text (e.g. all scanned PDFs were skipped). The
+      // pre-filled template is still the authoritative write-back payload:
+      // fall through and resolve every placeholder as missing_evidence (left
+      // empty), never invented.
+      plan.workpaper.policyDocuments = [];
+    } else {
+      plan.workpaper.policyDocuments = plan.workpaper.policy.documents;
     }
-    const policyIndex = await planner().invoke('build_policy_index', {
-      schemaVersion: 'omnia.workpaper-policy-index-input/v1', documents: plan.workpaper.policy.documents
-    }, { runId });
-    if (!policyIndex || policyIndex.schemaVersion !== 'omnia.workpaper-policy-index/v1' || !policyIndex.chunks) {
+    const hasPolicyText = Array.isArray(plan.workpaper.policyDocuments) && plan.workpaper.policyDocuments.length > 0;
+    const policyIndex = hasPolicyText
+      ? await planner().invoke('build_policy_index', {
+          schemaVersion: 'omnia.workpaper-policy-index-input/v1', documents: plan.workpaper.policyDocuments
+        }, { runId })
+      : null;
+    if (hasPolicyText && (!policyIndex || policyIndex.schemaVersion !== 'omnia.workpaper-policy-index/v1' || !policyIndex.chunks)) {
       fail('WORKPAPER.POLICY_INDEX', '制度索引构建失败。');
     }
     const resolutions = [];
     const replacements = plan.workpaper.replacement && plan.workpaper.replacement.replacements;
+    // A placeholder carries its frozen location so the final TestOfDesign text
+    // can be assembled from the template source and written back exactly once.
+    const locatedPlaceholder = (p, state, value, evidenceRefs, reason) => ({
+      placeholderId: String(p.placeholderId || ''), originalPlaceholder: String(p.originalPlaceholder || ''),
+      index: Number.isInteger(p.index) ? p.index : undefined, state, value: String(value || ''),
+      evidenceRefs: Array.isArray(evidenceRefs) ? evidenceRefs.map(String) : [], reason: String(reason || '')
+    });
+    const missingEvidence = (placeholders, reason) => placeholders.map((p) =>
+      locatedPlaceholder(p, 'missing_evidence', '', [], reason));
     for (const row of plan.workpaper.systems.flatMap((system) => PHASE2_TEMPLATE.controls.map((c) => ({ system, control: c })))) {
       const controlNumber = String(row.control.controlNumber || '').replace('系统ID', row.system);
       let sourceText = String((row.control.values || [])[8] || '').replace('系统ID', row.system);
@@ -776,20 +861,30 @@ function createFeatureWorker(ports) {
       // remaining 【placeholders】 left for the policy AI are only the
       // evidence-class ones (【...】, 【policy合集名称】, etc.).
       sourceText = applyReplacementValues(sourceText, row.system, controlNumber, replacements);
-      if (!sourceText.includes('【')) continue;
+      if (!text(sourceText)) continue;
       const placeholders = await planner().invoke('extract_placeholders', {
         schemaVersion: 'omnia.workpaper-placeholder-input/v1', controlNumber,
         sourceField: 'documentProcedureResults - TestOfDesign', sourceText
       }, { runId });
-      if (!placeholders || !placeholders.placeholders || !placeholders.placeholders.length) continue;
+      if (!placeholders || !placeholders.placeholders || !placeholders.placeholders.length) {
+        // No placeholder remains after replacement-field substitution: the
+        // template text is already final and must still be written back.
+        resolutions.push({ controlNumber, placeholders: [], resolvedText: sourceText });
+        continue;
+      }
+      if (!hasPolicyText) {
+        const located = missingEvidence(placeholders.placeholders, '未上传可索引的制度资料。');
+        resolutions.push({ controlNumber, placeholders: located, resolvedText: applyResolutions(sourceText, located) });
+        continue;
+      }
       const snippets = await planner().invoke('retrieve_policy_snippets', {
         schemaVersion: 'omnia.workpaper-policy-retrieve-input/v1', index: policyIndex,
         control: { controlNumber, description: String((row.control.values || [])[2] || ''), documentProcedureResults: sourceText }
       }, { runId });
       if (!snippets || !snippets.snippets || !snippets.snippets.length) {
         // No relevant policy evidence: every placeholder is missing_evidence.
-        resolutions.push({ controlNumber, placeholders: placeholders.placeholders.map((p) => ({
-          placeholderId: p.placeholderId, state: 'missing_evidence', value: '', evidenceRefs: [], reason: '未检索到相关制度片段。' })) });
+        const located = missingEvidence(placeholders.placeholders, '未检索到相关制度片段。');
+        resolutions.push({ controlNumber, placeholders: located, resolvedText: applyResolutions(sourceText, located) });
         continue;
       }
       const instructions = [
@@ -806,23 +901,23 @@ function createFeatureWorker(ports) {
           input: { control: { controlNumber, sourceField: 'documentProcedureResults - TestOfDesign', originalTestOfDesign: sourceText },
             placeholders: placeholders.placeholders, policySnippets: snippets.snippets } });
       } catch (error) {
-        resolutions.push({ controlNumber, placeholders: placeholders.placeholders.map((p) => ({
-          placeholderId: p.placeholderId, state: 'missing_evidence', value: '', evidenceRefs: [], reason: `AI 调用失败：${text(error.message)}` })) });
+        const located = missingEvidence(placeholders.placeholders, `AI 调用失败：${text(error.message)}`);
+        resolutions.push({ controlNumber, placeholders: located, resolvedText: applyResolutions(sourceText, located) });
         continue;
       }
       const output = result && result.output;
       const res = Array.isArray(output && output.resolutions) ? output.resolutions : [];
       const byId = new Map(res.map((item) => [String(item.placeholderId), item]));
-      resolutions.push({ controlNumber, placeholders: placeholders.placeholders.map((p) => {
+      const located = placeholders.placeholders.map((p) => {
         const r = byId.get(p.placeholderId);
         if (!r || !['evidence_supported', 'missing_evidence', 'ambiguous'].includes(String(r.state))) {
-          return { placeholderId: p.placeholderId, state: 'missing_evidence', value: '', evidenceRefs: [], reason: 'AI 返回缺失或无效。' };
+          return locatedPlaceholder(p, 'missing_evidence', '', [], 'AI 返回缺失或无效。');
         }
-        return { placeholderId: p.placeholderId, state: String(r.state), value: String(r.value || ''), evidenceRefs: Array.isArray(r.evidenceRefs) ? r.evidenceRefs.map(String) : [], reason: String(r.reason || '') };
-      }) });
+        return locatedPlaceholder(p, String(r.state), String(r.value || ''), r.evidenceRefs, String(r.reason || ''));
+      });
+      resolutions.push({ controlNumber, placeholders: located, resolvedText: applyResolutions(sourceText, located) });
     }
     plan.workpaper.resolution = { state: 'resolved', resolutions, resolvedAt: new Date().toISOString() };
-    plan.workpaper.state = 'resolved';
     plan.surfaceStateVersion += 1; await save(plan);
     return plan;
   }
@@ -839,16 +934,38 @@ function createFeatureWorker(ports) {
     }
     return output;
   }
+  // Advance from the upload step into the writeback step. This is where the AI
+  // policy resolution actually runs (once both inputs are present), producing
+  // the durable resolution + assembled final text. No Connector traffic here.
+  async function nextToWriteback(plan, context) {
+    if (!plan || !plan.workpaper || plan.workpaper.state !== 'generated'
+      || !plan.workpaper.policy || !plan.workpaper.replacement) {
+      fail('WORKPAPER.WRITEBACK_INVALID', '请先上传填写件与制度资料，再进入确认回传。');
+    }
+    await resolvePlaceholders(plan, context);
+    plan.workpaper.state = 'awaiting_writeback';
+    plan.surfaceStateVersion += 1;
+    await save(plan);
+    return plan;
+  }
   // The whole write-back capsule chain, run on one explicit confirmation:
   //   1. activate OE Tab (freeze → confirm → open hidden Tabs)
   //   2. read back every Control of every selected GRA
   //   3. intersect read-back Controls with resolved rows, then write back.
   async function confirmWriteback(plan, context) {
-    if (!plan || !plan.workpaper || plan.workpaper.state !== 'resolved' || !plan.workpaper.resolution) {
+    if (!plan || !plan.workpaper || plan.workpaper.state !== 'awaiting_writeback' || !plan.workpaper.resolution) {
       fail('WORKPAPER.WRITEBACK_INVALID', '请先上传填写件与制度资料并完成系统转化，再确认回传。');
     }
     const { b, s } = contextAuthority(context); sameAuthority(b, plan.binding); sameSafety(s, plan.safety);
-    const progress = { startedAt: new Date().toISOString(), state: 'running', capsules: [] };
+    // Seed all three capsules up front so the writeback step shows an empty
+    // progress panel immediately, then advance each capsule as work completes.
+    const progress = {
+      startedAt: new Date().toISOString(), state: 'running', capsules: [
+        { capsuleId: 'activate-oe', label: '激活 OE Tab', state: 'running', completed: 0, total: 0, detail: '正在读取并冻结' },
+        { capsuleId: 'readback', label: '读回 Control', state: 'pending', completed: 0, total: 0, detail: '等待回传' },
+        { capsuleId: 'writeback', label: '写回 Control', state: 'pending', completed: 0, total: 0, detail: '等待回传' }
+      ]
+    };
     plan.workpaper.writeback = progress;
     plan.surfaceStateVersion += 1; await save(plan);
 
@@ -856,8 +973,6 @@ function createFeatureWorker(ports) {
     // GRA's Control catalog and preflights the eligible Controls), then open
     // the hidden Tabs. A batch whose Controls are all already open completes
     // with zero mutation steps.
-    progress.capsules.push({ capsuleId: 'activate-oe', label: '激活 OE Tab', state: 'running', completed: 0, total: 0, detail: '正在读取并冻结' });
-    await save(plan);
     try {
       await freezeHiddenTabPlan(plan, context);
       if (!plan.steps || !plan.steps.length) {
@@ -883,7 +998,7 @@ function createFeatureWorker(ports) {
     plan.surfaceStateVersion += 1; await save(plan);
 
     // Capsule 2: read back every Control.
-    progress.capsules.push({ capsuleId: 'readback', label: '读回 Control', state: 'running', completed: 0, total: 0, detail: '正在读回' });
+    progress.capsules[1] = { capsuleId: 'readback', label: '读回 Control', state: 'running', completed: 0, total: 0, detail: '正在读回' };
     await save(plan);
     try {
       await readbackAllControls(plan, context);
@@ -906,7 +1021,7 @@ function createFeatureWorker(ports) {
       fail('WORKPAPER.RECONCILE_OUTPUT_INVALID', 'CPython returned an invalid write-back reconcile.');
     }
     const total = reconcile.rows.length;
-    progress.capsules.push({ capsuleId: 'writeback', label: '写回 Control', state: 'running', completed: 0, total, detail: `0/${total}` });
+    progress.capsules[2] = { capsuleId: 'writeback', label: '写回 Control', state: 'running', completed: 0, total, detail: `0/${total}` };
     await save(plan);
 
     const outcomes = [];
@@ -928,7 +1043,7 @@ function createFeatureWorker(ports) {
         continue;
       }
       const resolution = row.resolution;
-      if (!resolution || !resolution.placeholders || !resolution.placeholders.length) {
+      if (!resolution || typeof resolution.resolvedText !== 'string') {
         outcomes.push({ controlId: row.controlId, state: 'skipped', reason: '无占位符需写回' });
         progress.capsules[2] = { capsuleId: 'writeback', label: '写回 Control', state: 'running', completed: index + 1, total, detail: `${index + 1}/${total}` };
         plan.surfaceStateVersion += 1; await save(plan);
@@ -940,7 +1055,7 @@ function createFeatureWorker(ports) {
       } else {
         const procedure = (snapshot.procedures || []).find((item) => item.phaseType === 'TestOfDesign');
         const currentText = procedure ? procedure.documentProcedureResults : '';
-        const finalText = applyResolutions(currentText, resolution.placeholders);
+        const finalText = resolution.resolvedText;
         if (finalText === currentText) {
           outcomes.push({ controlId: row.controlId, state: 'skipped', reason: '占位符已解析，无实际变更' });
         } else {
@@ -1154,6 +1269,9 @@ function createFeatureWorker(ports) {
     if (!plan) fail('WORKPAPER.PLAN_NOT_FOUND', 'Current workpaper plan was not found.');
     if (input.actionId === 'restart-run') {
       return { surfacePatch: await forceEnd(plan, context) };
+    }
+    if (input.actionId === 'next-to-writeback') {
+      return { surfacePatch: workpaperSurface(await nextToWriteback(plan, context)) };
     }
     if (input.actionId === 'confirm-writeback') {
       const written = await confirmWriteback(plan, context);

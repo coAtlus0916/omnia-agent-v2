@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 import posixpath
 import re
 import zipfile
@@ -70,12 +71,24 @@ def _safe_member_name(name: str) -> str:
 def extract_policy_archive(payload: Any) -> dict[str, Any]:
     require(isinstance(payload, dict) and payload.get("schemaVersion") == ARCHIVE_SCHEMA,
             "POLICY.INPUT_INVALID", "制度压缩包输入 schema 无效。")
-    encoded = payload.get("zipBase64")
-    require(isinstance(encoded, str) and encoded, "POLICY.ZIP_REQUIRED", "制度压缩包字节缺失。")
-    try:
-        raw = base64.b64decode(encoded, validate=True)
-    except (ValueError, TypeError) as exc:
-        raise EngineError("POLICY.ZIP_BASE64_INVALID", "制度压缩包不是有效 base64。") from exc
+    zip_path = payload.get("zipPath")
+    if isinstance(zip_path, str) and zip_path:
+        # Large archives are delivered as a Core-managed artifact handle path
+        # (a regular file inside the Feature/Run temp root) to avoid the 1 MiB
+        # RPC frame ceiling. Read the bytes directly from that exact file.
+        require(os.path.isabs(zip_path), "POLICY.ZIP_PATH_INVALID", "制度压缩包路径无效。")
+        try:
+            with open(zip_path, "rb") as handle:
+                raw = handle.read()
+        except OSError as exc:
+            raise EngineError("POLICY.ZIP_READ_FAILED", "制度压缩包文件读取失败。") from exc
+    else:
+        encoded = payload.get("zipBase64")
+        require(isinstance(encoded, str) and encoded, "POLICY.ZIP_REQUIRED", "制度压缩包字节缺失。")
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise EngineError("POLICY.ZIP_BASE64_INVALID", "制度压缩包不是有效 base64。") from exc
     require(0 < len(raw) <= MAX_ARCHIVE_BYTES, "POLICY.ZIP_TOO_LARGE", "制度压缩包超过 64 MiB。")
     try:
         archive = zipfile.ZipFile(io.BytesIO(raw), "r")

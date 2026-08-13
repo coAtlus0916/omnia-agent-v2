@@ -3227,6 +3227,7 @@ export class FeatureRuntimeStore {
         if (!['object', 'relation', 'field', 'risk_control', 'documentation', 'evaluation'].includes(String(target.kind))
           || !String(target.key || '')) throw new Error('Return intent target identity is invalid.');
         if (String(target.kind) === 'object' && String(target.objectType) === 'GRA'
+          && target.disposition !== undefined
           && !['create', 'reuse'].includes(String(target.disposition || ''))) {
           throw new Error('GRA Return intent disposition must be exactly create or reuse.');
         }

@@ -10,7 +10,7 @@ import { packageFile, verifyOfficialPackage } from '../src/main/features/officia
 /**
  * Current-source offline contract plus immutable historical candidate coverage.
  *
- * The source self-check is the current-version assertion for 0.2.110. The
+ * The source self-check is the current-version assertion for 0.2.150. The
  * 0.2.109 assertions below remain explicitly historical and prove the last
  * immutable candidate rather than silently reusing source bytes.
  */
@@ -78,13 +78,13 @@ function commandRequest(kind: string, payload: Record<string, unknown>, targetId
   };
 }
 
-test('0.2.110 current source self-check runs release CPython and all 34 independent fixtures without changing a candidate', () => {
+test('0.2.150 current source self-check runs release CPython and all 37 independent fixtures without changing a candidate', () => {
   assert.equal(fs.existsSync(releasePython), true, 'the release-managed CPython executable is required');
   const version = spawnSync(releasePython, ['-I', '-S', '--version'], { encoding: 'utf8' });
   assert.equal(version.status, 0, version.stderr);
   assert.match(`${version.stdout}${version.stderr}`, /^Python 3\.13\.14\s*$/u);
-  const candidatePath = path.join(repository, 'feature-packages', 'create-associate', 'candidates', 'create-associate-0.2.110.ofp');
-  const operationPath = path.join(repository, 'feature-packages', 'create-associate', 'candidates', 'create-associate-operation-0.2.110.ofop');
+  const candidatePath = path.join(repository, 'feature-packages', 'create-associate', 'candidates', 'create-associate-0.2.150.ofp');
+  const operationPath = path.join(repository, 'feature-packages', 'create-associate', 'candidates', 'create-associate-operation-0.2.150.ofop');
   const candidateBefore = fs.existsSync(candidatePath) ? fs.readFileSync(candidatePath) : null;
   const operationBefore = fs.existsSync(operationPath) ? fs.readFileSync(operationPath) : null;
   const selfCheck = spawnSync(process.execPath, [packageScript, '--self-check'], {
@@ -99,7 +99,7 @@ test('0.2.110 current source self-check runs release CPython and all 34 independ
     }
   });
   assert.equal(selfCheck.status, 0, selfCheck.stderr || selfCheck.stdout);
-  assert.match(selfCheck.stdout, /omnia\.create-associate 0\.2\.110\/112 package self-check passed \(34 independent fixtures; no candidate written\)/u);
+  assert.match(selfCheck.stdout, /omnia\.create-associate 0\.2\.150\/152 package self-check passed \(37 independent fixtures; no candidate written\)/u);
   assert.deepEqual(fs.existsSync(candidatePath) ? fs.readFileSync(candidatePath) : null, candidateBefore, 'source self-check must not write or change the Feature candidate');
   assert.deepEqual(fs.existsSync(operationPath) ? fs.readFileSync(operationPath) : null, operationBefore, 'source self-check must not write or change the Operation candidate');
 });

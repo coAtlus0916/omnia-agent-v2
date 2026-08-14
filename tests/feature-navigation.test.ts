@@ -59,10 +59,10 @@ test('current immutable Feature candidates declare the signed IT Elements, Workp
     return JSON.parse(Buffer.from(member.contentBase64, 'base64').toString('utf8'));
   };
   const manifests = [
-    readManifest('feature-packages/create-associate/candidates/create-associate-0.2.135.ofp'),
-    readManifest('feature-packages/workpaper-preparation/candidates/workpaper-preparation-0.1.9.ofp'),
+    readManifest('feature-packages/create-associate/candidates/create-associate-0.2.150.ofp'),
+    readManifest('feature-packages/workpaper-preparation/candidates/workpaper-preparation-0.1.81.ofp'),
     readManifest('feature-packages/recording/candidates/recording-0.4.21.ofp'),
-    readManifest('feature-packages/delete-elements/candidates/delete-elements-0.3.31.ofp')
+    readManifest('feature-packages/delete-elements/candidates/delete-elements-0.3.32.ofp')
   ];
   const mergedGroups = [...new Map(manifests.flatMap((manifest) => manifest.navigation.groups)
     .map((group) => [group.id, group])).values()] as FeatureNavigationGroup[];

@@ -13,8 +13,8 @@ import { resolveProductPaths } from '../src/main/paths.js';
 
 const repository = path.resolve(import.meta.dirname, '..');
 const source = path.join(repository, 'feature-packages', 'workpaper-preparation', 'source');
-const candidate = path.join(repository, 'feature-packages', 'workpaper-preparation', 'candidates', 'workpaper-preparation-0.1.80.ofp');
-const operationCandidate = path.join(repository, 'feature-packages', 'workpaper-preparation', 'candidates', 'workpaper-preparation-operation-0.1.80.ofop');
+const candidate = path.join(repository, 'feature-packages', 'workpaper-preparation', 'candidates', 'workpaper-preparation-0.1.81.ofp');
+const operationCandidate = path.join(repository, 'feature-packages', 'workpaper-preparation', 'candidates', 'workpaper-preparation-operation-0.1.81.ofop');
 const releasePython = [
   path.join(repository, 'releases', 'runtime', 'python', 'cpython-3.13.14-embed-amd64', 'python.exe'),
   path.join(repository, 'data', 'remote-shell-product', 'runtime', 'python', 'cpython-3.13.14-embed-amd64', 'python.exe')
@@ -113,6 +113,43 @@ test('a single-system user template is deterministically rebound to the frozen t
   }), /多系统填写件无法唯一映射/u);
 });
 
+test('all six APP masters expose their exact TestOfDesign and OE procedure matrix', () => {
+  const procedureHeaders = [
+    'documentProcedureResults - TestOfDesign',
+    'documentProcedureResults - OperatingEffectiveness程序1',
+    'documentProcedureResults - OperatingEffectiveness程序2',
+    'documentProcedureResults - OperatingEffectiveness程序3',
+    'documentProcedureResults - OperatingEffectiveness程序4'
+  ];
+  const expected = new Map<string, boolean[]>([
+    ['APP.01 -系统ID', [true, true, false, false, false]],
+    ['APP.02 -系统ID', [true, true, true, false, false]],
+    ['APP.05 -系统ID', [true, true, true, true, true]],
+    ['APP.06 -系统ID', [true, true, false, false, false]],
+    ['APP.10 -系统ID', [true, true, false, false, false]],
+    ['APP.13 -系统ID', [true, true, true, true, false]]
+  ]);
+  assert.deepEqual(phase2Template.controls.map((item: any) => item.controlNumber), [...expected.keys()]);
+  for (const control of phase2Template.controls) {
+    const actual = procedureHeaders.map((header) => {
+      const index = phase2Template.headers.indexOf(header);
+      assert.notEqual(index, -1, `missing procedure header ${header}`);
+      return Boolean(String(control.values[index] || '').trim());
+    });
+    assert.deepEqual(actual, expected.get(control.controlNumber), control.controlNumber);
+  }
+  const procedureFields = phase2Fields.fields.filter((field: any) => procedureHeaders.includes(field.sourceHeader));
+  assert.deepEqual(procedureFields.map((field: any) => ({ phaseType: field.phaseType, procedureIndex: field.procedureIndex,
+    tab: field.concurrencyTab, concurrencyMode: field.concurrencyMode })), [
+    { phaseType: 'TestOfDesign', procedureIndex: 0, tab: 204, concurrencyMode: 'current_or_remove' },
+    ...[0, 1, 2, 3].map((procedureIndex) => ({ phaseType: 'OperatingEffectiveness', procedureIndex,
+      tab: 212, concurrencyMode: 'current_or_remove' }))
+  ]);
+  const recordedSourceFields = phase2Fields.fields.filter((field: any) => field.sourceHeader && field.writePath);
+  assert.equal(recordedSourceFields.every((field: any) => field.concurrencyMode === 'current_or_remove'), true,
+    'every Phase2 source field must use the token from the latest authoritative GET when present');
+});
+
 test('workpaper candidate is immutable Feature-only and installs in isolation', () => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'omnia-workpaper-package-'));
   const unpacked = path.join(temporary, 'unpacked');
@@ -120,11 +157,11 @@ test('workpaper candidate is immutable Feature-only and installs in isolation', 
   try {
     const envelope = verifyOfficialPackage(JSON.parse(fs.readFileSync(candidate, 'utf8')), 'omnia-feature');
     assert.equal(envelope.packageId, 'omnia.workpaper-preparation');
-    assert.equal(envelope.version, '0.1.80');
-    assert.equal(envelope.sequence, 81);
+    assert.equal(envelope.version, '0.1.81');
+    assert.equal(envelope.sequence, 82);
     const operation = verifyOfficialPackage(JSON.parse(fs.readFileSync(operationCandidate, 'utf8')), 'omnia-connector-operation');
     assert.equal(operation.packageId, 'omnia.workpaper-preparation.operation');
-    assert.equal(operation.version, '0.1.80');
+    assert.equal(operation.version, '0.1.81');
     unpack(envelope, unpacked);
     const selfTest = spawnSync(process.execPath, [path.join(unpacked, 'tests', 'self-test.cjs')], {
       cwd: unpacked, encoding: 'utf8', windowsHide: true
@@ -143,7 +180,7 @@ test('workpaper candidate is immutable Feature-only and installs in isolation', 
       const manager = new FeaturePackageManager(database.db, paths);
       const installed = manager.install(candidate);
       assert.equal(installed.featureId, 'omnia.workpaper-preparation');
-      assert.equal(installed.featureVersion, '0.1.80');
+      assert.equal(installed.featureVersion, '0.1.81');
       assert.equal(installed.packageDigest, packageDigest(envelope));
     } finally { database.close(); }
   } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
@@ -569,8 +606,15 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
     assert.equal(designProcedure.expectedValue, '【政策名称】原始文本', 'writeback must freeze the previous body value');
     assert.ok(patchChanges.some((change: any) => String(change.backendKey).startsWith('controlDesignEvaluation.')),
       'the real flow must carry recorded Design Evaluation fields');
+    const firstOeProcedure = patchChanges.find((change: any) => change.phaseType === 'OperatingEffectiveness'
+      && change.procedureIndex === 0);
+    assert.ok(firstOeProcedure, 'the real flow must carry OperatingEffectiveness procedure 1 through Tab 212');
+    assert.match(JSON.parse(firstOeProcedure.value).editorData, /【[^【】]+】/u,
+      'AI failure fallback must preserve OE procedure 1 placeholders');
     assert.ok(patchChanges.some((change: any) => change.backendKey === 'controlOperatingEffectiveness.procedureTiming'),
       'the real flow must carry the recorded Tab 211 timing field');
+    assert.equal(patchChanges.every((change: any) => change.concurrencyMode === 'current_or_remove'), true,
+      'all Phase2 field writes must carry the latest live token when Omnia already has one');
     assert.match(writebackRequests[0]?.command?.commandId || '', /^command-\d+$/u, 'writeback must carry a durable Core command');
     assert.match(writebackRequests[0]?.command?.idempotencyKey || '', /^[0-9a-f-]{36}$/u, 'writeback must carry a stable delivery identity');
     assert.match(writebackRequests[0]?.planDigest || '', /^[0-9a-f]{64}$/u, 'writeback must be bound to the confirmed plan');
@@ -711,8 +755,13 @@ test('a legacy durable-witness rejection safely reprocesses the original policy 
       })) }));
     assert.match(writebackRequests[0].command.commandId, /^retry-command-/u);
     const retryChanges = writebackRequests[0].command.payload.changes;
-    assert.equal(retryChanges.some((change: any) => change.phaseType === 'TestOfDesign'), false,
-      'missing-evidence placeholders must remain in the background workbook and must not be written to Omnia');
+    const retryDesign = retryChanges.find((change: any) => change.phaseType === 'TestOfDesign');
+    assert.ok(retryDesign, 'normal missing-evidence TestOfDesign text must still be written as a visible Pack placeholder');
+    assert.match(JSON.parse(retryDesign.value).editorData, /【[^【】]+】/u);
+    const retryOe1 = retryChanges.find((change: any) => change.phaseType === 'OperatingEffectiveness'
+      && change.procedureIndex === 0);
+    assert.ok(retryOe1, 'normal missing-evidence OE procedure 1 must still be written as a visible Pack placeholder');
+    assert.match(JSON.parse(retryOe1.value).editorData, /【[^【】]+】/u);
     const timingChange = retryChanges.find((change: any) => change.backendKey === 'controlOperatingEffectiveness.procedureTiming');
     assert.ok(timingChange);
     assert.equal(timingChange.value, 'Apportion');
@@ -726,6 +775,9 @@ test('a legacy durable-witness rejection safely reprocesses the original policy 
     assert.equal(retryPlan.workpaper.policy.documents[0].name, '制度(1).zip/账户管理制度.docx');
     assert.equal(retryPlan.workpaper.state, 'writeback_complete');
     assert.ok(retryPlan.workpaper.writebackCounts.fields.manualCompletion > 0);
+    assert.ok(retryPlan.workpaper.writebackCounts.fields.placeholderFallback > 0);
+    assert.ok(retryPlan.workpaper.writeback.coverage.some((item: any) =>
+      item.writebackMode === 'unresolved_placeholder_fallback' && ['confirmed', 'unchanged'].includes(item.state)));
     assert.equal(order.includes('store:prepareDeletionCommand'), true);
     assert.equal(order.includes('store:projectVerifiedReturn'), true);
   } finally {

@@ -6,12 +6,12 @@ const CONTROL_OE_TAB_ID = 209;
 const WRITEBACK_TAB_IDS = Object.freeze([201, 204, 205, 210, 211, 212, 214]);
 const WRITEBACK_TABS = new Set(WRITEBACK_TAB_IDS);
 const RECORDED_WRITEBACK_FIELDS = Object.freeze({
-  '/riskAssociationDescription': { valueKind: 'editor', tab: 210, concurrencyMode: 'remove', purgeHiddenData: true },
-  '/controlDesignEvaluation/{designEvaluationId}/competenceAndAuthorityDocumentation': { valueKind: 'editor', tab: 205, concurrencyMode: 'remove', purgeHiddenData: true },
-  '/controlDesignEvaluation/{designEvaluationId}/frequencyAndConsistency': { valueKind: 'editor', tab: 205, concurrencyMode: 'remove', purgeHiddenData: true },
-  '/controlDesignEvaluation/{designEvaluationId}/levelOfAggregation': { valueKind: 'editor', tab: 205, concurrencyMode: 'remove', purgeHiddenData: true },
-  '/controlDesignEvaluation/{designEvaluationId}/criteriaForInvestigation': { valueKind: 'editor', tab: 205, concurrencyMode: 'remove', purgeHiddenData: true },
-  '/controlRiskScopes/{riskScopeId}/controlRiskScopeDetails': { valueKind: 'editor', tab: 205, concurrencyMode: 'remove', purgeHiddenData: true,
+  '/riskAssociationDescription': { valueKind: 'editor', tab: 210, concurrencyMode: 'current_or_remove', purgeHiddenData: true },
+  '/controlDesignEvaluation/{designEvaluationId}/competenceAndAuthorityDocumentation': { valueKind: 'editor', tab: 205, concurrencyMode: 'current_or_remove', purgeHiddenData: true },
+  '/controlDesignEvaluation/{designEvaluationId}/frequencyAndConsistency': { valueKind: 'editor', tab: 205, concurrencyMode: 'current_or_remove', purgeHiddenData: true },
+  '/controlDesignEvaluation/{designEvaluationId}/levelOfAggregation': { valueKind: 'editor', tab: 205, concurrencyMode: 'current_or_remove', purgeHiddenData: true },
+  '/controlDesignEvaluation/{designEvaluationId}/criteriaForInvestigation': { valueKind: 'editor', tab: 205, concurrencyMode: 'current_or_remove', purgeHiddenData: true },
+  '/controlRiskScopes/{riskScopeId}/controlRiskScopeDetails': { valueKind: 'editor', tab: 205, concurrencyMode: 'current_or_remove', purgeHiddenData: true,
     wireShape: 'risk_scope_details_object' },
   '/controlOperatingEffectiveness/{operatingEffectivenessId}/procedureTiming': { valueKind: 'enum', tab: 211,
     concurrencyMode: 'current_or_remove', purgeHiddenData: true },
@@ -21,7 +21,7 @@ const RECORDED_WRITEBACK_FIELDS = Object.freeze({
     concurrencyMode: 'current_or_remove', purgeHiddenData: true },
   '/controlOperatingEffectiveness/{operatingEffectivenessId}/frequencyOfPerformanceExplanation': { valueKind: 'text', tab: 211,
     concurrencyMode: 'current_or_remove', purgeHiddenData: true },
-  '/controlOperatingEffectiveness/{operatingEffectivenessId}/operatingEffectively': { valueKind: 'choice', tab: 214, concurrencyMode: 'remove', purgeHiddenData: true }
+  '/controlOperatingEffectiveness/{operatingEffectivenessId}/operatingEffectively': { valueKind: 'choice', tab: 214, concurrencyMode: 'current_or_remove', purgeHiddenData: true }
 });
 const MAX_WORKSPACES = 500;
 const MAX_GRAS = 500;
@@ -783,10 +783,10 @@ function createOperationHandler() {
           ? { appropriatenessAndCorrelation: value } : value;
         const prepared = { change, template, valueKind, value, path, wireValue, tab, concurrencyMode,
           purgeHiddenData, phaseType, procedureIndex };
-        // Omnia saves each OE procedure separately. The first Tab 212 save
-        // removes the token; each authoritative GET then yields the token for
-        // the next save. Keep procedure rows in distinct mutation groups so
-        // the runtime preserves that recorded request/readback sequence.
+        // Omnia saves each OE procedure separately. Each Tab 212 save carries
+        // the token from the latest authoritative GET when present, otherwise
+        // it removes the token. Keep procedure rows in distinct mutation groups
+        // so every procedure gets its own PATCH -> GET concurrency sequence.
         const procedureGroup = template.includes('{procedureId}') ? `|procedure:${phaseType}:${procedureIndex}` : '';
         const groupKey = `${tab}|${concurrencyMode}|${purgeHiddenData ? 'purge' : 'keep'}${procedureGroup}`;
         if (!groups.has(groupKey)) groups.set(groupKey, []);

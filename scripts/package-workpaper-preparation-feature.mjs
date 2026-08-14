@@ -5,8 +5,8 @@ import path from 'node:path';
 const root = path.resolve(import.meta.dirname, '..');
 const source = path.join(root, 'feature-packages', 'workpaper-preparation', 'source');
 const output = path.join(root, 'feature-packages', 'workpaper-preparation', 'candidates');
-const version = '0.1.80';
-const sequence = 81;
+const version = '0.1.81';
+const sequence = 82;
 const signingRoot = process.env.OMNIA_V5_SIGNING_ROOT || path.join(process.env.USERPROFILE || '', '.omnia-agent-v5', 'signing');
 const featurePrivateKey = await readFile(path.join(signingRoot, 'feature-ed25519-private.pem'), 'utf8');
 const operationPrivateKey = await readFile(path.join(signingRoot, 'operation-ed25519-private.pem'), 'utf8');
@@ -209,7 +209,7 @@ const handler=handlerMember&&Buffer.from(handlerMember.contentBase64,'base64').t
 if(manifest.featureId!=='omnia.workpaper-preparation'||manifest.version!=='${version}'||runtime.pythonSidecar?.version!=='3.13.14')throw new Error('runtime identity failed');
 if(surface.actions.some((item)=>item.actionId.includes('comment'))||worker.includes('messageCard')||!surface.selectionBrowser||surface.selectionBrowser.layout?.mode!=='fixed_footer_split'||surface.actions.find((item)=>item.actionId==='select-elements')?.selectionMode!=='single')throw new Error('Feature-only two-step Surface failed');
 if(!surface.workflow||surface.workflow.steps.length!==3||surface.workflow.steps[0].stepId!=='select'||surface.workflow.steps[1].stepId!=='upload'||surface.workflow.steps[2].stepId!=='writeback'||!surface.actions.some((item)=>item.actionId==='select-elements'&&item.selectionMode==='single')||!surface.actions.some((item)=>item.actionId==='restart-run'&&item.presentation==='restart'))throw new Error('Declarative three-step workflow Surface failed');
-if(!handler||!handler.includes("path: '/planningOperatingEffectivenessTesting'")||!handler.includes("path: '/planningCommonControlTesting'")||!handler.includes("path: '/usePreviousAuditEvidence'")||!handler.includes("'validate-hidden-data'")||!handler.includes('CONTROL_CORE_TAB_ID = 201')||!handler.includes('CONTROL_OE_TAB_ID = 209')||!handler.includes('WRITEBACK_TAB_IDS = Object.freeze([201, 204, 205, 210, 211, 212, 214])')||!handler.includes("concurrencyMode: 'current_or_remove'")||!handler.includes("outcome: 'not_applied'"))throw new Error('signed hidden-tab Operation failed');
+if(!handler||!handler.includes("path: '/planningOperatingEffectivenessTesting'")||!handler.includes("path: '/planningCommonControlTesting'")||!handler.includes("path: '/usePreviousAuditEvidence'")||!handler.includes("'validate-hidden-data'")||!handler.includes('CONTROL_CORE_TAB_ID = 201')||!handler.includes('CONTROL_OE_TAB_ID = 209')||!handler.includes('WRITEBACK_TAB_IDS = Object.freeze([201, 204, 205, 210, 211, 212, 214])')||!handler.includes("concurrencyMode: 'current_or_remove'")||handler.includes("concurrencyMode: 'remove'")||!handler.includes("outcome: 'not_applied'"))throw new Error('signed hidden-tab Operation failed');
 if(!worker.includes("finishReturn', { runId: plan.runId, outcome: 'uncertain'")||!worker.includes("operationId: OPERATIONS.reconcile")
   ||!worker.includes('currentPreflight(step, b, plan.planDigest, plan.runId)')||!worker.includes('planDigest: plan.planDigest')
   ||!worker.includes('workflowSurface(plan)')||!worker.includes('forceEnd(plan, context)')||!worker.includes('freezeHiddenTabPlan(plan, context)')
@@ -218,7 +218,7 @@ if(!worker.includes("finishReturn', { runId: plan.runId, outcome: 'uncertain'")|
   ||!handler.includes('omnia.workpaper.phase2.writeback.v1')||!handler.includes('valueSatisfied')||!handler.includes('Write-back field changed after the frozen preflight.')
   ||!worker.includes('prepareWritebackRun(plan, candidates, b, s)')||!worker.includes('resumeWritebackRun(plan, context)')
   ||!worker.includes('receiptContext: { runId: plan.runId, commandId: command.commandId }')
-  ||!worker.includes('expectedDirectory: PHASE2_TEMPLATE.directory')||!worker.includes('protectUserAuthoredBracketTokens')||!worker.includes('manualCompletionRequired')
+  ||!worker.includes('expectedDirectory: PHASE2_TEMPLATE.directory')||!worker.includes('protectUserAuthoredBracketTokens')||!worker.includes('manualCompletionRequired')||!worker.includes('unresolved_placeholder_fallback')
   ||!runtime.aiReviewCapabilities?.some((item)=>item.capabilityId==='phase2-policy-resolution/v1')
   ||!engine.includes('build_phase2_workbook')||!engine.includes('parse_uploaded_workbook')||!engine.includes('build_phase2_template')||!engine.includes('extract_policy_archive')
   ||!engine.includes('apply_replacement_fields')||!workbook.includes('editable_columns')||!workbook.includes('["替换字段", "Controls", "Scope"]')||!workbook.includes('WORKBOOK.REPLACEMENT_INACTIVE')||workbook.includes('<sheetProtection sheet="1"')

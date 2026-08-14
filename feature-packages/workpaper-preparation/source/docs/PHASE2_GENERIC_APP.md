@@ -16,11 +16,22 @@
 
 当前目录只有 18 个存在母版消费位置的活动参数。旧目录中的 `1.08 / 【抽样标准】` 没有已录制的母版落点，因此新模板不再展示它；旧版仅含 `替换字段` 的文件仍可兼容读取，但该旧行必须留空，非空时会明确拒绝，避免静默丢值。
 
-当填写件与制度资料都已上传后，Feature 对每个 Control、每个母版字段执行制度解析，将有制度证据支持的结果覆盖到对应 `Controls` 单元格，并在后台生成、保存新的 `workpaper-phase2-filled-*.xlsx` 结果 Artifact。它不展示为下载项，也不增加用户核对步骤；现有三步流程保持不变。缺少证据或存在歧义的内容会保留原 `【占位符】`，并在计划中记录待人工补录数量，而不是转换成无法辨认来源的空白。空解析结果不会生成 Omnia 写入，缺少当前保存录制的非空字段只进入 `recording_required` 覆盖清单。
+当填写件与制度资料都已上传后，Feature 对每个 Control、每个母版字段执行制度解析，将有制度证据支持的结果覆盖到对应 `Controls` 单元格，并在后台生成、保存新的 `workpaper-phase2-filled-*.xlsx` 结果 Artifact。它不展示为下载项，也不增加用户核对步骤；现有三步流程保持不变。缺少证据或存在歧义的内容会保留原 `【占位符】`，并在计划中记录待人工补录数量，而不是转换成无法辨认来源的空白。对已录制的 editor/text 字段，保留占位符的正文也会真实回传到 Pack，保证待用户后续填写的程序不再是空白；number/boolean/enum/choice 等类型字段不能承载占位字符串，仍只进入人工补录。空单元格不会生成 Omnia 写入，缺少当前保存录制的非空字段只进入 `recording_required` 覆盖清单。
+
+六类预置 Control 的程序矩阵已按当前母版逐项冻结：
+
+| Control | 控制设计评估 | 运行有效性程序 |
+| --- | --- | --- |
+| APP.01 | TestOfDesign | 程序 1 |
+| APP.02 | TestOfDesign | 程序 1–2 |
+| APP.05 | TestOfDesign | 程序 1–4 |
+| APP.06 | TestOfDesign | 程序 1 |
+| APP.10 | TestOfDesign | 程序 1 |
+| APP.13 | TestOfDesign | 程序 1–3 |
 
 制度资料入口的点击选择会先让用户选择“文件”或“文件夹”：文件模式支持一个或多个 `.zip/.docx/.xlsx/.xlsm/.pdf`，文件夹模式递归收集这些类型。拖入单个 ZIP 时保持原 ZIP，不再额外套一层归档；拖入文件夹或多个文件时才归一化为 ZIP。Worker 不以内联 Base64 搬运制度文件，而是使用 Core 校验后的只读文件句柄交给 CPython。
 
-2026-08-14 的六类 APP 编辑录制证明字段写回分别使用 Tab 204（TestOfDesign ProcedureResults）、205（Design Factors/RiskScopeDetails）、210（风险关联描述）、211（OE 时间与范围）、212（OE ProcedureResults）和 214（OE 结论）。同一表单保存的字段合并 PATCH；OE ProcedureResults 按程序逐项 PATCH。Tab 204/211/212 每次 PATCH 前使用最新 GET：存在当前页签 token 就携带，否则移除，PATCH 后立即重新 GET。每个字段必须权威读回相等。Feature AI review 必须绑定 Core 管理的源文件上传 Run，不能使用 Feature 私有计划 ID。AI 能力不可用、调用/身份校验失败或返回不完整时不再停止整个流程，而是记录 `placeholder_writeback` 降级：保留原 `【占位符】`，通过已录制的 editor/text API 回传到 Pack；不接受占位字符串的 number/boolean/enum/choice 字段仍留作人工补录。AI 正常返回的 `missing_evidence / ambiguous` 继续保留原占位符并只进入人工补录统计，不冒充 AI 故障降级。
+2026-08-14 的六类 APP 编辑录制证明字段写回分别使用 Tab 204（TestOfDesign ProcedureResults）、205（Design Factors/RiskScopeDetails）、210（风险关联描述）、211（OE 时间与范围）、212（OE ProcedureResults）和 214（OE 结论）。同一表单保存的字段合并 PATCH；OE ProcedureResults 按程序逐项 PATCH。所有这些写入页签每次 PATCH 前都使用最新 GET：存在当前页签 token 就携带，否则移除，PATCH 后立即重新 GET；这同时覆盖已有 token 的 Tab 205/210/214，避免固定移除 token 引发并发冲突。每个程序按 `phaseType + procedureIndex` 解析到当前 GET 中的具体 procedure ID，并逐字段权威读回相等。Feature AI review 必须绑定 Core 管理的源文件上传 Run，不能使用 Feature 私有计划 ID。AI 能力不可用、调用/身份校验失败或返回不完整时会记录 `placeholder_writeback` 降级；AI 正常返回 `missing_evidence / ambiguous` 时会记录 `unresolved_placeholder_fallback`。两种情况都会将已录制 editor/text 字段的原 `【占位符】` 回传到 Pack，同时保留待人工补录统计；不接受占位字符串的 number/boolean/enum/choice 字段仍只留作人工补录。
 
 2026-08-12 的 Remote 录制 `bb8e103f-097a-4199-8c6b-a16cec6001d1` 完整冻结 85 个事件、0 omission。录制证明同一 Control 的真实顺序是：
 
@@ -55,19 +66,19 @@ Control 编号只用于从 GRA 的真实 Control 目录选择上述九个目标�
 | 控制详细信息 | 性质 | `controlNature` | Control 根对象 | 前台已录制，后台字段待确认 |
 | 控制详细信息 | 方法 | `approach` | Control 根对象 | 当前 GET 已确认 |
 | 控制详细信息 | 风险关联类型 | `riskAssociationType` | Control 根对象 | 母版有值；待枚举与保存录制 |
-| RAWC | 风险关联描述 | `riskAssociationDescription` | Control 根对象 / Tab 210 | 已实现：editor JSON、remove token、purge |
+| RAWC | 风险关联描述 | `riskAssociationDescription` | Control 根对象 / Tab 210 | 已实现：editor JSON、current-or-remove token、purge |
 | 控制详细信息 | 测试运行有效性 | `planningOperatingEffectivenessTesting` | Control 根对象 / Tab 201 | 已录制、已实现 |
 | 控制详细信息 | 同质化控制测试 | `planningCommonControlTesting` | Control 根对象 / Tab 201 | 已录制、已实现 |
 | 前期审计证据 | 是否利用前期审计证据 | `usePreviousAuditEvidence` | Control 根对象 / Tab 209 | 已录制、已实现 |
-| 设计因素 | 人员胜任能力与权限 | `competenceAndAuthorityDocumentation` | `controlDesignEvaluation/{id}` / Tab 205 | 已实现：母版源列、editor JSON、remove token、purge |
-| 设计因素 | 一致执行的频率 | `frequencyAndConsistency` | `controlDesignEvaluation/{id}` / Tab 205 | 已实现：editor JSON、remove token、purge |
-| 设计因素 | 汇总程度 | `levelOfAggregation` | `controlDesignEvaluation/{id}` / Tab 205 | 已实现：editor JSON、remove token、purge |
-| 设计因素 | 调查标准 | `criteriaForInvestigation` | `controlDesignEvaluation/{id}` / Tab 205 | 已实现：editor JSON、remove token、purge |
+| 设计因素 | 人员胜任能力与权限 | `competenceAndAuthorityDocumentation` | `controlDesignEvaluation/{id}` / Tab 205 | 已实现：母版源列、editor JSON、current-or-remove token、purge |
+| 设计因素 | 一致执行的频率 | `frequencyAndConsistency` | `controlDesignEvaluation/{id}` / Tab 205 | 已实现：editor JSON、current-or-remove token、purge |
+| 设计因素 | 汇总程度 | `levelOfAggregation` | `controlDesignEvaluation/{id}` / Tab 205 | 已实现：editor JSON、current-or-remove token、purge |
+| 设计因素 | 调查标准 | `criteriaForInvestigation` | `controlDesignEvaluation/{id}` / Tab 205 | 已实现：editor JSON、current-or-remove token、purge |
 | 设计因素 | 是否依赖其他控制 | `dependentOnOtherControls` | `controlDesignEvaluation/{id}` | 母版有值；待当前值域与保存录制 |
 | 设计结论 | 设计是否有效 | `designEffective` | `controlDesignEvaluation/{id}` | 母版列当前为空；待当前选择值与保存录制 |
 | 设计结论 | 是否得到执行 | `properlyImplemented` | `controlDesignEvaluation/{id}` | 母版缺少源列；待当前选择值与保存录制 |
 | 设计程序 | 程序结果 | `documentProcedureResults` | `gitcNonDetailedTestingProcedures/{id}`，`phaseType=TestOfDesign` / Tab 204 | 已实现：editor JSON、current-or-remove token、no purge |
-| RAWC | 适当性与相关性 | `appropriatenessAndCorrelation` | `controlRiskScopes/{scopeId}/controlRiskScopeDetails` / Tab 205 | 已实现：母版源列、整体对象、editor JSON、remove token、purge |
+| RAWC | 适当性与相关性 | `appropriatenessAndCorrelation` | `controlRiskScopes/{scopeId}/controlRiskScopeDetails` / Tab 205 | 已实现：母版源列、整体对象、editor JSON、current-or-remove token、purge |
 | 运行有效性 | 程序时间 | `procedureTiming` | `controlOperatingEffectiveness/{id}` / Tab 211 | 已实现：字符串枚举、current-or-remove token、purge |
 | 运行有效性 | 时间理由 | `procedureTimingRationale` | `controlOperatingEffectiveness/{id}` / Tab 211 | 已实现：普通字符串、current-or-remove token、purge |
 | 运行有效性 | 执行频率 | `frequencyOfPerformance` | `controlOperatingEffectiveness/{id}` / Tab 211 | 已实现：数字、current-or-remove token、purge |
@@ -76,7 +87,7 @@ Control 编号只用于从 GRA 的真实 Control 目录选择上述九个目标�
 | 运行有效性 | 实际样本量 | `actualSampleSize` | `controlOperatingEffectiveness/{id}` | 母版列当前为空；待当前保存录制 |
 | 运行有效性 | 实际样本量理由 | `actualSampleSizeRationale` | `controlOperatingEffectiveness/{id}` | 母版列当前为空；待当前保存录制 |
 | 运行有效性程序 | 程序结果 1–4 | `documentProcedureResults` | `gitcNonDetailedTestingProcedures/{id}`，`phaseType=OperatingEffectiveness` / Tab 212 | 已实现：按程序顺序逐项 PATCH、editor JSON、current-or-remove token、每次写后 GET、no purge |
-| 运行有效性 | 运行是否有效 | `operatingEffectively` | `controlOperatingEffectiveness/{id}` / Tab 214 | 已实现数值选择、remove token、purge；母版非空时写入 |
+| 运行有效性 | 运行是否有效 | `operatingEffectively` | `controlOperatingEffectiveness/{id}` / Tab 214 | 已实现数值选择、current-or-remove token、purge；母版非空时写入 |
 
 ## 后续实现顺序
 

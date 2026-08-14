@@ -1686,8 +1686,7 @@ function createFeatureWorker(ports) {
       const requiresManualCompletion = (field) => Array.isArray(field && field.placeholders)
         && field.placeholders.some((placeholder) => text(placeholder && placeholder.state) !== 'evidence_supported');
       const allowsPlaceholderFallback = (field) => requiresManualCompletion(field)
-        && field && field.placeholderWriteback && field.placeholderWriteback.mode === 'ai_failure_fallback'
-        && ['editor', 'text'].includes(text(field.valueKind) || 'text');
+        && ['editor', 'text'].includes(text(field && field.valueKind) || 'text');
       for (const field of resolvedFields) {
         const manualCompletion = text(field.resolvedText) && requiresManualCompletion(field);
         const fallbackAllowed = manualCompletion && allowsPlaceholderFallback(field);
@@ -1698,16 +1697,17 @@ function createFeatureWorker(ports) {
           sourceState: field.sourceState || (text(field.resolvedText) ? 'present' : 'empty'),
           supportState: field.writePath ? 'recorded' : 'recording_required',
           manualCompletionRequired: Boolean(manualCompletion),
-          writebackMode: fallbackAllowed ? 'ai_failure_placeholder_fallback'
+          writebackMode: fallbackAllowed && fallbackRequested ? 'ai_failure_placeholder_fallback'
+            : fallbackAllowed ? 'unresolved_placeholder_fallback'
             : fallbackRequested ? 'ai_failure_placeholder_type_incompatible' : 'normal',
           state: !text(field.resolvedText) ? 'source_empty'
             : !field.writePath ? 'unsupported'
               : manualCompletion && !fallbackAllowed ? 'manual_completion' : 'pending' });
       }
-      // Normal missing/ambiguous evidence remains manual-only. If Feature AI
-      // itself failed, the explicit fallback may transmit the unchanged master
-      // placeholder through recorded text/editor APIs. Typed fields cannot
-      // safely carry a placeholder string and remain manual-only.
+      // Missing/ambiguous evidence remains visibly unresolved, but recorded
+      // text/editor APIs still receive the unchanged master placeholder so the
+      // Pack is never left blank. Typed fields cannot safely carry a placeholder
+      // string and remain manual-only, including when Feature AI itself fails.
       const supportedFields = presentFields.filter((field) => field.writePath
         && (!requiresManualCompletion(field) || allowsPlaceholderFallback(field)));
       if (!supportedFields.length) {
@@ -1821,7 +1821,8 @@ function createFeatureWorker(ports) {
     plan.workpaper.state = uncertainCount ? 'writeback_uncertain' : 'writeback_complete';
     const unsupportedFieldCount = fieldCoverage.filter((item) => item.state === 'unsupported').length;
     const manualCompletionFieldCount = fieldCoverage.filter((item) => item.manualCompletionRequired).length;
-    const placeholderFallbackFieldCount = fieldCoverage.filter((item) => item.writebackMode === 'ai_failure_placeholder_fallback'
+    const placeholderFallbackFieldCount = fieldCoverage.filter((item) => ['ai_failure_placeholder_fallback',
+      'unresolved_placeholder_fallback'].includes(item.writebackMode)
       && ['confirmed', 'unchanged'].includes(item.state)).length;
     const placeholderFallbackIncompatibleFieldCount = fieldCoverage.filter((item) =>
       item.writebackMode === 'ai_failure_placeholder_type_incompatible').length;

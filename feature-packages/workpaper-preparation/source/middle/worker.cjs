@@ -32,6 +32,7 @@ function valueKindRead(current, kind) {
   if (current === null || current === undefined) return '';
   if (kind === 'number') return typeof current === 'number' ? current : text(current);
   if (kind === 'boolean') return current === true ? '是' : current === false ? '否' : text(current);
+  if (kind === 'editor') return omniaEditorPlainText(current);
   return text(current);
 }
 
@@ -49,6 +50,46 @@ function canonicalWorkpaperState(value) {
 }
 function digest(value) { return crypto.createHash('sha256').update(canonicalWorkpaperState(value)).digest('hex'); }
 function text(value) { return String(value == null ? '' : value).trim(); }
+function parseOmniaEditorValue(value) {
+  const raw = text(value);
+  if (!raw.startsWith('{')) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      && typeof parsed.editorData === 'string' && Array.isArray(parsed.suggestionsData)
+      && typeof parsed.trackChangesEnableFlagInEditor === 'boolean' && typeof parsed.plainText === 'string'
+      ? parsed : null;
+  } catch { return null; }
+}
+function decodeHtmlEntities(value) {
+  return String(value || '')
+    .replace(/&#(\d+);/gu, (_match, number) => String.fromCodePoint(Number(number)))
+    .replace(/&#x([0-9a-f]+);/giu, (_match, number) => String.fromCodePoint(Number.parseInt(number, 16)))
+    .replace(/&nbsp;/giu, ' ').replace(/&amp;/giu, '&').replace(/&lt;/giu, '<')
+    .replace(/&gt;/giu, '>').replace(/&quot;/giu, '"').replace(/&#39;/giu, "'");
+}
+function omniaEditorPlainText(value) {
+  const parsed = parseOmniaEditorValue(value);
+  if (!parsed) return text(value);
+  const html = parsed.editorData.replace(/\r\n?/gu, '\n')
+    .replace(/<p\b[^>]*>\s*<br\s*\/?\s*>\s*<\/p>/giu, '\n')
+    .replace(/<\/p>\s*<p\b[^>]*>/giu, '\n')
+    .replace(/<br\s*\/?\s*>/giu, '\n')
+    .replace(/<\/?p\b[^>]*>/giu, '')
+    .replace(/<\/(?:div|li|h[1-6])>\s*/giu, '\n')
+    .replace(/<[^>]+>/gu, '');
+  return text(decodeHtmlEntities(html));
+}
+function escapeOmniaEditorHtml(value) {
+  return String(value).replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;')
+    .replace(/"/gu, '&quot;').replace(/'/gu, '&#39;');
+}
+function omniaEditorValue(value) {
+  const plain = text(String(value == null ? '' : value).replace(/\r\n?/gu, '\n'));
+  const editorData = plain.split('\n').map((line) => line
+    ? `<p>${escapeOmniaEditorHtml(line)}</p>` : '<p><br></p>').join('');
+  return JSON.stringify({ editorData, suggestionsData: [], trackChangesEnableFlagInEditor: false, plainText: '' });
+}
 function fail(code, message) { throw Object.assign(new Error(message), { code }); }
 function required(value, label) {
   const result = text(value);
@@ -61,6 +102,40 @@ function optional(value, label) {
   return result;
 }
 function unique(values) { return [...new Set((values || []).map(text).filter(Boolean))].sort(); }
+function bindReplacementSystems(expectedSystemsInput, replacement) {
+  const expectedSystems = unique(expectedSystemsInput);
+  const uploadedSystems = unique(replacement && replacement.systems);
+  const replacements = Array.isArray(replacement && replacement.replacements)
+    ? replacement.replacements.map((item) => ({ ...item })) : [];
+  if (!expectedSystems.length || !uploadedSystems.length) {
+    fail('WORKPAPER.REPLACEMENT_SCOPE_DRIFT', '填写件的系统范围与冻结合同不一致。');
+  }
+  if (canonicalWorkpaperState(expectedSystems) === canonicalWorkpaperState(uploadedSystems)) {
+    return { replacements, systems: expectedSystems,
+      binding: { mode: 'exact', uploadedSystems, targetSystems: expectedSystems } };
+  }
+  // A user-provided single-APP template is reusable for another single frozen
+  // APP.  The workbook's row identity (code/control point/placeholder) remains
+  // unchanged; only its explicit source-system label is rebound to the one
+  // selected target. Multi-APP mismatches remain ambiguous and are rejected.
+  if (expectedSystems.length !== 1 || uploadedSystems.length !== 1) {
+    fail('WORKPAPER.REPLACEMENT_SCOPE_DRIFT', '多系统填写件无法唯一映射到当前冻结范围。');
+  }
+  const sourceSystem = uploadedSystems[0];
+  const targetSystem = expectedSystems[0];
+  const rebound = replacements.map((item) => {
+    if (text(item && item.system) !== sourceSystem) {
+      fail('WORKPAPER.REPLACEMENT_SCOPE_DRIFT', '填写件包含无法映射到唯一源系统的替换行。');
+    }
+    return { ...item, system: targetSystem };
+  });
+  const identities = rebound.map((item) => `${text(item.system)}\u0000${text(item.code)}`);
+  if (new Set(identities).size !== identities.length) {
+    fail('WORKPAPER.REPLACEMENT_DUPLICATE', '填写件映射后包含重复的系统/编号。');
+  }
+  return { replacements: rebound, systems: expectedSystems,
+    binding: { mode: 'single_system_rebind', uploadedSystems, targetSystems: expectedSystems } };
+}
 function errorSummary(error) {
   return { code: text(error && error.code || 'WORKPAPER.FAILED').slice(0, 160),
     message: text(error && error.message || error || 'Workpaper preparation failed.').slice(0, 800) };
@@ -230,6 +305,64 @@ function createFeatureWorker(ports) {
   };
   const operationTarget = (step) => ({ targetIdentityKey: step.stepId, workspaceId: step.workspaceId,
     riskAssessmentId: step.riskAssessmentId, controlId: step.controlId });
+  const writebackTarget = (control) => ({
+    targetIdentityKey: `workpaper-writeback|${control.workspaceId}|${control.riskAssessmentId}|${control.controlId}|TestOfDesign`,
+    workspaceId: control.workspaceId, riskAssessmentId: control.riskAssessmentId, controlId: control.controlId
+  });
+  const testOfDesignValue = (snapshot) => {
+    const procedure = Array.isArray(snapshot && snapshot.procedures)
+      ? snapshot.procedures.find((item) => item && item.phaseType === 'TestOfDesign') : null;
+    return text(procedure && procedure.documentProcedureResults);
+  };
+  const testOfDesignText = (snapshot) => omniaEditorPlainText(testOfDesignValue(snapshot));
+  function retryablePlaintextEditorWriteback(plan) {
+    const wp = plan && plan.workpaper;
+    const writeback = wp && wp.writeback;
+    const outcomes = writeback && Array.isArray(writeback.outcomes) ? writeback.outcomes : [];
+    const pending = wp && wp.writebackRun;
+    const candidates = pending && Array.isArray(pending.candidates) ? pending.candidates : [];
+    const policySource = wp && Array.isArray(wp.sources)
+      ? wp.sources.find((item) => item && item.actionId === 'upload-policy') : null;
+    return Boolean(plan && plan.featureVersion === '0.1.69'
+      && wp && wp.state === 'writeback_uncertain' && pending && pending.state === 'uncertain'
+      && wp.replacement && wp.replacement.state === 'filled'
+      && wp.policy && /^[0-9a-f]{64}$/u.test(text(wp.policy.uploadedSha256))
+      && policySource && text(policySource.artifactId)
+      && text(policySource.sha256) === text(wp.policy.uploadedSha256)
+      && outcomes.length > 0 && candidates.length === outcomes.length
+      && outcomes.every((item) => item && ['succeeded', 'uncertain'].includes(item.state) && text(item.commandId))
+      && candidates.every((candidate) => {
+        const changes = candidate && Array.isArray(candidate.changes) ? candidate.changes : [];
+        const change = changes.length === 1 ? changes[0] : null;
+        return Boolean(candidate && candidate.control && text(candidate.control.controlId)
+          && typeof candidate.finalText === 'string' && text(candidate.finalText)
+          && change && change.valueKind === 'editor' && change.phaseType === 'TestOfDesign'
+          && text(change.value) === text(candidate.finalText) && !parseOmniaEditorValue(change.value));
+      })
+      && wp.writebackCounts && Number(wp.writebackCounts.total) === outcomes.length
+      && Number(wp.writebackCounts.skipped) === 0
+      && Number(wp.writebackCounts.succeeded) + Number(wp.writebackCounts.uncertain) === outcomes.length);
+  }
+  function retryableRejectedWriteback(plan) {
+    const wp = plan && plan.workpaper;
+    const writeback = wp && wp.writeback;
+    const outcomes = writeback && Array.isArray(writeback.outcomes) ? writeback.outcomes : [];
+    const policySource = wp && Array.isArray(wp.sources)
+      ? wp.sources.find((item) => item && item.actionId === 'upload-policy') : null;
+    const durableWitnessRejection = Boolean(wp && wp.state === 'writeback_uncertain'
+      && !wp.writebackRun
+      && wp.replacement && wp.replacement.state === 'filled'
+      && wp.policy && /^[0-9a-f]{64}$/u.test(text(wp.policy.uploadedSha256))
+      && policySource && text(policySource.artifactId)
+      && text(policySource.sha256) === text(wp.policy.uploadedSha256)
+      && outcomes.length > 0
+      && outcomes.every((item) => item && item.state === 'uncertain'
+        && item.code === 'CONNECTOR_NEXT.DURABLE_MUTATION_REQUIRED' && !text(item.commandId))
+      && wp.writebackCounts && Number(wp.writebackCounts.total) === outcomes.length
+      && Number(wp.writebackCounts.succeeded) === 0
+      && Number(wp.writebackCounts.uncertain) === outcomes.length);
+    return durableWitnessRejection || retryablePlaintextEditorWriteback(plan);
+  }
   function workflowSurface(plan) {
     const wp = plan && plan.workpaper ? plan.workpaper : null;
     const wpState = wp ? wp.state : null;
@@ -272,6 +405,8 @@ function createFeatureWorker(ports) {
     const materialsReady = generated && Boolean(wp && wp.policy) && Boolean(wp && wp.replacement);
     const awaitingWriteback = wpState === 'awaiting_writeback';
     const writebackUncertain = wpState === 'writeback_uncertain';
+    const rejectedRetry = retryableRejectedWriteback(plan);
+    const editorRepair = retryablePlaintextEditorWriteback(plan);
     return [
       { actionId: 'bootstrap-workpaper-directory', enabled: false, visible: false, reason: 'Initial authoritative APP GRA read has completed.' },
       { actionId: 'refresh-workpaper-directory', enabled: directory, visible: directory, reason: directory ? '' : '底稿流程已开始。' },
@@ -279,7 +414,9 @@ function createFeatureWorker(ports) {
       { actionId: 'upload-filled-workbook', enabled: generated, visible: generated, reason: generated ? '' : '请先生成填写件模板，再上传填写好的替换字段表。' },
       { actionId: 'upload-policy', enabled: generated, visible: generated, reason: generated ? '' : '请先生成填写件模板，再上传制度资料。' },
       { actionId: 'next-to-writeback', enabled: materialsReady, visible: materialsReady, reason: materialsReady ? '' : '请先上传填写件与制度资料，再进入确认回传。' },
-      { actionId: 'confirm-writeback', enabled: awaitingWriteback, visible: awaitingWriteback || writebackUncertain, reason: awaitingWriteback ? '' : '请先进入确认回传步骤。' },
+      { actionId: 'confirm-writeback', enabled: awaitingWriteback || rejectedRetry, visible: awaitingWriteback || writebackUncertain,
+        reason: awaitingWriteback ? '' : editorRepair ? '上次正文使用了 Omnia 无法渲染的裸文本；可用原始材料改为编辑器 JSON 后安全补写。'
+          : rejectedRetry ? '上次写回在 mutation 启动前被拒绝；可使用原始材料安全重试。' : '请先进入确认回传步骤。' },
       { actionId: 'restart-run', enabled: Boolean(wpState), reason: wpState ? '结束当前流程并返回选择元素。' : '当前没有可结束的流程。' }
     ];
   };
@@ -422,6 +559,9 @@ function createFeatureWorker(ports) {
     try {
       const recoveryPlan = await openPlan();
       if (recoveryPlan) return recoveryPlan.workpaper ? workpaperSurface(recoveryPlan) : planSurface(recoveryPlan);
+      const pointer = await store.call('loadPlan', CURRENT_POINTER);
+      const previousPlan = pointer && pointer.currentPlanId ? await store.call('loadPlan', pointer.currentPlanId) : null;
+      if (retryableRejectedWriteback(previousPlan)) return workpaperSurface(previousPlan);
       return directorySurface((await readDirectory(context)).directory);
     }
     catch (error) {
@@ -781,14 +921,14 @@ function createFeatureWorker(ports) {
     }
     await closeSourceIntakeRun(bytes);
     recordSourceFile(plan, artifactDescriptor, bytes, '填写件', 'upload-filled-workbook');
-    // Prove the uploaded template still matches the frozen system scope.
-    const expectedSystems = [...plan.workpaper.systems].sort();
-    const uploadedSystems = [...replacement.systems].sort();
-    if (canonicalWorkpaperState(expectedSystems) !== canonicalWorkpaperState(uploadedSystems)) {
-      fail('WORKPAPER.REPLACEMENT_SCOPE_DRIFT', '填写件的系统范围与冻结合同不一致。');
-    }
+    // Bind a one-system user template to the one frozen target APP. Exact
+    // multi-system templates remain supported; ambiguous multi-system drift is
+    // rejected instead of guessing a row-to-APP mapping.
+    const bound = bindReplacementSystems(plan.workpaper.systems, replacement);
     plan.workpaper.replacement = {
-      replacements: replacement.replacements, uploadedSha256: bytes.sha256, state: 'filled'
+      replacements: bound.replacements, uploadedSystems: unique(replacement.systems),
+      targetSystems: bound.systems, scopeBinding: bound.binding,
+      uploadedSha256: bytes.sha256, state: 'filled'
     };
     plan.surfaceStateVersion += 1; await save(plan);
     return plan;
@@ -948,6 +1088,223 @@ function createFeatureWorker(ports) {
     await save(plan);
     return plan;
   }
+  async function reprepareRejectedWriteback(plan, context) {
+    if (!retryableRejectedWriteback(plan)) {
+      fail('WORKPAPER.WRITEBACK_RETRY_UNSAFE', 'The previous write-back is not an exact supported historical repair case.');
+    }
+    const editorRepair = retryablePlaintextEditorWriteback(plan);
+    const { b, s } = contextAuthority(context); sameAuthority(b, plan.binding); sameSafety(s, plan.safety);
+    const sourcePlanId = plan.planId;
+    plan = JSON.parse(JSON.stringify(plan));
+    const wp = plan.workpaper;
+    const policySource = wp.sources.find((item) => item && item.actionId === 'upload-policy');
+    const bytes = await store.call('readArtifactBytes', { artifactId: policySource.artifactId });
+    if (!bytes || !bytes.contentBase64 || text(bytes.sha256) !== text(policySource.sha256)
+      || text(bytes.sha256) !== text(wp.policy.uploadedSha256)) {
+      fail('WORKPAPER.WRITEBACK_RETRY_ARTIFACT_DRIFT', 'The original policy artifact is unavailable or its SHA-256 has changed.');
+    }
+    let handle = null;
+    let extraction;
+    try {
+      handle = await store.call('openPythonArtifactHandle', { runId: bytes.runId, artifactId: policySource.artifactId });
+      extraction = await planner().invoke('extract_policy_archive', {
+        schemaVersion: 'omnia.workpaper-policy-archive/v1', zipPath: handle.path
+      }, { runId: plan.runId || plan.planId });
+    } finally {
+      if (handle && handle.handleId) {
+        await store.call('releasePythonArtifactHandles', { handleIds: [handle.handleId] });
+      }
+    }
+    if (!extraction || extraction.schemaVersion !== 'omnia.workpaper-policy-extraction/v1'
+      || !Array.isArray(extraction.documents) || extraction.documents.length < 1) {
+      fail('WORKPAPER.WRITEBACK_RETRY_POLICY_EMPTY', 'The original policy artifact still contains no indexable policy text.');
+    }
+    const previousWriteback = wp.writeback;
+    wp.writebackRetry = {
+      schemaVersion: 'omnia.workpaper-writeback-retry/v1', sourcePlanId,
+      fromFeatureVersion: text(plan.featureVersion), toFeatureVersion: FEATURE_VERSION,
+      rejectionCode: editorRepair ? 'WORKPAPER.EDITOR_PAYLOAD_PLAINTEXT_V0_1_69' : 'CONNECTOR_NEXT.DURABLE_MUTATION_REQUIRED',
+      reason: editorRepair ? 'Rewrite the exact prior semantic text using the recorded Omnia rich-editor JSON envelope.'
+        : 'Retry a mutation proven not to have started.', sourceArtifactId: policySource.artifactId,
+      sourceSha256: bytes.sha256, rejectedOutcomes: previousWriteback.outcomes,
+      reprocessedAt: new Date().toISOString()
+    };
+    wp.policy = {
+      documents: extraction.documents, skipped: extraction.skipped || [],
+      documentCount: extraction.documentCount, skippedCount: extraction.skippedCount,
+      uploadedSha256: bytes.sha256, state: 'extracted'
+    };
+    wp.policyDocuments = extraction.documents;
+    delete wp.resolution;
+    delete wp.writeback;
+    delete wp.writebackCounts;
+    delete wp.writebackRun;
+    wp.state = 'generated';
+    plan.planId = crypto.randomUUID();
+    plan.runId = '';
+    plan.featureVersion = FEATURE_VERSION;
+    await resolvePlaceholders(plan, context);
+    wp.state = 'awaiting_writeback';
+    plan.surfaceStateVersion += 1;
+    await save(plan);
+    return plan;
+  }
+  async function prepareWritebackRun(plan, candidates, b, s) {
+    const coreRun = await store.call('createMutationRun', { engagementId: b.engagementId });
+    const targets = candidates.map((candidate) => ({
+      kind: 'field', key: candidate.target.targetIdentityKey, workspace: candidate.control.workspaceId,
+      objectType: 'Control', objectId: candidate.control.controlId, workItemId: candidate.control.workItemId,
+      riskAssessmentId: candidate.control.riskAssessmentId, appId: candidate.control.appId,
+      baseline: { controlId: candidate.snapshot.controlId, workItemId: candidate.snapshot.workItemId,
+        currentValue: candidate.currentValue, currentText: candidate.currentText },
+      preflightDigest: digest({ controlId: candidate.snapshot.controlId, workItemId: candidate.snapshot.workItemId,
+        currentValue: candidate.currentValue, currentText: candidate.currentText }),
+      mutationOperationId: OPERATIONS.writeback, mutationPayload: candidate.mutationPayload,
+      evidenceOperationIds: [OPERATIONS.snapshot], operationTargetIdentityKey: candidate.target.targetIdentityKey
+    }));
+    const graphDigest = digest(targets.map((item) => ({ key: item.key, preflightDigest: item.preflightDigest,
+      mutationPayload: item.mutationPayload })));
+    const frozen = await store.call('prepareReturnIntent', { runId: coreRun.runId,
+      plan: { schemaVersion: 'omnia.workpaper-writeback-return-intent/v1', authority: {
+        authorityInstanceId: b.authorityInstanceId, tenantOrOrgId: b.tenantOrOrgId,
+        packId: b.packId, engagementId: b.engagementId }, selectedGras: plan.selectedGras, graphDigest, targets },
+      connectorBinding: b, safetyLock: s, credentialDigest: credentialDigest(b, s), preflightDigest: graphDigest });
+    plan.workpaper.hiddenTabRunId = plan.runId || '';
+    plan.workpaper.writebackRun = { runId: coreRun.runId, graphDigest, planDigest: frozen.planDigest,
+      state: 'waiting_confirmation', candidates, outcomes: [], completedCount: 0 };
+    Object.assign(plan, { planId: coreRun.runId, runId: coreRun.runId, graphDigest, planDigest: frozen.planDigest,
+      confirmationId: frozen.confirmationId, confirmationToken: frozen.confirmationToken,
+      confirmationStateVersion: frozen.stateVersion });
+    await save(plan);
+    await store.call('approveReturnIntent', { confirmationId: frozen.confirmationId,
+      confirmationToken: frozen.confirmationToken, expectedStateVersion: Number(frozen.stateVersion),
+      connectorBinding: b, safetyLock: s });
+    await store.call('validateReturnAuthority', { runId: plan.runId, connectorBinding: b, safetyLock: s });
+    plan.workpaper.writebackRun = Object.assign(plan.workpaper.writebackRun || {}, {
+      runId: coreRun.runId, graphDigest, planDigest: frozen.planDigest, state: 'returning',
+      candidates, outcomes: [], completedCount: 0
+    });
+    await save(plan);
+  }
+  async function executeWritebackCandidate(plan, candidate, b, s) {
+    const { control, target, mutationPayload, currentValue, finalValue } = candidate;
+    try {
+      const live = await invoke(OPERATIONS.snapshot, { connectorBinding: b, target, planDigest: plan.planDigest,
+        ...controlRequest(control, control) });
+      if (!live || live.controlId !== control.controlId || live.workItemId !== control.workItemId) {
+        fail('WORKPAPER.WRITEBACK_PREFLIGHT_IDENTITY_DRIFT', '写回前 Control 身份或 Work Item 已变化。');
+      }
+      if (testOfDesignValue(live) !== currentValue) {
+        fail('WORKPAPER.WRITEBACK_PREFLIGHT_DRIFT', '写回前 TestOfDesign 正文已变化。');
+      }
+    } catch (error) {
+      return { terminal: 'failed', phase: 'preflight', error, commandId: '' };
+    }
+
+    let command;
+    try {
+      command = await store.call('prepareDeletionCommand', { runId: plan.runId, planDigest: plan.planDigest,
+        targetKind: 'field', targetKey: target.targetIdentityKey, workspaceId: control.workspaceId,
+        binding: b, workspaceIds: s.workspaceIds, operationId: OPERATIONS.writeback, request: mutationPayload,
+        evidenceOperationIds: [OPERATIONS.snapshot], evidenceTargetIdentityKey: target.targetIdentityKey });
+    } catch (error) {
+      return { terminal: 'failed', phase: 'command_prepare', error, commandId: '' };
+    }
+
+    const readRequest = { connectorBinding: b, target, ...controlRequest(control, control) };
+    try {
+      await store.call('freezeReturnEvidenceSpec', { runId: plan.runId, commandId: command.commandId,
+        operationId: OPERATIONS.snapshot, request: readRequest });
+      await store.call('recordReturnEvidence', { runId: plan.runId, commandId: command.commandId,
+        evidenceType: 'request', commandState: 'submitted', payload: { operationId: OPERATIONS.writeback } });
+    } catch (error) {
+      try {
+        await store.call('recordReturnEvidence', { runId: plan.runId, commandId: command.commandId,
+          evidenceType: 'request', commandState: 'failed', payload: { code: errorSummary(error).code },
+          error: errorSummary(error).message });
+      } catch {}
+      return { terminal: 'failed', phase: 'before_mutation', error, commandId: command.commandId };
+    }
+
+    let mutationResult;
+    try {
+      mutationResult = await invoke(OPERATIONS.writeback, { connectorBinding: b, target,
+        planDigest: plan.planDigest, ...controlRequest(control, control), command: {
+          commandId: command.commandId, idempotencyKey: command.idempotencyKey, payload: mutationPayload } });
+      if (mutationResult && mutationResult.__connectorMutationNotStarted === true) {
+        fail('WORKPAPER.WRITEBACK_NOT_STARTED', 'Connector 已证明正文写回未开始。');
+      }
+      await store.call('recordReturnEvidence', { runId: plan.runId, commandId: command.commandId,
+        evidenceType: 'commit', commandState: 'committed', payload: mutationResult });
+    } catch (error) {
+      return { terminal: 'uncertain', phase: 'submitted', error, commandId: command.commandId };
+    }
+
+    let observed;
+    try {
+      observed = await invoke(OPERATIONS.snapshot, { ...readRequest,
+        receiptContext: { runId: plan.runId, commandId: command.commandId } });
+      if (!observed || observed.controlId !== control.controlId || observed.workItemId !== control.workItemId
+        || testOfDesignValue(observed) !== finalValue) {
+        fail('WORKPAPER.WRITEBACK_READBACK_MISMATCH', '权威读回未证明完整 TestOfDesign 正文已写入。');
+      }
+      await store.call('recordReturnEvidence', { runId: plan.runId, commandId: command.commandId,
+        evidenceType: 'readback', commandState: 'readback_verified', payload: observed,
+        receiptId: observed.__operationReceiptId });
+    } catch (error) {
+      return { terminal: 'uncertain', phase: 'readback', error, commandId: command.commandId };
+    }
+    try {
+      await store.call('projectVerifiedReturn', { runId: plan.runId, commandId: command.commandId,
+        binding: b, workspaceId: control.workspaceId, projectionKind: 'object', objectType: 'Control',
+        objectId: control.controlId, provenance: { riskAssessmentId: control.riskAssessmentId,
+          appId: control.appId, purpose: 'phase2_test_of_design_writeback' }, payload: observed });
+    } catch (error) {
+      return { terminal: 'uncertain', phase: 'projection', error, commandId: command.commandId };
+    }
+    return { terminal: 'succeeded', phase: 'readback_verified', commandId: command.commandId,
+      ledger: mutationResult.ledger };
+  }
+  async function resumeWritebackRun(plan, context) {
+    const pending = plan && plan.workpaper && plan.workpaper.writebackRun;
+    if (!pending || !['waiting_confirmation','returning'].includes(pending.state) || !Array.isArray(pending.candidates)) {
+      fail('WORKPAPER.WRITEBACK_RECOVERY_INVALID', '待恢复的正文写回计划缺少冻结候选清单。');
+    }
+    const { b, s } = contextAuthority(context); sameAuthority(b, plan.binding); sameSafety(s, plan.safety);
+    if (pending.state === 'waiting_confirmation') {
+      await store.call('approveReturnIntent', { confirmationId: plan.confirmationId,
+        confirmationToken: plan.confirmationToken, expectedStateVersion: Number(plan.confirmationStateVersion),
+        connectorBinding: b, safetyLock: s });
+      pending.state = 'returning';
+      await save(plan);
+    }
+    await store.call('validateReturnAuthority', { runId: plan.runId, connectorBinding: b, safetyLock: s });
+    const outcomes = Array.isArray(pending.outcomes) ? pending.outcomes : [];
+    const completed = new Set(outcomes.map((item) => text(item && item.controlId)).filter(Boolean));
+    let writebackOutcome = outcomes.some((item) => item.state === 'uncertain') ? 'uncertain' : 'succeeded';
+    for (const candidate of pending.candidates) {
+      if (completed.has(candidate.control.controlId)) continue;
+      const result = await executeWritebackCandidate(plan, candidate, b, s);
+      if (result.terminal === 'succeeded') {
+        outcomes.push({ controlId: candidate.control.controlId, state: 'succeeded', phase: result.phase,
+          commandId: result.commandId, ledger: result.ledger });
+      } else {
+        writebackOutcome = result.terminal === 'uncertain' ? 'uncertain'
+          : writebackOutcome === 'succeeded' ? 'failed' : writebackOutcome;
+        const summary = errorSummary(result.error);
+        outcomes.push({ controlId: candidate.control.controlId, state: 'uncertain', phase: result.phase,
+          commandId: result.commandId, code: summary.code, message: summary.message });
+      }
+      pending.outcomes = outcomes;
+      pending.completedCount = outcomes.length;
+      await save(plan);
+    }
+    await store.call('finishReturn', { runId: plan.runId, outcome: writebackOutcome,
+      ...(writebackOutcome !== 'succeeded' ? { error: 'Recovered Control body write-back lacks verified read-back.' } : {}) });
+    pending.state = writebackOutcome;
+    await save(plan);
+    return plan;
+  }
   // The whole write-back capsule chain, run on one explicit confirmation:
   //   1. activate OE Tab (freeze → confirm → open hidden Tabs)
   //   2. read back every Control of every selected GRA
@@ -1025,56 +1382,93 @@ function createFeatureWorker(ports) {
     await save(plan);
 
     const outcomes = [];
+    const candidates = [];
     const field = PHASE2_FIELDS.find((item) => item.backendKey === 'gitcNonDetailedTestingProcedures[phaseType=TestOfDesign].documentProcedureResults');
     if (!field || !field.writePath) fail('WORKPAPER.WRITEBACK_FIELD', 'TestOfDesign 字段没有可写的 Phase 2 合同。');
-    for (let index = 0; index < reconcile.rows.length; index += 1) {
-      const row = reconcile.rows[index];
+    for (const row of reconcile.rows) {
       if (!row.matched) {
         outcomes.push({ controlId: row.controlId, state: 'skipped', reason: '无匹配的写回控制点' });
-        progress.capsules[2] = { capsuleId: 'writeback', label: '写回 Control', state: 'running', completed: index + 1, total, detail: `${index + 1}/${total}` };
-        plan.surfaceStateVersion += 1; await save(plan);
         continue;
       }
       const control = plan.controls.find((item) => item.controlId === row.controlId);
       if (!control) {
         outcomes.push({ controlId: row.controlId, state: 'skipped', reason: '读回 Control 不在冻结清单中' });
-        progress.capsules[2] = { capsuleId: 'writeback', label: '写回 Control', state: 'running', completed: index + 1, total, detail: `${index + 1}/${total}` };
-        plan.surfaceStateVersion += 1; await save(plan);
         continue;
       }
       const resolution = row.resolution;
       if (!resolution || typeof resolution.resolvedText !== 'string') {
         outcomes.push({ controlId: row.controlId, state: 'skipped', reason: '无占位符需写回' });
-        progress.capsules[2] = { capsuleId: 'writeback', label: '写回 Control', state: 'running', completed: index + 1, total, detail: `${index + 1}/${total}` };
-        plan.surfaceStateVersion += 1; await save(plan);
         continue;
       }
-      const snapshot = await invoke(OPERATIONS.snapshot, { connectorBinding: b, ...controlRequest(control, control) });
-      if (!snapshot || snapshot.controlId !== control.controlId) {
-        outcomes.push({ controlId: row.controlId, state: 'uncertain', reason: '实时快照身份漂移' });
-      } else {
-        const procedure = (snapshot.procedures || []).find((item) => item.phaseType === 'TestOfDesign');
-        const currentText = procedure ? procedure.documentProcedureResults : '';
-        const finalText = resolution.resolvedText;
-        if (finalText === currentText) {
-          outcomes.push({ controlId: row.controlId, state: 'skipped', reason: '占位符已解析，无实际变更' });
-        } else {
-          const changes = [{ writePath: field.writePath, value: finalText, valueKind: 'editor',
-            concurrencyTab: field.concurrencyTab || 201, phaseType: 'TestOfDesign' }];
-          try {
-            const result = await invoke(OPERATIONS.writeback, {
-              connectorBinding: b, ...controlRequest(control, control),
-              command: { payload: { controlId: control.controlId, changes } }
-            });
-            const allConfirmed = Array.isArray(result.ledger) && result.ledger.every((entry) => entry.confirmed === true);
-            outcomes.push({ controlId: row.controlId, state: allConfirmed ? 'succeeded' : 'uncertain', ledger: result.ledger });
-          } catch (error) {
-            outcomes.push({ controlId: row.controlId, state: 'uncertain', code: errorSummary(error).code, message: errorSummary(error).message });
+      let snapshot;
+      try {
+        snapshot = await invoke(OPERATIONS.snapshot, { connectorBinding: b, ...controlRequest(control, control) });
+      } catch (error) {
+        const summary = errorSummary(error);
+        outcomes.push({ controlId: row.controlId, state: 'uncertain', phase: 'snapshot', code: summary.code, message: summary.message });
+        continue;
+      }
+      if (!snapshot || snapshot.controlId !== control.controlId || snapshot.workItemId !== control.workItemId) {
+        outcomes.push({ controlId: row.controlId, state: 'uncertain', reason: '实时快照身份或 Work Item 漂移' });
+        continue;
+      }
+      const currentValue = testOfDesignValue(snapshot);
+      const currentText = testOfDesignText(snapshot);
+      const finalText = text(resolution.resolvedText);
+      const finalValue = omniaEditorValue(finalText);
+      if (finalValue === currentValue) {
+        outcomes.push({ controlId: row.controlId, state: 'skipped', reason: '占位符已解析，无实际变更' });
+        continue;
+      }
+      const changes = [{ writePath: field.writePath, value: finalValue, expectedValue: currentValue,
+        valueKind: 'editor', concurrencyTab: field.concurrencyTab || 201, phaseType: 'TestOfDesign' }];
+      candidates.push({ row, control, resolution, snapshot, currentValue, currentText, finalValue, finalText, changes,
+        target: writebackTarget(control), mutationPayload: { controlId: control.controlId, changes } });
+    }
+
+    if (candidates.length) {
+      try {
+        await prepareWritebackRun(plan, candidates, b, s);
+        let writebackOutcome = 'succeeded';
+        for (const candidate of candidates) {
+          const result = await executeWritebackCandidate(plan, candidate, b, s);
+          if (result.terminal === 'succeeded') {
+            outcomes.push({ controlId: candidate.control.controlId, state: 'succeeded', phase: result.phase,
+              commandId: result.commandId, ledger: result.ledger });
+          } else {
+            writebackOutcome = result.terminal === 'uncertain' ? 'uncertain'
+              : writebackOutcome === 'succeeded' ? 'failed' : writebackOutcome;
+            const summary = errorSummary(result.error);
+            outcomes.push({ controlId: candidate.control.controlId, state: 'uncertain', phase: result.phase,
+              commandId: result.commandId, code: summary.code, message: summary.message });
+          }
+          plan.workpaper.writebackRun.outcomes = outcomes.filter((item) => candidates.some((candidateItem) => (
+            candidateItem.control.controlId === item.controlId)));
+          plan.workpaper.writebackRun.completedCount = plan.workpaper.writebackRun.outcomes.length;
+          const completed = Math.min(total, outcomes.length);
+          progress.capsules[2] = { capsuleId: 'writeback', label: '写回 Control', state: 'running',
+            completed, total, detail: `${completed}/${total}` };
+          plan.surfaceStateVersion += 1; await save(plan);
+        }
+        await store.call('finishReturn', { runId: plan.runId,
+          outcome: writebackOutcome,
+          ...(writebackOutcome !== 'succeeded' ? { error: 'One or more Control body write-backs lack verified read-back.' } : {}) });
+        plan.workpaper.writebackRun.state = writebackOutcome;
+      } catch (error) {
+        const summary = errorSummary(error);
+        for (const candidate of candidates) {
+          if (!outcomes.some((item) => item.controlId === candidate.control.controlId)) {
+            outcomes.push({ controlId: candidate.control.controlId, state: 'uncertain', phase: 'return_intent',
+              code: summary.code, message: summary.message });
           }
         }
+        if (plan.workpaper.writebackRun && plan.workpaper.writebackRun.state === 'returning') {
+          try {
+            await store.call('finishReturn', { runId: plan.runId, outcome: 'uncertain', error: `${summary.code}: ${summary.message}` });
+          } catch {}
+          plan.workpaper.writebackRun.state = 'uncertain';
+        }
       }
-      progress.capsules[2] = { capsuleId: 'writeback', label: '写回 Control', state: 'running', completed: index + 1, total, detail: `${index + 1}/${total}` };
-      plan.surfaceStateVersion += 1; await save(plan);
     }
     const uncertainCount = outcomes.filter((item) => item.state === 'uncertain').length;
     const succeededCount = outcomes.filter((item) => item.state === 'succeeded').length;
@@ -1255,6 +1649,12 @@ function createFeatureWorker(ports) {
   }
   async function handleAction(input) {
     const context = input.context || {};
+    const recoverable = input.actionId === 'confirm-writeback' ? await openPlan() : null;
+    if (recoverable && recoverable.workpaper && recoverable.workpaper.writebackRun
+      && ['waiting_confirmation','returning'].includes(recoverable.workpaper.writebackRun.state)) {
+      const resumed = await resumeWritebackRun(recoverable, context);
+      return { surfacePatch: workpaperSurface(resumed) };
+    }
     if (input.actionId === 'bootstrap-workpaper-directory' || input.actionId === 'refresh-workpaper-directory') {
       return { surfacePatch: await refresh(context) };
     }
@@ -1274,7 +1674,8 @@ function createFeatureWorker(ports) {
       return { surfacePatch: workpaperSurface(await nextToWriteback(plan, context)) };
     }
     if (input.actionId === 'confirm-writeback') {
-      const written = await confirmWriteback(plan, context);
+      const prepared = retryableRejectedWriteback(plan) ? await reprepareRejectedWriteback(plan, context) : plan;
+      const written = await confirmWriteback(prepared, context);
       return { surfacePatch: workpaperSurface(written) };
     }
     if (input.actionId === 'upload-policy') {
@@ -1303,4 +1704,5 @@ function createFeatureWorker(ports) {
   return Object.freeze({ health, shutdown: () => bridge ? bridge.close() : undefined, refreshCatalog: refresh, handleAction });
 }
 
-module.exports = Object.freeze({ createFeatureWorker, FEATURE_ID, FEATURE_VERSION, OPERATIONS, normalizeDirectory });
+module.exports = Object.freeze({ createFeatureWorker, FEATURE_ID, FEATURE_VERSION, OPERATIONS, normalizeDirectory,
+  bindReplacementSystems });

@@ -408,6 +408,19 @@ function riskScopeWritebackPath(template, snapshot) {
   if (!detail || !detail.scopeId || !detail.detailId) fail('Write-back requires a unique risk-scope detail id.');
   return template.replaceAll('{riskScopeId}', detail.scopeId).replaceAll('{riskScopeDetailId}', detail.detailId);
 }
+function normalizeOmniaEditorValue(value) {
+  const raw = text(value);
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch { fail('Write-back editor value is not valid Omnia rich-editor JSON.'); }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
+    || typeof parsed.editorData !== 'string' || !Array.isArray(parsed.suggestionsData)
+    || typeof parsed.trackChangesEnableFlagInEditor !== 'boolean' || typeof parsed.plainText !== 'string') {
+    fail('Write-back editor value does not match the recorded Omnia rich-editor envelope.');
+  }
+  return JSON.stringify({ editorData: parsed.editorData, suggestionsData: parsed.suggestionsData,
+    trackChangesEnableFlagInEditor: parsed.trackChangesEnableFlagInEditor, plainText: parsed.plainText });
+}
 function normalizeWritebackValue(value, valueKind) {
   if (valueKind === 'number') {
     const number = Number(value);
@@ -420,6 +433,14 @@ function normalizeWritebackValue(value, valueKind) {
     if (value === '否' || value === 'false' || value === '0') return false;
     fail('Write-back boolean value is invalid.');
   }
+  if (valueKind === 'editor') return normalizeOmniaEditorValue(value);
+  return text(value);
+}
+function normalizeExpectedWritebackValue(value, valueKind) {
+  if (valueKind === 'number' || valueKind === 'boolean') return normalizeWritebackValue(value, valueKind);
+  // Frozen editor values may legitimately be empty, a historical malformed
+  // plain string, or a valid rich-editor envelope. Compare the exact live raw
+  // value here; only the new value submitted to PATCH must pass the envelope.
   return text(value);
 }
 function extractSnapshotField(snapshot, template, phaseType) {
@@ -695,6 +716,11 @@ function createOperationHandler() {
           path = riskScopeWritebackPath(template, snapshot);
         } else {
           path = resolveWritebackPath(template, snapshot);
+        }
+        if (!Object.hasOwn(change, 'expectedValue')) fail('Write-back change lacks the frozen current value.');
+        const expectedValue = normalizeExpectedWritebackValue(change.expectedValue, valueKind);
+        if (!valueSatisfied(snapshot, template, expectedValue, valueKind, text(change.phaseType || 'TestOfDesign'))) {
+          fail('Write-back field changed after the frozen preflight.');
         }
         const tab = Number(change.concurrencyTab) === CONTROL_OE_TAB_ID ? CONTROL_OE_TAB_ID : CONTROL_CORE_TAB_ID;
         const token = currentTab(detail, tab);

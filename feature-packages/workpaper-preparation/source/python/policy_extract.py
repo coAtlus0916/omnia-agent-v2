@@ -1,8 +1,8 @@
-"""Deterministic policy-archive (制度) text extraction.
+"""Deterministic recursive policy-archive (制度) text extraction.
 
-Pure standard-library. Extracts text from .docx (WordprocessingML) and .xlsx
-(OOXML via ooxml.read_xlsx) members of a .zip archive. Scanned-image PDFs carry
-no text layer and are reported as skipped rather than guessed.
+Pure standard-library. Recursively extracts text from .docx (WordprocessingML)
+and .xlsx (OOXML via ooxml.read_xlsx) members of a .zip archive. Scanned-image
+PDFs carry no text layer and are reported as skipped rather than guessed.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ import base64
 import io
 import os
 import posixpath
-import re
 import zipfile
 from typing import Any
 from xml.etree import ElementTree as ET
@@ -23,7 +22,10 @@ ARCHIVE_SCHEMA = "omnia.workpaper-policy-archive/v1"
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 MAX_MEMBER_BYTES = 32 * 1024 * 1024
 MAX_MEMBERS = 200
+MAX_ARCHIVE_DEPTH = 4
+MAX_TOTAL_EXPANDED_BYTES = 128 * 1024 * 1024
 MAX_EXTRACTED_CHARS = 400_000
+SUPPORTED_COMPRESSION = {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
 
 _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
@@ -31,10 +33,16 @@ _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 def _docx_text(data: bytes) -> str:
     try:
         archive = zipfile.ZipFile(io.BytesIO(data), "r")
-        document = archive.read("word/document.xml")
+        info = archive.getinfo("word/document.xml")
+        require(info.compress_type in SUPPORTED_COMPRESSION,
+                "POLICY.DOCX_COMPRESSION_UNSUPPORTED", "制度 docx 使用了不支持的压缩算法。")
+        require(info.file_size <= MAX_MEMBER_BYTES,
+                "POLICY.DOCX_TOO_LARGE", "制度 docx 超过大小限制。")
+        document = archive.read(info)
     except (zipfile.BadZipFile, KeyError, OSError) as exc:
         raise EngineError("POLICY.DOCX_INVALID", "制度 docx 文件无法读取。") from exc
-    require(len(document) <= MAX_MEMBER_BYTES, "POLICY.DOCX_TOO_LARGE", "制度 docx 超过大小限制。")
+    require(len(document) <= MAX_MEMBER_BYTES,
+            "POLICY.DOCX_TOO_LARGE", "制度 docx 超过大小限制。")
     try:
         root = ET.fromstring(document)
     except ET.ParseError as exc:
@@ -68,14 +76,93 @@ def _safe_member_name(name: str) -> str:
     return normalized
 
 
+def _archive_label(prefix: str, member_name: str) -> str:
+    return posixpath.join(prefix, member_name) if prefix else member_name
+
+
+def _walk_archive(
+    raw: bytes,
+    *,
+    depth: int,
+    prefix: str,
+    budget: dict[str, int],
+    documents: list[dict[str, str]],
+    skipped: list[str],
+) -> None:
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(raw), "r")
+    except zipfile.BadZipFile as exc:
+        if depth == 0:
+            raise EngineError("POLICY.ZIP_INVALID", "制度压缩包 ZIP 无效。") from exc
+        skipped.append(f"{prefix}（嵌套 ZIP 无效）")
+        return
+
+    infos = [info for info in archive.infolist() if not info.is_dir() and not info.filename.endswith("/")]
+    if depth == 0:
+        require(infos, "POLICY.ZIP_ENTRY_LIMIT", f"制度压缩包成员数超出 1..{MAX_MEMBERS} 限制。")
+    elif not infos:
+        skipped.append(f"{prefix}（空压缩包）")
+        return
+
+    for info in infos:
+        budget["members"] += 1
+        require(budget["members"] <= MAX_MEMBERS, "POLICY.ZIP_ENTRY_LIMIT",
+                f"制度压缩包递归成员数超出 1..{MAX_MEMBERS} 限制。")
+        name = _safe_member_name(info.filename)
+        display_name = _archive_label(prefix, name)
+        original_name = posixpath.basename(name)
+        if original_name.startswith(".") or "__MACOSX" in name.split("/"):
+            continue
+        require(info.compress_type in SUPPORTED_COMPRESSION, "POLICY.COMPRESSION_UNSUPPORTED",
+                f"制度文件 {display_name} 使用了不支持的压缩算法。")
+        require(info.file_size <= MAX_MEMBER_BYTES, "POLICY.MEMBER_TOO_LARGE",
+                f"制度文件 {display_name} 超过大小限制。")
+        try:
+            data = archive.read(info)
+        except (RuntimeError, zipfile.BadZipFile, OSError) as exc:
+            raise EngineError("POLICY.MEMBER_READ_FAILED", f"制度文件 {display_name} 无法读取。") from exc
+        require(len(data) <= MAX_MEMBER_BYTES, "POLICY.MEMBER_TOO_LARGE",
+                f"制度文件 {display_name} 超过大小限制。")
+        budget["expandedBytes"] += len(data)
+        require(budget["expandedBytes"] <= MAX_TOTAL_EXPANDED_BYTES, "POLICY.EXPANDED_TOO_LARGE",
+                "制度压缩包递归展开后的总大小超过限制。")
+
+        lower = original_name.lower()
+        if lower.endswith(".zip"):
+            if depth >= MAX_ARCHIVE_DEPTH:
+                skipped.append(f"{display_name}（嵌套 ZIP 超过 {MAX_ARCHIVE_DEPTH} 层限制）")
+                continue
+            _walk_archive(data, depth=depth + 1, prefix=display_name, budget=budget,
+                          documents=documents, skipped=skipped)
+            continue
+        if lower.endswith(".docx"):
+            extracted = _docx_text(data)
+            kind = "Word"
+        elif lower.endswith((".xlsx", ".xlsm")):
+            extracted = _xlsx_text(data)
+            kind = "Excel"
+        elif lower.endswith(".pdf"):
+            skipped.append(f"{display_name}（扫描 PDF 无文本层，需文本版制度或多模态 AI）")
+            continue
+        else:
+            skipped.append(f"{display_name}（不支持的制度文件类型）")
+            continue
+
+        extracted = extracted.strip()
+        if not extracted:
+            skipped.append(f"{display_name}（未提取到文字）")
+            continue
+        budget["extractedChars"] += len(extracted)
+        require(budget["extractedChars"] <= MAX_EXTRACTED_CHARS, "POLICY.EXTRACTED_TOO_LARGE",
+                "制度提取文本总量超过限制。")
+        documents.append({"name": display_name, "kind": kind, "text": extracted})
+
+
 def extract_policy_archive(payload: Any) -> dict[str, Any]:
     require(isinstance(payload, dict) and payload.get("schemaVersion") == ARCHIVE_SCHEMA,
             "POLICY.INPUT_INVALID", "制度压缩包输入 schema 无效。")
     zip_path = payload.get("zipPath")
     if isinstance(zip_path, str) and zip_path:
-        # Large archives are delivered as a Core-managed artifact handle path
-        # (a regular file inside the Feature/Run temp root) to avoid the 1 MiB
-        # RPC frame ceiling. Read the bytes directly from that exact file.
         require(os.path.isabs(zip_path), "POLICY.ZIP_PATH_INVALID", "制度压缩包路径无效。")
         try:
             with open(zip_path, "rb") as handle:
@@ -84,51 +171,19 @@ def extract_policy_archive(payload: Any) -> dict[str, Any]:
             raise EngineError("POLICY.ZIP_READ_FAILED", "制度压缩包文件读取失败。") from exc
     else:
         encoded = payload.get("zipBase64")
-        require(isinstance(encoded, str) and encoded, "POLICY.ZIP_REQUIRED", "制度压缩包字节缺失。")
+        require(isinstance(encoded, str) and encoded,
+                "POLICY.ZIP_REQUIRED", "制度压缩包字节缺失。")
         try:
             raw = base64.b64decode(encoded, validate=True)
         except (ValueError, TypeError) as exc:
             raise EngineError("POLICY.ZIP_BASE64_INVALID", "制度压缩包不是有效 base64。") from exc
-    require(0 < len(raw) <= MAX_ARCHIVE_BYTES, "POLICY.ZIP_TOO_LARGE", "制度压缩包超过 64 MiB。")
-    try:
-        archive = zipfile.ZipFile(io.BytesIO(raw), "r")
-    except zipfile.BadZipFile as exc:
-        raise EngineError("POLICY.ZIP_INVALID", "制度压缩包 ZIP 无效。") from exc
-
-    infos = [info for info in archive.infolist() if not info.is_dir() and not info.filename.endswith("/")]
-    require(0 < len(infos) <= MAX_MEMBERS, "POLICY.ZIP_ENTRY_LIMIT", f"制度压缩包成员数超出 1..{MAX_MEMBERS} 限制。")
+    require(0 < len(raw) <= MAX_ARCHIVE_BYTES,
+            "POLICY.ZIP_TOO_LARGE", "制度压缩包超过 64 MiB。")
 
     documents: list[dict[str, str]] = []
     skipped: list[str] = []
-    total_chars = 0
-    for info in infos:
-        name = _safe_member_name(info.filename)
-        original_name = posixpath.basename(name)
-        if original_name.startswith(".") or "__MACOSX" in name:
-            continue
-        lower = original_name.lower()
-        data = archive.read(info)
-        require(len(data) <= MAX_MEMBER_BYTES, "POLICY.MEMBER_TOO_LARGE", f"制度文件 {original_name} 超过大小限制。")
-        if lower.endswith(".docx"):
-            text = _docx_text(data)
-            kind = "Word"
-        elif lower.endswith((".xlsx", ".xlsm")):
-            text = _xlsx_text(data)
-            kind = "Excel"
-        elif lower.endswith(".pdf"):
-            # Scanned-image PDFs have no text layer; report skipped, never guess.
-            skipped.append(f"{original_name}（扫描 PDF 无文本层，需文本版制度或多模态 AI）")
-            continue
-        else:
-            skipped.append(f"{original_name}（不支持的制度文件类型）")
-            continue
-        text = text.strip()
-        if not text:
-            skipped.append(f"{original_name}（未提取到文字）")
-            continue
-        total_chars += len(text)
-        require(total_chars <= MAX_EXTRACTED_CHARS, "POLICY.EXTRACTED_TOO_LARGE", "制度提取文本总量超过限制。")
-        documents.append({"name": original_name, "kind": kind, "text": text})
+    budget = {"members": 0, "expandedBytes": 0, "extractedChars": 0}
+    _walk_archive(raw, depth=0, prefix="", budget=budget, documents=documents, skipped=skipped)
 
     return {
         "schemaVersion": "omnia.workpaper-policy-extraction/v1",

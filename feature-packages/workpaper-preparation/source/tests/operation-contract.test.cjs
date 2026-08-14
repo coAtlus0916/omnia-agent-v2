@@ -328,6 +328,8 @@ test('phase2 writeback resolves sub-entity paths and confirms each stage via rea
   const handler = createOperationHandler();
   let description = 'old description';
   let procedureResult = 'old procedure result';
+  const editorValue = JSON.stringify({ editorData: '<p>new procedure</p>', suggestionsData: [],
+    trackChangesEnableFlagInEditor: false, plainText: '' });
   const writableSdk = {
     ...sdk,
     async invokeStep(stepId, parameters, body) {
@@ -356,16 +358,25 @@ test('phase2 writeback resolves sub-entity paths and confirms each stage via rea
   const response = await handler.run('omnia.workpaper.phase2.writeback.v1', {
     ...contextRequest(), controlId: CONTROL, controlWorkItemId: CONTROL_WORK,
     command: { payload: { controlId: CONTROL, changes: [
-      { writePath: '/description', value: 'new description', valueKind: 'text', concurrencyTab: 201 },
-      { writePath: '/gitcNonDetailedTestingProcedures/{procedureId}/documentProcedureResults', value: 'new procedure', valueKind: 'editor', concurrencyTab: 201, phaseType: 'TestOfDesign' }
+      { writePath: '/description', value: 'new description', expectedValue: 'old description', valueKind: 'text', concurrencyTab: 201 },
+      { writePath: '/gitcNonDetailedTestingProcedures/{procedureId}/documentProcedureResults', value: editorValue,
+        expectedValue: 'old procedure result', valueKind: 'editor', concurrencyTab: 201, phaseType: 'TestOfDesign' }
     ] } }
   }, writableSdk);
   assert.equal(response.accepted, true);
   assert.equal(response.ledger.length, 2);
   assert.deepEqual(response.ledger.map((item) => item.confirmed), [true, true]);
   assert.equal(description, 'new description');
-  assert.equal(procedureResult, 'new procedure');
+  assert.equal(procedureResult, editorValue);
   const patchCalls = calls.filter((item) => item.stepId === 'writeback-patch');
   assert.equal(patchCalls.length, 2);
   assert.ok(patchCalls.every((item) => item.body.some((op) => op.path === '/concurrencyTabId' && op.value === 201)));
+  await assert.rejects(handler.run('omnia.workpaper.phase2.writeback.v1', {
+    ...contextRequest(), controlId: CONTROL, controlWorkItemId: CONTROL_WORK,
+    command: { payload: { controlId: CONTROL, changes: [{
+      writePath: '/gitcNonDetailedTestingProcedures/{procedureId}/documentProcedureResults', value: 'bare text',
+      expectedValue: editorValue, valueKind: 'editor', concurrencyTab: 201, phaseType: 'TestOfDesign'
+    }] } }
+  }, writableSdk), /not valid Omnia rich-editor JSON/u);
+  assert.equal(calls.filter((item) => item.stepId === 'writeback-patch').length, 2);
 });

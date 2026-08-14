@@ -5,8 +5,8 @@ import path from 'node:path';
 const root = path.resolve(import.meta.dirname, '..');
 const source = path.join(root, 'feature-packages', 'workpaper-preparation', 'source');
 const output = path.join(root, 'feature-packages', 'workpaper-preparation', 'candidates');
-const version = '0.1.66';
-const sequence = 67;
+const version = '0.1.71';
+const sequence = 72;
 const signingRoot = process.env.OMNIA_V5_SIGNING_ROOT || path.join(process.env.USERPROFILE || '', '.omnia-agent-v5', 'signing');
 const featurePrivateKey = await readFile(path.join(signingRoot, 'feature-ed25519-private.pem'), 'utf8');
 const operationPrivateKey = await readFile(path.join(signingRoot, 'operation-ed25519-private.pem'), 'utf8');
@@ -89,7 +89,7 @@ const operations = [
   {
     operationId: 'omnia.workpaper.phase2.snapshot.read.v1', effect: 'read_only',
     requestSchema: 'omnia.workpaper.phase2-snapshot-read-request/v1', responseSchema: 'omnia.workpaper.phase2-snapshot-read-response/v1',
-    enabledByDefault: true, grantsMutationPermit: false, routes: [
+    enabledByDefault: true, grantsMutationPermit: true, permitsOperationId: 'omnia.workpaper.phase2.writeback.v1', routes: [
       ...graContextRoutes('snapshot'),
       route('snapshot-control-detail', 'GET', '/rapr/v0/engagements/{engagementId}/controls/{controlId}', [{ name: 'controlId', type: 'guid' }])
     ]
@@ -213,7 +213,9 @@ if(!worker.includes("finishReturn', { runId: plan.runId, outcome: 'uncertain'")|
   ||!worker.includes('workflowSurface(plan)')||!worker.includes('forceEnd(plan, context)')||!worker.includes('freezeHiddenTabPlan(plan, context)')
   ||!worker.includes('generateWorkpaper(plan, context)')||!worker.includes('applyReplacementFields(plan, context')||!worker.includes('confirmWriteback(plan, context')||!worker.includes('commitStandaloneArtifact')
   ||!surface.actions.some((item)=>item.actionId==='upload-filled-workbook'&&item.input?.kind==='open_file')||!surface.actions.some((item)=>item.actionId==='upload-policy'&&item.input?.kind==='open_file')||!surface.actions.some((item)=>item.actionId==='confirm-writeback'&&item.effect==='omnia_mutation')
-  ||!handler.includes('omnia.workpaper.phase2.writeback.v1')||!handler.includes('valueSatisfied')
+  ||!handler.includes('omnia.workpaper.phase2.writeback.v1')||!handler.includes('valueSatisfied')||!handler.includes('Write-back field changed after the frozen preflight.')
+  ||!worker.includes('prepareWritebackRun(plan, candidates, b, s)')||!worker.includes('resumeWritebackRun(plan, context)')
+  ||!worker.includes('receiptContext: { runId: plan.runId, commandId: command.commandId }')
   ||!engine.includes('build_phase2_workbook')||!engine.includes('parse_uploaded_workbook')||!engine.includes('build_phase2_template')||!engine.includes('extract_policy_archive')
   ||!engine.includes('apply_replacement_fields')
   ||!handler.includes('omnia.workpaper.phase2.snapshot.read.v1')||!handler.includes('documentProcedureResults')

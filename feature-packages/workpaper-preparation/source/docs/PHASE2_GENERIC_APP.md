@@ -48,7 +48,7 @@ Control 编号只用于从 GRA 的真实 Control 目录选择上述九个目标�
 | 设计因素 | 是否依赖其他控制 | `dependentOnOtherControls` | `controlDesignEvaluation/{id}` | v4 遗留，待写入录制 |
 | 设计结论 | 设计是否有效 | `designEffective` | `controlDesignEvaluation/{id}` | v4 遗留，待写入录制 |
 | 设计结论 | 是否得到执行 | `properlyImplemented` | `controlDesignEvaluation/{id}` | v4 遗留，待写入录制 |
-| 设计程序 | 程序结果 | `documentProcedureResults` | `gitcNonDetailedTestingProcedures/{id}`，`phaseType=TestOfDesign` | v4 遗留，待写入录制 |
+| 设计程序 | 程序结果 | `documentProcedureResults` | `gitcNonDetailedTestingProcedures/{id}`，`phaseType=TestOfDesign` | 已接入 durable command + snapshot permit；按 v5 录制提交 Omnia editor JSON，待真实 Pack canary 复核 |
 | RAWC | 适当性与相关性 | `appropriatenessAndCorrelation` | `controlRiskScopes/{scopeId}/controlRiskScopeDetails/{detailId}` | v4 遗留，待写入录制 |
 | 运行有效性 | 程序时间 | `procedureTiming` | `controlOperatingEffectiveness/{id}` | v4 遗留，待写入录制 |
 | 运行有效性 | 时间理由 | `procedureTimingRationale` | `controlOperatingEffectiveness/{id}` | v4 遗留，待写入录制 |
@@ -57,7 +57,7 @@ Control 编号只用于从 GRA 的真实 Control 目录选择上述九个目标�
 | 运行有效性 | 使用建议样本量 | `useRecommendedSampleSize` | `controlOperatingEffectiveness/{id}` | v4 遗留，待写入录制 |
 | 运行有效性 | 实际样本量 | `actualSampleSize` | `controlOperatingEffectiveness/{id}` | v4 遗留，待写入录制 |
 | 运行有效性 | 实际样本量理由 | `actualSampleSizeRationale` | `controlOperatingEffectiveness/{id}` | v4 遗留，待写入录制 |
-| 运行有效性程序 | 程序结果 1–4 | `documentProcedureResults` | `gitcNonDetailedTestingProcedures/{id}`，`phaseType=OperatingEffectiveness` | v4 遗留，待写入录制 |
+| 运行有效性程序 | 程序结果 1–4 | `documentProcedureResults` | `gitcNonDetailedTestingProcedures/{id}`，`phaseType=OperatingEffectiveness` | v5 录制已确认 path、editor JSON 与 Tab 212；尚未开放执行入口 |
 | 运行有效性 | 运行是否有效 | `operatingEffectively` | `controlOperatingEffectiveness/{id}` | v4 遗留，待写入录制 |
 
 ## 后续实现顺序

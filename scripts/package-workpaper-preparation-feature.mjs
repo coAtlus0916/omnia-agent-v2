@@ -5,8 +5,8 @@ import path from 'node:path';
 const root = path.resolve(import.meta.dirname, '..');
 const source = path.join(root, 'feature-packages', 'workpaper-preparation', 'source');
 const output = path.join(root, 'feature-packages', 'workpaper-preparation', 'candidates');
-const version = '0.1.81';
-const sequence = 82;
+const version = '0.1.83';
+const sequence = 84;
 const signingRoot = process.env.OMNIA_V5_SIGNING_ROOT || path.join(process.env.USERPROFILE || '', '.omnia-agent-v5', 'signing');
 const featurePrivateKey = await readFile(path.join(signingRoot, 'feature-ed25519-private.pem'), 'utf8');
 const operationPrivateKey = await readFile(path.join(signingRoot, 'operation-ed25519-private.pem'), 'utf8');
@@ -167,6 +167,7 @@ const actions = [
   { actionId: 'select-elements', label: '下一步', effect: 'local_state_write', enabled: true, reason: '', selectionMode: 'single', dependencies: ['remote_connector', 'safety_lock'] },
   { actionId: 'upload-filled-workbook', label: '上传填写好的参数表', effect: 'local_state_write', enabled: false, reason: '请先生成填写件，再上传填写好的参数表。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock'], input: { kind: 'open_file', accept: ['.xlsx', '.xlsm'], label: '选择填写好的参数表' } },
   { actionId: 'upload-policy', label: '上传制度资料', effect: 'local_state_write', enabled: false, reason: '请先生成填写件模板，再上传制度资料。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock'], input: { kind: 'open_file', accept: ['.zip', '.docx', '.xlsx', '.xlsm', '.pdf'], multiple: true, directory: true, label: '选择制度资料（压缩包/文件/文件夹）' } },
+  { actionId: 'skip-materials', label: '跳过', effect: 'local_state_write', enabled: false, reason: '请先生成填写件模板。', presentation: 'upload', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock'] },
   { actionId: 'next-to-writeback', label: '下一步', effect: 'local_state_write', enabled: false, reason: '请先上传填写件与制度资料，再进入确认回传。', presentation: 'upload', selectionMode: 'none', dependencies: [] },
   { actionId: 'confirm-writeback', label: '确认回传', effect: 'omnia_mutation', enabled: false, reason: '请先上传填写件与制度资料并完成系统转化，再确认回传。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock'] },
   { actionId: 'restart-run', label: '强制结束流程', effect: 'local_state_write', enabled: false, reason: '当前没有可结束的流程。', presentation: 'restart', selectionMode: 'none', dependencies: [] }
@@ -178,7 +179,7 @@ const surface = {
   status: 'loading', statusMessage: '正在读取当前 Pack 的真实 Application GRA。', scopes: [], items: [], selectedItemIds: [], search: '', actions,
   workflow: { revision: 1, currentStepId: 'select', steps: [
     { stepId: 'select', label: '选择元素', state: 'current', detail: '选择 Generic Application GRA 并生成填写件模板' },
-    { stepId: 'upload', label: '上传材料', state: 'pending', detail: '下载填写件、上传填写件与制度资料后系统转化' },
+    { stepId: 'upload', label: '上传材料', state: 'pending', detail: '上传填写件与制度资料，或跳过并保留母版占位内容' },
     { stepId: 'writeback', label: '确认回传', state: 'pending', detail: '激活 OE Tab、读回 Control 并写回' }
   ] },
   selectionBrowser: { schemaVersion: 'omnia.declarative-selection-browser/v1',
@@ -208,7 +209,7 @@ const operation=JSON.parse(read('connector-capability/operation.ofop'));const ha
 const handler=handlerMember&&Buffer.from(handlerMember.contentBase64,'base64').toString('utf8');const worker=read('middle/worker.cjs'),engine=read('python/workpaper-preparation-engine.py'),workbook=read('python/workpaper_workbook.py');
 if(manifest.featureId!=='omnia.workpaper-preparation'||manifest.version!=='${version}'||runtime.pythonSidecar?.version!=='3.13.14')throw new Error('runtime identity failed');
 if(surface.actions.some((item)=>item.actionId.includes('comment'))||worker.includes('messageCard')||!surface.selectionBrowser||surface.selectionBrowser.layout?.mode!=='fixed_footer_split'||surface.actions.find((item)=>item.actionId==='select-elements')?.selectionMode!=='single')throw new Error('Feature-only two-step Surface failed');
-if(!surface.workflow||surface.workflow.steps.length!==3||surface.workflow.steps[0].stepId!=='select'||surface.workflow.steps[1].stepId!=='upload'||surface.workflow.steps[2].stepId!=='writeback'||!surface.actions.some((item)=>item.actionId==='select-elements'&&item.selectionMode==='single')||!surface.actions.some((item)=>item.actionId==='restart-run'&&item.presentation==='restart'))throw new Error('Declarative three-step workflow Surface failed');
+if(!surface.workflow||surface.workflow.steps.length!==3||surface.workflow.steps[0].stepId!=='select'||surface.workflow.steps[1].stepId!=='upload'||surface.workflow.steps[2].stepId!=='writeback'||!surface.actions.some((item)=>item.actionId==='select-elements'&&item.selectionMode==='single')||!surface.actions.some((item)=>item.actionId==='skip-materials'&&item.presentation==='upload')||!surface.actions.some((item)=>item.actionId==='restart-run'&&item.presentation==='restart'))throw new Error('Declarative three-step workflow Surface failed');
 if(!handler||!handler.includes("path: '/planningOperatingEffectivenessTesting'")||!handler.includes("path: '/planningCommonControlTesting'")||!handler.includes("path: '/usePreviousAuditEvidence'")||!handler.includes("'validate-hidden-data'")||!handler.includes('CONTROL_CORE_TAB_ID = 201')||!handler.includes('CONTROL_OE_TAB_ID = 209')||!handler.includes('WRITEBACK_TAB_IDS = Object.freeze([201, 204, 205, 210, 211, 212, 214])')||!handler.includes("concurrencyMode: 'current_or_remove'")||handler.includes("concurrencyMode: 'remove'")||!handler.includes("outcome: 'not_applied'"))throw new Error('signed hidden-tab Operation failed');
 if(!worker.includes("finishReturn', { runId: plan.runId, outcome: 'uncertain'")||!worker.includes("operationId: OPERATIONS.reconcile")
   ||!worker.includes('currentPreflight(step, b, plan.planDigest, plan.runId)')||!worker.includes('planDigest: plan.planDigest')
@@ -219,6 +220,7 @@ if(!worker.includes("finishReturn', { runId: plan.runId, outcome: 'uncertain'")|
   ||!worker.includes('prepareWritebackRun(plan, candidates, b, s)')||!worker.includes('resumeWritebackRun(plan, context)')
   ||!worker.includes('receiptContext: { runId: plan.runId, commandId: command.commandId }')
   ||!worker.includes('expectedDirectory: PHASE2_TEMPLATE.directory')||!worker.includes('protectUserAuthoredBracketTokens')||!worker.includes('manualCompletionRequired')||!worker.includes('unresolved_placeholder_fallback')
+  ||!worker.includes('skipMaterials(plan, context)')||!worker.includes("templateMode: 'master_placeholders'")||!worker.includes('draftAuthority(plan, context')
   ||!runtime.aiReviewCapabilities?.some((item)=>item.capabilityId==='phase2-policy-resolution/v1')
   ||!engine.includes('build_phase2_workbook')||!engine.includes('parse_uploaded_workbook')||!engine.includes('build_phase2_template')||!engine.includes('extract_policy_archive')
   ||!engine.includes('apply_replacement_fields')||!workbook.includes('editable_columns')||!workbook.includes('["替换字段", "Controls", "Scope"]')||!workbook.includes('WORKBOOK.REPLACEMENT_INACTIVE')||workbook.includes('<sheetProtection sheet="1"')

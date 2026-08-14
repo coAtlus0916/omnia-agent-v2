@@ -250,7 +250,9 @@ export function createConnectorNextServer(options: ConnectorNextServerOptions) {
           ...(url.searchParams.get('version') ? { version: url.searchParams.get('version')! } : {}),
           ...(url.searchParams.has('generation') ? { generation: Number(url.searchParams.get('generation')) } : {}),
           ...(url.searchParams.has('after') ? { after: Number(url.searchParams.get('after')) } : {}),
-          ...(url.searchParams.has('limit') ? { limit: Number(url.searchParams.get('limit')) } : {})
+          ...(url.searchParams.has('limit') ? { limit: Number(url.searchParams.get('limit')) } : {}),
+          ...(url.searchParams.get('since') ? { since: url.searchParams.get('since')! } : {}),
+          ...(url.searchParams.get('until') ? { until: url.searchParams.get('until')! } : {})
         }) });
         return;
       }

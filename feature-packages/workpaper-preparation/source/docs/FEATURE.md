@@ -1,6 +1,6 @@
 # 底稿编制 Feature __FEATURE_VERSION__
 
-当前版本实现 Phase2 的录制证据范围闭环：激活隐藏 Tab 后生成可编辑的预置控制母版，上传用户填写的母版与制度资料，合并生成完整母版；确认后只写回已有录制证明的 Control/ProcedureResults/DesignEvaluation/OperatingEffectiveness 字段，并逐字段 readback。母版非空但尚无保存录制的字段会进入 `recording_required` 覆盖清单，不冒充已完成。
+当前版本实现 Phase2 的录制证据范围闭环：激活隐藏 Tab 后生成可编辑的预置控制母版；用户可以上传填写件与制度资料，也可以在上传步骤直接跳过并保留母版占位内容；确认后只写回已有录制证明的 Control/ProcedureResults/DesignEvaluation/OperatingEffectiveness 字段，并逐字段 readback。母版非空但尚无保存录制的字段会进入 `recording_required` 覆盖清单，不冒充已完成。
 
 1. 从当前 Connector authority、显式安全锁 Workspace 与 Standardized Accounts List 读取权威 Generic Application GRA。当前版本每次只允许选择一个 GRA，冻结为一个 APP 的独立计划；多 GRA 必须等完整 GRA/APP 身份参与正文 resolution 与回传匹配后再开放。
 2. 读取该 GRA 的真实 Control 目录，逐项核验 Control、Work Item、APP、GRA、Workspace 和并发令牌。
@@ -8,8 +8,9 @@
 4. 最终只在同一 Control 同时满足以下条件时判定成功：`planningOperatingEffectivenessTesting=true`、`planningCommonControlTesting=false`、`usePreviousAuditEvidence=false`、存在 OE 实体。Tab 209 时间戳是诊断证据，不是完成条件。
 5. 根据选中的 APP 名称生成 Phase 2 预置母版。下载文件包含可编辑的 `替换字段` 与 `Controls`，以及隐藏的 `Scope`；不再启用工作表保护。绿色单元格是建议填写区，`controlNumber` 是只读身份，上传时会严格核验。
 6. 用户可以填写 `替换字段` E 列，也可以直接修改 `Controls` 的非身份列；参数表可以全空或部分填写，留空内容允许后续在 Pack 补录。重新上传后，参数目录、Controls 行身份、表头和冻结 Scope 都会校验；用户编辑的 Controls 是后续制度解析的真实输入，用户新增的 `【...】` 正文不会被二次当作占位符。模板与目标都只有一个系统时，允许把模板的源系统标签确定性重绑定到已冻结的目标 APP；多系统范围不一致仍因映射歧义而拒绝。
-7. 制度资料支持点击选择单个/多个文件或文件夹，也支持拖入 ZIP、Word、Excel 与 PDF。单个文件保持原文件，文件夹或多个文件由 Shell 归一化为一个 ZIP；解析器也允许 ZIP 内继续包含 ZIP，递归展开至 4 层，并对成员数、单成员大小、累计展开字节与累计文本量统一限额。内层 Word/Excel 使用完整归档路径进入制度索引，PDF 无文本层时仍明确跳过，绝不猜测。
-8. 用户填写内容与制度解析结果合并后，后台会生成并保存一份 `workpaper-phase2-filled-*.xlsx` 完整母版，但不在界面增加下载核对或额外确认环节。制度有证据支持的占位符才会替换；正常返回的 `missing_evidence / ambiguous` 保留原占位符，并在计划中记录待人工补录数量。Feature AI review 使用制度/参数表上传时由 Core 创建的真实 Run identity，不把私有 `planId` 冒充 Run。无论 AI 正常判定缺证据/歧义，还是 AI 端口缺失、调用失败、身份被拒绝或返回无效，已录制的富文本/普通文本字段都会保留原 `【占位符】` 写入 Pack，避免控制设计评估和运行有效性程序成为空白；数字、布尔、枚举/选择等类型不兼容字段不伪造值，继续进入待人工补录统计。现有“确认回传”步骤不变：富文本先转换为 Omnia editor JSON（不是裸字符串）；按录制分别使用 Tab 204/205/210/211/212/214。所有正文写入页签使用最新 GET 的 token，尚无 token 时移除；OE 程序按 `phaseType + procedureIndex` 绑定具体 procedure ID，逐项 PATCH 且每次写后重新 GET。每个字段都冻结旧值、取得独立权威 snapshot receipt 并逐字段读回相等后才标记成功；超时/断线/中断标 uncertain，禁止盲目重放。
+7. 上传步骤开始时即显示“跳过”。只有参数表和制度资料都尚未上传时可以点击；Worker 会固化 `materials.state=skipped`，不调用制度 AI、不伪造解析结果，直接用预置母版生成后台结果并保留原 `【占位符】`。点击后进入原“确认回传”步骤，仍须执行实时 Control 读取、签名 Operation、冻结旧值和逐字段读回；它不是绕过写回安全门禁的快捷入口。若生成模板后 Connector Session 重建，只有尚未创建任何 Return intent、稳定 Connector/Pack/Engagement/Workspace 权威完全一致且当前安全锁已重新验证的草稿可以换绑；已经冻结、开始或 uncertain 的写回继续严格拒绝。
+8. 制度资料支持点击选择单个/多个文件或文件夹，也支持拖入 ZIP、Word、Excel 与 PDF。单个文件保持原文件，文件夹或多个文件由 Shell 归一化为一个 ZIP；解析器也允许 ZIP 内继续包含 ZIP，递归展开至 4 层，并对成员数、单成员大小、累计展开字节与累计文本量统一限额。内层 Word/Excel 使用完整归档路径进入制度索引，PDF 无文本层时仍明确跳过，绝不猜测。
+9. 用户填写内容与制度解析结果合并后，后台会生成并保存一份 `workpaper-phase2-filled-*.xlsx` 完整母版，但不在界面增加下载核对或额外确认环节。制度有证据支持的占位符才会替换；正常返回的 `missing_evidence / ambiguous` 保留原占位符，并在计划中记录待人工补录数量。Feature AI review 使用制度/参数表上传时由 Core 创建的真实 Run identity，不把私有 `planId` 冒充 Run。无论 AI 正常判定缺证据/歧义，还是 AI 端口缺失、调用失败、身份被拒绝或返回无效，已录制的富文本/普通文本字段都会保留原 `【占位符】` 写入 Pack，避免控制设计评估和运行有效性程序成为空白；数字、布尔、枚举/选择等类型不兼容字段不伪造值，继续进入待人工补录统计。现有“确认回传”步骤不变：富文本先转换为 Omnia editor JSON（不是裸字符串）；按录制分别使用 Tab 204/205/210/211/212/214。所有正文写入页签使用最新 GET 的 token，尚无 token 时移除；OE 程序按 `phaseType + procedureIndex` 绑定具体 procedure ID，逐项 PATCH 且每次写后重新 GET。每个字段都冻结旧值、取得独立权威 snapshot receipt 并逐字段读回相等后才标记成功；超时/断线/中断标 uncertain，禁止盲目重放。
 
 当前模板只生成 18 个存在母版落点的活动参数；旧目录 `1.08 / 【抽样标准】` 没有可消费落点，已从新模板停用。旧版仅含 `替换字段` 的填写件仍可读取，但不会提供直接编辑 Controls 的能力，且旧 `1.08` 行只能留空；新流程应重新下载当前版本母版。
 

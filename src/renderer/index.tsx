@@ -103,34 +103,36 @@ function FeatureNavigation({ snapshot, collapsed, run, openFeature, selectedFeat
       {!tree.length
         ? <div className="navigation-empty"><strong>没有可用 Feature</strong><p>Registry 尚未返回已安装且兼容的功能。</p></div>
         : tree.map((entry) => entry.kind === 'leaf'
-          ? <NavigationLeaf key={`${entry.leaf.featureId}:${entry.leaf.id}`} leaf={entry.leaf} selected={(selectedFeatureId || snapshot.features.selectedFeatureId) === entry.leaf.featureId} run={run} {...(openFeature ? { openFeature } : {})} />
-          : <NavigationGroup key={entry.node.group.id} node={entry.node} selectedFeatureId={selectedFeatureId || snapshot.features.selectedFeatureId} run={run} {...(openFeature ? { openFeature } : {})} />)}
+          ? <NavigationLeaf key={`${entry.leaf.featureId}:${entry.leaf.id}`} leaf={entry.leaf} showFeatureVersion={snapshot.preference.showFeatureVersions} selected={(selectedFeatureId || snapshot.features.selectedFeatureId) === entry.leaf.featureId} run={run} {...(openFeature ? { openFeature } : {})} />
+          : <NavigationGroup key={entry.node.group.id} node={entry.node} showFeatureVersion={snapshot.preference.showFeatureVersions} selectedFeatureId={selectedFeatureId || snapshot.features.selectedFeatureId} run={run} {...(openFeature ? { openFeature } : {})} />)}
     </div>
   </aside>;
 }
 
-function NavigationGroup({ node, selectedFeatureId, run, openFeature }: {
+function NavigationGroup({ node, selectedFeatureId, showFeatureVersion, run, openFeature }: {
   node: FeatureNavigationGroupNode;
   selectedFeatureId: string;
+  showFeatureVersion: boolean;
   run: Run;
   openFeature?: (featureId: string) => void;
 }) {
   return <section className="navigation-group" aria-labelledby={`navigation-group-${node.group.id}`}>
     <h2 id={`navigation-group-${node.group.id}`}>{node.group.label}</h2>
-    {node.leaves.map((leaf) => <NavigationLeaf key={`${leaf.featureId}:${leaf.id}`} leaf={leaf} selected={selectedFeatureId === leaf.featureId} run={run} {...(openFeature ? { openFeature } : {})} />)}
+    {node.leaves.map((leaf) => <NavigationLeaf key={`${leaf.featureId}:${leaf.id}`} leaf={leaf} showFeatureVersion={showFeatureVersion} selected={selectedFeatureId === leaf.featureId} run={run} {...(openFeature ? { openFeature } : {})} />)}
     {node.subgroups.map((subgroup) => <div className="navigation-subgroup" key={subgroup.group.id} aria-labelledby={`navigation-group-${subgroup.group.id}`}>
       <h3 id={`navigation-group-${subgroup.group.id}`}>{subgroup.group.label}</h3>
-      {subgroup.leaves.map((leaf) => <NavigationLeaf key={`${leaf.featureId}:${leaf.id}`} leaf={leaf} selected={selectedFeatureId === leaf.featureId} run={run} {...(openFeature ? { openFeature } : {})} />)}
+      {subgroup.leaves.map((leaf) => <NavigationLeaf key={`${leaf.featureId}:${leaf.id}`} leaf={leaf} showFeatureVersion={showFeatureVersion} selected={selectedFeatureId === leaf.featureId} run={run} {...(openFeature ? { openFeature } : {})} />)}
     </div>)}
   </section>;
 }
 
-function NavigationLeaf({ leaf, selected, run, openFeature }: { leaf: FeatureNavigationLeaf; selected: boolean; run: Run; openFeature?: (featureId: string) => void }) {
+function NavigationLeaf({ leaf, selected, showFeatureVersion, run, openFeature }: { leaf: FeatureNavigationLeaf; selected: boolean; showFeatureVersion: boolean; run: Run; openFeature?: (featureId: string) => void }) {
   const available = leaf.availability === 'available';
+  const visibleLabel = `${leaf.label}${showFeatureVersion ? ` v.${leaf.featureVersion}` : ''}`;
   return <button type="button" className={`navigation-leaf ${selected ? 'active' : ''}`} disabled={!available}
-    title={leaf.reason || (available ? leaf.label : '该 Feature 当前不可用')}
+    title={leaf.reason || (available ? visibleLabel : '该 Feature 当前不可用')}
     onClick={() => openFeature ? openFeature(leaf.featureId) : run(`select-feature:${leaf.featureId}`, () => window.omnia.selectFeature({ featureId: leaf.featureId }))}>
-    <span>{leaf.label}</span><span className={`nav-dot ${leaf.availability}`} aria-hidden="true" />
+    <span className="navigation-leaf-copy"><span>{leaf.label}</span>{showFeatureVersion ? <span className="navigation-feature-version">v.{leaf.featureVersion}</span> : null}</span><span className={`nav-dot ${leaf.availability}`} aria-hidden="true" />
   </button>;
 }
 
@@ -512,20 +514,23 @@ function SafetyDialog({ snapshot, close, run }: { snapshot: ShellSnapshot; close
   </div>;
 }
 
-function SettingsDialog({ snapshot, close, run, fail }: { snapshot: ShellSnapshot; close(): void; run: Run; fail(message: string): void }) {
+function SettingsDialog({ snapshot, close, run, fail, busy }: { snapshot: ShellSnapshot; close(): void; run: Run; fail(message: string): void; busy: string }) {
   const ai = snapshot.settings.ai;
   const [provider, setProvider] = useState<AiProviderKind>(ai.provider);
   const [baseUrl, setBaseUrl] = useState(ai.baseUrl);
   const [model, setModel] = useState(ai.model);
   const [capability, setCapability] = useState<AiAttachmentCapability>(ai.attachmentCapability);
   const [apiKey, setApiKey] = useState('');
+  const [section, setSection] = useState<'general' | 'ai' | 'logs'>('general');
   const [settingsBasis, setSettingsBasis] = useState(snapshot.settingsLayout.settingsNavigationBasisPoints);
   useEffect(() => setSettingsBasis(snapshot.settingsLayout.settingsNavigationBasisPoints), [snapshot.settingsLayout.stateVersion]);
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
     <section className="settings-dialog" role="dialog" aria-modal="true" aria-label="设置" data-testid="settings-dialog">
       <header><h2>设置</h2><div className="header-actions"><ScaleControl snapshot={snapshot} fail={fail} /><button type="button" onClick={close}>关闭</button></div></header>
       <div className="settings-columns" style={{ gridTemplateColumns: `${settingsBasis / 100}% 7px minmax(0, 1fr)` }}><nav className="settings-nav" aria-label="设置导航" data-testid="settings-nav-scroll">
-        <button type="button" className="active">AI 设置</button>
+        <button type="button" className={section === 'general' ? 'active' : ''} onClick={() => setSection('general')}>通用</button>
+        <button type="button" className={section === 'ai' ? 'active' : ''} onClick={() => setSection('ai')}>AI 设置</button>
+        <button type="button" className={section === 'logs' ? 'active' : ''} onClick={() => setSection('logs')}>日志</button>
       </nav><div className="settings-splitter" role="separator" aria-orientation="vertical" aria-label="调整设置导航宽度"
         aria-valuemin={1600} aria-valuemax={3600} aria-valuenow={settingsBasis} tabIndex={0}
         onDoubleClick={() => run('settings-layout-reset', () => window.omnia.saveSettingsLayout({ settingsNavigationBasisPoints: 2200, expectedStateVersion: snapshot.settingsLayout.stateVersion }))}
@@ -551,7 +556,11 @@ function SettingsDialog({ snapshot, close, run, fail }: { snapshot: ShellSnapsho
           window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
         }} />
       <div className="settings-main" data-testid="settings-main-scroll">
-        <section className="settings-section"><h3>AI 设置</h3>
+        {section === 'general' ? <section className="settings-section"><h3>通用</h3>
+          <label className="settings-toggle"><span>显示 Feature 版本号</span><input type="checkbox" checked={snapshot.preference.showFeatureVersions}
+            onChange={(event) => run('save-feature-version-visibility', () => window.omnia.saveFeatureVersionVisibility({ visible: event.target.checked, expectedStateVersion: snapshot.preference.stateVersion }))} /></label>
+          <p className="settings-note">开启后，Feature 菜单按“底稿编制 v.0.1.83”的格式显示当前真实激活版本。</p>
+        </section> : section === 'ai' ? <section className="settings-section"><h3>AI 设置</h3>
           <label>Provider<select value={provider} onChange={(event) => { const next = event.target.value as AiProviderKind; setProvider(next); if (next === 'deepseek') { setBaseUrl('https://api.deepseek.com'); setModel('deepseek-v4-flash'); } }}>
             <option value="deepseek">DeepSeek</option><option value="custom">OpenAI-compatible Custom</option></select></label>
           <label>Base URL<input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} /></label>
@@ -562,7 +571,22 @@ function SettingsDialog({ snapshot, close, run, fail }: { snapshot: ShellSnapsho
           <p className={`test-state ${ai.testStatus}`}>{ai.testMessage || '尚未测试连接。'}</p>
           <div className="button-row no-border"><button type="button" className="primary" onClick={() => run('save-ai', () => window.omnia.saveAiSettings({ provider, baseUrl, model, attachmentCapability: capability, ...(apiKey ? { apiKey } : {}), expectedStateVersion: ai.stateVersion }))}>保存 AI 设置</button>
             <button type="button" disabled={!ai.hasApiKey && !apiKey} onClick={() => run('test-ai', () => window.omnia.testAiProvider())}>测试连接</button></div>
-        </section>
+        </section> : <section className="settings-section log-export-settings" data-testid="log-export-settings"><h3>日志</h3>
+          <p className="settings-note">生成当前电脑今天的诊断日志压缩包。每次点击都会重新收集 Shell、Feature、Connector Next 和本地进程日志，并替换上一份导出；日志不会发送到 AI Provider。</p>
+          <div className="button-row no-border"><button data-testid="generate-today-logs" type="button" className="primary"
+            disabled={Boolean(busy)} onClick={() => run('generate-today-logs', () => window.omnia.generateTodayLogs())}>
+            {busy === 'generate-today-logs' ? '正在生成…' : '生成今日日志'}
+          </button></div>
+          {snapshot.settings.logs.available ? <article className={`log-export-card ${snapshot.settings.logs.state}`}>
+            <div className="log-export-heading"><div><strong>{snapshot.settings.logs.fileName}</strong><small>{formatTime(snapshot.settings.logs.generatedAt)}</small></div>
+              <span>{snapshot.settings.logs.state === 'partial' ? '部分完成' : '已生成'}</span></div>
+            <dl><dt>日期</dt><dd>{snapshot.settings.logs.localDate}</dd><dt>大小</dt><dd>{formatSize(snapshot.settings.logs.size)}</dd>
+              <dt>文件数</dt><dd>{snapshot.settings.logs.entryCount}</dd><dt>SHA-256</dt><dd title={snapshot.settings.logs.sha256}>{snapshot.settings.logs.sha256.slice(0, 16)}…</dd></dl>
+            {snapshot.settings.logs.warnings.length ? <div className="log-export-warnings"><strong>以下来源未完整收集：</strong><ul>{snapshot.settings.logs.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div> : null}
+            <div className="button-row no-border"><button data-testid="download-log-export" type="button" disabled={Boolean(busy)}
+              onClick={() => run('download-log-export', () => window.omnia.downloadLogExport({ exportId: snapshot.settings.logs.exportId }))}>下载日志</button></div>
+          </article> : <p className="log-export-empty">尚未生成今日日志。</p>}
+        </section>}
       </div></div>
     </section>
   </div>;
@@ -1042,7 +1066,7 @@ function ShellApp() {
         </main>
       </div>
     </section>
-    {settings ? <SettingsDialog snapshot={snapshot} close={closeSettings} run={run} fail={setError} /> : null}
+    {settings ? <SettingsDialog snapshot={snapshot} close={closeSettings} run={run} fail={setError} busy={busy} /> : null}
     {safety ? <SafetyDialog snapshot={snapshot} close={() => setSafety(false)} run={run} /> : null}
     {connectionDetails ? <RemoteConnectionDialog snapshot={snapshot} close={() => setConnectionDetails(false)} run={run} /> : null}
     {error ? <div className="toast" role="alert"><span>{error}</span><button type="button" onClick={() => setError('')} aria-label="关闭错误">×</button></div> : null}

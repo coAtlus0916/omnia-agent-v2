@@ -30,7 +30,7 @@ src/main/features/builtin-release-inventory.ts
 | `omnia.create-associate` | `0.2.150` | `152` |
 | `omnia.recording` | `0.4.21` | `34` |
 | `omnia.delete-elements` | `0.3.32` | `1786632995691` |
-| `omnia.workpaper-preparation` | `0.1.81` | `82` |
+| `omnia.workpaper-preparation` | `0.1.83` | `84` |
 
 Feature 包位于 `resources/app/builtins`，安装后各自在独立 Worker 中运行。Connector Next 只能实现通用 Pack Session、传输、Gate、签名 Operation 注册与调用；不得包含 Feature 业务规则、Feature ID 分支、模板或业务数据。
 
@@ -90,6 +90,8 @@ remoteServerRequired = false
 
 ## 6. 当前验收产物
 
+Shell 源码现已提升到 `0.5.0`，新构建脚本使用 `Omnia-Agent-v5-0.5.0-Company-Loopback-Portable` 作为版本唯一的发布目录/ZIP 基名，不再复用日期 `r1/r2` 目录。下列 `0.4.18 r2` 仍是最近一份已经生成并记录摘要的历史验收产物；在实际执行 0.5.0 打包和验收前，不把源码版本描述成已有产物。
+
 ```text
 文件：Omnia-Agent-v5-0.4.18-Company-Loopback-Portable-20260814-r2.zip
 来源：main@7d3e803
@@ -108,7 +110,7 @@ r2 已确认 ZIP CRC、250 个文件逐项与发布目录一致、四个签名 F
 SHA-256：ECEC56AF636C17DA5FD750B6023583BA1F0D4CECD435727D85D4B1521FD64EE1
 ```
 
-该 r1 产物已确认 ZIP CRC、248 个文件逐项一致、四个签名 Feature 精确身份、关键文件 manifest 摘要以及 `connector-next-loopback / embedded-exe-host / remoteServerRequired=false`。它仍冻结 Workpaper 0.1.71，属于历史产物；当前 0.1.81 清单必须生成新的 r2。真实 EXE、四个 Feature 激活和公司电脑 Pack canary 仍需在公司电脑执行，不能由本机构建替代。
+该 r1 产物已确认 ZIP CRC、248 个文件逐项一致、四个签名 Feature 精确身份、关键文件 manifest 摘要以及 `connector-next-loopback / embedded-exe-host / remoteServerRequired=false`。它仍冻结 Workpaper 0.1.71，属于历史产物；其后的 0.4.18 r2 冻结 Workpaper 0.1.81。当前源码清单已提升到 0.1.83，必须生成新的 0.5.0 产物后再做真实 EXE、四 Feature 激活和公司电脑 Pack canary，不能由本机构建替代。
 
 ## 8. 公司电脑使用
 

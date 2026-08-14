@@ -172,6 +172,24 @@ test('Shell Feature navigation renders signed mixed-depth groups without Feature
   assert.match(component,/buildFeatureNavigationTree\(snapshot\.features\.groups, snapshot\.features\.navigation\)/u);
   assert.match(component,/function NavigationGroup/u);assert.match(component,/navigation-subgroup/u);assert.match(component,/node\.group\.label/u);
   assert.match(component,/const available = leaf\.availability === 'available'/u);assert.match(component,/disabled=\{!available\}/u);
+  assert.match(component,/showFeatureVersion=\{snapshot\.preference\.showFeatureVersions\}/u);
+  assert.match(component,/navigation-feature-version">v\.\{leaf\.featureVersion\}/u);
+  assert.match(styles,/\.navigation-leaf-copy \{[^}]*gap: 8px/u);
   assert.match(component,/feature-navigation \$\{collapsed \? 'collapsed' : ''\}/u);assert.match(styles,/\.feature-navigation\.collapsed \{ width: 0; border: 0; \}/u);
   assert.doesNotMatch(component,/featureId\s*===\s*['"]omnia\./u);
+});
+
+test('Shell General settings persist Feature version visibility through the real preference API',()=>{
+  const source=fs.readFileSync(path.join(root,'src/renderer/index.tsx'),'utf8');
+  const settings=source.slice(source.indexOf('function SettingsDialog'),source.indexOf('function RemotePairingDialog'));
+  const contracts=fs.readFileSync(path.join(root,'src/shared/contracts.ts'),'utf8');
+  const preload=fs.readFileSync(path.join(root,'src/preload/index.ts'),'utf8');
+  const main=fs.readFileSync(path.join(root,'src/main/index.ts'),'utf8');
+  assert.match(settings,/>通用<\/button>/u);
+  assert.match(settings,/>显示 Feature 版本号<\/span>/u);
+  assert.match(settings,/checked=\{snapshot\.preference\.showFeatureVersions\}/u);
+  assert.match(settings,/window\.omnia\.saveFeatureVersionVisibility\(\{ visible: event\.target\.checked, expectedStateVersion: snapshot\.preference\.stateVersion \}\)/u);
+  assert.match(contracts,/saveFeatureVersionVisibility\(input: \{ visible: boolean; expectedStateVersion: number \}\)/u);
+  assert.match(preload,/saveFeatureVersionVisibility: \(input\) => invoke\('shell:save-feature-version-visibility', input\)/u);
+  assert.match(main,/shell:save-feature-version-visibility/u);
 });

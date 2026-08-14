@@ -176,6 +176,50 @@ function returnSurface(
   };
 }
 
+function validationSurface(
+  state: DeclarativeProgress['state'],
+  itemState: DeclarativeProgress['items'][number]['state'],
+  stateVersion: number,
+  detail: string
+): DeclarativeFeatureSurface {
+  return {
+    schemaVersion: 'omnia.declarative-feature-surface/v1',
+    featureId: 'omnia.create-associate',
+    featureVersion: '0.2.150',
+    surfaceId: 'create-associate.main',
+    stateVersion,
+    title: '新建与关联',
+    description: '',
+    density: 'compact',
+    status: 'ready',
+    statusMessage: '',
+    scopes: [],
+    items: [],
+    selectedItemIds: [],
+    search: '',
+    actions: [],
+    workflow: {
+      currentStepId: 'review',
+      revision: stateVersion,
+      steps: []
+    },
+    progress: {
+      label: '校验进度',
+      completed: 1,
+      total: 1,
+      percent: 100,
+      state,
+      message: '已完成 1/1 项校验。',
+      items: [{
+        itemId: 'infrastructure_rait',
+        label: '基础设施 RAIT',
+        state: itemState,
+        detail
+      }]
+    }
+  };
+}
+
 test('Feature Surface renderer does not flash an older same-revision projection back to zero', () => {
   const advanced = declaredProgress();
   advanced.completed = 3;
@@ -197,6 +241,30 @@ test('Feature Surface renderer carries receipt-backed progress across an active 
   assert.equal(merged.stateVersion, 10);
   assert.equal(returnProgressWaitState(merged), 'active');
   assert.equal(shouldReleasePendingReturn(9, merged), false);
+});
+
+test('Feature Surface renderer accepts a newer warning after a previous failed projection', () => {
+  const previous = validationSurface('failed', 'failed', 10, '旧核验结果为阻断错误。');
+  const next = validationSurface('warning', 'warning', 11, '新核验结果为非阻断提醒。');
+  const merged = mergeMonotonicProgress(previous, next);
+  assert.equal(merged.progress?.state, 'warning');
+  assert.equal(merged.progress?.items[0]?.state, 'warning');
+  assert.equal(merged.progress?.items[0]?.detail, '新核验结果为非阻断提醒。');
+});
+
+test('Create & Associate revalidation keeps mixed RAIT as a yellow warning', () => {
+  const previous = validationSurface('failed', 'failed', 20, '基础设施 RAIT 校验失败。');
+  const next = validationSurface(
+    'warning',
+    'warning',
+    21,
+    '所选基础设施同时包含 Higher 和 Lower，已按 Higher 处理。'
+  );
+  const merged = mergeMonotonicProgress(previous, next);
+  assert.deepEqual(
+    [merged.progress?.state, merged.progress?.items[0]?.state],
+    ['warning', 'warning']
+  );
 });
 
 test('Feature Surface renderer preserves 52/88 through pause and rejects a late zero projection', () => {

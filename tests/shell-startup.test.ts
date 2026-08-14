@@ -8,6 +8,24 @@ import { findPortableProductRoot } from '../src/main/paths.js';
 
 const root = path.resolve(import.meta.dirname, '..');
 
+test('Shell release identity is consistently derived from version 0.5.0', () => {
+  const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')) as { version: string };
+  const packageLock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8')) as {
+    version: string;
+    packages: Record<string, { version?: string }>;
+  };
+  const main = fs.readFileSync(path.join(root, 'src', 'main', 'index.ts'), 'utf8');
+  const packageManager = fs.readFileSync(path.join(root, 'src', 'main', 'features', 'package-manager.ts'), 'utf8');
+  const portable = fs.readFileSync(path.join(root, 'scripts', 'package-create-associate-next-portable.mjs'), 'utf8');
+  assert.equal(packageJson.version, '0.5.0');
+  assert.equal(packageLock.version, packageJson.version);
+  assert.equal(packageLock.packages['']?.version, packageJson.version);
+  assert.match(packageManager, /const PRODUCT_VERSION = '0\.5\.0'/u);
+  assert.match(main, /Omnia Agent v5 · \$\{app\.getVersion\(\)\}/u);
+  assert.match(portable, /Omnia-Agent-v5-\$\{shellVersion\}-Company-Loopback-Portable/u);
+  assert.doesNotMatch(portable, /Company-Loopback-Portable-\d{8}-r\d+/u);
+});
+
 test('the main window subscribes before load and retains a post-load visibility fallback', () => {
   const source = fs.readFileSync(path.join(root, 'src', 'main', 'index.ts'), 'utf8');
   const subscribe = source.indexOf("windowToShow.once('ready-to-show'");

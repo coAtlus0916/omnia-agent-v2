@@ -816,12 +816,14 @@ export class ConnectorNextServerStore {
     });
   }
 
-  queryLogs(target: ConnectorNextTarget, filters: { version?: string; generation?: number; after?: number; limit?: number }): Record<string, unknown>[] {
+  queryLogs(target: ConnectorNextTarget, filters: { version?: string; generation?: number; after?: number; limit?: number; since?: string; until?: string }): Record<string, unknown>[] {
     assertTarget(target);
     const clauses = ['agent_id=?', 'device_id=?', 'connector_instance_id=?', 'server_log_id>?'];
     const values: Array<string | number> = [target.agentId, target.deviceId, target.connectorInstanceId, filters.after || 0];
     if (filters.version) { clauses.push('version=?'); values.push(filters.version); }
     if (filters.generation !== undefined) { clauses.push('generation=?'); values.push(filters.generation); }
+    if (filters.since && Number.isFinite(Date.parse(filters.since))) { clauses.push('occurred_at>=?'); values.push(filters.since); }
+    if (filters.until && Number.isFinite(Date.parse(filters.until))) { clauses.push('occurred_at<?'); values.push(filters.until); }
     const limit = Math.max(1, Math.min(filters.limit || 200, 500));
     values.push(limit);
     const rows = this.db.prepare(`SELECT server_log_id,client_record_id,agent_id,device_id,connector_instance_id,version,generation,source,severity,event,occurred_at,received_at,details_json FROM connector_next_logs WHERE ${clauses.join(' AND ')} ORDER BY server_log_id LIMIT ?`).all(...values) as Record<string, unknown>[];

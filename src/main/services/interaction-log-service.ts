@@ -170,6 +170,17 @@ export class InteractionLogService {
     return { traceId: normalized, entries: rows.map((row) => this.fromRow(row)) };
   }
 
+  exportRange(since: string, until: string): InteractionLogEntry[] {
+    if (!Number.isFinite(Date.parse(since)) || !Number.isFinite(Date.parse(until)) || since >= until) {
+      throw new Error('INTERACTION_LOG.INVALID_EXPORT_RANGE');
+    }
+    const rows = this.database.prepare(`
+      SELECT * FROM interaction_logs WHERE timestamp>=? AND timestamp<?
+      ORDER BY timestamp, event_id
+    `).all(since, until) as Record<string, unknown>[];
+    return rows.map((row) => this.fromRow(row));
+  }
+
   prune(): void {
     const cutoff = new Date(Date.now() - RETENTION_DAYS * 86_400_000).toISOString();
     this.database.prepare("DELETE FROM interaction_logs WHERE timestamp<? AND phase<>'start'").run(cutoff);

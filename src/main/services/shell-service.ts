@@ -20,6 +20,7 @@ import type { AttachmentService } from './attachment-service.js';
 import type { ChatService } from './chat-service.js';
 import type { FeaturePackageManager } from '../features/package-manager.js';
 import type { InteractionLogService } from './interaction-log-service.js';
+import type { LogExportService } from './log-export-service.js';
 
 const utcNow = () => new Date().toISOString();
 
@@ -125,7 +126,9 @@ export class ShellService {
     private readonly features?: FeaturePackageManager,
     timing: Partial<ShellServiceTiming> = {},
     remoteLifecycle: Partial<RemoteLifecycleApi> = {},
-    private readonly interactionLogs?: InteractionLogService
+    private readonly interactionLogs?: InteractionLogService,
+    private readonly productVersion = '0.5.0',
+    private readonly logExports?: LogExportService
   ) {
     this.timing = {
       now: timing.now || Date.now,
@@ -397,7 +400,7 @@ export class ShellService {
     return {
       schemaVersion: 'omnia.shell-home/v1',
       generatedAt: utcNow(),
-      productVersion: '0.4.18',
+      productVersion: this.productVersion,
       featureCount: this.database.activeFeatureCount(),
       features: featureRuntime,
       connection: this.connection,
@@ -411,7 +414,11 @@ export class ShellService {
       settingsLayout: this.database.getSettingsLayout(),
       settings: {
         ai: this.database.publicAiSettings(),
-        connection: this.database.publicConnectionSettings()
+        connection: this.database.publicConnectionSettings(),
+        logs: this.logExports?.snapshot() || {
+          state: 'empty', available: false, exportId: '', fileName: '', generatedAt: '', localDate: '',
+          size: 0, sha256: '', entryCount: 0, warnings: []
+        }
       },
       bridgePairing: this.bridgePairing,
       remotePairing: this.remotePairing
@@ -1393,6 +1400,47 @@ export class ShellService {
     this.database.savePreference(percent, expectedStateVersion);
     this.emitChanged();
     return this.snapshot();
+  }
+
+  saveFeatureVersionVisibility(visible: boolean, expectedStateVersion: number): ShellSnapshot {
+    this.database.saveFeatureVersionVisibility(visible, expectedStateVersion);
+    this.emitChanged();
+    return this.snapshot();
+  }
+
+  async generateTodayLogs(): Promise<ShellSnapshot> {
+    if (!this.logExports) throw new AppError('LOG_EXPORT.UNAVAILABLE', '日志导出服务不可用。');
+    const snapshot = this.snapshot();
+    let connectorContext: Record<string, unknown> | null = null;
+    try { connectorContext = this.adapter.diagnosticContext?.() || null; } catch { connectorContext = null; }
+    await this.logExports.generateToday({
+      shellVersion: this.productVersion,
+      connection: {
+        adapter: this.connection.adapter,
+        status: this.connection.status,
+        connected: this.connection.connected,
+        connectorId: this.connection.connectorId,
+        connectorVersion: this.connection.connectorVersion,
+        sessionGeneration: this.connection.sessionGeneration ?? null,
+        authorityInstanceId: this.connection.authorityInstanceId || '',
+        tenantOrOrgId: this.connection.tenantOrOrgId || '',
+        packId: this.connection.packId || '',
+        engagementId: this.connection.engagementId,
+        checkedAt: this.connection.checkedAt
+      },
+      connector: connectorContext,
+      features: snapshot.features.navigation.map((item) => ({
+        featureId: item.featureId,
+        featureVersion: item.featureVersion,
+        availability: item.availability
+      }))
+    });
+    return this.emitChanged();
+  }
+
+  logExportDownload(exportId: string): { source: string; suggestedName: string } {
+    if (!this.logExports) throw new AppError('LOG_EXPORT.UNAVAILABLE', '日志导出服务不可用。');
+    return this.logExports.download(exportId);
   }
 
   saveLayout(

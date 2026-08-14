@@ -86,12 +86,16 @@ test('startup recovery closes interrupted starts and retention deletes expired t
   assert.equal((database.db.prepare("SELECT COUNT(*) AS count FROM interaction_logs WHERE interaction_id='interaction-old'").get() as any).count, 0);
 });
 
-test('settings hides the log menu but keeps the query IPC for agent-side export', () => {
+test('settings exposes the real local log export while keeping raw log queries out of the renderer', () => {
   const renderer = fs.readFileSync(path.resolve(import.meta.dirname, '../src/renderer/index.tsx'), 'utf8');
   const preload = fs.readFileSync(path.resolve(import.meta.dirname, '../src/preload/index.ts'), 'utf8');
-  assert.doesNotMatch(renderer, />日志<\/button>/u);
+  assert.match(renderer, />日志<\/button>/u);
+  assert.match(renderer, /generateTodayLogs/u);
+  assert.match(renderer, /downloadLogExport/u);
   assert.doesNotMatch(renderer, /queryInteractionLogs/u);
   assert.doesNotMatch(renderer, /getInteractionTrace/u);
+  assert.match(preload, /shell:generate-today-logs/u);
+  assert.match(preload, /shell:download-log-export/u);
   assert.match(preload, /shell:query-interaction-logs/u);
   assert.match(preload, /shell:get-interaction-trace/u);
 });

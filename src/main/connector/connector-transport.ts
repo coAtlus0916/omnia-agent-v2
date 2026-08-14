@@ -47,4 +47,12 @@ export interface ConnectorTransport {
   invokeOperationWithWitness?(input: OperationInvocationRequest): Promise<ConnectorInvocationDelivery>;
   deliveryStatus?(input: ConnectorDeliveryStatusRequest): Promise<ConnectorDeliveryStatusResult>;
   acknowledgeDelivery?(input: ConnectorDeliveryAck): Promise<{ acknowledged: true; clearedMutationCount: number }>;
+  /** Redacted operational records used only by the local diagnostic export. */
+  readDiagnosticLogs?(input: { since: string; until: string }): Promise<{
+    records: Record<string, unknown>[];
+    scannedRecords: number;
+    truncated: boolean;
+  }>;
+  /** Non-secret deployment identity used to distinguish loopback from remote Connector lifecycles. */
+  diagnosticContext?(): Record<string, unknown>;
 }

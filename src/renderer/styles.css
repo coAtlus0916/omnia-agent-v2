@@ -470,6 +470,22 @@ button.danger { color: var(--danger); border-color: #d8aaaa; }
 .settings-dialog label { display: grid; grid-template-columns: 150px minmax(0,1fr); align-items: center; gap: 10px; margin: 8px 0; }
 .settings-dialog input, .settings-dialog select { width: 100%; min-height: 29px; padding: 4px 7px; border: 1px solid #c8d1d9; border-radius: 3px; background: #fff; }
 .settings-note { margin: 8px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.log-export-settings > .button-row { margin-top: 12px; }
+.log-export-card { margin-top: 14px; padding: 12px; border: 1px solid #b9d5c8; border-radius: 4px; background: #f5fbf8; }
+.log-export-card.partial { border-color: #dec98e; background: #fffaf0; }
+.log-export-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.log-export-heading > div { min-width: 0; }
+.log-export-heading strong { display: block; overflow-wrap: anywhere; }
+.log-export-heading small { display: block; margin-top: 3px; color: var(--muted); }
+.log-export-heading > span { flex: 0 0 auto; padding: 2px 6px; border-radius: 10px; color: #17663f; background: #dff3e8; font-size: 9px; }
+.log-export-card.partial .log-export-heading > span { color: #71570d; background: #f5e8bd; }
+.log-export-card dl { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 5px 10px; margin: 12px 0 0; font-size: 10px; }
+.log-export-card dt { color: var(--muted); }
+.log-export-card dd { margin: 0; overflow-wrap: anywhere; }
+.log-export-warnings { margin-top: 10px; padding: 8px; border: 1px solid #ead7a6; background: #fffdf7; font-size: 10px; }
+.log-export-warnings ul { margin: 5px 0 0; padding-left: 18px; }
+.log-export-warnings li + li { margin-top: 3px; }
+.log-export-empty { margin: 14px 0 0; padding: 12px; border: 1px dashed var(--border); color: var(--muted); text-align: center; font-size: 10px; }
 .mode-row { display: flex; gap: 6px; margin-bottom: 9px; }
 .pair-result { margin-top: 10px; padding: 9px; border: 1px solid #bed5e6; background: #f2f8fc; }
 .pair-result code { display: block; margin: 5px 0; padding: 5px; user-select: all; background: #fff; border: 1px solid #d7e2ea; overflow-wrap: anywhere; }
@@ -568,7 +584,10 @@ button.danger { color: var(--danger); border-color: #d8aaaa; }
 .navigation-group > .navigation-leaf { padding-left: 22px; }
 .navigation-subgroup .navigation-leaf { padding-left: 32px; }
 .navigation-leaf { width: 100%; min-height: 28px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px; border: 0; border-radius: 3px; color: #344554; background: transparent; text-align: left; font-size: 11px; }
+.navigation-leaf-copy { min-width: 0; display: inline-flex; align-items: baseline; gap: 8px; white-space: nowrap; }
+.navigation-feature-version { color: #71808d; font-size: 9px; font-variant-numeric: tabular-nums; }
 .navigation-leaf:hover:not(:disabled), .navigation-leaf.active { color: #0f568e; background: #e4f0f8; }
+.navigation-leaf:hover:not(:disabled) .navigation-feature-version, .navigation-leaf.active .navigation-feature-version { color: #3f7399; }
 .navigation-leaf:disabled { color: #8b96a0; opacity: .75; }
 .navigation-leaf .nav-dot.available { background: #2ca771; }
 .navigation-leaf .nav-dot.disabled, .navigation-leaf .nav-dot.incompatible, .navigation-leaf .nav-dot.unauthorized { background: #ca9a34; }
@@ -682,6 +701,8 @@ button.danger { color: var(--danger); border-color: #d8aaaa; }
 .settings-section h3 { margin: 0 0 10px; font-size: 13px; }
 .settings-section label { display: grid; grid-template-columns: 150px minmax(0, 1fr); align-items: center; gap: 10px; margin: 8px 0; font-size: 11px; }
 .settings-section input, .settings-section select { min-height: 29px; padding: 4px 7px; border: 1px solid #c8d1d9; border-radius: 3px; }
+.settings-section .settings-toggle { grid-template-columns: minmax(0, 1fr) auto; }
+.settings-section .settings-toggle input[type="checkbox"] { width: 16px; min-height: 16px; margin: 0; padding: 0; }
 .settings-workspaces { max-height: 260px; overflow: auto; padding: 6px; border: 1px solid var(--border); }
 .settings-workspaces strong, .settings-workspaces label { display: block; margin: 4px 0; font-size: 10px; }
 .settings-workspaces label { padding-left: 12px; }

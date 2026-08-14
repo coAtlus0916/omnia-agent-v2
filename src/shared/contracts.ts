@@ -193,6 +193,20 @@ export interface ConnectionSettingsSnapshot {
 export interface SettingsSnapshot {
   ai: AiSettingsSnapshot;
   connection: ConnectionSettingsSnapshot;
+  logs: LogExportSnapshot;
+}
+
+export interface LogExportSnapshot {
+  state: 'empty' | 'ready' | 'partial';
+  available: boolean;
+  exportId: string;
+  fileName: string;
+  generatedAt: string;
+  localDate: string;
+  size: number;
+  sha256: string;
+  entryCount: number;
+  warnings: string[];
 }
 
 export interface RemotePairingSnapshot {
@@ -204,6 +218,7 @@ export interface RemotePairingSnapshot {
 
 export interface UserViewPreference {
   uiScalePercent: number;
+  showFeatureVersions: boolean;
   stateVersion: number;
   updatedAt: string;
 }
@@ -311,6 +326,9 @@ export interface ShellApi {
   cancelRemotePairing(): Promise<ShellSnapshot>;
   revokeRemoteBinding(input: { confirmed: boolean; expectedStateVersion: number }): Promise<ShellSnapshot>;
   saveScale(input: { percent: number; expectedStateVersion: number }): Promise<ShellSnapshot>;
+  saveFeatureVersionVisibility(input: { visible: boolean; expectedStateVersion: number }): Promise<ShellSnapshot>;
+  generateTodayLogs(): Promise<ShellSnapshot>;
+  downloadLogExport(input: { exportId: string }): Promise<{ saved: boolean }>;
   saveLayout(input: {
     featureNavigationBasisPoints: number;
     featureNavigationCollapsed: boolean;

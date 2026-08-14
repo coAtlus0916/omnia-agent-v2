@@ -29,7 +29,7 @@ import { FeatureRuntimeStore, isFeatureRuntimeStorePort } from './feature-runtim
 import { FeatureWorkerSupervisor, type FeatureWorkerPortContext } from './worker-supervisor.js';
 import type { InteractionLogService } from '../services/interaction-log-service.js';
 
-const PRODUCT_VERSION = '0.4.18';
+const PRODUCT_VERSION = '0.5.0';
 // A Return action owns the durable mutation authorization while it executes a
 // bounded sequence of individually timed signed Operations. The previous
 // 15-minute envelope could terminate a healthy multi-row Return after a

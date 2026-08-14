@@ -504,7 +504,13 @@ function sameProgressEpoch(previous: DeclarativeFeatureSurface, next: Declarativ
     && progressShape(previous.progress) === progressShape(next.progress));
 }
 
-const TERMINAL_PROGRESS_STATES = new Set<DeclarativeProgress['state']>(['passed', 'failed', 'skipped', 'uncertain']);
+const TERMINAL_PROGRESS_STATES = new Set<DeclarativeProgress['state']>([
+  'passed',
+  'warning',
+  'failed',
+  'skipped',
+  'uncertain'
+]);
 
 function returnWorkflowStepIds(value: DeclarativeFeatureSurface): Set<string> {
   return new Set(value.actions

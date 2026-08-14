@@ -104,12 +104,14 @@ export class ConnectorNextControlClient {
     return this.request('deliveries/ack', { method: 'POST', body: JSON.stringify(input) });
   }
 
-  queryLogs(target: ConnectorNextTarget, filters: { version?: string; generation?: number; after?: number; limit?: number } = {}): Promise<{ records: Record<string, unknown>[] }> {
+  queryLogs(target: ConnectorNextTarget, filters: { version?: string; generation?: number; after?: number; limit?: number; since?: string; until?: string } = {}): Promise<{ records: Record<string, unknown>[] }> {
     const query = new URLSearchParams({ agentId: target.agentId, deviceId: target.deviceId, connectorInstanceId: target.connectorInstanceId });
     if (filters.version) query.set('version', filters.version);
     if (filters.generation !== undefined) query.set('generation', String(filters.generation));
     if (filters.after !== undefined) query.set('after', String(filters.after));
     if (filters.limit !== undefined) query.set('limit', String(filters.limit));
+    if (filters.since) query.set('since', filters.since);
+    if (filters.until) query.set('until', filters.until);
     return this.request(`logs?${query.toString()}`);
   }
 

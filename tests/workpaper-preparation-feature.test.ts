@@ -13,8 +13,8 @@ import { resolveProductPaths } from '../src/main/paths.js';
 
 const repository = path.resolve(import.meta.dirname, '..');
 const source = path.join(repository, 'feature-packages', 'workpaper-preparation', 'source');
-const candidate = path.join(repository, 'feature-packages', 'workpaper-preparation', 'candidates', 'workpaper-preparation-0.1.81.ofp');
-const operationCandidate = path.join(repository, 'feature-packages', 'workpaper-preparation', 'candidates', 'workpaper-preparation-operation-0.1.81.ofop');
+const candidate = path.join(repository, 'feature-packages', 'workpaper-preparation', 'candidates', 'workpaper-preparation-0.1.83.ofp');
+const operationCandidate = path.join(repository, 'feature-packages', 'workpaper-preparation', 'candidates', 'workpaper-preparation-operation-0.1.83.ofop');
 const releasePython = [
   path.join(repository, 'releases', 'runtime', 'python', 'cpython-3.13.14-embed-amd64', 'python.exe'),
   path.join(repository, 'data', 'remote-shell-product', 'runtime', 'python', 'cpython-3.13.14-embed-amd64', 'python.exe')
@@ -157,11 +157,11 @@ test('workpaper candidate is immutable Feature-only and installs in isolation', 
   try {
     const envelope = verifyOfficialPackage(JSON.parse(fs.readFileSync(candidate, 'utf8')), 'omnia-feature');
     assert.equal(envelope.packageId, 'omnia.workpaper-preparation');
-    assert.equal(envelope.version, '0.1.81');
-    assert.equal(envelope.sequence, 82);
+    assert.equal(envelope.version, '0.1.83');
+    assert.equal(envelope.sequence, 84);
     const operation = verifyOfficialPackage(JSON.parse(fs.readFileSync(operationCandidate, 'utf8')), 'omnia-connector-operation');
     assert.equal(operation.packageId, 'omnia.workpaper-preparation.operation');
-    assert.equal(operation.version, '0.1.81');
+    assert.equal(operation.version, '0.1.83');
     unpack(envelope, unpacked);
     const selfTest = spawnSync(process.execPath, [path.join(unpacked, 'tests', 'self-test.cjs')], {
       cwd: unpacked, encoding: 'utf8', windowsHide: true
@@ -180,7 +180,7 @@ test('workpaper candidate is immutable Feature-only and installs in isolation', 
       const manager = new FeaturePackageManager(database.db, paths);
       const installed = manager.install(candidate);
       assert.equal(installed.featureId, 'omnia.workpaper-preparation');
-      assert.equal(installed.featureVersion, '0.1.81');
+      assert.equal(installed.featureVersion, '0.1.83');
       assert.equal(installed.packageDigest, packageDigest(envelope));
     } finally { database.close(); }
   } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
@@ -192,6 +192,7 @@ test('next Workpaper package declares the generic fixed-footer split catalog lay
   assert.match(packager, /actionId: 'select-elements'[\s\S]*?selectionMode: 'single'/u);
   assert.match(packager, /stepId: 'select'[\s\S]*?stepId: 'upload'/u);
   assert.match(packager, /actionId: 'select-elements'/u);
+  assert.match(packager, /actionId: 'skip-materials'[\s\S]*?label: '跳过'[\s\S]*?presentation: 'upload'/u);
   assert.match(packager, /actionId: 'restart-run'[\s\S]*?presentation: 'restart'/u);
   assert.doesNotMatch(packager, /featureId\s*===\s*['"]omnia\.workpaper-preparation/u);
 });
@@ -416,6 +417,9 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
   const safety = { enabled: true, validForCurrentConnection: true, globalEnabled: false, globalSectionIds: [], globalWorkspaceIds: [],
     connectorId: 'connector-1', sessionGeneration: 2, engagementId: ids.engagement, authorityInstanceId: 'authority-1', tenantOrOrgId: '',
     packId: 'pack-1', stateVersion: 9, authorityObservationId: 'authority-observation-1', workspaceIds: [ids.workspace] };
+  const reboundBinding = { ...binding, sessionGeneration: 3 };
+  const reboundSafety = { ...safety, sessionGeneration: 3, stateVersion: 10,
+    authorityObservationId: 'authority-observation-2' };
   const selected = { riskAssessmentId: ids.gra, graWorkItemId: ids.graWork, appId: ids.app, appWorkItemId: ids.appWork,
     workspaceId: ids.workspace, workspaceName: 'Workspace 1', graName: 'GRA APP', graReferenceNumber: 'GRA-1', graContentId: 'generic-content',
     graStatus: 'EvaluationComplete', graUpdatedOn: '2026-08-09T00:00:00.000Z', appName: 'APP 1', appNumber: 'APP-1',
@@ -443,6 +447,7 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
       frequencyOfPerformance: null, frequencyOfPerformanceExplanation: '', operatingEffectively: null }
   };
   const snapshot = () => JSON.parse(JSON.stringify(liveSnapshot));
+  const initialLiveSnapshot = snapshot();
   const connector = { async invoke(input: any) {
     order.push(`operation:${input.operationId}`);
     if (input.operationId.endsWith('directory.read.v1')) return { ...binding, workspaces: [{ id: ids.workspace, name: 'Workspace 1' }], gras: [selected] };
@@ -525,6 +530,9 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
       payload: { targetIds: [ids.gra] }, context: { connectorBinding: binding, safetyLock: safety } });
     assert.equal(selectedPlan.surfacePatch.workflow.currentStepId, 'upload');
     assert.equal(actionById(selectedPlan.surfacePatch).get('upload-filled-workbook').enabled, true);
+    assert.equal(actionById(selectedPlan.surfacePatch).get('skip-materials').enabled, true,
+      '跳过必须在上传步骤开始时立即可用');
+    assert.equal(actionById(selectedPlan.surfacePatch).get('skip-materials').visible, true);
     assert.equal(opened.size, 0, 'selecting must not open any hidden Tab');
     // Upload the exact generated workbook through the same handle-only parser
     // used in production. The empty parameter cells are a supported real input;
@@ -537,6 +545,8 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
       context: { connectorBinding: binding, safetyLock: safety } });
     assert.equal(filled.surfacePatch.workflow.currentStepId, 'upload');
     assert.equal(actionById(filled.surfacePatch).get('next-to-writeback').enabled, false);
+    assert.equal(actionById(filled.surfacePatch).get('skip-materials').enabled, false,
+      '部分上传后不能静默丢弃已上传资料并切换为空资料流程');
     let current: any = null; for (const value of plans.values()) { if (value.schemaVersion === 'omnia.workpaper-plan/v1') current = value; }
     assert.ok(current, 'a workpaper plan must be saved');
     assert.equal(current.workpaper.replacement.state, 'filled');
@@ -627,6 +637,52 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
     assert.ok(current.workpaper.writebackCounts.fields.placeholderFallback > 0);
     assert.ok(current.workpaper.writebackCounts.fields.manualCompletion > 0,
       '占位符已传入 Pack 后仍须如实保留待人工补录统计');
+
+    // A second real flow exercises the initial Skip action. Generate the
+    // template under Session 2, then revalidate the exact same Pack/Workspace
+    // under Session 3 before clicking Skip. No material bytes or AI call are
+    // allowed; the master placeholders must become the confirmed payload.
+    const restarted = await worker.handleAction({ actionId: 'restart-run',
+      expectedStateVersion: written.surfacePatch.stateVersion,
+      context: { connectorBinding: binding, safetyLock: safety } });
+    assert.equal(restarted.surfacePatch.workflow.currentStepId, 'select');
+    const secondSelected = await worker.handleAction({ actionId: 'select-elements',
+      expectedStateVersion: restarted.surfacePatch.stateVersion,
+      payload: { targetIds: [ids.gra] }, context: { connectorBinding: binding, safetyLock: safety } });
+    const aiCountBeforeSkip = aiRequests.length;
+    const skipped = await worker.handleAction({ actionId: 'skip-materials',
+      expectedStateVersion: secondSelected.surfacePatch.stateVersion,
+      context: { connectorBinding: reboundBinding, safetyLock: reboundSafety } });
+    assert.equal(skipped.surfacePatch.workflow.currentStepId, 'writeback');
+    assert.equal(actionById(skipped.surfacePatch).get('confirm-writeback').enabled, true);
+    assert.equal(aiRequests.length, aiCountBeforeSkip, '空资料跳过不得伪造或调用制度解析 AI');
+    current = null; for (const value of plans.values()) { if (value.schemaVersion === 'omnia.workpaper-plan/v1') current = value; }
+    assert.equal(current.binding.sessionGeneration, 3);
+    assert.equal(current.safety.stateVersion, 10);
+    assert.equal(current.draftAuthorityRebindings.length, 1,
+      '只允许尚未创建 Return intent 的草稿换绑到同一稳定 authority 的新 Session');
+    assert.equal(current.workpaper.materials.state, 'skipped');
+    assert.equal(current.workpaper.policy.state, 'skipped');
+    assert.equal(current.workpaper.replacement.templateMode, 'master_placeholders');
+    assert.equal(current.workpaper.resolution.ai.state, 'not_required');
+    const skippedPlaceholder = current.workpaper.resolution.resolutions
+      .flatMap((item: any) => item.fields)
+      .flatMap((field: any) => field.placeholders.map((placeholder: any) => ({ field, placeholder })))
+      .find((item: any) => item.placeholder.state === 'missing_evidence');
+    assert.ok(skippedPlaceholder);
+    assert.equal(skippedPlaceholder.field.resolvedText.includes(skippedPlaceholder.placeholder.originalPlaceholder), true);
+    Object.assign(liveSnapshot, JSON.parse(JSON.stringify(initialLiveSnapshot)));
+    const skippedWritten = await worker.handleAction({ actionId: 'confirm-writeback',
+      expectedStateVersion: skipped.surfacePatch.stateVersion,
+      context: { connectorBinding: reboundBinding, safetyLock: reboundSafety } });
+    assert.equal(skippedWritten.surfacePatch.workflow.currentStepId, 'writeback');
+    assert.equal(writebackRequests.length, 2, '跳过资料仍必须通过原有签名写回链提交母版占位内容');
+    const skippedChanges = writebackRequests[1]?.command?.payload?.changes || [];
+    assert.ok(skippedChanges.length > 5);
+    assert.ok(skippedChanges.some((change: any) => {
+      if (change.valueKind !== 'editor') return false;
+      return /【[^【】]+】/u.test(JSON.parse(change.value).editorData);
+    }), '跳过流程的真实 PATCH 必须保留母版占位内容');
   } finally {
     await worker.shutdown();
     for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }

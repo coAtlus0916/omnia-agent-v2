@@ -1,6 +1,6 @@
 {
   "name": "omnia-agent-v5-shell",
-  "version": "0.4.18",
+  "version": "0.5.0",
   "description": "Omnia Agent v5 Shell with Connector Next",
   "private": true,
   "type": "module",

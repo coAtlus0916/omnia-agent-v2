@@ -246,4 +246,62 @@ export class ConnectorNextTransport implements ConnectorTransport {
   async acknowledgeDelivery(input: ConnectorDeliveryAck): Promise<{ acknowledged: true; clearedMutationCount: number }> {
     return this.ensureClient().acknowledgeDelivery(input);
   }
+
+  async readDiagnosticLogs(input: { since: string; until: string }): Promise<{
+    records: Record<string, unknown>[];
+    scannedRecords: number;
+    truncated: boolean;
+  }> {
+    const sinceMs = Date.parse(input.since);
+    const untilMs = Date.parse(input.until);
+    if (!Number.isFinite(sinceMs) || !Number.isFinite(untilMs) || sinceMs >= untilMs) {
+      throw new AppError('CONNECTOR_NEXT.LOG_RANGE_INVALID', 'Connector 日志导出时间范围无效。');
+    }
+    const config = this.config();
+    const client = this.ensureClient();
+    const records: Record<string, unknown>[] = [];
+    const maximumScannedRecords = 200_000;
+    let scannedRecords = 0;
+    let after = 0;
+    let truncated = false;
+    while (scannedRecords < maximumScannedRecords) {
+      const page = await client.queryLogs(config.target, {
+        after,
+        limit: 500,
+        since: input.since,
+        until: input.until
+      });
+      const rows = Array.isArray(page.records) ? page.records : [];
+      if (!rows.length) break;
+      scannedRecords += rows.length;
+      let nextAfter = after;
+      for (const record of rows) {
+        const serverId = Number(record.server_log_id ?? record.serverLogId ?? 0);
+        if (Number.isSafeInteger(serverId) && serverId > nextAfter) nextAfter = serverId;
+        const occurredAt = String(record.occurred_at ?? record.occurredAt ?? '');
+        const occurredMs = Date.parse(occurredAt);
+        if (Number.isFinite(occurredMs) && occurredMs >= sinceMs && occurredMs < untilMs) records.push(record);
+      }
+      if (nextAfter <= after) throw new AppError('CONNECTOR_NEXT.LOG_CURSOR_INVALID', 'Connector 日志分页游标没有向前推进。');
+      after = nextAfter;
+      if (rows.length < 500) break;
+    }
+    if (scannedRecords >= maximumScannedRecords) truncated = true;
+    return { records, scannedRecords, truncated };
+  }
+
+  diagnosticContext(): Record<string, unknown> {
+    const config = this.config();
+    const endpoint = new URL(config.serverUrl);
+    const loopback = ['127.0.0.1', '::1', 'localhost'].includes(endpoint.hostname);
+    return {
+      adapter: 'connector_next_v3',
+      endpointKind: loopback ? 'loopback' : 'remote',
+      endpointProtocol: endpoint.protocol,
+      endpointHost: endpoint.hostname,
+      endpointPort: endpoint.port || (endpoint.protocol === 'https:' ? '443' : '80'),
+      target: { ...config.target },
+      connectorVersion: this.connectorVersion
+    };
+  }
 }

@@ -156,6 +156,19 @@ const bindRemoteFixture = (database: CoreDatabase) => {
   });
 };
 
+test('Shell snapshot exposes 0.5.0 and persists Feature version visibility without touching Feature runtime', async () => {
+  await fixture(async (shell) => {
+    const before = shell.snapshot();
+    assert.equal(before.productVersion, '0.5.0');
+    assert.equal(before.preference.showFeatureVersions, true);
+    const after = shell.saveFeatureVersionVisibility(false, before.preference.stateVersion);
+    assert.equal(after.preference.showFeatureVersions, false);
+    assert.equal(after.preference.stateVersion, before.preference.stateVersion + 1);
+    assert.equal(after.features.selectedFeatureId, before.features.selectedFeatureId);
+    assert.equal(after.features.navigation.length, before.features.navigation.length);
+  });
+});
+
 test('refresh performs a real connector refresh and authoritative light read', async () => {
   await fixture(async (shell) => {
     const snapshot = await shell.refresh();

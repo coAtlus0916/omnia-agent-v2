@@ -9,7 +9,7 @@ Owner：Control & Data Plane
 | 表 | Owner/用途 |
 |---|---|
 | `schema_migrations` | 已提交 migration 版本与应用时间 |
-| `user_preferences` | UI scale、`state_version` |
+| `user_preferences` | UI scale、Feature 版本可见性、`state_version` |
 | `layout_preferences` | `shell.main` splitter basis points、layout/state version |
 | `connection_state` | 最近一次真实 Connector 快照；不是 Omnia 授权 |
 | `keepalive_state` | 启停、周期、最近尝试/成功/失败、下次执行 |
@@ -34,6 +34,7 @@ Owner：Control & Data Plane
 - Workspace observation 追加写；失败的读取不会覆盖最近成功 observation。
 - UI 只有在当前 Session/Pack 已核验且本次目录 `available=true` 时展示 Workspace 名称并允许保存安全锁。
 - Migration 21 为 `workspace_safety` 增加 `global_enabled`、`global_section_ids_json` 与 `global_workspace_ids_json`；三者和显式 Workspace 锁在同一 CAS UPDATE 中保存。全局成员只由同一权威 observation 的真实 `parentSectionId` 展开，后续成员变化会使锁失效并要求重存。
+- Migration 29 为 `user_preferences` 增加 `show_feature_versions`，`NOT NULL DEFAULT 1`；它和 UI scale 共用现有 `state_version` CAS，只控制 Shell 菜单渲染，不触碰 Feature Registry、Feature Store、Run 或 Artifact。
 - Connection snapshot 只用于恢复说明；启动后由 Connector 实时重读。
 
 ## Secret 与正文
@@ -134,4 +135,6 @@ Migration 12 adds durable Runs/events, artifacts, immutable TemplateVersions and
 
 Migration 19 在现有 `data/stores/core.sqlite` 原位新增 `interaction_logs` 和 timestamp/trace/failure/action 索引。表保存交互阶段、关联 ID、耗时、Plane/组件/Surface/action、稳定错误码与脱敏失败点；不保存 Secret、正文、文件内容或完整路径。
 
-启动时未完成的 `start` 行转为 `APP.PROCESS_INTERRUPTED`。普通诊断日志保留 14 天且最多 20,000 行，终态行按最早时间滚动删除；Run/Event、Command Evidence、binding audit 与未解决 effect 不受此清理影响。迁移单调、事务化，不改写已有业务表或 `data/` 中的 Artifact。
+启动时未完成的 `start` 行转为 `APP.PROCESS_INTERRUPTED`。普通诊断日志保留 1 天且最多 20,000 行，终态行按最早时间滚动删除；Run/Event、Command Evidence、binding audit 与未解决 effect 不受此清理影响。迁移单调、事务化，不改写已有业务表或 `data/` 中的 Artifact。
+
+Shell 0.5.0 的今日日志导出不增加数据库迁移。最新导出 pointer 和服务自有 ZIP 位于 `data/log-exports/`；ZIP 只包含查询得到的脱敏日志、纯身份诊断和当天文本日志，不复制 Core/Feature/Connector SQLite 文件。重新生成先完整写入并提交新 pointer，再以 best-effort 清理旧 ZIP；下载按 export ID、托管目录、大小和 SHA-256 失败关闭。

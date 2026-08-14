@@ -138,11 +138,12 @@ Shell/Core 使用统一实例合同管理第三列标签与独立窗口，Render
 | `schemaVersion` | const `omnia.user-view-preference/v1` | 合同版本 |
 | `profileId` | string | 当前本地 profile |
 | `uiScalePercent` | integer | 后台验证过的当前值 |
+| `showFeatureVersions` | boolean | 是否在 Shell Feature 菜单显示真实 active package 版本；默认 `true` |
 | `stateVersion` | integer ≥ 0 | CAS/多窗口同步 |
 | `updatedAt` | timestamp | Core 写入时间 |
 | `source` | `user|reset|migration|default` | 值来源 |
 
-更新 action 必须携带 `expectedStateVersion`。Core 成功提交后发布 `user_preference.updated`；Shell 和所有独立窗口只应用后台返回值。范围和步长由已发布 UI policy 给出，Renderer 不得自行扩大。
+缩放和 Feature 版本可见性的更新 action 都必须携带 `expectedStateVersion`。Core 成功提交后发布 `user_preference.updated`；Shell 和所有独立窗口只应用后台返回值。范围和步长由已发布 UI policy 给出，Renderer 不得自行扩大。Feature 版本文本来自当前 active package manifest，不得用硬编码展示值冒充当前状态。
 
 ### 2.4 LayoutPreference
 
@@ -762,7 +763,11 @@ Shell 的诊断日志使用 `omnia.interaction-log/v1`。它是短期、严格�
 
 `details` 只允许平面 allowlist 元数据。API Key、token、Cookie、Authorization、password、credential、poll secret、链接码、请求/响应 body、聊天/工作簿正文、文件内容、密文和完整本机路径不得进入日志；文件只允许 basename、大小、媒体类型和 digest。Renderer 只能通过受限查询合同读取已经脱敏的行，不能执行任意 SQL。
 
-查询支持 severity、Plane、时间和 interaction/trace/parent ID 前缀，单页最多 200 条；trace 详情最多 500 个阶段。当前无清空或导出合同，因此 UI 不得提供对应按钮。
+查询支持 severity、Plane、时间和 interaction/trace/parent ID 前缀，单页最多 200 条；trace 详情最多 500 个阶段。当前没有清空合同。
+
+设置 → 日志提供本机 `omnia.log-export/v1` 导出合同。`generateTodayLogs` 以当前操作系统本地日期计算 `[当天 00:00, 次日 00:00)`，每次重新收集并生成一份新的 ZIP；`SettingsSnapshot.logs` 只投影最新导出的 ID、文件名、生成时间、大小、SHA-256、条目数和完整/部分状态。`downloadLogExport` 只接受该最新 ID，Main 在显示保存对话框前重新验证托管路径、大小和 SHA-256；Renderer 不能传入源路径或读取任意文件。重新生成提交新 pointer 后，旧的服务自有 ZIP 才可被清理。
+
+ZIP 包含脱敏后的 Interaction Log、当天 Feature Run/Event/Command 诊断、当前 Feature plan 的纯身份投影、Connector Next 控制面已汇聚的脱敏日志、当天本机 Shell/embedded Connector 文本日志，以及不含凭据的 endpoint kind、Connector/Pack session generation 和激活 Feature 版本。Feature plan 投影只允许 schema/plan/run/stage/state、Connector/authority/Pack/Workspace identity、generation/revision、Artifact identity 和时间字段；不得包含制度、参数表、工作簿单元格或其他业务正文。导出不得打包 `core.sqlite`、Feature Store 数据库、Connector state/runtime 数据库、API Key、control token、cookie、Authorization、密文、用户上传原件或任意请求/响应 body。某个来源无法获取或达到明确容量边界时，仍可生成其余真实日志，但状态必须为 `partial` 并在 manifest/UI 列出 warning，不得伪装完整。
 
 ## 14. 统一错误模型
 

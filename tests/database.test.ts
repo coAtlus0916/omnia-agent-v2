@@ -22,6 +22,7 @@ test('Core migration creates a real empty feature registry and persistent defaul
   withDatabase((database) => {
     assert.equal(database.activeFeatureCount(), 0);
     assert.equal(database.getPreference().uiScalePercent, 100);
+    assert.equal(database.getPreference().showFeatureVersions, true);
     assert.equal(database.getLayout().surfaceId, 'shell.main');
     assert.equal(database.getSafety().enabled, false);
     assert.ok(database.getChatSessionId());
@@ -158,6 +159,15 @@ test('preference and layout writes use stateVersion conflict protection', () => 
       (error: any) => error.code === 'PREFERENCE.CONFLICT'
     );
 
+    const hiddenVersions = database.saveFeatureVersionVisibility(false, savedPreference.stateVersion);
+    assert.equal(hiddenVersions.showFeatureVersions, false);
+    assert.equal(hiddenVersions.stateVersion, savedPreference.stateVersion + 1);
+    assert.equal(database.getPreference().showFeatureVersions, false);
+    assert.throws(
+      () => database.saveFeatureVersionVisibility(true, savedPreference.stateVersion),
+      (error: any) => error.code === 'PREFERENCE.CONFLICT'
+    );
+
     const layout = database.getLayout();
     const savedLayout = database.saveLayout(700, 3000, layout.stateVersion);
     assert.equal(savedLayout.railBasisPoints, 700);
@@ -166,6 +176,30 @@ test('preference and layout writes use stateVersion conflict protection', () => 
       (error: any) => error.code === 'LAYOUT.CONFLICT'
     );
   });
+});
+
+test('migration 29 adds Feature version visibility without changing an existing preference', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'omnia-v5-db-migration29-'));
+  const filename = path.join(root, 'core.sqlite');
+  const cipher = createTestContentCipher();
+  let database = new CoreDatabase(filename, cipher);
+  try {
+    const preference = database.getPreference();
+    const savedPreference = database.savePreference(115, preference.stateVersion);
+    database.db.exec(`
+      DELETE FROM schema_migrations WHERE version=29;
+      ALTER TABLE user_preferences DROP COLUMN show_feature_versions;
+    `);
+    database.close();
+    database = new CoreDatabase(filename, cipher);
+    const migrated = database.getPreference();
+    assert.equal(migrated.uiScalePercent, 115);
+    assert.equal(migrated.stateVersion, savedPreference.stateVersion);
+    assert.equal(migrated.showFeatureVersions, true);
+  } finally {
+    database.close();
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('chat message body and provider failure state are durable', () => {

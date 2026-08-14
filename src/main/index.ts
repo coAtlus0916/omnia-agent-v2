@@ -34,6 +34,7 @@ import type { FeatureActionRequest, FeatureArtifactBytesInputRequest, FeatureArt
 import { packArchive } from './feature-artifact-archive.js';
 import { SurfaceWindowManager } from './services/surface-window-manager.js';
 import { InteractionLogService, type InteractionDescriptor } from './services/interaction-log-service.js';
+import { LogExportService } from './services/log-export-service.js';
 import type { InteractionLogQuery } from '../shared/interaction-log-contracts.js';
 
 let mainWindow: BrowserWindow | null = null;
@@ -119,7 +120,9 @@ function resolveHotApplicationRoot(): string | null {
 
 async function createWindow(): Promise<void> {
   const initialZoomFactor = shell!.snapshot().preference.uiScalePercent / 100;
+  const windowTitle = `Omnia Agent v5 · ${app.getVersion()}`;
   mainWindow = new BrowserWindow({
+    title: windowTitle,
     width: 1280,
     height: 800,
     minWidth: 920,
@@ -145,6 +148,10 @@ async function createWindow(): Promise<void> {
   mainWindow.webContents.setZoomFactor(initialZoomFactor);
   surfaceWindows.setZoomFactor(initialZoomFactor);
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.on('page-title-updated', (event) => {
+    event.preventDefault();
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setTitle(windowTitle);
+  });
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (url !== pathToFileURL(rendererPath('index.html')).href) event.preventDefault();
   });
@@ -274,6 +281,16 @@ function registerIpc(service: ShellService, packages: FeaturePackageManager, log
     service.revokeRemoteBinding(input));
   handle('shell:save-scale', (input: { percent: number; expectedStateVersion: number }) =>
     service.saveScale(input.percent, input.expectedStateVersion));
+  handle('shell:save-feature-version-visibility', (input: { visible: boolean; expectedStateVersion: number }) =>
+    service.saveFeatureVersionVisibility(input.visible, input.expectedStateVersion));
+  handle('shell:generate-today-logs', () => service.generateTodayLogs());
+  handle('shell:download-log-export', async (input: { exportId: string }) => {
+    const artifact = service.logExportDownload(String(input?.exportId || ''));
+    const selected = await dialog.showSaveDialog({ title: '保存今日日志', defaultPath: artifact.suggestedName });
+    if (selected.canceled || !selected.filePath) return { saved: false };
+    fs.copyFileSync(artifact.source, selected.filePath);
+    return { saved: true };
+  });
   handle('shell:save-layout', (input: {
     featureNavigationBasisPoints: number;
     featureNavigationCollapsed: boolean;
@@ -564,7 +581,8 @@ app.whenReady().then(async () => {
     packagedEmbedded ? builtinFeatureReleaseInventoryForProfile(packagedEmbedded.builtinProfile) : undefined
   );
   await featurePackages.initializeRuntime();
-  shell = new ShellService(database, connector, chat, attachments, featurePackages, {}, {}, interactionLogs);
+  const logExports = new LogExportService(database, paths, interactionLogs, connector);
+  shell = new ShellService(database, connector, chat, attachments, featurePackages, {}, {}, interactionLogs, app.getVersion(), logExports);
   registerIpc(shell, featurePackages, interactionLogs);
   // The local Shell surface must not be gated by a remote status request.
   // ShellService starts from its durable cached/offline snapshot, so it is

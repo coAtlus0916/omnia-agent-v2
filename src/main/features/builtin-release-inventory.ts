@@ -180,13 +180,13 @@ export const COMPANY_LOOPBACK_CURRENT_FEATURE_RELEASE_INVENTORY: BuiltinFeatureR
     Object.freeze({
       delivery: 'shell-builtin-baseline',
       featureId: 'omnia.workpaper-preparation',
-      version: '0.1.81',
-      sequence: 82,
+      version: '0.1.83',
+      sequence: 84,
       sourceDirectory: 'workpaper-preparation',
-      filename: 'workpaper-preparation-0.1.81.ofp',
-      sourceRelativePath: 'feature-packages/workpaper-preparation/candidates/workpaper-preparation-0.1.81.ofp',
-      fileSha256: 'sha256:26a670b8e47f090248ac4341d3027c344dbb2e9a70540cc3e4e0a126ae3bfe48',
-      packageDigest: 'sha256:c45a094381cc33c142def9e0af509e1059d7fd7998e75b406dd5948309607069'
+      filename: 'workpaper-preparation-0.1.83.ofp',
+      sourceRelativePath: 'feature-packages/workpaper-preparation/candidates/workpaper-preparation-0.1.83.ofp',
+      fileSha256: 'sha256:283bb1d726a684b7be5681875e4b4853256c0e2fe8ba5923e0043cde4e1390ca',
+      packageDigest: 'sha256:bc79d72456dca48c1d6bdc0f8f6f06f8c597b080426535cfea449962988baf71'
     })
   ]),
   postInstallFeatures: Object.freeze([])

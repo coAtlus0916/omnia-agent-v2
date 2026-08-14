@@ -60,7 +60,7 @@ test('current immutable Feature candidates declare the signed IT Elements, Workp
   };
   const manifests = [
     readManifest('feature-packages/create-associate/candidates/create-associate-0.2.150.ofp'),
-    readManifest('feature-packages/workpaper-preparation/candidates/workpaper-preparation-0.1.81.ofp'),
+    readManifest('feature-packages/workpaper-preparation/candidates/workpaper-preparation-0.1.83.ofp'),
     readManifest('feature-packages/recording/candidates/recording-0.4.21.ofp'),
     readManifest('feature-packages/delete-elements/candidates/delete-elements-0.3.32.ofp')
   ];

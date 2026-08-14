@@ -1141,6 +1141,10 @@ export class CoreDatabase {
                 WHERE delivery.command_id=command.command_id AND delivery.purpose='mutation'
               )
           );
+      `],
+      [29, `
+        ALTER TABLE user_preferences ADD COLUMN show_feature_versions INTEGER NOT NULL DEFAULT 1
+          CHECK(show_feature_versions IN (0,1));
       `]
     ];
     for (const [version, sql] of migrations) {
@@ -1227,10 +1231,12 @@ export class CoreDatabase {
 
   getPreference(): UserViewPreference {
     const row = this.db.prepare(`
-      SELECT ui_scale_percent, state_version, updated_at FROM user_preferences WHERE profile_id='local-user'
-    `).get() as { ui_scale_percent: number; state_version: number; updated_at: string };
+      SELECT ui_scale_percent, show_feature_versions, state_version, updated_at
+      FROM user_preferences WHERE profile_id='local-user'
+    `).get() as { ui_scale_percent: number; show_feature_versions: number; state_version: number; updated_at: string };
     return {
       uiScalePercent: row.ui_scale_percent,
+      showFeatureVersions: row.show_feature_versions === 1,
       stateVersion: row.state_version,
       updatedAt: row.updated_at
     };
@@ -1268,6 +1274,19 @@ export class CoreDatabase {
       WHERE profile_id='local-user' AND state_version=?
     `).run(percent, now, expectedStateVersion);
     if (result.changes !== 1) throw new AppError('PREFERENCE.CONFLICT', '界面缩放已在另一个窗口更新，请刷新后重试。', true);
+    return this.getPreference();
+  }
+
+  saveFeatureVersionVisibility(visible: boolean, expectedStateVersion: number): UserViewPreference {
+    if (typeof visible !== 'boolean') {
+      throw new AppError('PREFERENCE.INVALID_FEATURE_VERSION_VISIBILITY', 'Feature 版本号显示设置必须是布尔值。');
+    }
+    const result = this.db.prepare(`
+      UPDATE user_preferences
+      SET show_feature_versions=?, state_version=state_version+1, updated_at=?
+      WHERE profile_id='local-user' AND state_version=?
+    `).run(visible ? 1 : 0, utcNow(), expectedStateVersion);
+    if (result.changes !== 1) throw new AppError('PREFERENCE.CONFLICT', '界面偏好已在另一个窗口更新，请刷新后重试。', true);
     return this.getPreference();
   }
 

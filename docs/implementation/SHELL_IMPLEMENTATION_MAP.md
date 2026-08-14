@@ -1,6 +1,6 @@
 # Shell Baseline 实现映射
 
-版本：`0.4.18`
+版本：`0.5.0`
 状态：2026-08-14 `integration/remote` 当前源码映射。Connector Next v3 是唯一 Connector 产品链；旧 Bridge、旧 Remote Connector 和 Local fallback 已退出当前构建与运行选择。标准 Shell baseline、公司 loopback profile 和 Feature 源码候选是不同状态，精确集合见 [Feature 包总览](FEATURE_PACKAGE_CATALOG.md)。
 
 SurfaceWindowManager 在 Feature action 成功或失败后向所有同 Feature/版本/Surface 实例广播 Core 最新投影。每个已授权实例保存自己的最后一份 `DeclarativeFeatureSurface`；聚焦、dock、minimize、restore 和已有实例再次 open 只能使用身份匹配的实例缓存，不得从全局 selected Surface 借用另一 Feature 的投影。Artifact 输入授权在打开文件选择器前复核当前 workflow，仅上传步骤接受 `open_file`；旧 WebContents 不能在后台已进入校验后继续导入。
@@ -22,10 +22,11 @@ Shell 原装平台包含 Core Store、Feature/Documentation Registry、通用 Wo
 | 安全锁 | 工作台展示真实 Workspace 目录、选择和恢复原因 | Core 以 CAS 保存 authority observation、精确 Workspace IDs 与 session generation；成员或身份漂移失败关闭 | Connector Next 执行权威轻读取；Feature mutation 仍在预检和提交前重新验证 | 2026-08-14 已统一恢复状态；真实 Pack 身份和成员关系仍以当前读取为准。 |
 | 对话 | 第三列消息列表与输入区；用户消息落库后立即可见 | `chat_sessions/chat_messages` 持久化 user/assistant 两阶段状态 | Provider 只由 Main 受控调用；系统提示包含 Omnia Agent 身份、保密边界和不可替代专业判断 | Provider 未配置或失败时不造假回复；失败保留真实用户消息。 |
 | 缩放 | 右上角/设置 `− 百分比 +`、快捷键 | `user_preferences` CAS；Main 对所有当前/新建 WebContents `setZoomFactor` | Feature view/window 继承同一值 | 0.4.1 已按实际 DPR/viewport/bounds 验证；重启恢复、无 CSS 双缩放 |
+| Feature 版本显示 | 左侧菜单按 `Feature 名称 v.实际激活版本` 显示；设置 → 通用可关闭 | `user_preferences.show_feature_versions` 与缩放共用 CAS；版本来自 PackageManager active manifest | 不修改 Feature 包、Worker、Operation 或 Run | 0.5.0 默认开启；仅是本机目视核对信息，不声称联网判断“最新版本” |
 | Splitter | Feature 菜单/Tabbed Host、Comments 内容/composer、设置导航/内容 | `layout_preferences` 与 `settings.main` CAS | 不适用 | 已实现；pointer/键盘；Rail 固定且无 splitter |
 | Native Surface 可见性 | Renderer 只声明 active tab/overlay | `SurfaceWindowManager` 唯一拥有 attached/visible，Comments/Settings 时附着数为 0；Shell 主窗口在 load 前订阅显示事件并在 load 后检查可见性 | Worker/Run 生命周期不随隐藏终止 | 0.4.4 修复主窗口隐藏竞态；任意时刻最多一个 docked view |
 | 设置稳定布局 | 固定/clamp 外框、左右独立滚动、公共 splitter；无旧 Connector/Bridge 表单 | `settings.main` LayoutPreference CAS | Connector Next 设置不暴露 Secret | 已实现；无 Local/Remote 模式切换。 |
-| 交互诊断 | 当前主导航隐藏日志菜单，不提供清空/导出假入口 | `InteractionLogService` 仍记录 start/success/failure、崩溃恢复、严格脱敏和受限查询；保留期为 1 天，上限 20,000 行 | Feature/Operation/AI 子阶段沿 trace 关联 | 诊断状态是真实 Core 数据；隐藏菜单不删除后台合同，也不把日志冒充 Run/Evidence。 |
+| 日志导出 | 设置 → 日志显示“生成今日日志”和最新 ZIP 的真实下载入口；重复点击重新生成 | `LogExportService` 收集当天 Interaction、Feature 运行状态/纯计划身份、Connector Next 脱敏记录和本地进程日志；托管 pointer、大小和 SHA-256 后再交付 | Connector Next 通过既有受控日志 API 分页读取；loopback/remote 使用同一合同 | 某来源失败时明确标记 `partial`；不打包数据库、凭据、上传原件或业务正文，也不把日志冒充 Run/Evidence。 |
 | Feature 包运行 | 导航和 Surface 完全来自已验签 manifest/active head | `FeaturePackageManager`、每 Feature Worker、私有 Store、Artifact、Command/Receipt 和交接 ledger | Feature 只经自身签名 Operation 调用 Connector Next | 候选、安装、便携和 live canary 状态必须分别记录。 |
 
 ## 进程与信任边界
@@ -77,7 +78,7 @@ canary 未通过不改变失败关闭语义。
 
 ## 历史快照：正式版实施增量（2026-07-31）
 
-以下表格记录 0.2.0 当时的实施范围。它只保留作历史说明，不覆盖本页顶部 Connector Next v3 / Shell 0.4.18 状态；当时的 Local/Remote 设置与 Bridge 产品链均已退出当前构建。
+以下表格记录 0.2.0 当时的实施范围。它只保留作历史说明，不覆盖本页顶部 Connector Next v3 / Shell 0.5.0 状态；当时的 Local/Remote 设置与 Bridge 产品链均已退出当前构建。
 
 版本：0.2.0。范围仍只有三列首页 Shell，无业务 Feature。
 
@@ -120,4 +121,4 @@ Shell hosts native file selection/export, no-path artifact descriptors, scoped b
 
 `src/main/index.ts` 的统一 IPC handler 为 Shell 与 Feature Surface 入口建立真实 interaction；原有五个 Feature Surface 直连 handler 也复用同一包装。`InteractionLogService` 负责 SQLite start/success/failure、trace/parent 关联、脱敏、崩溃恢复、滚动与受限查询。Feature Worker 调用显式传递 interaction context，签名 Connector Operation 按 preflight/execute/readback/reconcile 的 operation ID 记录子阶段；AI Provider 与逐文件附件导入补记原先会被业务状态吸收的失败。
 
-日志查询合同直接读取 Core 数据，不使用 sample 数据；当前 Shell 主导航隐藏日志菜单，也不存在清空/导出入口。保留期为 1 天，容量上限为 20,000 行。该诊断不替代 Feature Run/Event/Evidence，也不改变 Connector Next-only、失败关闭或无 fallback 边界。
+日志查询合同直接读取 Core 数据，不使用 sample 数据；设置页日志导出通过 Main 托管服务生成当天 ZIP，不向 Renderer 暴露源路径。每次生成都会重新收集并替换 latest pointer；下载前重新校验大小和 SHA-256。保留期为 1 天，容量上限为 20,000 行。该诊断不替代 Feature Run/Event/Evidence，也不改变 Connector Next-only、失败关闭或无 fallback 边界。

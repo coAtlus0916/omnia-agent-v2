@@ -165,6 +165,12 @@ test('Connector Next performs exact enrollment, durable read-only job, result an
     assert.ok(queried.records.some((record) => record.event === 'job.succeeded'));
     assert.ok(queried.records.every((record) => record.agent_id === target.agentId && record.device_id === target.deviceId && record.connector_instance_id === target.connectorInstanceId));
     assert.equal(JSON.stringify(queried.records).includes(enrolled.token), false, 'redaction prevents token upload');
+    const bounded = await f.control.queryLogs(target, {
+      since: new Date(Date.now() - 60_000).toISOString(), until: new Date(Date.now() + 60_000).toISOString(), limit: 500
+    });
+    assert.equal(bounded.records.length, queried.records.length, 'time-bounded diagnostic export returns the complete current window');
+    const future = await f.control.queryLogs(target, { since: new Date(Date.now() + 86_400_000).toISOString(), limit: 500 });
+    assert.equal(future.records.length, 0, 'server-side log export excludes records outside the requested local-day window');
 
     const crossed = connectorNextDescriptor({ ...target, connectorInstanceId: 'omnia.connector-next.instance.wrong-01' }, '0.1.0', 1, 1);
     const wrong = new ConnectorNextAgentClient({ serverUrl: f.serverUrl, descriptor: crossed, token: enrolled.token });

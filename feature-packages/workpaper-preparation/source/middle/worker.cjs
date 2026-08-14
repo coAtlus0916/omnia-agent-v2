@@ -189,6 +189,17 @@ function sameAuthority(current, frozen) {
     if (String(current[key]) !== String(frozen[key])) fail('WORKPAPER.AUTHORITY_DRIFT', `Current ${key} differs from the frozen authority.`);
   }
 }
+function sameStableAuthority(current, frozen) {
+  return ['connectorId', 'engagementId', 'authorityInstanceId', 'tenantOrOrgId', 'packId']
+    .every((key) => String(current && current[key]) === String(frozen && frozen[key]));
+}
+function sameSafetyScope(current, frozen) {
+  return Boolean(current && frozen
+    && current.globalEnabled === frozen.globalEnabled
+    && canonicalWorkpaperState(current.workspaceIds) === canonicalWorkpaperState(frozen.workspaceIds)
+    && canonicalWorkpaperState(current.globalSectionIds) === canonicalWorkpaperState(frozen.globalSectionIds)
+    && canonicalWorkpaperState(current.globalWorkspaceIds) === canonicalWorkpaperState(frozen.globalWorkspaceIds));
+}
 function sameSafety(current, frozen) {
   if (Number(current.stateVersion) !== Number(frozen.stateVersion)
     || current.authorityObservationId !== frozen.authorityObservationId
@@ -319,6 +330,45 @@ function createFeatureWorker(ports) {
     const b = binding(context && context.connectorBinding); const s = safety(context && context.safetyLock, b.engagementId);
     sameAuthority(b, s); return { b, s };
   };
+  // A generated/assembled Workpaper is still a local draft until a Core Return
+  // intent is created. Connector restart changes sessionGeneration even when
+  // the exact Connector, Pack, Engagement and Workspace authority are stable.
+  // Permit only that pre-mutation draft to adopt the newly revalidated Session;
+  // every frozen/started/uncertain Return retains exact authority matching.
+  const draftAuthority = async (plan, context, reason) => {
+    const { b, s } = contextAuthority(context);
+    const exactAuthority = ['connectorId', 'sessionGeneration', 'engagementId', 'authorityInstanceId', 'tenantOrOrgId', 'packId']
+      .every((key) => String(b[key]) === String(plan && plan.binding && plan.binding[key]));
+    const exactSafety = plan && plan.safety
+      && Number(s.stateVersion) === Number(plan.safety.stateVersion)
+      && s.authorityObservationId === plan.safety.authorityObservationId
+      && sameSafetyScope(s, plan.safety);
+    if (exactAuthority && exactSafety) return { b, s };
+    const workpaperState = text(plan && plan.workpaper && plan.workpaper.state);
+    const rebindable = plan && plan.workpaper && ['generated', 'awaiting_writeback'].includes(workpaperState)
+      && !text(plan.runId) && !text(plan.planDigest) && !text(plan.confirmationId)
+      && !(plan.workpaper && plan.workpaper.writebackRun)
+      && (!Array.isArray(plan.steps) || plan.steps.length === 0)
+      && (!Array.isArray(plan.outcomes) || plan.outcomes.length === 0)
+      && sameStableAuthority(b, plan.binding) && sameSafetyScope(s, plan.safety);
+    if (!rebindable) {
+      sameAuthority(b, plan.binding);
+      sameSafety(s, plan.safety);
+      fail('WORKPAPER.AUTHORITY_DRIFT', 'Current authority cannot replace a frozen Return authority.');
+    }
+    const previous = { sessionGeneration: Number(plan.binding.sessionGeneration), safetyStateVersion: Number(plan.safety.stateVersion),
+      authorityObservationId: text(plan.safety.authorityObservationId) };
+    plan.binding = b;
+    plan.safety = s;
+    const history = Array.isArray(plan.draftAuthorityRebindings) ? plan.draftAuthorityRebindings : [];
+    plan.draftAuthorityRebindings = [...history, {
+      schemaVersion: 'omnia.workpaper-draft-authority-rebinding/v1', reason: text(reason) || 'draft_revalidation',
+      from: previous, to: { sessionGeneration: b.sessionGeneration, safetyStateVersion: s.stateVersion,
+        authorityObservationId: s.authorityObservationId }, reboundAt: new Date().toISOString()
+    }].slice(-20);
+    await save(plan);
+    return { b, s };
+  };
   const operationTarget = (step) => ({ targetIdentityKey: step.stepId, workspaceId: step.workspaceId,
     riskAssessmentId: step.riskAssessmentId, controlId: step.controlId });
   const writebackTarget = (control) => ({
@@ -393,7 +443,7 @@ function createFeatureWorker(ports) {
     const selectState = !wpState ? 'current' : 'completed';
     const uploadState = !wpState ? 'pending' : uploadDone ? 'completed' : 'current';
     const uploadDetail = !wpState ? '等待选择元素'
-      : wpState === 'generated' ? '下载填写件、上传填写件与制度资料'
+      : wpState === 'generated' ? '上传填写件与制度资料，或跳过并保留母版占位内容'
         : '材料已上传；点击下一步进入确认回传';
     const writebackState = writebackDone ? 'completed'
       : writebackUncertain ? 'warning'
@@ -419,6 +469,7 @@ function createFeatureWorker(ports) {
     const directory = !wpState;
     const generated = wpState === 'generated';
     const materialsReady = generated && Boolean(wp && wp.policy) && Boolean(wp && wp.replacement);
+    const noMaterials = generated && !wp.policy && !wp.replacement;
     const awaitingWriteback = wpState === 'awaiting_writeback';
     const writebackUncertain = wpState === 'writeback_uncertain';
     const rejectedRetry = retryableRejectedWriteback(plan);
@@ -429,6 +480,8 @@ function createFeatureWorker(ports) {
       { actionId: 'select-elements', enabled: directory, visible: directory, reason: directory ? '' : '填写件模板已生成。' },
       { actionId: 'upload-filled-workbook', enabled: generated, visible: generated, reason: generated ? '' : '请先生成填写件模板，再上传填写好的参数表。' },
       { actionId: 'upload-policy', enabled: generated, visible: generated, reason: generated ? '' : '请先生成填写件模板，再上传制度资料。' },
+      { actionId: 'skip-materials', enabled: noMaterials, visible: generated,
+        reason: noMaterials ? '不上传参数表或制度资料，保留母版占位内容并进入确认回传。' : '已经上传部分或全部资料，不能再切换为空资料流程。' },
       { actionId: 'next-to-writeback', enabled: materialsReady, visible: materialsReady, reason: materialsReady ? '' : '请先上传填写件与制度资料，再进入确认回传。' },
       { actionId: 'confirm-writeback', enabled: awaitingWriteback || rejectedRetry, visible: awaitingWriteback || writebackUncertain,
         reason: awaitingWriteback ? '' : editorRepair ? '上次正文使用了 Omnia 无法渲染的裸文本；可用原始材料改为编辑器 JSON 后安全补写。'
@@ -930,7 +983,7 @@ function createFeatureWorker(ports) {
     if (!plan || !plan.workpaper || plan.workpaper.state !== 'generated') {
       fail('WORKPAPER.POLICY_INVALID', '请先生成控制底稿模板，再上传制度资料。');
     }
-    const { b, s } = contextAuthority(context); sameAuthority(b, plan.binding); sameSafety(s, plan.safety);
+    const { b, s } = await draftAuthority(plan, context, 'upload-policy');
     const runId = plan.runId || plan.planId;
     if (!artifactDescriptor || artifactDescriptor.schemaVersion !== 'omnia.feature-artifact/v1'
       || artifactDescriptor.featureId !== FEATURE_ID || artifactDescriptor.kind !== 'source'
@@ -976,7 +1029,7 @@ function createFeatureWorker(ports) {
     if (!plan || !plan.workpaper || plan.workpaper.state !== 'generated') {
       fail('WORKPAPER.REPLACEMENT_INVALID', '请先生成填写件模板，再上传填写好的参数表。');
     }
-    const { b, s } = contextAuthority(context); sameAuthority(b, plan.binding); sameSafety(s, plan.safety);
+    const { b, s } = await draftAuthority(plan, context, 'upload-filled-workbook');
     const runId = plan.runId || plan.planId;
     if (!artifactDescriptor || artifactDescriptor.schemaVersion !== 'omnia.feature-artifact/v1'
       || artifactDescriptor.featureId !== FEATURE_ID || artifactDescriptor.kind !== 'source'
@@ -1344,12 +1397,37 @@ function createFeatureWorker(ports) {
       || !plan.workpaper.policy || !plan.workpaper.replacement) {
       fail('WORKPAPER.WRITEBACK_INVALID', '请先上传填写件与制度资料，再进入确认回传。');
     }
+    await draftAuthority(plan, context, 'next-to-writeback');
     await resolvePlaceholders(plan, context);
     await commitResolvedWorkbook(plan, context);
     plan.workpaper.state = 'awaiting_writeback';
     plan.surfaceStateVersion += 1;
     await save(plan);
     return plan;
+  }
+  async function skipMaterials(plan, context) {
+    if (!plan || !plan.workpaper || plan.workpaper.state !== 'generated') {
+      fail('WORKPAPER.SKIP_MATERIALS_INVALID', '当前不在上传材料步骤，不能跳过。');
+    }
+    if (plan.workpaper.policy || plan.workpaper.replacement) {
+      fail('WORKPAPER.SKIP_MATERIALS_PARTIAL', '已经上传部分或全部资料，不能再切换为空资料流程。');
+    }
+    await draftAuthority(plan, context, 'skip-materials');
+    plan.workpaper.policy = {
+      documents: [], skipped: [], documentCount: 0, skippedCount: 0,
+      uploadedSha256: '', state: 'skipped'
+    };
+    plan.workpaper.replacement = {
+      replacements: [], uploadedSystems: [], targetSystems: [...plan.workpaper.systems],
+      scopeBinding: { mode: 'skipped', uploadedSystems: [], targetSystems: [...plan.workpaper.systems] },
+      controls: [], controlHeaders: [], templateMode: 'master_placeholders',
+      uploadedSha256: '', state: 'skipped'
+    };
+    plan.workpaper.materials = { state: 'skipped', skippedAt: new Date().toISOString(),
+      reason: '用户选择不上传参数表或制度资料；保留母版占位内容。' };
+    plan.surfaceStateVersion += 1;
+    await save(plan);
+    return nextToWriteback(plan, context);
   }
   async function reprepareRejectedWriteback(plan, context) {
     if (!retryableRejectedWriteback(plan)) {
@@ -1595,7 +1673,7 @@ function createFeatureWorker(ports) {
     if (!plan || !plan.workpaper || plan.workpaper.state !== 'awaiting_writeback' || !plan.workpaper.resolution) {
       fail('WORKPAPER.WRITEBACK_INVALID', '请先上传填写件与制度资料并完成系统转化，再确认回传。');
     }
-    const { b, s } = contextAuthority(context); sameAuthority(b, plan.binding); sameSafety(s, plan.safety);
+    const { b, s } = await draftAuthority(plan, context, 'confirm-writeback');
     // Seed all three capsules up front so the writeback step shows an empty
     // progress panel immediately, then advance each capsule as work completes.
     const progress = {
@@ -2034,6 +2112,9 @@ function createFeatureWorker(ports) {
     }
     if (input.actionId === 'next-to-writeback') {
       return { surfacePatch: workpaperSurface(await nextToWriteback(plan, context)) };
+    }
+    if (input.actionId === 'skip-materials') {
+      return { surfacePatch: workpaperSurface(await skipMaterials(plan, context)) };
     }
     if (input.actionId === 'confirm-writeback') {
       const prepared = retryableRejectedWriteback(plan) ? await reprepareRejectedWriteback(plan, context) : plan;

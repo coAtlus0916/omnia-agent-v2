@@ -2,7 +2,7 @@
 
 状态：实现现状与目标边界（2026-08-14）
 
-产品版本：Shell 源码 `0.4.18`
+产品版本：Shell 源码 `0.5.0`
 传输决策：Remote-only；无 Local Connector fallback
 
 这份文档只描述当前可从源码验证的架构。四个官方 Feature 的独立性尚未通过发布门禁，详见 [Feature 独立性审计](FEATURE_INDEPENDENCE.md)。
@@ -66,7 +66,7 @@ Core 共享表只应保存通用控制面事实。业务 Schema、Feature 专属
 | `omnia.create-associate` | `0.2.150` | 152 | 已跟踪签名候选并进入当前便携包；签名、摘要和内嵌 Operation 一致性已验证，live acceptance pending。 |
 | `omnia.delete-elements` | `0.3.32` | 1786632995691 | 构建脚本与当前本地便携内置产物存在；当前精确 digest live acceptance pending。 |
 | `omnia.recording` | `0.4.21` | 34 | 构建脚本与本地便携内置产物存在；当前精确 digest live acceptance pending。 |
-| `omnia.workpaper-preparation` | `0.1.81` | 82 | 已包含六类 APP 程序矩阵、富文本占位回传、动态并发 token 和 OE1–4 精确 procedure ID 写回；当前精确 digest 的真实 Pack live acceptance pending。 |
+| `omnia.workpaper-preparation` | `0.1.83` | 84 | 上传阶段可跳过全部资料并保留母版占位内容；同一稳定权威下只有未创建 Return intent 的草稿可适配新 Session，写回仍保持严格冻结与读回。当前精确 digest 的真实 Pack live acceptance pending。 |
 
 “构建身份”仅指脚本当前会声明的包身份，不表示源码已经冻结、候选可重现、已安装、已推广或已在授权 Pack 通过。工作树修改与既有同版本候选不一致时，历史候选保持不可变，源码必须提升版本/sequence 后才能重新打包。
 

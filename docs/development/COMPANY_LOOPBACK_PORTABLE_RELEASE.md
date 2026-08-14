@@ -27,10 +27,10 @@ src/main/features/builtin-release-inventory.ts
 
 | Feature | 版本 | sequence |
 |---|---:|---:|
-| `omnia.create-associate` | `0.2.135` | `137` |
+| `omnia.create-associate` | `0.2.150` | `152` |
 | `omnia.recording` | `0.4.21` | `34` |
-| `omnia.delete-elements` | `0.3.31` | `1786522815131` |
-| `omnia.workpaper-preparation` | `0.1.4` | `5` |
+| `omnia.delete-elements` | `0.3.32` | `1786632995691` |
+| `omnia.workpaper-preparation` | `0.1.71` | `72` |
 
 Feature 包位于 `resources/app/builtins`，安装后各自在独立 Worker 中运行。Connector Next 只能实现通用 Pack Session、传输、Gate、签名 Operation 注册与调用；不得包含 Feature 业务规则、Feature ID 分支、模板或业务数据。
 
@@ -91,12 +91,13 @@ remoteServerRequired = false
 ## 6. 当前验收产物
 
 ```text
-文件：Omnia-Agent-v5-0.4.18-Company-Loopback-Portable-20260812-r1.zip
-字节：160587064
-SHA-256：3E2A9EB485C29BEBA61E88D3F08B55715AA1DCCC7382F104A07AB0B0E35E23FD
+文件：Omnia-Agent-v5-0.4.18-Company-Loopback-Portable-20260814-r1.zip
+来源：integration/remote@c1b57b3
+字节：160741402
+SHA-256：ECEC56AF636C17DA5FD750B6023583BA1F0D4CECD435727D85D4B1521FD64EE1
 ```
 
-真实 EXE 启动验收已确认：四个 Feature 均安装并激活；主窗口 Renderer、内置 Server、内置 Agent 与四个 Feature Worker 同时存活；关闭主窗口后该 EXE 进程树归零。
+本次已确认 ZIP CRC、248 个文件逐项一致、四个签名 Feature 精确身份、关键文件 manifest 摘要以及 `connector-next-loopback / embedded-exe-host / remoteServerRequired=false`。Connector Next 配置与端到端测试通过；真实 EXE、四个 Feature 激活和公司电脑 Pack canary 仍需在公司电脑执行，不能由本机构建替代。
 
 ## 7. 公司电脑使用
 

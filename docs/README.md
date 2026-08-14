@@ -2,19 +2,19 @@
 
 本页是 v5 文档的当前状态索引。新 Agent 必须先读 [Agent 开发入口](development/AGENT_START_HERE.md)，再按任务路由阅读；不要把历史验收或 v4 研究报告当作当前实现状态。
 
-## 当前状态（2026-08-13）
+## 当前状态（2026-08-14）
 
 | 项目 | 源码事实 | 未完成边界 |
 |---|---|---|
-| Shell | `0.4.18`；Connector Next v3 是唯一 Connector 路径 | 无 Local fallback；2026-08-13 最近提交更新了安全锁恢复、聊天投影/保密 persona、一天交互日志保留和导航 UI，但没有形成新的公开 Tag。 |
-| Create & Associate | `0.2.150 / sequence 152` | HEAD 已包含在途 mutation 重启门禁和包身份提升；本地未跟踪候选不是发布证据。当前精确 digest 的安装验证与 live acceptance pending。 |
-| Delete Elements | `0.3.31 / sequence 1786522815131` | 已进入本地 `0.4.18` company-loopback 产物；当前精确 digest 的完整真实删除 canary pending。 |
-| Recording | `0.4.21 / sequence 34` | 已进入本地 `0.4.18` company-loopback 产物；当前精确 digest 的现场录制/导出验收不从历史版本继承。 |
-| Workpaper Preparation | `0.1.58 / sequence 59` | HEAD 已包含单表模板、写回胶囊和一步选择流程；本地未跟踪候选不是发布或 live acceptance 证据，npm 发布入口仍缺失。 |
-| Company loopback | 当前内置 inventory 为 Create `0.2.146`、Recording `0.4.21`、Delete `0.3.31`、Workpaper `0.1.52` | 便携脚本要求 Create `0.2.149`，Feature HEAD 已是 `0.2.150`；新构建前必须收敛三方身份。2026-08-13 已有本地产物继续以自身 manifest 为准。 |
+| Shell | `0.4.18`；Connector Next v3 是唯一 Connector 路径 | 2026-08-14 本地便携包由主 EXE 托管 loopback Server 与 Agent，仅连接 `127.0.0.1`，没有远程 Connector 服务器依赖；尚未形成新的公开 Tag。 |
+| Create & Associate | `0.2.150 / sequence 152` | 签名候选已跟踪并进入当前便携包；签名、摘要和内嵌 Operation 一致性已验证，当前精确 digest 的 live acceptance pending。 |
+| Delete Elements | `0.3.32 / sequence 1786632995691` | 已进入当前本地 `0.4.18` company-loopback 产物；当前精确 digest 的完整真实删除 canary pending。 |
+| Recording | `0.4.21 / sequence 34` | 已进入当前本地 `0.4.18` company-loopback 产物；当前精确 digest 的现场录制/导出验收不从历史版本继承。 |
+| Workpaper Preparation | `0.1.71 / sequence 72` | 富文本 JSON 写回、嵌套制度 ZIP 和单制度模板重绑定已打包；当前精确 digest 的真实 Pack 写回 canary pending。 |
+| Company loopback | Create `0.2.150`、Recording `0.4.21`、Delete `0.3.32`、Workpaper `0.1.71` | inventory、构建期望、复制列表和 manifest 已收敛；2026-08-14 已从 `c1b57b3` 干净快照生成本地产物。 |
 | Connector Next | 唯一 Connector 产品链；协议 `omnia.connector-next/v3` | 远端/本机 loopback 是部署 profile 差异，不是两套业务源码；真实 Pack canary 以精确目标、Feature/Operation digest 和发布记录为准。 |
 
-四个 Feature 仍不能仅凭候选包或自动化表述为“当前版本已独立升级/回滚并完成 live acceptance”。[四 Feature 独立性审计](architecture/FEATURE_INDEPENDENCE.md) 是 2026-08-10 的审计快照；分支其后已演进，原行号和个别关闭状态需要在下一次发布冻结前重新审计，不能直接当作 2026-08-13 当前结论。
+四个 Feature 仍不能仅凭候选包或自动化表述为“当前版本已独立升级/回滚并完成 live acceptance”。[四 Feature 独立性审计](architecture/FEATURE_INDEPENDENCE.md) 是 2026-08-10 的审计快照；分支其后已演进，原行号和个别关闭状态需要在下一次发布冻结前重新审计，不能直接当作 2026-08-14 当前结论。
 
 Feature 的原装/内置/后装/Operation/额外部署边界以 [Feature 包总览](implementation/FEATURE_PACKAGE_CATALOG.md) 为准；Shell 的实际代码映射以 [Shell 实现映射](implementation/SHELL_IMPLEMENTATION_MAP.md) 为准。
 

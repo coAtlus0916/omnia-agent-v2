@@ -1,7 +1,7 @@
 # Shell Baseline 实现映射
 
 版本：`0.4.18`
-状态：2026-08-13 `integration/remote` 当前源码映射。Connector Next v3 是唯一 Connector 产品链；旧 Bridge、旧 Remote Connector 和 Local fallback 已退出当前构建与运行选择。标准 Shell baseline、公司 loopback profile 和 Feature 源码候选是不同状态，精确集合见 [Feature 包总览](FEATURE_PACKAGE_CATALOG.md)。
+状态：2026-08-14 `integration/remote` 当前源码映射。Connector Next v3 是唯一 Connector 产品链；旧 Bridge、旧 Remote Connector 和 Local fallback 已退出当前构建与运行选择。标准 Shell baseline、公司 loopback profile 和 Feature 源码候选是不同状态，精确集合见 [Feature 包总览](FEATURE_PACKAGE_CATALOG.md)。
 
 SurfaceWindowManager 在 Feature action 成功或失败后向所有同 Feature/版本/Surface 实例广播 Core 最新投影。每个已授权实例保存自己的最后一份 `DeclarativeFeatureSurface`；聚焦、dock、minimize、restore 和已有实例再次 open 只能使用身份匹配的实例缓存，不得从全局 selected Surface 借用另一 Feature 的投影。Artifact 输入授权在打开文件选择器前复核当前 workflow，仅上传步骤接受 `open_file`；旧 WebContents 不能在后台已进入校验后继续导入。
 
@@ -19,7 +19,7 @@ Shell 原装平台包含 Core Store、Feature/Documentation Registry、通用 Wo
 | 连接 | 顶部 Connect/Cancel 与分阶段真实状态 | `ShellService` 持久化连接、安全锁和恢复状态 | `ConnectorNextTransport` 经 Server durable job 到 exact Agent，再由工作站 Session Core 连接 Pack | 源码已接通；是否 live accepted 由精确产物和目标 Pack canary 决定。 |
 | 刷新 | 顶部刷新按钮与错误提示 | `ShellService.refresh` 只读调和 Core 状态和 Workspace 权威目录 | Connector Next `status/refresh/lightRead` 合同；不把任意 URL/method/body 交给 Agent | 失败不覆盖已验证 observation，也不恢复失效安全锁。 |
 | 保活 | 启停、运行/下次/错误状态 | Core DB `keepalive_state` + 后台 5 秒调度扫描 | 到期只调用 `status`；不启动、聚焦、刷新或关闭受控浏览器 | 已实现；重启恢复 |
-| 安全锁 | 工作台展示真实 Workspace 目录、选择和恢复原因 | Core 以 CAS 保存 authority observation、精确 Workspace IDs 与 session generation；成员或身份漂移失败关闭 | Connector Next 执行权威轻读取；Feature mutation 仍在预检和提交前重新验证 | 2026-08-13 已统一恢复状态；真实 Pack 身份和成员关系仍以当前读取为准。 |
+| 安全锁 | 工作台展示真实 Workspace 目录、选择和恢复原因 | Core 以 CAS 保存 authority observation、精确 Workspace IDs 与 session generation；成员或身份漂移失败关闭 | Connector Next 执行权威轻读取；Feature mutation 仍在预检和提交前重新验证 | 2026-08-14 已统一恢复状态；真实 Pack 身份和成员关系仍以当前读取为准。 |
 | 对话 | 第三列消息列表与输入区；用户消息落库后立即可见 | `chat_sessions/chat_messages` 持久化 user/assistant 两阶段状态 | Provider 只由 Main 受控调用；系统提示包含 Omnia Agent 身份、保密边界和不可替代专业判断 | Provider 未配置或失败时不造假回复；失败保留真实用户消息。 |
 | 缩放 | 右上角/设置 `− 百分比 +`、快捷键 | `user_preferences` CAS；Main 对所有当前/新建 WebContents `setZoomFactor` | Feature view/window 继承同一值 | 0.4.1 已按实际 DPR/viewport/bounds 验证；重启恢复、无 CSS 双缩放 |
 | Splitter | Feature 菜单/Tabbed Host、Comments 内容/composer、设置导航/内容 | `layout_preferences` 与 `settings.main` CAS | 不适用 | 已实现；pointer/键盘；Rail 固定且无 splitter |

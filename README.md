@@ -6,20 +6,20 @@ Omnia Agent v5 是 Windows Shell、独立 Feature 包和 Connector Next 的工�
 
 仓库当前可验证的公开 Tag 为 [v0.4.15-company-loopback-r1](https://github.com/coAtlus0916/omnia-agent-v2/releases/tag/v0.4.15-company-loopback-r1)。完整解压后双击 `Start Omnia Agent v5.cmd`；Shell 会自动在本机启动 Connector Next Server 与 Agent 并连接 `127.0.0.1`，不经过远程 Connector 服务器。
 
-本工作区另有一份 2026-08-13 生成、尚未由当前 Git Tag 表示的本地 `0.4.18` 自包含产物。其冻结内置集合为：Create & Associate `0.2.146 / sequence 148`、Recording `0.4.21 / sequence 34`、Delete Elements `0.3.31 / sequence 1786522815131`、Workpaper Preparation `0.1.52 / sequence 53`。本地产物不能自动解释为已经公开发布或已经通过当前源码的真实 Pack canary。
+本工作区另有一份 2026-08-14 从 `c1b57b3` 干净快照生成、尚未由当前 Git Tag 表示的本地 `0.4.18` 自包含产物。其冻结内置集合为：Create & Associate `0.2.150 / sequence 152`、Recording `0.4.21 / sequence 34`、Delete Elements `0.3.32 / sequence 1786632995691`、Workpaper Preparation `0.1.71 / sequence 72`。ZIP 为 `160741402` 字节，SHA-256 为 `ECEC56AF636C17DA5FD750B6023583BA1F0D4CECD435727D85D4B1521FD64EE1`。本地产物不能自动解释为已经公开发布或已经通过真实 Pack canary。
 
 ## 当前源码状态
 
-状态基线：`integration/remote@9ab6d5f`，2026-08-13。Shell 源码版本是 `0.4.18`，唯一 Connector 实现为 Connector Next v3。四个官方 Feature 的构建入口当前指向：
+状态基线：`integration/remote@c1b57b3`，2026-08-14。Shell 源码版本是 `0.4.18`，唯一 Connector 实现为 Connector Next v3。四个官方 Feature 的便携冻结身份为：
 
 | Feature | 当前构建身份 | 当前事实与验收边界 |
 |---|---:|---|
-| `omnia.create-associate` | `0.2.150 / sequence 152` | HEAD 已包含在途 mutation 重启门禁和包身份提升；本地存在未跟踪候选，但它不是发布记录，当前精确 digest 的安装验证与完整 live acceptance 仍 pending。 |
-| `omnia.delete-elements` | `0.3.31 / sequence 1786522815131` | 已进入 2026-08-13 本地 `0.4.18` 便携产物；当前精确 digest 的完整真实删除 canary 不能由历史版本继承。 |
-| `omnia.recording` | `0.4.21 / sequence 34` | 已进入 2026-08-13 本地 `0.4.18` 便携产物；历史现场录制证据不自动覆盖当前精确 digest。 |
-| `omnia.workpaper-preparation` | `0.1.58 / sequence 59` | HEAD 已包含单表模板、写回胶囊和一步选择流程；本地存在未跟踪候选，但尚无发布记录或当前精确 digest 的 live acceptance。 |
+| `omnia.create-associate` | `0.2.150 / sequence 152` | 已跟踪签名候选并进入 2026-08-14 本地便携产物；签名、摘要和内嵌 Operation 一致性已验证，真实 Pack live acceptance 仍 pending。 |
+| `omnia.delete-elements` | `0.3.32 / sequence 1786632995691` | 已进入 2026-08-14 本地便携产物；当前精确 digest 的完整真实删除 canary 不能由历史版本继承。 |
+| `omnia.recording` | `0.4.21 / sequence 34` | 已进入 2026-08-14 本地便携产物；历史现场录制证据不自动覆盖当前精确 digest。 |
+| `omnia.workpaper-preparation` | `0.1.71 / sequence 72` | 已包含富文本 JSON 写回、嵌套制度 ZIP 和单制度模板重绑定，并进入本地便携产物；真实 Pack 写回 canary 仍 pending。 |
 
-当前 `company-loopback-current` 内置清单仍冻结 Create & Associate `0.2.146`，便携构建脚本要求 `0.2.149`，而 Feature HEAD 已是 `0.2.150`；三者不一致，新的公司便携构建必须先收敛单一清单。已有 `0.4.18` 本地产物仍以其自己的 `release-manifest.json` 为不可变事实，不能被后来源码重新解释。
+当前 `company-loopback-current` inventory、便携构建期望、复制列表、manifest 和使用说明已收敛到上述四个精确身份。产物使用 Shell 内置 Connector Next Server 与 Agent，仅监听 `127.0.0.1`；`remoteServerRequired` 为 `false`，不走远程 Connector 服务器。
 
 上述“构建身份”“本地产物”和“真实 canary”是三个不同状态。候选文件、自动化测试、历史 hash 或历史 canary 都不能替代当前精确源码和 digest 的验收。
 

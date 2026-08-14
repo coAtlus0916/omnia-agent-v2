@@ -1,6 +1,6 @@
 # Feature Package 标准
 
-状态：实现约束与发布门禁（2026-08-13）
+状态：实现约束与发布门禁（2026-08-14）
 合同：`omnia.feature-manifest/v1`、`omnia.feature-runtime-contract/v1`、`omnia.operation-manifest/v1`
 
 本标准定义“独立 Feature”的可验证含义。当前实现尚未通过全部门禁，缺口与证据集中在 [Feature 独立性审计](FEATURE_INDEPENDENCE.md)。候选包、自动化测试或旧版本验收都不等于当前版本已在真实 Omnia 环境通过。
@@ -63,7 +63,7 @@ npm run package:recording-feature
 node scripts/package-workpaper-preparation-feature.mjs
 ```
 
-`workpaper-preparation` 目前没有对应 npm script，这是发布流程缺口，不能据此宣称四包工作流一致。2026-08-13 HEAD 的构建身份为 `0.1.58 / sequence 59`；本地未跟踪候选仍须经过安装、回归与 live canary，不能仅凭文件存在描述为已发布或已验收。
+`workpaper-preparation` 目前没有对应 npm script，这是发布流程缺口，不能据此宣称四包工作流一致。2026-08-14 的冻结身份为 `0.1.71 / sequence 72`；签名候选已进入本地便携包，但真实 Pack live canary 仍 pending，不能仅凭文件存在描述为已公开发布或已验收。
 
 每次 Feature 变更至少需要：
 

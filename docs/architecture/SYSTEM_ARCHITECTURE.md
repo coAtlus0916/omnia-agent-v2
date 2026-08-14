@@ -1,6 +1,6 @@
 # Omnia Agent v5 系统架构
 
-状态：实现现状与目标边界（2026-08-13）
+状态：实现现状与目标边界（2026-08-14）
 
 产品版本：Shell 源码 `0.4.18`
 传输决策：Remote-only；无 Local Connector fallback
@@ -48,7 +48,7 @@ Core 共享表只应保存通用控制面事实。业务 Schema、Feature 专属
 
 正常目标序列是：验签并落不可变候选 → 校验迁移/导航/Operation → 启动候选 Worker → 远端 Operation prepare/commit → CAS 切换 head → 停旧 Worker → finalize。启动或交接失败时旧 head 和旧 Worker 保持权威。
 
-当前实现已有 durable Operation handoff ledger、activation-head CAS、按 Feature 的 supervisor map、Runtime `storePorts` 声明检查，以及 mutation Worker 超时/退出后的 fail-closed recovery。2026-08-10 独立性审计指出的 Operation 交接、回滚、私有迁移和共享资源 owner 问题在分支上已有后续修改，但尚未对 2026-08-13 精确工作树重新执行完整四 Feature 共存、升级、失败升级、回滚和恶意跨包矩阵。
+当前实现已有 durable Operation handoff ledger、activation-head CAS、按 Feature 的 supervisor map、Runtime `storePorts` 声明检查，以及 mutation Worker 超时/退出后的 fail-closed recovery。2026-08-10 独立性审计指出的 Operation 交接、回滚、私有迁移和共享资源 owner 问题在分支上已有后续修改，但尚未对 2026-08-14 精确工作树重新执行完整四 Feature 共存、升级、失败升级、回滚和恶意跨包矩阵。
 
 因此当前仍不能从“代码存在”或“可安装候选”推导出“当前版本已独立升级、回滚和持久恢复”。发布冻结前必须刷新独立性审计的代码证据和行号，并以精确候选执行完整矩阵。
 
@@ -63,10 +63,10 @@ Core 共享表只应保存通用控制面事实。业务 Schema、Feature 专属
 
 | Feature | 当前构建身份 | sequence | 当前说明 |
 |---|---:|---:|---|
-| `omnia.create-associate` | `0.2.150` | 152 | HEAD 已包含在途 mutation 重启门禁和包身份提升；本地未跟踪候选不是发布证据，当前精确 digest 的安装验证与 live acceptance pending。 |
-| `omnia.delete-elements` | `0.3.31` | 1786522815131 | 构建脚本与本地便携内置产物存在；当前精确 digest live acceptance pending。 |
+| `omnia.create-associate` | `0.2.150` | 152 | 已跟踪签名候选并进入当前便携包；签名、摘要和内嵌 Operation 一致性已验证，live acceptance pending。 |
+| `omnia.delete-elements` | `0.3.32` | 1786632995691 | 构建脚本与当前本地便携内置产物存在；当前精确 digest live acceptance pending。 |
 | `omnia.recording` | `0.4.21` | 34 | 构建脚本与本地便携内置产物存在；当前精确 digest live acceptance pending。 |
-| `omnia.workpaper-preparation` | `0.1.58` | 59 | HEAD 已包含单表模板、写回胶囊和一步选择流程；直接 Node 打包入口存在，npm 发布入口仍缺失，本地未跟踪候选尚未形成发布或 live acceptance 证据。 |
+| `omnia.workpaper-preparation` | `0.1.71` | 72 | 已包含富文本 JSON 写回、嵌套制度 ZIP 和单制度模板重绑定，并进入当前本地便携产物；真实 Pack live acceptance pending。 |
 
 “构建身份”仅指脚本当前会声明的包身份，不表示源码已经冻结、候选可重现、已安装、已推广或已在授权 Pack 通过。工作树修改与既有同版本候选不一致时，历史候选保持不可变，源码必须提升版本/sequence 后才能重新打包。
 

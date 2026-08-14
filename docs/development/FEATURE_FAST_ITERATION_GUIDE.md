@@ -3,7 +3,7 @@
 状态：Accepted workflow / implementation gaps noted  
 依据：[ADR-0031](../adr/0031-fast-local-feature-iteration-and-automated-integrity.md)
 
-> 2026-08-13 Connector 更新：标题中的“本地快速迭代”指本地开发工作流，不表示 Shell Local Connector。v5 当前唯一 Connector 产品为 [Connector Next v3](../architecture/CONNECTOR_NEXT.md)；本文旧版 Local/Remote Operation host 清单不再授权旧 Local 或 Bridge 产品路径。company loopback 只是相同 Connector Next 协议的本机部署 profile，不是 fallback。
+> 2026-08-14 Connector 更新：标题中的“本地快速迭代”指本地开发工作流，不表示 Shell Local Connector。v5 当前唯一 Connector 产品为 [Connector Next v3](../architecture/CONNECTOR_NEXT.md)；本文旧版 Local/Remote Operation host 清单不再授权旧 Local 或 Bridge 产品路径。company loopback 只是相同 Connector Next 协议的本机部署 profile，不是 fallback。
 
 ## 1. 目标
 
@@ -83,16 +83,16 @@ Windows 强隔离认证不属于上述任何一层的必需前置步骤。进程
 
 人工 `Get-FileHash`、把 SHA 复制进普通开发记录、每改一次文档就手工对比所有文件，都不是日常完成条件。历史验收报告中已有的 SHA 表是当次集中证据，不是今后每次开发的模板。
 
-## 5. 当前实现差距（2026-08-13）
+## 5. 当前实现差距（2026-08-14）
 
 通用 Feature Worker supervisor/action router、Store/Event/Connector/AI ports、声明式 Surface、签名 Operation host、durable Connector Next delivery 和 Operation handoff ledger 已存在；不能再把它们写成尚未实现的平台前置。
 
 当前真实差距是：
 
 1. 下一次发布冻结前，重新执行四 Feature 共存、升级、失败升级、回滚、Worker crash、Connector reconnect 和恶意跨包矩阵；2026-08-10 独立性审计的行号与部分结论已漂移。
-2. 收敛 `company-loopback-current` inventory 的 Create `0.2.146`、便携脚本期望的 `0.2.149` 与 Feature HEAD `0.2.150` 三方差异；不得绕过 exact identity 检查。
-3. Create & Associate HEAD 已提升为 `0.2.150 / sequence 152`，但本地未跟踪候选仍须完成确定性核验、隔离安装和当前 digest canary；验证前不得晋升或发布。
-4. Workpaper HEAD 已提升为 `0.1.58 / sequence 59`，本地存在未跟踪候选且仍缺对应 npm script；先完成定向验证、隔离安装和真实产物/结构验收，再进入发布流程。
+2. 当前 `company-loopback-current` 四个身份已经收敛并完成干净快照便携构建；下一次升级仍必须同步 inventory、构建期望、manifest 与说明，不得绕过 exact identity 检查。
+3. Create & Associate `0.2.150 / sequence 152` 已通过签名、摘要和内嵌 Operation 一致性核验并进入便携包，仍需完成当前 digest 的真实 Pack canary。
+4. Workpaper `0.1.71 / sequence 72` 已通过定向测试与便携构建，但仍缺对应 npm script，且真实 Pack 富文本写回 canary 仍 pending。
 5. 对每个当前精确 Feature/Operation digest，在授权的 Omnia/Pack 完成其声明范围内的真实 canary；未验证能力继续失败关闭。
 
 这些差距不授权引入第二套 Worker、Connector 或打包链。Feature-only 修改继续复用现有平台边界；平台合同没有真实缺口时不修改 Shell/Connector Core。

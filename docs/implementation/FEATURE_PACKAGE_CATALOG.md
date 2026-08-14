@@ -1,6 +1,6 @@
 # v5 Shell 与 Feature 包总览
 
-状态日期：2026-08-13
+状态日期：2026-08-14
 
 源码基线：`integration/remote@9ab6d5f`
 
@@ -49,25 +49,25 @@ v5 产品根
 
 | Feature | 版本 | sequence |
 |---|---:|---:|
-| `omnia.create-associate` | `0.2.146` | 148 |
+| `omnia.create-associate` | `0.2.150` | 152 |
 | `omnia.recording` | `0.4.21` | 34 |
-| `omnia.delete-elements` | `0.3.31` | 1786522815131 |
-| `omnia.workpaper-preparation` | `0.1.52` | 53 |
+| `omnia.delete-elements` | `0.3.32` | 1786632995691 |
+| `omnia.workpaper-preparation` | `0.1.71` | 72 |
 
-2026-08-13 本地 `0.4.18` company-loopback 产物的 `release-manifest.json` 冻结了同一集合。它是本地不可变产物事实，但当前没有对应 Git Tag，不能描述为已经公开发布，也不能替代当前源码 canary。
+2026-08-14 从 `c1b57b3` 干净快照生成的本地 `0.4.18` company-loopback 产物，其 `release-manifest.json` 冻结了同一集合。它是本地不可变产物事实，但当前没有对应 Git Tag，不能描述为已经公开发布，也不能替代当前源码 canary。
 
-当前发行阻断：`scripts/package-create-associate-next-portable.mjs` 要求 Create & Associate `0.2.149`，唯一 company inventory 仍是 `0.2.146`，而 Feature HEAD 已提升到 `0.2.150 / sequence 152`。新的 company-loopback 构建会在 exact inventory 检查处失败；必须在候选验证后从单一已验签清单同时生成构建期望、复制列表、manifest 和使用说明。
+`company-loopback-current` inventory、便携构建期望、复制列表、manifest 和使用说明已收敛到上述四个精确身份。构建仍会逐项验证官方签名、文件 SHA 和 package digest，任何身份漂移均失败关闭。
 
 ### 2.3 当前源码构建身份
 
 | Feature | 构建身份 | 源码/工作树状态 | 当前验证边界 |
 |---|---:|---|---|
-| Create & Associate | `0.2.150 / 152` | HEAD 支持真实校验进度持久化/流式投影、仅补齐仍缺失 Risk identity，并禁止在 mutation 仍处于 `prepared/submitted/executing/verifying` 时重启 Run | 本地 `0.2.150` 候选未跟踪，不能替代确定性核验、隔离安装或当前精确 digest 的 live acceptance。 |
-| Delete Elements | `0.3.31 / 1786522815131` | HEAD 构建入口；真实目录、冻结删除图、确认、逐步 mutation/readback、uncertain/reconcile | 已进入本地便携产物；当前精确 digest 的完整删除 canary pending。 |
+| Create & Associate | `0.2.150 / 152` | HEAD 支持真实校验进度持久化/流式投影、仅补齐仍缺失 Risk identity，并禁止在 mutation 仍处于 `prepared/submitted/executing/verifying` 时重启 Run | 签名候选已跟踪并进入当前便携包；真实 Pack live acceptance pending。 |
+| Delete Elements | `0.3.32 / 1786632995691` | 支持单侧删除、真实目录、冻结删除图、确认、逐步 mutation/readback、uncertain/reconcile | 已进入当前本地便携产物；当前精确 digest 的完整删除 canary pending。 |
 | Recording | `0.4.21 / 34` | HEAD 构建入口；真实 start/pause/resume/stop、分块流、Core Artifact 与 24 小时 Feature staging | 已进入本地便携产物；当前精确 digest 的现场录制与导出验收不能从历史版本继承。 |
-| Workpaper Preparation | `0.1.58 / 59` | HEAD 已包含单表模板、写回胶囊和一步选择流程，并调整政策文件处理与写回边界 | 本地 `0.1.58` 候选未跟踪，不能描述为已发布或 live accepted；仍需定向测试、隔离安装和真实产物/结构验收。 |
+| Workpaper Preparation | `0.1.71 / 72` | 已包含富文本 JSON 写回、嵌套制度 ZIP、单制度模板重绑定和一步选择流程 | 签名候选已进入当前本地便携产物；真实 Pack 写回 canary pending。 |
 
-`create-associate` 与 `workpaper-preparation` 的构建身份已进入 HEAD，但本地候选文件仍未跟踪。官方包具有 `featureId + version + sequence + digest` 不可变性；候选必须经过确定性核验、隔离安装和当前 digest 验收后，才可进入晋升或发布。
+四个冻结候选均已进入干净快照并通过构建期官方签名、文件 SHA 和 package digest 校验。官方包仍具有 `featureId + version + sequence + digest` 不可变性；本地便携构建不等于公开发布，也不替代当前 digest 的真实 Pack canary。
 
 ## 3. Shell 平台当前状态
 
@@ -97,7 +97,7 @@ v5 产品根
 - 删除聊天记录仍只有产品设计；真实本地事务、附件引用清理和恢复合同未交付，不能显示可点击入口。
 - 新的 company-loopback 产物在 inventory 与便携期望收敛前不得构建或发布。
 - Create & Associate HEAD 已是 `0.2.150 / sequence 152`，但不得用未跟踪候选替代确定性核验、安装冒烟或 live canary。
-- Workpaper HEAD 已是 `0.1.58 / sequence 59`；先完成定向测试、隔离安装和真实产物/结构验收，再晋升现有候选。
+- Workpaper 当前冻结身份为 `0.1.71 / sequence 72`；定向测试与便携构建已通过，仍需在公司电脑授权 Pack 完成真实写回 canary。
 - 四 Feature 的 2026-08-10 独立性审计已是历史快照；下一次发布候选必须刷新行号与结论，执行共存、升级、失败升级、回滚、Worker crash、Connector reconnect 和恶意跨包矩阵。
 - 自动化、fixture、候选签名、本地安装或历史 canary 都不能替代当前精确 digest 在授权 Omnia/Pack 的 live acceptance。
 

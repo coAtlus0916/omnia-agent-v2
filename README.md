@@ -6,7 +6,7 @@ Omnia Agent v5 是 Windows Shell、独立 Feature 包和 Connector Next 的工�
 
 仓库当前可验证的公开 Tag 为 [v0.4.15-company-loopback-r1](https://github.com/coAtlus0916/omnia-agent-v2/releases/tag/v0.4.15-company-loopback-r1)。完整解压后双击 `Start Omnia Agent v5.cmd`；Shell 会自动在本机启动 Connector Next Server 与 Agent 并连接 `127.0.0.1`，不经过远程 Connector 服务器。
 
-本工作区另有一份 2026-08-14 从 `c1b57b3` 干净快照生成、尚未由当前 Git Tag 表示的本地 `0.4.18` 自包含产物。其冻结内置集合为：Create & Associate `0.2.150 / sequence 152`、Recording `0.4.21 / sequence 34`、Delete Elements `0.3.32 / sequence 1786632995691`、Workpaper Preparation `0.1.71 / sequence 72`。ZIP 为 `160741402` 字节，SHA-256 为 `ECEC56AF636C17DA5FD750B6023583BA1F0D4CECD435727D85D4B1521FD64EE1`。本地产物不能自动解释为已经公开发布或已经通过真实 Pack canary。
+本工作区保留一份 2026-08-14 从 `c1b57b3` 干净快照生成、尚未由当前 Git Tag 表示的历史 `0.4.18` 自包含产物。它冻结 Workpaper Preparation `0.1.71 / sequence 72`；ZIP 为 `160741402` 字节，SHA-256 为 `ECEC56AF636C17DA5FD750B6023583BA1F0D4CECD435727D85D4B1521FD64EE1`。当前 `company-loopback-current` 清单已推进到 Workpaper Preparation `0.1.81 / sequence 82`，新产物必须使用 r2 名称，不能覆盖历史 r1。本地产物不能自动解释为已经公开发布或已经通过真实 Pack canary。
 
 ## 当前源码状态
 
@@ -17,7 +17,7 @@ Omnia Agent v5 是 Windows Shell、独立 Feature 包和 Connector Next 的工�
 | `omnia.create-associate` | `0.2.150 / sequence 152` | 已跟踪签名候选并进入 2026-08-14 本地便携产物；签名、摘要和内嵌 Operation 一致性已验证，真实 Pack live acceptance 仍 pending。 |
 | `omnia.delete-elements` | `0.3.32 / sequence 1786632995691` | 已进入 2026-08-14 本地便携产物；当前精确 digest 的完整真实删除 canary 不能由历史版本继承。 |
 | `omnia.recording` | `0.4.21 / sequence 34` | 已进入 2026-08-14 本地便携产物；历史现场录制证据不自动覆盖当前精确 digest。 |
-| `omnia.workpaper-preparation` | `0.1.71 / sequence 72` | 已包含富文本 JSON 写回、嵌套制度 ZIP 和单制度模板重绑定，并进入本地便携产物；真实 Pack 写回 canary 仍 pending。 |
+| `omnia.workpaper-preparation` | `0.1.81 / sequence 82` | 已包含六类 APP 程序矩阵、富文本占位回传、全正文页签动态 token 和 OE1–4 精确 procedure ID 写回；当前精确 digest 的新一轮真实 Pack canary 仍 pending。 |
 
 当前 `company-loopback-current` inventory、便携构建期望、复制列表、manifest 和使用说明已收敛到上述四个精确身份。产物使用 Shell 内置 Connector Next Server 与 Agent，仅监听 `127.0.0.1`；`remoteServerRequired` 为 `false`，不走远程 Connector 服务器。
 

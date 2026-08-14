@@ -10,8 +10,8 @@
 | Create & Associate | `0.2.150 / sequence 152` | 签名候选已跟踪并进入当前便携包；签名、摘要和内嵌 Operation 一致性已验证，当前精确 digest 的 live acceptance pending。 |
 | Delete Elements | `0.3.32 / sequence 1786632995691` | 已进入当前本地 `0.4.18` company-loopback 产物；当前精确 digest 的完整真实删除 canary pending。 |
 | Recording | `0.4.21 / sequence 34` | 已进入当前本地 `0.4.18` company-loopback 产物；当前精确 digest 的现场录制/导出验收不从历史版本继承。 |
-| Workpaper Preparation | `0.1.71 / sequence 72` | 富文本 JSON 写回、嵌套制度 ZIP 和单制度模板重绑定已打包；当前精确 digest 的真实 Pack 写回 canary pending。 |
-| Company loopback | Create `0.2.150`、Recording `0.4.21`、Delete `0.3.32`、Workpaper `0.1.71` | inventory、构建期望、复制列表和 manifest 已收敛；2026-08-14 已从 `c1b57b3` 干净快照生成本地产物。 |
+| Workpaper Preparation | `0.1.81 / sequence 82` | 六类 APP 程序矩阵、富文本占位回传、动态并发 token 和 OE1–4 精确 procedure ID 已冻结；当前精确 digest 的真实 Pack 写回 canary pending。 |
+| Company loopback | Create `0.2.150`、Recording `0.4.21`、Delete `0.3.32`、Workpaper `0.1.81` | inventory、构建期望、复制列表和 manifest 已收敛到 r2；历史 r1 仍冻结 Workpaper 0.1.71。 |
 | Connector Next | 唯一 Connector 产品链；协议 `omnia.connector-next/v3` | 远端/本机 loopback 是部署 profile 差异，不是两套业务源码；真实 Pack canary 以精确目标、Feature/Operation digest 和发布记录为准。 |
 
 四个 Feature 仍不能仅凭候选包或自动化表述为“当前版本已独立升级/回滚并完成 live acceptance”。[四 Feature 独立性审计](architecture/FEATURE_INDEPENDENCE.md) 是 2026-08-10 的审计快照；分支其后已演进，原行号和个别关闭状态需要在下一次发布冻结前重新审计，不能直接当作 2026-08-14 当前结论。

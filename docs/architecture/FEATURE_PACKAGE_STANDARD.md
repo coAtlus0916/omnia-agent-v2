@@ -63,7 +63,7 @@ npm run package:recording-feature
 node scripts/package-workpaper-preparation-feature.mjs
 ```
 
-`workpaper-preparation` 目前没有对应 npm script，这是发布流程缺口，不能据此宣称四包工作流一致。2026-08-14 的冻结身份为 `0.1.71 / sequence 72`；签名候选已进入本地便携包，但真实 Pack live canary 仍 pending，不能仅凭文件存在描述为已公开发布或已验收。
+`workpaper-preparation` 目前没有对应 npm script，这是发布流程缺口，不能据此宣称四包工作流一致。2026-08-14 的当前冻结身份为 `0.1.81 / sequence 82`；签名候选已通过定向测试并进入 company-loopback 构建清单，但新 digest 的真实 Pack live canary 仍 pending，不能仅凭文件存在描述为已公开发布或已验收。
 
 每次 Feature 变更至少需要：
 

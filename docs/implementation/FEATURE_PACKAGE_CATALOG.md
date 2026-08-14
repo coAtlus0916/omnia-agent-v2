@@ -52,7 +52,7 @@ v5 产品根
 | `omnia.create-associate` | `0.2.150` | 152 |
 | `omnia.recording` | `0.4.21` | 34 |
 | `omnia.delete-elements` | `0.3.32` | 1786632995691 |
-| `omnia.workpaper-preparation` | `0.1.71` | 72 |
+| `omnia.workpaper-preparation` | `0.1.81` | 82 |
 
 2026-08-14 从 `c1b57b3` 干净快照生成的本地 `0.4.18` company-loopback 产物，其 `release-manifest.json` 冻结了同一集合。它是本地不可变产物事实，但当前没有对应 Git Tag，不能描述为已经公开发布，也不能替代当前源码 canary。
 
@@ -65,7 +65,7 @@ v5 产品根
 | Create & Associate | `0.2.150 / 152` | HEAD 支持真实校验进度持久化/流式投影、仅补齐仍缺失 Risk identity，并禁止在 mutation 仍处于 `prepared/submitted/executing/verifying` 时重启 Run | 签名候选已跟踪并进入当前便携包；真实 Pack live acceptance pending。 |
 | Delete Elements | `0.3.32 / 1786632995691` | 支持单侧删除、真实目录、冻结删除图、确认、逐步 mutation/readback、uncertain/reconcile | 已进入当前本地便携产物；当前精确 digest 的完整删除 canary pending。 |
 | Recording | `0.4.21 / 34` | HEAD 构建入口；真实 start/pause/resume/stop、分块流、Core Artifact 与 24 小时 Feature staging | 已进入本地便携产物；当前精确 digest 的现场录制与导出验收不能从历史版本继承。 |
-| Workpaper Preparation | `0.1.71 / 72` | 已包含富文本 JSON 写回、嵌套制度 ZIP、单制度模板重绑定和一步选择流程 | 签名候选已进入当前本地便携产物；真实 Pack 写回 canary pending。 |
+| Workpaper Preparation | `0.1.81 / 82` | 已包含六类 APP 程序矩阵、富文本占位回传、全正文页签动态 token、OE1–4 精确 procedure ID 和一步选择流程 | 签名候选已通过定向测试与本地安装/启动冒烟；当前精确 digest 的真实 Pack 写回 canary pending。 |
 
 四个冻结候选均已进入干净快照并通过构建期官方签名、文件 SHA 和 package digest 校验。官方包仍具有 `featureId + version + sequence + digest` 不可变性；本地便携构建不等于公开发布，也不替代当前 digest 的真实 Pack canary。
 
@@ -97,7 +97,7 @@ v5 产品根
 - 删除聊天记录仍只有产品设计；真实本地事务、附件引用清理和恢复合同未交付，不能显示可点击入口。
 - 新的 company-loopback 产物在 inventory 与便携期望收敛前不得构建或发布。
 - Create & Associate HEAD 已是 `0.2.150 / sequence 152`，但不得用未跟踪候选替代确定性核验、安装冒烟或 live canary。
-- Workpaper 当前冻结身份为 `0.1.71 / sequence 72`；定向测试与便携构建已通过，仍需在公司电脑授权 Pack 完成真实写回 canary。
+- Workpaper 当前冻结身份为 `0.1.81 / sequence 82`；定向测试与本地安装/启动冒烟已通过，仍需在公司电脑授权 Pack 完成当前精确 digest 的真实写回 canary。
 - 四 Feature 的 2026-08-10 独立性审计已是历史快照；下一次发布候选必须刷新行号与结论，执行共存、升级、失败升级、回滚、Worker crash、Connector reconnect 和恶意跨包矩阵。
 - 自动化、fixture、候选签名、本地安装或历史 canary 都不能替代当前精确 digest 在授权 Omnia/Pack 的 live acceptance。
 
@@ -111,7 +111,7 @@ npm run package:recording-feature
 node scripts/package-workpaper-preparation-feature.mjs
 ```
 
-Workpaper 尚无对应 npm script。开发内环只运行定向测试，不反复签名或生成候选；候选冻结后才执行一次打包。公司便携使用 `npm run package:company-next-loopback-portable`，但当前有上文所述 exact inventory 漂移，收敛前不得把失败构建绕过为成功。
+Workpaper 尚无对应 npm script。开发内环只运行定向测试，不反复签名或生成候选；候选冻结后才执行一次打包。公司便携使用 `npm run package:company-next-loopback-portable`；当前 inventory、构建期望和候选精确身份已收敛到 0.1.81，任何后续漂移仍必须失败关闭。
 
 ## 7. 状态词
 

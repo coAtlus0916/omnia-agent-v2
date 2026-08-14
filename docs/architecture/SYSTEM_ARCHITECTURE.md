@@ -66,7 +66,7 @@ Core 共享表只应保存通用控制面事实。业务 Schema、Feature 专属
 | `omnia.create-associate` | `0.2.150` | 152 | 已跟踪签名候选并进入当前便携包；签名、摘要和内嵌 Operation 一致性已验证，live acceptance pending。 |
 | `omnia.delete-elements` | `0.3.32` | 1786632995691 | 构建脚本与当前本地便携内置产物存在；当前精确 digest live acceptance pending。 |
 | `omnia.recording` | `0.4.21` | 34 | 构建脚本与本地便携内置产物存在；当前精确 digest live acceptance pending。 |
-| `omnia.workpaper-preparation` | `0.1.71` | 72 | 已包含富文本 JSON 写回、嵌套制度 ZIP 和单制度模板重绑定，并进入当前本地便携产物；真实 Pack live acceptance pending。 |
+| `omnia.workpaper-preparation` | `0.1.81` | 82 | 已包含六类 APP 程序矩阵、富文本占位回传、动态并发 token 和 OE1–4 精确 procedure ID 写回；当前精确 digest 的真实 Pack live acceptance pending。 |
 
 “构建身份”仅指脚本当前会声明的包身份，不表示源码已经冻结、候选可重现、已安装、已推广或已在授权 Pack 通过。工作树修改与既有同版本候选不一致时，历史候选保持不可变，源码必须提升版本/sequence 后才能重新打包。
 

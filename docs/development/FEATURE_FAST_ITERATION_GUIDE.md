@@ -92,7 +92,7 @@ Windows 强隔离认证不属于上述任何一层的必需前置步骤。进程
 1. 下一次发布冻结前，重新执行四 Feature 共存、升级、失败升级、回滚、Worker crash、Connector reconnect 和恶意跨包矩阵；2026-08-10 独立性审计的行号与部分结论已漂移。
 2. 当前 `company-loopback-current` 四个身份已经收敛并完成干净快照便携构建；下一次升级仍必须同步 inventory、构建期望、manifest 与说明，不得绕过 exact identity 检查。
 3. Create & Associate `0.2.150 / sequence 152` 已通过签名、摘要和内嵌 Operation 一致性核验并进入便携包，仍需完成当前 digest 的真实 Pack canary。
-4. Workpaper `0.1.71 / sequence 72` 已通过定向测试与便携构建，但仍缺对应 npm script，且真实 Pack 富文本写回 canary 仍 pending。
+4. Workpaper `0.1.81 / sequence 82` 已通过定向测试与本地安装/启动冒烟，但仍缺对应 npm script，且当前精确 digest 的真实 Pack 富文本写回 canary 仍 pending。
 5. 对每个当前精确 Feature/Operation digest，在授权的 Omnia/Pack 完成其声明范围内的真实 canary；未验证能力继续失败关闭。
 
 这些差距不授权引入第二套 Worker、Connector 或打包链。Feature-only 修改继续复用现有平台边界；平台合同没有真实缺口时不修改 Shell/Connector Core。

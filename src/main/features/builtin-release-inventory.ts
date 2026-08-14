@@ -147,13 +147,13 @@ export const COMPANY_LOOPBACK_CURRENT_FEATURE_RELEASE_INVENTORY: BuiltinFeatureR
     Object.freeze({
       delivery: 'shell-builtin-baseline',
       featureId: 'omnia.create-associate',
-      version: '0.2.146',
-      sequence: 148,
+      version: '0.2.150',
+      sequence: 152,
       sourceDirectory: 'create-associate',
-      filename: 'create-associate-0.2.146.ofp',
-      sourceRelativePath: 'feature-packages/create-associate/candidates/create-associate-0.2.146.ofp',
-      fileSha256: 'sha256:ebcc175cfb148a29a69518a107a85091ba9af5654f64aa849810e5dca308677a',
-      packageDigest: 'sha256:42a97062e7f480ea9ef0bdc834dc8740ee85c94895b89454a5b1f974782f2958'
+      filename: 'create-associate-0.2.150.ofp',
+      sourceRelativePath: 'feature-packages/create-associate/candidates/create-associate-0.2.150.ofp',
+      fileSha256: 'sha256:a019a652c779b593e8e119fd0f8ded3372f9eb9ffd758206d0336c5fe4ec6fd5',
+      packageDigest: 'sha256:76cc704cc7f29aa10348e976a1395437e345abede01c022c1e2367d671295073'
     }),
     Object.freeze({
       delivery: 'shell-builtin-baseline',
@@ -169,24 +169,24 @@ export const COMPANY_LOOPBACK_CURRENT_FEATURE_RELEASE_INVENTORY: BuiltinFeatureR
     Object.freeze({
       delivery: 'shell-builtin-baseline',
       featureId: 'omnia.delete-elements',
-      version: '0.3.31',
-      sequence: 1786522815131,
+      version: '0.3.32',
+      sequence: 1786632995691,
       sourceDirectory: 'delete-elements',
-      filename: 'delete-elements-0.3.31.ofp',
-      sourceRelativePath: 'feature-packages/delete-elements/candidates/delete-elements-0.3.31.ofp',
-      fileSha256: 'sha256:12d4b35217f8694d2a4be53ab843d1d8abd7f93568c191b6c4738040240334a1',
-      packageDigest: 'sha256:474576df01ebd17a0d64458989c1833f73505bb087b91f42dd4e0bc048dfcce0'
+      filename: 'delete-elements-0.3.32.ofp',
+      sourceRelativePath: 'feature-packages/delete-elements/candidates/delete-elements-0.3.32.ofp',
+      fileSha256: 'sha256:7757d995610f830af9a0091a5edb5b21ffe1daeca71055106cc01609ddefd7e5',
+      packageDigest: 'sha256:0aed84b8fa5d2ca69ce9ceaa58ac6517ccbbcd257b0b2f2b8a6a674a7a2ff337'
     }),
     Object.freeze({
       delivery: 'shell-builtin-baseline',
       featureId: 'omnia.workpaper-preparation',
-      version: '0.1.52',
-      sequence: 53,
+      version: '0.1.71',
+      sequence: 72,
       sourceDirectory: 'workpaper-preparation',
-      filename: 'workpaper-preparation-0.1.52.ofp',
-      sourceRelativePath: 'feature-packages/workpaper-preparation/candidates/workpaper-preparation-0.1.52.ofp',
-      fileSha256: 'sha256:662cd856f301a1b42c437cbb3b2dabc9198b63b7d5e591c1b4031b4f5a741a4c',
-      packageDigest: 'sha256:1b905e81a6c2c248ebb17591bb101b2083a48726fc29bc1baef562035c9345b1'
+      filename: 'workpaper-preparation-0.1.71.ofp',
+      sourceRelativePath: 'feature-packages/workpaper-preparation/candidates/workpaper-preparation-0.1.71.ofp',
+      fileSha256: 'sha256:4879ba12cbf6e8056f5fb70f73179fd75c3deec10638b4de0fba644000f4678b',
+      packageDigest: 'sha256:864a4699870c1ec5eb6d80630d925ed47a298ae16297d37e0cffa05dd8bb16cd'
     })
   ]),
   postInstallFeatures: Object.freeze([])

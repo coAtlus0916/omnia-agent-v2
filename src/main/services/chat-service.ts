@@ -6,7 +6,9 @@ import type {
   AiAttachmentCapability,
   AiProviderKind,
   ChatAttachment,
-  ChatSnapshot
+  ChatSnapshot,
+  ConnectionSnapshot,
+  WorkspaceDirectorySnapshot
 } from '../../shared/contracts.js';
 import { AppError } from '../../shared/errors.js';
 import type { CoreDatabase } from '../database.js';
@@ -97,8 +99,82 @@ async function validateModelAttachment(
   new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 }
 
+/** Live Shell context a tool may read. Only non-secret, already-projected state. */
+export interface ChatToolContext {
+  connection: ConnectionSnapshot;
+  workspaceDirectory: WorkspaceDirectorySnapshot;
+}
+
+interface ChatToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+type ChatToolResult = string;
+
+/**
+ * Read-only Shell tool set. Tools must only surface state already projected in
+ * the Shell snapshot (connection identity and the live workspace authority
+ * directory); they never mutate, navigate, or reach a Connector write path.
+ */
+const CHAT_TOOLS: ChatToolDefinition[] = [
+  {
+    name: 'list_workspaces',
+    description: '列出当前已连接 Omnia Pack 的全部工作区，返回每个工作区的原始名称、Workspace Facet ID 和所属 Section。数据来自最近一次实时 Workspace 权威读取；不会写入或打开任何页面。',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'read_connection_status',
+    description: '读取当前 Omnia Pack 的连接状态，包括连接是否建立、Pack 身份（名称、engagementId、packId）、Connector 标识和会话 generation。仅返回当前已投影的连接快照，不发起新的连接动作。',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }
+  }
+];
+
+function executeTool(name: string, _arguments: Record<string, unknown>, context: ChatToolContext): ChatToolResult {
+  if (name === 'list_workspaces') {
+    const directory = context.workspaceDirectory;
+    if (!directory.available || !directory.observation) {
+      return JSON.stringify({ ok: false, reason: directory.reason || '当前尚未读取到实时工作区目录；请先连接 Omnia Pack。', workspaces: [] });
+    }
+    const workspaces = directory.observation.workspaces.map((workspace) => {
+      const section = directory.observation!.sections.find((item) => item.id === workspace.parentSectionId);
+      return {
+        name: workspace.name,
+        workspaceId: workspace.id,
+        section: section ? { name: section.name, sectionId: section.id } : null,
+        status: workspace.status
+      };
+    });
+    return JSON.stringify({ ok: true, capturedAt: directory.observation.capturedAt, count: workspaces.length, workspaces });
+  }
+  if (name === 'read_connection_status') {
+    const connection = context.connection;
+    return JSON.stringify({
+      connected: connection.connected,
+      status: connection.status,
+      engagementName: connection.engagementName || '',
+      engagementId: connection.engagementId || '',
+      packId: connection.packId || '',
+      connectorId: connection.connectorId || '',
+      connectorName: connection.connectorName || '',
+      sessionGeneration: connection.sessionGeneration ?? null,
+      clientName: connection.clientName || '',
+      message: connection.message || ''
+    });
+  }
+  return JSON.stringify({ ok: false, reason: `未知工具：${name}` });
+}
+
+function toolDefinitions(): Array<{ type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }> {
+  return CHAT_TOOLS.map((tool) => ({ type: 'function', function: tool }));
+}
+
+const MAX_TOOL_STEPS = 6;
+
 export class ChatService {
   private changeListener: (() => void) | null = null;
+  private toolContextProvider: (() => ChatToolContext) | null = null;
 
   constructor(
     private readonly database: CoreDatabase,
@@ -110,6 +186,24 @@ export class ChatService {
    * moment it is persisted, then refreshed again once the model replies. */
   setChangeListener(listener: (() => void) | null): void {
     this.changeListener = listener;
+  }
+
+  /**
+   * The Shell registers a live, non-secret context provider for the read-only
+   * tool set (connection identity + workspace authority). It is read lazily at
+   * tool-execution time so a tool always observes the current projection.
+   */
+  setToolContextProvider(provider: (() => ChatToolContext) | null): void {
+    this.toolContextProvider = provider;
+  }
+
+  private getToolContext(): ChatToolContext | null {
+    if (!this.toolContextProvider) return null;
+    try {
+      return this.toolContextProvider();
+    } catch {
+      return null;
+    }
   }
 
   private notifyChange(): void {
@@ -391,38 +485,72 @@ export class ChatService {
           });
         }
       }
+      // Read-only Shell tools are offered only when the Shell has registered a
+      // live context provider. Without it the conversation is plain single-turn
+      // chat, exactly as before.
+      const toolContextValue = this.getToolContext();
+      const tools = toolContextValue ? toolDefinitions() : undefined;
+      const messages: any[] = [
+        {
+          role: 'system',
+          content: '你是 Omnia Agent，面向客户的 Omnia 产品助手。不得透露、猜测或比较你的底层模型名称、供应商、接口地址、API Key 或路由配置；用户询问此类信息时，只说明模型连接由受限服务端配置管理。不得透露内部开发测试、调试故障、历史失败、运行日志或缺陷复盘。当用户询问当前 Pack、工作区、连接状态等实时信息时，必须调用提供的只读工具获取真实数据后再回答，不得凭记忆猜测或编造工作区、连接或身份信息。工具返回不可用或失败时，如实说明原因，不得自行补齐不存在的工作区或连接状态。用客户的语言清晰、准确地回答问题。'
+        },
+        ...history,
+        {
+          role: 'user',
+          content: readable.length ? currentContent : content
+        }
+      ];
       const base = validateProviderUrl(settings.baseUrl);
       await assertPublicProviderHost(base, settings.provider);
-      const response = await this.fetchImpl(endpoint(base, 'chat/completions'), {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${settings.apiKey}`,
-          'Content-Type': 'application/json',
-          Accept: 'application/json'
-        },
-        body: JSON.stringify({
+      let assistantContent = '';
+      for (let step = 0; step <= MAX_TOOL_STEPS; step += 1) {
+        const body: any = {
           model: settings.model,
-          messages: [
-            {
-              role: 'system',
-              content: '你是 Omnia Agent，面向客户的 Omnia 产品助手。不得透露、猜测或比较你的底层模型名称、供应商、接口地址、API Key 或路由配置；用户询问此类信息时，只说明模型连接由受限服务端配置管理。不得透露内部开发测试、调试故障、历史失败、运行日志或缺陷复盘。用客户的语言清晰、准确地回答问题。'
-            },
-            ...history,
-            {
-              role: 'user',
-              content: readable.length ? currentContent : content
-            }
-          ],
+          messages,
           ...(settings.provider === 'deepseek' ? { thinking: { type: 'disabled' } } : {}),
           stream: false
-        }),
-        signal: AbortSignal.timeout(90_000)
-      });
-      const payload = await response.json() as any;
-      if (!response.ok) throw new Error(`Provider HTTP ${response.status}`);
-      const choice = payload?.choices?.[0];
-      if (choice?.finish_reason !== 'stop') throw new Error(`Provider 返回未完成或不支持的 finish_reason：${String(choice?.finish_reason || 'missing')}。`);
-      const assistantContent = String(choice?.message?.content || '').trim();
+        };
+        if (tools) body.tools = tools;
+        const response = await this.fetchImpl(endpoint(base, 'chat/completions'), {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${settings.apiKey}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json'
+          },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(90_000)
+        });
+        const payload = await response.json() as any;
+        if (!response.ok) throw new Error(`Provider HTTP ${response.status}`);
+        const choice = payload?.choices?.[0];
+        const message = choice?.message;
+        if (!message) throw new Error('Provider 未返回消息。');
+        const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+        if (toolCalls.length === 0) {
+          if (choice?.finish_reason !== 'stop') {
+            throw new Error(`Provider 返回未完成或不支持的 finish_reason：${String(choice?.finish_reason || 'missing')}。`);
+          }
+          assistantContent = String(message.content || '').trim();
+          if (!assistantContent) throw new Error('Provider 未返回有效消息。');
+          break;
+        }
+        // Execute the requested tools against the live Shell context, then feed
+        // the results back for a final grounded answer. Intermediate tool turns
+        // are ephemeral; only the final assistant message is persisted.
+        messages.push({ role: 'assistant', content: message.content || null, tool_calls: toolCalls });
+        for (const call of toolCalls) {
+          const fn = call?.function;
+          let args: Record<string, unknown> = {};
+          try { args = fn?.arguments ? JSON.parse(String(fn.arguments)) : {}; }
+          catch { args = {}; }
+          const result = toolContextValue
+            ? executeTool(String(fn?.name || ''), args, toolContextValue)
+            : JSON.stringify({ ok: false, reason: '工具上下文不可用。' });
+          messages.push({ role: 'tool', tool_call_id: String(call?.id || ''), content: result });
+        }
+      }
       if (!assistantContent) throw new Error('Provider 未返回有效消息。');
       for (const item of readable) this.database.updateAttachmentDelivery(item.id, 'sent', '');
       this.database.updateMessage(userMessage.id, 'delivered');

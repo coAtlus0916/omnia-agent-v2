@@ -323,13 +323,27 @@ test('a completed OE read-back remains authoritative when the recorded Tab 209 t
   assert.equal(calls.some((item) => item.stepId === 'open-hidden-tab'), false);
 });
 
-test('phase2 writeback resolves sub-entity paths and confirms each stage via readback', async () => {
+test('phase2 writeback groups every recorded Tab and confirms all Control fields via readback', async () => {
   const { sdk, calls } = fixture({ opened: true, planningCommonControlTesting: false });
   const handler = createOperationHandler();
-  let description = 'old description';
-  let procedureResult = 'old procedure result';
-  const editorValue = JSON.stringify({ editorData: '<p>new procedure</p>', suggestionsData: [],
+  const editor = (value) => JSON.stringify({ editorData: `<p>${value}</p>`, suggestionsData: [],
     trackChangesEnableFlagInEditor: false, plainText: '' });
+  let riskDescription = 'old risk';
+  let competenceAndAuthorityDocumentation = 'old competence';
+  let frequencyAndConsistency = 'old frequency';
+  let levelOfAggregation = 'old aggregation';
+  let criteriaForInvestigation = 'old criteria';
+  let appropriatenessAndCorrelation = 'old appropriateness';
+  let designProcedure = 'old design procedure';
+  const oeProcedures = ['old OE 1', 'old OE 2'];
+  let procedureTiming = '';
+  let procedureTimingRationale = '';
+  let frequencyOfPerformance = null;
+  let frequencyOfPerformanceExplanation = '';
+  let operatingEffectively = null;
+  const concurrencyTokens = new Map([[205, '2026-08-09T00:00:00.000Z'], [210, '2026-08-09T00:00:00.000Z'],
+    [214, '2026-08-09T00:00:00.000Z']]);
+  let tokenSequence = 0;
   const writableSdk = {
     ...sdk,
     async invokeStep(stepId, parameters, body) {
@@ -337,18 +351,42 @@ test('phase2 writeback resolves sub-entity paths and confirms each stage via rea
       if (stepId === 'writeback-control-detail' || stepId === 'writeback-readback') {
         return {
           id: CONTROL, workItemId: CONTROL_WORK, controlNumber: 'APP.01 - GRA-APP', name: 'Control 1',
-          description, approach: 'Preventive',
-          controlDesignEvaluation: { id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1', competenceAndAuthorityDocumentation: '' },
-          gitcNonDetailedTestingProcedures: [{ id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1', phaseType: 'TestOfDesign', documentProcedureResults: procedureResult }],
-          controlRiskScopes: [{ id: 'cccccccc-cccc-cccc-cccc-ccccccccccc1', riskId: 'dddddddd-dddd-dddd-dddd-ddddddddddd1', controlRiskScopeDetails: [{ id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1', appropriatenessAndCorrelation: '' }] }],
-          controlOperatingEffectiveness: { id: OE },
-          concurrencyTabs: [{ entityTabTypeId: 201, updatedOn: '2026-08-09T00:00:00.000Z' }]
+          description: 'old description', approach: 'Preventive', riskAssociationDescription: riskDescription,
+          controlDesignEvaluation: { id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1',
+            competenceAndAuthorityDocumentation, frequencyAndConsistency, levelOfAggregation, criteriaForInvestigation },
+          gitcNonDetailedTestingProcedures: [
+            { id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1', phaseType: 'TestOfDesign', documentProcedureResults: designProcedure },
+            { id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2', phaseType: 'OperatingEffectiveness', documentProcedureResults: oeProcedures[0] },
+            { id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3', phaseType: 'OperatingEffectiveness', documentProcedureResults: oeProcedures[1] }
+          ],
+          controlRiskScopes: [{ id: 'cccccccc-cccc-cccc-cccc-ccccccccccc1', riskId: 'dddddddd-dddd-dddd-dddd-ddddddddddd1',
+            controlRiskScopeDetails: { id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1', appropriatenessAndCorrelation } }],
+          controlOperatingEffectiveness: { id: OE, procedureTiming, procedureTimingRationale,
+            frequencyOfPerformance, frequencyOfPerformanceExplanation, operatingEffectively },
+          concurrencyTabs: [...concurrencyTokens].map(([entityTabTypeId, updatedOn]) => ({ entityTabTypeId, updatedOn }))
         };
       }
       if (stepId === 'writeback-patch') {
         for (const op of body) {
-          if (op.path === '/description') description = op.value;
-          if (op.path === '/gitcNonDetailedTestingProcedures/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1/documentProcedureResults') procedureResult = op.value;
+          if (op.path === '/riskAssociationDescription') riskDescription = op.value;
+          if (op.path.endsWith('/competenceAndAuthorityDocumentation')) competenceAndAuthorityDocumentation = op.value;
+          if (op.path.endsWith('/frequencyAndConsistency')) frequencyAndConsistency = op.value;
+          if (op.path.endsWith('/levelOfAggregation')) levelOfAggregation = op.value;
+          if (op.path.endsWith('/criteriaForInvestigation')) criteriaForInvestigation = op.value;
+          if (op.path.endsWith('/controlRiskScopeDetails')) appropriatenessAndCorrelation = op.value.appropriatenessAndCorrelation;
+          if (op.path.endsWith('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1/documentProcedureResults')) designProcedure = op.value;
+          if (op.path.endsWith('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2/documentProcedureResults')) oeProcedures[0] = op.value;
+          if (op.path.endsWith('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3/documentProcedureResults')) oeProcedures[1] = op.value;
+          if (op.path.endsWith('/procedureTiming')) procedureTiming = op.value;
+          if (op.path.endsWith('/procedureTimingRationale')) procedureTimingRationale = op.value;
+          if (op.path.endsWith('/frequencyOfPerformance')) frequencyOfPerformance = op.value;
+          if (op.path.endsWith('/frequencyOfPerformanceExplanation')) frequencyOfPerformanceExplanation = op.value;
+          if (op.path.endsWith('/operatingEffectively')) operatingEffectively = op.value;
+        }
+        const tab = body.find((op) => op.path === '/concurrencyTabId').value;
+        if ([204, 211, 212].includes(tab)) {
+          tokenSequence += 1;
+          concurrencyTokens.set(tab, `2026-08-09T00:00:0${tokenSequence}.000Z`);
         }
         return {};
       }
@@ -358,25 +396,89 @@ test('phase2 writeback resolves sub-entity paths and confirms each stage via rea
   const response = await handler.run('omnia.workpaper.phase2.writeback.v1', {
     ...contextRequest(), controlId: CONTROL, controlWorkItemId: CONTROL_WORK,
     command: { payload: { controlId: CONTROL, changes: [
-      { writePath: '/description', value: 'new description', expectedValue: 'old description', valueKind: 'text', concurrencyTab: 201 },
-      { writePath: '/gitcNonDetailedTestingProcedures/{procedureId}/documentProcedureResults', value: editorValue,
-        expectedValue: 'old procedure result', valueKind: 'editor', concurrencyTab: 201, phaseType: 'TestOfDesign' }
+      { backendKey: 'controlDesignEvaluation.competenceAndAuthorityDocumentation', sourceHeader: 'competenceAndAuthorityDocumentation',
+        writePath: '/controlDesignEvaluation/{designEvaluationId}/competenceAndAuthorityDocumentation', value: editor('new competence'),
+        expectedValue: 'old competence', valueKind: 'editor', concurrencyTab: 205, concurrencyMode: 'remove', purgeHiddenData: true },
+      { backendKey: 'controlDesignEvaluation.frequencyAndConsistency', sourceHeader: 'frequencyAndConsistency',
+        writePath: '/controlDesignEvaluation/{designEvaluationId}/frequencyAndConsistency', value: editor('new frequency'),
+        expectedValue: 'old frequency', valueKind: 'editor', concurrencyTab: 205, concurrencyMode: 'remove', purgeHiddenData: true },
+      { backendKey: 'controlDesignEvaluation.levelOfAggregation', sourceHeader: 'levelOfAggregation',
+        writePath: '/controlDesignEvaluation/{designEvaluationId}/levelOfAggregation', value: editor('new aggregation'),
+        expectedValue: 'old aggregation', valueKind: 'editor', concurrencyTab: 205, concurrencyMode: 'remove', purgeHiddenData: true },
+      { backendKey: 'controlDesignEvaluation.criteriaForInvestigation', sourceHeader: 'criteriaForInvestigation',
+        writePath: '/controlDesignEvaluation/{designEvaluationId}/criteriaForInvestigation', value: editor('new criteria'),
+        expectedValue: 'old criteria', valueKind: 'editor', concurrencyTab: 205, concurrencyMode: 'remove', purgeHiddenData: true },
+      { backendKey: 'controlRiskScopes[].controlRiskScopeDetails.appropriatenessAndCorrelation',
+        writePath: '/controlRiskScopes/{riskScopeId}/controlRiskScopeDetails', wireShape: 'risk_scope_details_object',
+        value: editor('new appropriateness'), expectedValue: 'old appropriateness', valueKind: 'editor',
+        concurrencyTab: 205, concurrencyMode: 'remove', purgeHiddenData: true },
+      { backendKey: 'riskAssociationDescription', writePath: '/riskAssociationDescription', value: editor('new risk'),
+        expectedValue: 'old risk', valueKind: 'editor', concurrencyTab: 210, concurrencyMode: 'remove', purgeHiddenData: true },
+      { backendKey: 'design procedure', writePath: '/gitcNonDetailedTestingProcedures/{procedureId}/documentProcedureResults',
+        value: editor('new design procedure'), expectedValue: 'old design procedure', valueKind: 'editor',
+        concurrencyTab: 204, concurrencyMode: 'current_or_remove', purgeHiddenData: false, phaseType: 'TestOfDesign', procedureIndex: 0 },
+      { backendKey: 'controlOperatingEffectiveness.procedureTiming',
+        writePath: '/controlOperatingEffectiveness/{operatingEffectivenessId}/procedureTiming',
+        value: 'Apportion', expectedValue: '', valueKind: 'enum', concurrencyTab: 211,
+        concurrencyMode: 'current_or_remove', purgeHiddenData: true },
+      { backendKey: 'controlOperatingEffectiveness.procedureTimingRationale',
+        writePath: '/controlOperatingEffectiveness/{operatingEffectivenessId}/procedureTimingRationale',
+        value: 'new timing rationale', expectedValue: '', valueKind: 'text', concurrencyTab: 211,
+        concurrencyMode: 'current_or_remove', purgeHiddenData: true },
+      { backendKey: 'controlOperatingEffectiveness.frequencyOfPerformance',
+        writePath: '/controlOperatingEffectiveness/{operatingEffectivenessId}/frequencyOfPerformance',
+        value: 11, expectedValue: null, valueKind: 'number', concurrencyTab: 211,
+        concurrencyMode: 'current_or_remove', purgeHiddenData: true },
+      { backendKey: 'controlOperatingEffectiveness.frequencyOfPerformanceExplanation',
+        writePath: '/controlOperatingEffectiveness/{operatingEffectivenessId}/frequencyOfPerformanceExplanation',
+        value: 'new frequency explanation', expectedValue: '', valueKind: 'text', concurrencyTab: 211,
+        concurrencyMode: 'current_or_remove', purgeHiddenData: true },
+      { backendKey: 'OE procedure 1', writePath: '/gitcNonDetailedTestingProcedures/{procedureId}/documentProcedureResults',
+        value: editor('new OE 1'), expectedValue: 'old OE 1', valueKind: 'editor', concurrencyTab: 212,
+        concurrencyMode: 'current_or_remove', purgeHiddenData: false, phaseType: 'OperatingEffectiveness', procedureIndex: 0 },
+      { backendKey: 'OE procedure 2', writePath: '/gitcNonDetailedTestingProcedures/{procedureId}/documentProcedureResults',
+        value: editor('new OE 2'), expectedValue: 'old OE 2', valueKind: 'editor', concurrencyTab: 212,
+        concurrencyMode: 'current_or_remove', purgeHiddenData: false, phaseType: 'OperatingEffectiveness', procedureIndex: 1 },
+      { backendKey: 'controlOperatingEffectiveness.operatingEffectively',
+        writePath: '/controlOperatingEffectiveness/{operatingEffectivenessId}/operatingEffectively',
+        value: 1, expectedValue: null, valueKind: 'choice', concurrencyTab: 214,
+        concurrencyMode: 'remove', purgeHiddenData: true }
     ] } }
   }, writableSdk);
   assert.equal(response.accepted, true);
-  assert.equal(response.ledger.length, 2);
-  assert.deepEqual(response.ledger.map((item) => item.confirmed), [true, true]);
-  assert.equal(description, 'new description');
-  assert.equal(procedureResult, editorValue);
+  assert.equal(response.ledger.length, 14);
+  assert.ok(response.ledger.every((item) => item.confirmed));
+  assert.equal(competenceAndAuthorityDocumentation, editor('new competence'));
+  assert.equal(frequencyAndConsistency, editor('new frequency'));
+  assert.equal(appropriatenessAndCorrelation, editor('new appropriateness'));
+  assert.equal(procedureTiming, 'Apportion');
+  assert.equal(procedureTimingRationale, 'new timing rationale');
+  assert.equal(frequencyOfPerformance, 11);
+  assert.equal(frequencyOfPerformanceExplanation, 'new frequency explanation');
+  assert.deepEqual(oeProcedures, [editor('new OE 1'), editor('new OE 2')]);
+  assert.equal(operatingEffectively, 1);
   const patchCalls = calls.filter((item) => item.stepId === 'writeback-patch');
-  assert.equal(patchCalls.length, 2);
-  assert.ok(patchCalls.every((item) => item.body.some((op) => op.path === '/concurrencyTabId' && op.value === 201)));
+  assert.equal(patchCalls.length, 7);
+  const patchesForTab = (tab) => patchCalls.filter((item) => item.body.some((op) => op.path === '/concurrencyTabId' && op.value === tab));
+  const patchByTab = new Map(patchCalls.map((item) => [item.body.find((op) => op.path === '/concurrencyTabId').value, item.body]));
+  assert.equal(patchByTab.get(205).filter((op) => !op.path.startsWith('/concurrency') && op.path !== '/isPurgeHiddenData').length, 5);
+  assert.equal(Object.hasOwn(patchByTab.get(204).find((op) => op.path === '/concurrencyTabUpdatedOn'), 'value'), false);
+  assert.equal(Object.hasOwn(patchByTab.get(211).find((op) => op.path === '/concurrencyTabUpdatedOn'), 'value'), false);
+  assert.equal(Object.hasOwn(patchByTab.get(210).find((op) => op.path === '/concurrencyTabUpdatedOn'), 'value'), false);
+  assert.equal(patchesForTab(212).length, 2);
+  assert.equal(patchesForTab(212).every((item) => !item.body.some((op) => op.path === '/isPurgeHiddenData')), true);
+  assert.equal(Object.hasOwn(patchesForTab(212)[0].body.find((op) => op.path === '/concurrencyTabUpdatedOn'), 'value'), false);
+  assert.equal(patchesForTab(212)[1].body.find((op) => op.path === '/concurrencyTabUpdatedOn').value, '2026-08-09T00:00:03.000Z');
+  const oePatchIndexes = patchesForTab(212).map((item) => calls.indexOf(item));
+  assert.ok(calls.some((item, index) => item.stepId === 'writeback-readback'
+    && index > oePatchIndexes[0] && index < oePatchIndexes[1]));
   await assert.rejects(handler.run('omnia.workpaper.phase2.writeback.v1', {
     ...contextRequest(), controlId: CONTROL, controlWorkItemId: CONTROL_WORK,
     command: { payload: { controlId: CONTROL, changes: [{
       writePath: '/gitcNonDetailedTestingProcedures/{procedureId}/documentProcedureResults', value: 'bare text',
-      expectedValue: editorValue, valueKind: 'editor', concurrencyTab: 201, phaseType: 'TestOfDesign'
+      expectedValue: designProcedure, valueKind: 'editor', concurrencyTab: 204, concurrencyMode: 'current_or_remove',
+      purgeHiddenData: false, phaseType: 'TestOfDesign'
     }] } }
   }, writableSdk), /not valid Omnia rich-editor JSON/u);
-  assert.equal(calls.filter((item) => item.stepId === 'writeback-patch').length, 2);
+  assert.equal(calls.filter((item) => item.stepId === 'writeback-patch').length, 7);
 });

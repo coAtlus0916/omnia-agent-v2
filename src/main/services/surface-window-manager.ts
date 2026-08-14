@@ -25,6 +25,13 @@ interface SurfaceWindowState extends Omit<SurfaceOpenInput, 'placement'> {
   attached: boolean;
   bounds: { x: number; y: number; width: number; height: number };
   authorizedSurface: DeclarativeFeatureSurface;
+  /** Content fingerprint of the last projection pushed to this instance via the passive refresh path. */
+  lastBootstrappedSignature: string;
+}
+
+/** Stable content fingerprint of a Surface, used to skip redundant passive re-broadcasts. */
+function surfaceContentSignature(surface: DeclarativeFeatureSurface): string {
+  return JSON.stringify(surface);
 }
 
 /** Main-process owner of isolated Feature WebContents and native windows. */
@@ -108,6 +115,7 @@ export class SurfaceWindowManager {
   private bootstrap(state: SurfaceWindowState, surface: DeclarativeFeatureSurface): void {
     const target = state.view?.webContents || state.window?.webContents;
     if (!target || target.isDestroyed()) return;
+    state.lastBootstrappedSignature = surfaceContentSignature(surface);
     target.send('feature:bootstrap', surface);
   }
 
@@ -119,6 +127,15 @@ export class SurfaceWindowManager {
         && state.featureVersion === surface.featureVersion
         && state.surfaceId === surface.surfaceId
       ) {
+        // The passive refresh fires on every Core snapshot broadcast (keepalive,
+        // connection drift, background tick), which is far more often than the
+        // Surface actually changes. Action enablement/reason is derived from
+        // live connection/safety context and can change without bumping
+        // stateVersion, so compare a stable content fingerprint rather than the
+        // surface object identity. Skip the IPC + renderer rebuild when nothing
+        // the Feature window would re-render actually changed.
+        const signature = surfaceContentSignature(surface);
+        if (signature === state.lastBootstrappedSignature) continue;
         state.authorizedSurface = surface;
         this.bootstrap(state, surface);
       }
@@ -462,7 +479,8 @@ export class SurfaceWindowManager {
       window: null,
       attached: false,
       bounds: input.bounds || { x: 0, y: 0, width: 1, height: 1 },
-      authorizedSurface: surface
+      authorizedSurface: surface,
+      lastBootstrappedSignature: ''
     };
     this.states.set(input.instanceId, state);
     if (input.placement === 'docked') {

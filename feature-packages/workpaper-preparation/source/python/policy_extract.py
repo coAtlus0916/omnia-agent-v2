@@ -1,8 +1,8 @@
-"""Deterministic recursive policy-archive (制度) text extraction.
+"""Deterministic policy-file and recursive policy-archive (制度) extraction.
 
-Pure standard-library. Recursively extracts text from .docx (WordprocessingML)
-and .xlsx (OOXML via ooxml.read_xlsx) members of a .zip archive. Scanned-image
-PDFs carry no text layer and are reported as skipped rather than guessed.
+Pure standard-library. Reads a direct .docx/.xlsx/.xlsm/.pdf input or recursively
+extracts those files from a .zip archive. Scanned-image PDFs carry no text layer
+and are reported as skipped rather than guessed.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 from errors import EngineError, require
-from ooxml import read_xlsx
+from ooxml import read_workpaper_xlsx
 
 ARCHIVE_SCHEMA = "omnia.workpaper-policy-archive/v1"
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
@@ -57,7 +57,7 @@ def _docx_text(data: bytes) -> str:
 
 
 def _xlsx_text(data: bytes) -> str:
-    workbook = read_xlsx(data, allow_formula_cache=True)
+    workbook = read_workpaper_xlsx(data, allow_formula_cache=True)
     lines: list[str] = []
     for sheet in workbook.sheets:
         lines.append(f"== {sheet.name} ==")
@@ -183,7 +183,32 @@ def extract_policy_archive(payload: Any) -> dict[str, Any]:
     documents: list[dict[str, str]] = []
     skipped: list[str] = []
     budget = {"members": 0, "expandedBytes": 0, "extractedChars": 0}
-    _walk_archive(raw, depth=0, prefix="", budget=budget, documents=documents, skipped=skipped)
+    source_name = posixpath.basename(str(payload.get("sourceName") or "policy-materials.zip").replace("\\", "/"))
+    lower = source_name.lower()
+    if lower.endswith(".zip"):
+        _walk_archive(raw, depth=0, prefix="", budget=budget, documents=documents, skipped=skipped)
+    else:
+        require(len(raw) <= MAX_MEMBER_BYTES, "POLICY.MEMBER_TOO_LARGE",
+                f"制度文件 {source_name} 超过大小限制。")
+        if lower.endswith(".docx"):
+            extracted = _docx_text(raw)
+            kind = "Word"
+        elif lower.endswith((".xlsx", ".xlsm")):
+            extracted = _xlsx_text(raw)
+            kind = "Excel"
+        elif lower.endswith(".pdf"):
+            extracted = ""
+            kind = "PDF"
+            skipped.append(f"{source_name}（扫描 PDF 无文本层，需文本版制度或多模态 AI）")
+        else:
+            raise EngineError("POLICY.FILE_TYPE_UNSUPPORTED", "制度文件类型不受支持。")
+        extracted = extracted.strip()
+        if extracted:
+            require(len(extracted) <= MAX_EXTRACTED_CHARS, "POLICY.EXTRACTED_TOO_LARGE",
+                    "制度提取文本总量超过限制。")
+            documents.append({"name": source_name, "kind": kind, "text": extracted})
+        elif kind != "PDF":
+            skipped.append(f"{source_name}（未提取到文字）")
 
     return {
         "schemaVersion": "omnia.workpaper-policy-extraction/v1",

@@ -332,13 +332,35 @@ function registerIpc(service: ShellService, packages: FeaturePackageManager, log
       const engagementId = service.snapshot().connection.engagementId || '';
       const extensions = input.accept.map((value) => value.slice(1));
       if (input.directory === true) {
+        const mode = await dialog.showMessageBox({
+          type: 'question', title: '选择资料', message: '请选择资料的选取方式',
+          detail: '可以选择一个或多个文件，也可以选择一个或多个文件夹；文件夹中的允许类型会被递归收集。',
+          buttons: ['选择文件', '选择文件夹', '取消'], defaultId: 0, cancelId: 2, noLink: true
+        });
+        if (mode.response === 2) return null;
+        if (mode.response === 0) {
+          const selected = await dialog.showOpenDialog({
+            title: '选择资料文件',
+            properties: ['openFile', ...(input.multiple === true ? ['multiSelections' as const] : [])],
+            filters: [{ name: 'Feature input', extensions }]
+          });
+          if (selected.canceled || !selected.filePaths.length) return null;
+          if (selected.filePaths.length === 1) {
+            return packages.importArtifact({ ...input, engagementId }, selected.filePaths[0]!);
+          }
+          const files = selected.filePaths.map((filePath) => ({ absolutePath: filePath, relativePath: path.basename(filePath) }));
+          const archiveBytes = packArchive(files.map((file) => ({ name: file.relativePath, bytes: fs.readFileSync(file.absolutePath) })));
+          return packages.importArtifactBytes({ ...input, engagementId }, `policy-materials-${Date.now()}.zip`, archiveBytes);
+        }
         const selected = await dialog.showOpenDialog({
-          title: '选择制度资料文件夹',
+          title: '选择资料文件夹',
           properties: ['openDirectory', 'multiSelections']
         });
         if (selected.canceled || !selected.filePaths.length) return null;
         const files = selected.filePaths.flatMap((dirPath) => collectDirectoryFiles(dirPath, extensions));
-        if (!files.length) return null;
+        if (!files.length) {
+          throw new AppError('FEATURE.ARTIFACT_DIRECTORY_EMPTY', `所选文件夹中没有允许的文件：${input.accept.join(' / ')}`);
+        }
         const archiveBytes = packArchive(files.map((file) => ({ name: file.relativePath, bytes: fs.readFileSync(file.absolutePath) })));
         return packages.importArtifactBytes({ ...input, engagementId }, `policy-materials-${Date.now()}.zip`, archiveBytes);
       }

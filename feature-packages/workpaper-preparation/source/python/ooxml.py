@@ -42,7 +42,7 @@ class Workbook:
     sheets: tuple[Worksheet, ...]
 
 
-def read_bounded(source: bytes | bytearray | memoryview | BinaryIO, *, limit: int = MAX_CONTAINER_BYTES) -> bytes:
+def read_workpaper_bounded(source: bytes | bytearray | memoryview | BinaryIO, *, limit: int = MAX_CONTAINER_BYTES) -> bytes:
     if isinstance(source, (bytes, bytearray, memoryview)):
         data = bytes(source)
     elif hasattr(source, "read"):
@@ -64,20 +64,20 @@ def read_bounded(source: bytes | bytearray | memoryview | BinaryIO, *, limit: in
     return data
 
 
-def read_xlsx(source: bytes | bytearray | memoryview | BinaryIO, *, allow_formula_cache: bool = False) -> Workbook:
-    parts = read_zip_parts(read_bounded(source))
+def read_workpaper_xlsx(source: bytes | bytearray | memoryview | BinaryIO, *, allow_formula_cache: bool = False) -> Workbook:
+    parts = read_workpaper_zip_parts(read_workpaper_bounded(source))
     required = ("[Content_Types].xml", "xl/workbook.xml", "xl/_rels/workbook.xml.rels")
     for name in required:
         require(name in parts, "WORKBOOK.REQUIRED_PART_MISSING", f"Required OOXML part is missing: {name}.")
-    shared = _shared_strings(parts.get("xl/sharedStrings.xml"))
-    bordered_styles = _bordered_styles(parts.get("xl/styles.xml"))
-    workbook_root = _parse_xml(parts["xl/workbook.xml"], "WORKBOOK.XML_INVALID")
-    rel_root = _parse_xml(parts["xl/_rels/workbook.xml.rels"], "WORKBOOK.RELS_INVALID")
+    shared = _workpaper_shared_strings(parts.get("xl/sharedStrings.xml"))
+    bordered_styles = _workpaper_bordered_styles(parts.get("xl/styles.xml"))
+    workbook_root = _parse_workpaper_xml(parts["xl/workbook.xml"], "WORKBOOK.XML_INVALID")
+    rel_root = _parse_workpaper_xml(parts["xl/_rels/workbook.xml.rels"], "WORKBOOK.RELS_INVALID")
     relationships: dict[str, str] = {}
     for rel in rel_root.findall(f"{{{_REL_NS}}}Relationship"):
         rel_id, target = rel.get("Id", ""), rel.get("Target", "")
         if rel_id and target and rel.get("TargetMode", "Internal") != "External":
-            relationships[rel_id] = _resolve_part("xl/workbook.xml", target)
+            relationships[rel_id] = _resolve_workpaper_part("xl/workbook.xml", target)
     sheets: list[Worksheet] = []
     sheet_parent = workbook_root.find(f"{{{_SHEET_NS}}}sheets")
     require(sheet_parent is not None, "WORKBOOK.SHEET_DIRECTORY_MISSING", "Workbook has no sheet directory.")
@@ -87,7 +87,7 @@ def read_xlsx(source: bytes | bytearray | memoryview | BinaryIO, *, allow_formul
         part_name = relationships.get(rel_id, "")
         require(name and part_name, "WORKBOOK.SHEET_RELATION_MISSING", f"Worksheet relationship is missing for {name or '(unnamed)' }.")
         require(part_name in parts, "WORKBOOK.SHEET_PART_MISSING", f"Worksheet part is missing for {name}.")
-        rows, bordered_cells, data_entry_row_ranges, merged_row_ranges = _worksheet_rows(
+        rows, bordered_cells, data_entry_row_ranges, merged_row_ranges = _workpaper_worksheet_rows(
             parts[part_name], shared, bordered_styles, allow_formula_cache=allow_formula_cache
         )
         sheets.append(Worksheet(name=name, part_name=part_name, rows=rows, bordered_cells=bordered_cells,
@@ -96,7 +96,7 @@ def read_xlsx(source: bytes | bytearray | memoryview | BinaryIO, *, allow_formul
     return Workbook(parts=parts, sheets=tuple(sheets))
 
 
-def read_zip_parts(data: bytes) -> dict[str, bytes]:
+def read_workpaper_zip_parts(data: bytes) -> dict[str, bytes]:
     require(len(data) >= 22, "WORKBOOK.INVALID_ZIP", "XLSX ZIP container is too small.")
     try:
         archive = zipfile.ZipFile(io.BytesIO(data), "r")
@@ -111,7 +111,7 @@ def read_zip_parts(data: bytes) -> dict[str, bytes]:
         # no payload and are not OOXML parts. Skip them before name validation.
         if info.is_dir() or info.filename.endswith("/"):
             continue
-        name = _safe_part_name(info.filename)
+        name = _safe_workpaper_part_name(info.filename)
         require(name not in parts, "WORKBOOK.DUPLICATE_PART", f"Duplicate OOXML part: {name}.")
         require(not (info.flag_bits & 0x1), "WORKBOOK.ENCRYPTED_PART", f"Encrypted OOXML part is unsupported: {name}.")
         require(info.compress_type in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED), "WORKBOOK.UNSUPPORTED_COMPRESSION", f"Unsupported compression for {name}.")
@@ -130,12 +130,12 @@ def read_zip_parts(data: bytes) -> dict[str, bytes]:
     return parts
 
 
-def compile_parts(base: bytes | bytearray | memoryview | BinaryIO, mutations: Mapping[str, bytes]) -> bytes:
+def compile_workpaper_parts(base: bytes | bytearray | memoryview | BinaryIO, mutations: Mapping[str, bytes]) -> bytes:
     """Replace/add only explicitly declared parts; unchanged part payloads remain byte-identical."""
-    original = read_zip_parts(read_bounded(base))
+    original = read_workpaper_zip_parts(read_workpaper_bounded(base))
     normalized: dict[str, bytes] = {}
     for raw_name, value in mutations.items():
-        name = _safe_part_name(raw_name)
+        name = _safe_workpaper_part_name(raw_name)
         require(isinstance(value, bytes), "COMPILE.PART_BYTES_REQUIRED", f"Mutation for {name} must be bytes.")
         require(len(value) <= MAX_ENTRY_BYTES, "COMPILE.PART_SIZE_EXCEEDED", f"Mutation for {name} exceeds size limit.")
         normalized[name] = value
@@ -152,7 +152,7 @@ def compile_parts(base: bytes | bytearray | memoryview | BinaryIO, mutations: Ma
             archive.writestr(info, final[name], compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
     result = output.getvalue()
     require(len(result) <= MAX_CONTAINER_BYTES, "COMPILE.OUTPUT_SIZE_EXCEEDED", "Compiled workbook exceeds 64 MiB.")
-    verified = read_zip_parts(result)
+    verified = read_workpaper_zip_parts(result)
     for name, value in original.items():
         if name not in normalized:
             require(verified.get(name) == value, "COMPILE.UNDECLARED_PART_DRIFT", f"Undeclared OOXML part changed: {name}.")
@@ -161,7 +161,7 @@ def compile_parts(base: bytes | bytearray | memoryview | BinaryIO, mutations: Ma
     return result
 
 
-def _safe_part_name(name: str) -> str:
+def _safe_workpaper_part_name(name: str) -> str:
     require(isinstance(name, str) and name != "", "WORKBOOK.PART_NAME_INVALID", "OOXML part name is empty.")
     normalized = name.replace("\\", "/").lstrip("/")
     require(normalized == posixpath.normpath(normalized), "WORKBOOK.PART_NAME_INVALID", f"Unsafe OOXML part name: {name}.")
@@ -169,15 +169,15 @@ def _safe_part_name(name: str) -> str:
     return normalized
 
 
-def _resolve_part(source: str, target: str) -> str:
+def _resolve_workpaper_part(source: str, target: str) -> str:
     if target.startswith("/"):
         resolved = target.lstrip("/")
     else:
         resolved = posixpath.normpath(posixpath.join(posixpath.dirname(source), target))
-    return _safe_part_name(resolved)
+    return _safe_workpaper_part_name(resolved)
 
 
-def _parse_xml(data: bytes, code: str) -> ET.Element:
+def _parse_workpaper_xml(data: bytes, code: str) -> ET.Element:
     require(len(data) <= MAX_ENTRY_BYTES, code, "OOXML XML part exceeds size limit.")
     if b"<!DOCTYPE" in data.upper() or b"<!ENTITY" in data.upper():
         raise EngineError("WORKBOOK.XML_DTD_FORBIDDEN", "OOXML XML parts may not contain DTD/entity declarations.")
@@ -187,20 +187,20 @@ def _parse_xml(data: bytes, code: str) -> ET.Element:
         raise EngineError(code, "OOXML XML part is malformed.") from exc
 
 
-def _shared_strings(data: bytes | None) -> tuple[str, ...]:
+def _workpaper_shared_strings(data: bytes | None) -> tuple[str, ...]:
     if data is None:
         return ()
-    root = _parse_xml(data, "WORKBOOK.SHARED_STRINGS_INVALID")
+    root = _parse_workpaper_xml(data, "WORKBOOK.SHARED_STRINGS_INVALID")
     values: list[str] = []
     for item in root.findall(f"{{{_SHEET_NS}}}si"):
         values.append("".join(node.text or "" for node in item.iter(f"{{{_SHEET_NS}}}t")))
     return tuple(values)
 
 
-def _bordered_styles(data: bytes | None) -> tuple[bool, ...]:
+def _workpaper_bordered_styles(data: bytes | None) -> tuple[bool, ...]:
     if data is None:
         return (False,)
-    root = _parse_xml(data, "WORKBOOK.STYLES_INVALID")
+    root = _parse_workpaper_xml(data, "WORKBOOK.STYLES_INVALID")
     cell_xfs = root.find(f"{{{_SHEET_NS}}}cellXfs")
     require(cell_xfs is not None, "WORKBOOK.STYLES_INVALID", "Workbook styles have no cellXfs collection.")
     result: list[bool] = []
@@ -212,7 +212,7 @@ def _bordered_styles(data: bytes | None) -> tuple[bool, ...]:
     return tuple(result)
 
 
-def _row_ranges(reference_list: str, code: str) -> tuple[tuple[int, int], ...]:
+def _workpaper_row_ranges(reference_list: str, code: str) -> tuple[tuple[int, int], ...]:
     ranges: list[tuple[int, int]] = []
     for reference in reference_list.split():
         match = _RANGE_REF.match(reference)
@@ -223,7 +223,7 @@ def _row_ranges(reference_list: str, code: str) -> tuple[tuple[int, int], ...]:
     return tuple(ranges)
 
 
-def _column_index(reference: str) -> int:
+def _workpaper_column_index(reference: str) -> int:
     match = _CELL_REF.match(reference)
     require(match is not None, "WORKBOOK.CELL_REFERENCE_INVALID", f"Invalid cell reference: {reference or '(empty)'}.")
     value = 0
@@ -233,12 +233,12 @@ def _column_index(reference: str) -> int:
     return value - 1
 
 
-def _worksheet_rows(data: bytes, shared: tuple[str, ...], bordered_styles: tuple[bool, ...], *, allow_formula_cache: bool) -> tuple[dict[int, list[str]], dict[int, frozenset[int]], tuple[tuple[int, int], ...], tuple[tuple[int, int], ...]]:
-    root = _parse_xml(data, "WORKBOOK.WORKSHEET_XML_INVALID")
+def _workpaper_worksheet_rows(data: bytes, shared: tuple[str, ...], bordered_styles: tuple[bool, ...], *, allow_formula_cache: bool) -> tuple[dict[int, list[str]], dict[int, frozenset[int]], tuple[tuple[int, int], ...], tuple[tuple[int, int], ...]]:
+    root = _parse_workpaper_xml(data, "WORKBOOK.WORKSHEET_XML_INVALID")
     rows: dict[int, list[str]] = {}
     bordered_cells: dict[int, frozenset[int]] = {}
-    data_entry_row_ranges = tuple(item for node in root.findall(f"{{{_SHEET_NS}}}dataValidations/{{{_SHEET_NS}}}dataValidation") for item in _row_ranges(node.get("sqref", ""), "WORKBOOK.DATA_VALIDATION_RANGE_INVALID"))
-    merged_row_ranges = tuple(item for node in root.findall(f"{{{_SHEET_NS}}}mergeCells/{{{_SHEET_NS}}}mergeCell") for item in _row_ranges(node.get("ref", ""), "WORKBOOK.MERGE_RANGE_INVALID"))
+    data_entry_row_ranges = tuple(item for node in root.findall(f"{{{_SHEET_NS}}}dataValidations/{{{_SHEET_NS}}}dataValidation") for item in _workpaper_row_ranges(node.get("sqref", ""), "WORKBOOK.DATA_VALIDATION_RANGE_INVALID"))
+    merged_row_ranges = tuple(item for node in root.findall(f"{{{_SHEET_NS}}}mergeCells/{{{_SHEET_NS}}}mergeCell") for item in _workpaper_row_ranges(node.get("ref", ""), "WORKBOOK.MERGE_RANGE_INVALID"))
     sheet_data = root.find(f"{{{_SHEET_NS}}}sheetData")
     if sheet_data is None:
         return rows, bordered_cells, data_entry_row_ranges, merged_row_ranges
@@ -251,7 +251,7 @@ def _worksheet_rows(data: bytes, shared: tuple[str, ...], bordered_styles: tuple
         row_bordered: set[int] = set()
         for cell in row.findall(f"{{{_SHEET_NS}}}c"):
             ref = cell.get("r", "")
-            index = _column_index(ref)
+            index = _workpaper_column_index(ref)
             style_id = cell.get("s", "0")
             require(style_id.isdigit() and int(style_id) < len(bordered_styles), "WORKBOOK.CELL_STYLE_INVALID", f"Invalid cell style in {ref}.")
             if bordered_styles[int(style_id)]:

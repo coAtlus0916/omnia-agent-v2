@@ -5,8 +5,8 @@ import path from 'node:path';
 const root = path.resolve(import.meta.dirname, '..');
 const source = path.join(root, 'feature-packages', 'workpaper-preparation', 'source');
 const output = path.join(root, 'feature-packages', 'workpaper-preparation', 'candidates');
-const version = '0.1.71';
-const sequence = 72;
+const version = '0.1.78';
+const sequence = 79;
 const signingRoot = process.env.OMNIA_V5_SIGNING_ROOT || path.join(process.env.USERPROFILE || '', '.omnia-agent-v5', 'signing');
 const featurePrivateKey = await readFile(path.join(signingRoot, 'feature-ed25519-private.pem'), 'utf8');
 const operationPrivateKey = await readFile(path.join(signingRoot, 'operation-ed25519-private.pem'), 'utf8');
@@ -141,6 +141,8 @@ const runtimeContract = {
     'prepareDeletionCommand', 'freezeReturnEvidenceSpec', 'recordReturnEvidence', 'projectVerifiedReturn',
     'loadLatestRun', 'loadOpenRun', 'transitionRun', 'finishReturn', 'commitStandaloneArtifact', 'readArtifactBytes',
     'openPythonArtifactHandle', 'releasePythonArtifactHandles'],
+  aiReviewCapabilities: [{ capabilityId: 'phase2-policy-resolution/v1',
+    requestSchemaVersion: 'omnia.feature-ai-review-request/v1', maxRequestBytes: 1024 * 1024 }],
   pythonSidecar: { schemaVersion: 'omnia.python-sidecar-runtime/v1', implementation: 'cpython', version: '3.13.14', architecture: 'win32-x64',
     protocol: 'omnia.python-sidecar-rpc/v1', bridgePath: 'middle/workpaper-preparation-python-bridge.cjs', entryPath: 'python/workpaper-preparation-engine.py', members: ['python/canonical.py', 'python/errors.py', 'python/ooxml.py', 'python/policy_extract.py', 'python/policy_resolve.py', 'python/workpaper-preparation-engine.py', 'python/workpaper_workbook.py'],
     maxFrameBytes: 1024 * 1024, heartbeatIntervalMs: 5000, heartbeatTimeoutMs: 15000 }
@@ -163,7 +165,7 @@ const actions = [
   { actionId: 'bootstrap-workpaper-directory', label: '首次读取 APP GRA', effect: 'read_only', enabled: true, reason: '', selectionMode: 'none', presentation: 'background', dependencies: ['remote_connector', 'safety_lock'] },
   { actionId: 'refresh-workpaper-directory', label: '刷新', effect: 'read_only', enabled: true, reason: '', selectionMode: 'none', presentation: 'refresh', dependencies: ['remote_connector', 'safety_lock'] },
   { actionId: 'select-elements', label: '下一步', effect: 'local_state_write', enabled: true, reason: '', selectionMode: 'multiple', dependencies: ['remote_connector', 'safety_lock'] },
-  { actionId: 'upload-filled-workbook', label: '上传填写好的替换字段表', effect: 'local_state_write', enabled: false, reason: '请先生成填写件，再上传填写好的替换字段表。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock'], input: { kind: 'open_file', accept: ['.xlsx', '.xlsm'], label: '选择填写好的替换字段表' } },
+  { actionId: 'upload-filled-workbook', label: '上传填写好的参数表', effect: 'local_state_write', enabled: false, reason: '请先生成填写件，再上传填写好的参数表。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock'], input: { kind: 'open_file', accept: ['.xlsx', '.xlsm'], label: '选择填写好的参数表' } },
   { actionId: 'upload-policy', label: '上传制度资料', effect: 'local_state_write', enabled: false, reason: '请先生成填写件模板，再上传制度资料。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock'], input: { kind: 'open_file', accept: ['.zip', '.docx', '.xlsx', '.xlsm', '.pdf'], multiple: true, directory: true, label: '选择制度资料（压缩包/文件/文件夹）' } },
   { actionId: 'next-to-writeback', label: '下一步', effect: 'local_state_write', enabled: false, reason: '请先上传填写件与制度资料，再进入确认回传。', presentation: 'upload', selectionMode: 'none', dependencies: [] },
   { actionId: 'confirm-writeback', label: '确认回传', effect: 'omnia_mutation', enabled: false, reason: '请先上传填写件与制度资料并完成系统转化，再确认回传。', selectionMode: 'none', dependencies: ['remote_connector', 'safety_lock'] },
@@ -203,21 +205,23 @@ const fs=require('node:fs'),path=require('node:path');const root=path.resolve(__
 const read=(member)=>fs.readFileSync(path.join(root,...member.split('/')),'utf8');
 const manifest=JSON.parse(read('manifest.json')),surface=JSON.parse(read('frontend/surface.json')),runtime=JSON.parse(read('contracts/feature-runtime.json'));
 const operation=JSON.parse(read('connector-capability/operation.ofop'));const handlerMember=operation.files.find((item)=>item.path==='operation/handler.cjs');
-const handler=handlerMember&&Buffer.from(handlerMember.contentBase64,'base64').toString('utf8');const worker=read('middle/worker.cjs'),engine=read('python/workpaper-preparation-engine.py');
+const handler=handlerMember&&Buffer.from(handlerMember.contentBase64,'base64').toString('utf8');const worker=read('middle/worker.cjs'),engine=read('python/workpaper-preparation-engine.py'),workbook=read('python/workpaper_workbook.py');
 if(manifest.featureId!=='omnia.workpaper-preparation'||manifest.version!=='${version}'||runtime.pythonSidecar?.version!=='3.13.14')throw new Error('runtime identity failed');
 if(surface.actions.some((item)=>item.actionId.includes('comment'))||worker.includes('messageCard')||!surface.selectionBrowser||surface.selectionBrowser.layout?.mode!=='fixed_footer_split'||surface.actions.find((item)=>item.actionId==='select-elements')?.selectionMode!=='multiple')throw new Error('Feature-only two-step Surface failed');
 if(!surface.workflow||surface.workflow.steps.length!==3||surface.workflow.steps[0].stepId!=='select'||surface.workflow.steps[1].stepId!=='upload'||surface.workflow.steps[2].stepId!=='writeback'||!surface.actions.some((item)=>item.actionId==='select-elements'&&item.selectionMode==='multiple')||!surface.actions.some((item)=>item.actionId==='restart-run'&&item.presentation==='restart'))throw new Error('Declarative three-step workflow Surface failed');
-if(!handler||!handler.includes("path: '/planningOperatingEffectivenessTesting'")||!handler.includes("path: '/planningCommonControlTesting'")||!handler.includes("path: '/usePreviousAuditEvidence'")||!handler.includes("'validate-hidden-data'")||!handler.includes('CONTROL_CORE_TAB_ID = 201')||!handler.includes('CONTROL_OE_TAB_ID = 209')||!handler.includes("outcome: 'not_applied'"))throw new Error('signed hidden-tab Operation failed');
+if(!handler||!handler.includes("path: '/planningOperatingEffectivenessTesting'")||!handler.includes("path: '/planningCommonControlTesting'")||!handler.includes("path: '/usePreviousAuditEvidence'")||!handler.includes("'validate-hidden-data'")||!handler.includes('CONTROL_CORE_TAB_ID = 201')||!handler.includes('CONTROL_OE_TAB_ID = 209')||!handler.includes('WRITEBACK_TAB_IDS = Object.freeze([201, 204, 205, 210, 211, 212, 214])')||!handler.includes("concurrencyMode: 'current_or_remove'")||!handler.includes("outcome: 'not_applied'"))throw new Error('signed hidden-tab Operation failed');
 if(!worker.includes("finishReturn', { runId: plan.runId, outcome: 'uncertain'")||!worker.includes("operationId: OPERATIONS.reconcile")
   ||!worker.includes('currentPreflight(step, b, plan.planDigest, plan.runId)')||!worker.includes('planDigest: plan.planDigest')
   ||!worker.includes('workflowSurface(plan)')||!worker.includes('forceEnd(plan, context)')||!worker.includes('freezeHiddenTabPlan(plan, context)')
-  ||!worker.includes('generateWorkpaper(plan, context)')||!worker.includes('applyReplacementFields(plan, context')||!worker.includes('confirmWriteback(plan, context')||!worker.includes('commitStandaloneArtifact')
-  ||!surface.actions.some((item)=>item.actionId==='upload-filled-workbook'&&item.input?.kind==='open_file')||!surface.actions.some((item)=>item.actionId==='upload-policy'&&item.input?.kind==='open_file')||!surface.actions.some((item)=>item.actionId==='confirm-writeback'&&item.effect==='omnia_mutation')
+  ||!worker.includes('generateWorkpaper(plan, context)')||!worker.includes('applyReplacementFields(plan, context')||!worker.includes('commitResolvedWorkbook(plan, context)')||!worker.includes('confirmWriteback(plan, context')||!worker.includes('commitStandaloneArtifact')
+  ||!surface.actions.some((item)=>item.actionId==='upload-filled-workbook'&&item.input?.kind==='open_file'&&item.input?.label==='选择填写好的参数表')||!surface.actions.some((item)=>item.actionId==='upload-policy'&&item.input?.kind==='open_file'&&item.input?.multiple===true&&item.input?.directory===true)||!surface.actions.some((item)=>item.actionId==='confirm-writeback'&&item.effect==='omnia_mutation')
   ||!handler.includes('omnia.workpaper.phase2.writeback.v1')||!handler.includes('valueSatisfied')||!handler.includes('Write-back field changed after the frozen preflight.')
   ||!worker.includes('prepareWritebackRun(plan, candidates, b, s)')||!worker.includes('resumeWritebackRun(plan, context)')
   ||!worker.includes('receiptContext: { runId: plan.runId, commandId: command.commandId }')
+  ||!worker.includes('expectedDirectory: PHASE2_TEMPLATE.directory')||!worker.includes('protectUserAuthoredBracketTokens')||!worker.includes('manualCompletionRequired')
+  ||!runtime.aiReviewCapabilities?.some((item)=>item.capabilityId==='phase2-policy-resolution/v1')
   ||!engine.includes('build_phase2_workbook')||!engine.includes('parse_uploaded_workbook')||!engine.includes('build_phase2_template')||!engine.includes('extract_policy_archive')
-  ||!engine.includes('apply_replacement_fields')
+  ||!engine.includes('apply_replacement_fields')||!workbook.includes('editable_columns')||!workbook.includes('["替换字段", "Controls", "Scope"]')||!workbook.includes('WORKBOOK.REPLACEMENT_INACTIVE')||workbook.includes('<sheetProtection sheet="1"')
   ||!handler.includes('omnia.workpaper.phase2.snapshot.read.v1')||!handler.includes('documentProcedureResults')
   ||!engine.includes('select_hidden_tab_controls')||!engine.includes('build_hidden_tab_plan')||!engine.includes('classify_control_observation')||!engine.includes('reconcile_writeback_controls'))throw new Error('permit, delivery, no-replay, workflow navigation, workpaper generation, or Python planner contract failed');
 process.stdout.write('omnia.workpaper-preparation package self-test passed\\n');`;

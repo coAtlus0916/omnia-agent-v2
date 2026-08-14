@@ -13,8 +13,8 @@ import { resolveProductPaths } from '../src/main/paths.js';
 
 const repository = path.resolve(import.meta.dirname, '..');
 const source = path.join(repository, 'feature-packages', 'workpaper-preparation', 'source');
-const candidate = path.join(repository, 'feature-packages', 'workpaper-preparation', 'candidates', 'workpaper-preparation-0.1.71.ofp');
-const operationCandidate = path.join(repository, 'feature-packages', 'workpaper-preparation', 'candidates', 'workpaper-preparation-operation-0.1.71.ofop');
+const candidate = path.join(repository, 'feature-packages', 'workpaper-preparation', 'candidates', 'workpaper-preparation-0.1.78.ofp');
+const operationCandidate = path.join(repository, 'feature-packages', 'workpaper-preparation', 'candidates', 'workpaper-preparation-operation-0.1.78.ofop');
 const releasePython = [
   path.join(repository, 'releases', 'runtime', 'python', 'cpython-3.13.14-embed-amd64', 'python.exe'),
   path.join(repository, 'data', 'remote-shell-product', 'runtime', 'python', 'cpython-3.13.14-embed-amd64', 'python.exe')
@@ -125,7 +125,9 @@ test('a single-system user template is deterministically rebound to the frozen t
   };
   const rebound = workerModule.bindReplacementSystems(['a'], {
     systems: ['b'], replacements: [{ system: 'b', code: '1.01', controlPoint: 'AA通用',
-      placeholder: '【系统名称】', value: '业务系统' }]
+      placeholder: '【系统名称】', value: '业务系统' }],
+    controlHeaders: ['controlNumber', 'description'], templateMode: 'editable_controls',
+    controls: [{ system: 'b', controlNumber: 'APP.01 -b', values: ['APP.01 -b', 'b description'] }]
   });
   assert.deepEqual(rebound.systems, ['a']);
   assert.equal(rebound.binding.mode, 'single_system_rebind');
@@ -133,6 +135,10 @@ test('a single-system user template is deterministically rebound to the frozen t
   assert.deepEqual(rebound.binding.targetSystems, ['a']);
   assert.equal(rebound.replacements[0].system, 'a');
   assert.equal(rebound.replacements[0].value, '业务系统');
+  assert.equal(rebound.templateMode, 'editable_controls');
+  assert.deepEqual(rebound.controlHeaders, ['controlNumber', 'description']);
+  assert.deepEqual(rebound.controls, [{ system: 'a', controlNumber: 'APP.01 -a',
+    values: ['APP.01 -a', 'a description'] }]);
 
   const exact = workerModule.bindReplacementSystems(['b', 'a'], {
     systems: ['a', 'b'], replacements: []
@@ -152,11 +158,11 @@ test('workpaper candidate is immutable Feature-only and installs in isolation', 
   try {
     const envelope = verifyOfficialPackage(JSON.parse(fs.readFileSync(candidate, 'utf8')), 'omnia-feature');
     assert.equal(envelope.packageId, 'omnia.workpaper-preparation');
-    assert.equal(envelope.version, '0.1.71');
-    assert.equal(envelope.sequence, 72);
+    assert.equal(envelope.version, '0.1.78');
+    assert.equal(envelope.sequence, 79);
     const operation = verifyOfficialPackage(JSON.parse(fs.readFileSync(operationCandidate, 'utf8')), 'omnia-connector-operation');
     assert.equal(operation.packageId, 'omnia.workpaper-preparation.operation');
-    assert.equal(operation.version, '0.1.71');
+    assert.equal(operation.version, '0.1.78');
     unpack(envelope, unpacked);
     const selfTest = spawnSync(process.execPath, [path.join(unpacked, 'tests', 'self-test.cjs')], {
       cwd: unpacked, encoding: 'utf8', windowsHide: true
@@ -175,7 +181,7 @@ test('workpaper candidate is immutable Feature-only and installs in isolation', 
       const manager = new FeaturePackageManager(database.db, paths);
       const installed = manager.install(candidate);
       assert.equal(installed.featureId, 'omnia.workpaper-preparation');
-      assert.equal(installed.featureVersion, '0.1.71');
+      assert.equal(installed.featureVersion, '0.1.78');
       assert.equal(installed.packageDigest, packageDigest(envelope));
     } finally { database.close(); }
   } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
@@ -202,6 +208,80 @@ test('release CPython 3.13.14 builds a deterministic Tab 201 to Tab 209 plan', (
   assert.match(result.stdout, /planner self-check passed/);
 });
 
+test('downloaded Phase2 template is editable and uploaded Controls cells become real input', () => {
+  assert.equal(fs.existsSync(releasePython), true);
+  const script = [
+    'import base64,io,json,sys,zipfile',
+    'from xml.etree import ElementTree as ET',
+    `sys.path.insert(0, ${JSON.stringify(path.join(source, 'python'))})`,
+    'from workpaper_workbook import build_phase2_template,apply_replacement_fields',
+    'from ooxml import compile_workpaper_parts',
+    `data=json.load(open(${JSON.stringify(path.join(source, 'managed', 'phase2-template-data.json'))},encoding='utf-8'))`,
+    "scope={'engagementId':'eng-1','workspaceIds':['ws-1'],'selectedGraIds':['gra-1']}",
+    "built=build_phase2_template({'schemaVersion':'omnia.workpaper-phase2-workbook/v1','systems':['APP 1'],'directory':data['directory'],'headers':data['headers'],'controls':data['controls'],'scope':scope})",
+    "raw=base64.b64decode(built['xlsxBase64'])",
+    'archive=zipfile.ZipFile(io.BytesIO(raw)); parts={name:archive.read(name) for name in archive.namelist() if not name.endswith(\'/\')}; archive.close()',
+    "ns='http://schemas.openxmlformats.org/spreadsheetml/2006/main'",
+    "replacement=ET.fromstring(parts['xl/worksheets/sheet1.xml']); controls=ET.fromstring(parts['xl/worksheets/sheet2.xml'])",
+    "assert replacement.find('{%s}sheetProtection'%ns) is None and controls.find('{%s}sheetProtection'%ns) is None",
+    "e3=replacement.find(\".//{%s}c[@r='E3']\"%ns); b2=controls.find(\".//{%s}c[@r='B2']\"%ns)",
+    "assert e3.get('s')=='3' and b2.get('s')=='3'",
+    "e3.find('{%s}is/{%s}t'%(ns,ns)).text='用户填写的替换值'",
+    "b2.find('{%s}is/{%s}t'%(ns,ns)).text='用户直接修改的 Controls 内容'",
+    "mutated=compile_workpaper_parts(raw,{'xl/worksheets/sheet1.xml':ET.tostring(replacement,encoding='utf-8',xml_declaration=True),'xl/worksheets/sheet2.xml':ET.tostring(controls,encoding='utf-8',xml_declaration=True)})",
+    "parsed=apply_replacement_fields({'schemaVersion':'omnia.workpaper-replacement-input/v1','xlsxBase64':base64.b64encode(mutated).decode('ascii'),'expectedDirectory':data['directory'],'expectedHeaders':data['headers'],'controlTemplates':data['controls'],'expectedScope':scope})",
+    "print(json.dumps({'sheets':built['sheetNames'],'replacementRows':built['replacementRowCount'],'controlRows':built['controlRowCount'],'replacement':parsed['replacements'][0]['value'],'controlValue':parsed['controls'][0]['values'][1],'mode':parsed['templateMode']},ensure_ascii=False))"
+  ].join('\n');
+  const result = spawnSync(releasePython, ['-X', 'utf8', '-I', '-S', '-E', '-c', script], {
+    cwd: repository, encoding: 'utf8', windowsHide: true,
+    env: { SystemRoot: process.env.SystemRoot || 'C:\\Windows', WINDIR: process.env.WINDIR || 'C:\\Windows',
+      PATH: path.dirname(releasePython), PYTHONNOUSERSITE: '1', PYTHONSAFEPATH: '1', PYTHONDONTWRITEBYTECODE: '1', PYTHONUTF8: '1', NO_PROXY: '*', no_proxy: '*' }
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const checked = JSON.parse(result.stdout);
+  assert.deepEqual(checked.sheets, ['替换字段', 'Controls', 'Scope']);
+  assert.equal(checked.replacementRows, 19, '模板应只包含说明行和 18 个存在母版落点的参数');
+  assert.equal(checked.controlRows, 6);
+  assert.equal(checked.replacement, '用户填写的替换值');
+  assert.equal(checked.controlValue, '用户直接修改的 Controls 内容');
+  assert.equal(checked.mode, 'editable_controls');
+});
+
+test('parameter directory accepts empty current and legacy tables but rejects drift or inactive input', () => {
+  assert.equal(fs.existsSync(releasePython), true);
+  const script = [
+    'import base64,json,sys',
+    `sys.path.insert(0, ${JSON.stringify(path.join(source, 'python'))})`,
+    'from errors import EngineError',
+    'from workpaper_workbook import build_phase2_template,apply_replacement_fields,_container_parts,_worksheet_xml,_deterministic_zip,_REPLACEMENT_HEADERS',
+    `data=json.load(open(${JSON.stringify(path.join(source, 'managed', 'phase2-template-data.json'))},encoding='utf-8'))`,
+    "scope={'engagementId':'eng-1','workspaceIds':['ws-1'],'selectedGraIds':['gra-1']}",
+    "built=build_phase2_template({'schemaVersion':'omnia.workpaper-phase2-workbook/v1','systems':['APP 1'],'directory':data['directory'],'headers':data['headers'],'controls':data['controls'],'scope':scope})",
+    "common={'schemaVersion':'omnia.workpaper-replacement-input/v1','expectedDirectory':data['directory'],'expectedHeaders':data['headers'],'controlTemplates':data['controls'],'expectedScope':scope}",
+    "current=apply_replacement_fields({**common,'xlsxBase64':built['xlsxBase64']})",
+    "instruction=['请仅填写 E 列绿色单元格；无法确认的内容可以留空。','','','','','']",
+    "legacy_rows=[instruction]+[[item['code'],'APP 1',item['controlPoint'],item['placeholder'],'',item.get('example','')] for item in data['directory']]",
+    "def legacy_bytes(rows):\n parts=_container_parts(1,['替换字段']); parts['xl/worksheets/sheet1.xml']=_worksheet_xml(list(_REPLACEMENT_HEADERS),rows,hidden=False).encode('utf-8'); return _deterministic_zip(parts)",
+    "legacy=apply_replacement_fields({'schemaVersion':'omnia.workpaper-replacement-input/v1','xlsxBase64':base64.b64encode(legacy_bytes(legacy_rows)).decode('ascii'),'expectedDirectory':data['directory']})",
+    "tampered=[list(row) for row in legacy_rows]; tampered[1][3]='【伪造参数】'",
+    "try:\n apply_replacement_fields({'schemaVersion':'omnia.workpaper-replacement-input/v1','xlsxBase64':base64.b64encode(legacy_bytes(tampered)).decode('ascii'),'expectedDirectory':data['directory']}); drift='accepted'\nexcept EngineError as exc:\n drift=exc.code",
+    "inactive=[list(row) for row in legacy_rows]; inactive_index=1+next(i for i,item in enumerate(data['directory']) if item.get('active') is False); inactive[inactive_index][4]='CSOX'",
+    "try:\n apply_replacement_fields({'schemaVersion':'omnia.workpaper-replacement-input/v1','xlsxBase64':base64.b64encode(legacy_bytes(inactive)).decode('ascii'),'expectedDirectory':data['directory']}); inactive_result='accepted'\nexcept EngineError as exc:\n inactive_result=exc.code",
+    "print(json.dumps({'currentCount':current['replacementCount'],'legacyCount':legacy['replacementCount'],'currentRows':built['replacementRowCount'],'drift':drift,'inactive':inactive_result},ensure_ascii=False))"
+  ].join('\n');
+  const result = spawnSync(releasePython, ['-X', 'utf8', '-I', '-S', '-E', '-c', script], {
+    cwd: repository, encoding: 'utf8', windowsHide: true,
+    env: { SystemRoot: process.env.SystemRoot || 'C:\\Windows', WINDIR: process.env.WINDIR || 'C:\\Windows',
+      PATH: path.dirname(releasePython), PYTHONNOUSERSITE: '1', PYTHONSAFEPATH: '1', PYTHONDONTWRITEBYTECODE: '1', PYTHONUTF8: '1', NO_PROXY: '*', no_proxy: '*' }
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const checked = JSON.parse(result.stdout);
+  assert.deepEqual(checked, {
+    currentCount: 0, legacyCount: 0, currentRows: 19,
+    drift: 'WORKBOOK.REPLACEMENT_DIRECTORY_DRIFT', inactive: 'WORKBOOK.REPLACEMENT_INACTIVE'
+  });
+});
+
 test('policy extraction recursively expands a nested ZIP and preserves its archive path', () => {
   assert.equal(fs.existsSync(releasePython), true);
   const inner = storedZip([{ name: '账户管理制度.docx', content: docxWithText('账户权限必须每季度复核。') }]);
@@ -224,6 +304,25 @@ test('policy extraction recursively expands a nested ZIP and preserves its archi
   assert.equal(extracted.documents[0].name, '制度(1).zip/账户管理制度.docx');
   assert.match(extracted.documents[0].text, /账户权限必须每季度复核/u);
   assert.deepEqual(extracted.skipped, []);
+
+  const directDocx = docxWithText('直接上传制度也必须进入索引。');
+  const directScript = [
+    'import base64,json,sys',
+    `sys.path.insert(0, ${JSON.stringify(path.join(source, 'python'))})`,
+    'from policy_extract import extract_policy_archive',
+    `result=extract_policy_archive({'schemaVersion':'omnia.workpaper-policy-archive/v1','zipBase64':${JSON.stringify(directDocx.toString('base64'))},'sourceName':'直接制度.docx'})`,
+    'print(json.dumps(result,ensure_ascii=False))'
+  ].join(';');
+  const directResult = spawnSync(releasePython, ['-X', 'utf8', '-I', '-S', '-E', '-c', directScript], {
+    cwd: repository, encoding: 'utf8', windowsHide: true,
+    env: { SystemRoot: process.env.SystemRoot || 'C:\\Windows', WINDIR: process.env.WINDIR || 'C:\\Windows',
+      PATH: path.dirname(releasePython), PYTHONNOUSERSITE: '1', PYTHONSAFEPATH: '1', PYTHONDONTWRITEBYTECODE: '1', PYTHONUTF8: '1', NO_PROXY: '*', no_proxy: '*' }
+  });
+  assert.equal(directResult.status, 0, directResult.stderr || directResult.stdout);
+  const direct = JSON.parse(directResult.stdout);
+  assert.equal(direct.documentCount, 1);
+  assert.equal(direct.documents[0].name, '直接制度.docx');
+  assert.match(direct.documents[0].text, /直接上传制度也必须进入索引/u);
 });
 
 test('writeback Operation checks the frozen body before issuing PATCH', async () => {
@@ -238,7 +337,7 @@ test('writeback Operation checks the frozen body before issuing PATCH', async ()
     procedure: '99999999-9999-9999-9999-999999999999'
   };
   const detail = { id: ids.control, workItemId: ids.controlWork, controlNumber: 'APP.01',
-    concurrencyTabs: [{ entityTabTypeId: 201, updatedOn: '2026-08-14T01:02:03.000Z' }],
+    concurrencyTabs: [{ entityTabTypeId: 204, updatedOn: '2026-08-14T01:02:03.000Z' }],
     gitcNonDetailedTestingProcedures: [{ id: ids.procedure, phaseType: 'TestOfDesign', documentProcedureResults: '现场已被修改' }] };
   const steps: string[] = [];
   const sdk = { binding: { engagementId: ids.engagement }, async invokeStep(stepId: string) {
@@ -255,7 +354,8 @@ test('writeback Operation checks the frozen body before issuing PATCH', async ()
     appWorkItemId: ids.appWork, workspaceId: ids.workspace, graContentId: 'generic-content',
     controlId: ids.control, controlWorkItemId: ids.controlWork, command: { payload: { controlId: ids.control, changes: [{
       writePath: '/gitcNonDetailedTestingProcedures/{procedureId}/documentProcedureResults', phaseType: 'TestOfDesign',
-      valueKind: 'editor', value: editorPayload('新正文'), expectedValue: '冻结旧正文', concurrencyTab: 201
+      valueKind: 'editor', value: editorPayload('新正文'), expectedValue: '冻结旧正文', concurrencyTab: 204,
+      concurrencyMode: 'current_or_remove', purgeHiddenData: false
     }] } } };
   await assert.rejects(createOperationHandler().run('omnia.workpaper.phase2.writeback.v1', request, sdk),
     /changed after the frozen preflight/u);
@@ -275,6 +375,9 @@ test('source contract is no-replay and leaves Connector business-free', () => {
   assert.match(handler, /CONTROL_CORE_TAB_ID = 201/);
   assert.match(handler, /CONTROL_OE_TAB_ID = 209/);
   assert.match(worker, /function workflowSurface\(plan\)/);
+  assert.match(worker, /protectUserAuthoredBracketTokens/);
+  assert.match(worker, /manualCompletionRequired/);
+  assert.match(worker, /expectedDirectory: PHASE2_TEMPLATE\.directory/);
   assert.match(worker, /async function forceEnd\(plan, context\)/);
   assert.match(worker, /async function freezeHiddenTabPlan\(plan, context\)/);
   assert.match(worker, /async function prepareWritebackRun\(plan, candidates, b, s\)/);
@@ -352,7 +455,7 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
     if (method === 'recordReturnEvidence') return { evidenceId: crypto.randomUUID() };
     if (method === 'commitStandaloneArtifact') return { artifactId: 'artifact-1', sha256: crypto.createHash('sha256').update(Buffer.from(input.contentBase64, 'base64')).digest('hex') };
     if (method === 'readArtifactBytes') return { contentBase64: emptyZipBase64(), sha256: 'zip-sha', runId: 'run-1', originalName: 'policy.zip', sizeBytes: 0 };
-    if (method === 'openPythonArtifactHandle') return { handleId: 'handle-1', runId: input.runId, path: path.resolve(repository, '.codex-tmp', 'template-test2.xlsx'), sha256: 'a'.repeat(64), sizeBytes: 0 };
+    if (method === 'openPythonArtifactHandle') return { handleId: 'handle-1', runId: input.runId, path: path.resolve(repository, '.codex-tmp', 'template-test2.xlsx'), originalName: 'policy.zip', sha256: 'a'.repeat(64), sizeBytes: 0 };
     if (method === 'releasePythonArtifactHandles') return true;
     throw new Error(`unexpected store method ${method}`);
   } };
@@ -380,8 +483,10 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
     current.workpaper.replacement = { replacements: [], state: 'filled' };
     await store.call('savePlan', current);
     const uploaded = await worker.handleAction({ actionId: 'upload-policy', expectedStateVersion: 3,
-      payload: { artifact: { schemaVersion: 'omnia.feature-artifact/v1', featureId: 'omnia.workpaper-preparation', kind: 'source', artifactId: 'artifact-1' } },
+      payload: { artifact: { schemaVersion: 'omnia.feature-artifact/v1', featureId: 'omnia.workpaper-preparation', kind: 'source', artifactId: 'artifact-1', runId: 'run-1' } },
       context: { connectorBinding: binding, safetyLock: safety } });
+    assert.equal(order.includes('store:readArtifactBytes'), false,
+      '新制度上传必须直接使用 Core 文件句柄，不能把 ZIP 以内联 Base64 搬入 Worker');
     assert.equal(uploaded.surfacePatch.workflow.currentStepId, 'upload');
     assert.equal(actionById(uploaded.surfacePatch).get('next-to-writeback').enabled, true);
     assert.equal(actionById(uploaded.surfacePatch).get('confirm-writeback').enabled, false);
@@ -391,11 +496,27 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
       context: { connectorBinding: binding, safetyLock: safety } });
     assert.equal(advanced.surfacePatch.workflow.currentStepId, 'writeback');
     assert.equal(actionById(advanced.surfacePatch).get('confirm-writeback').enabled, true);
+    assert.equal(advanced.surfacePatch.artifacts.some((artifact: any) => artifact.kind === 'result'
+      && String(artifact.name).includes('workpaper-phase2-filled-')), false,
+    '制度解析后的完整母版只保留在后台，不新增用户核对环节');
+    assert.equal(order.filter((item) => item === 'store:commitStandaloneArtifact').length, 2,
+      '初始可编辑模板和制度解析结果必须分别提交 Artifact');
     // Seed a resolved row whose final text differs from the live snapshot so
     // the write-back loop must emit a real PATCH (not a no-op skip). The
     // controlNumber code APP.01 matches the single read-back Control.
     current = null; for (const value of plans.values()) { if (value.schemaVersion === 'omnia.workpaper-plan/v1') current = value; }
     assert.ok(current, 'an awaiting-writeback plan must be saved');
+    assert.match(current.workpaper.completedArtifact.artifactId, /^artifact-/u,
+      '制度解析后的完整母版必须作为后台 Artifact 保存在计划中');
+    const missing = current.workpaper.resolution.resolutions
+      .flatMap((item: any) => item.fields)
+      .flatMap((field: any) => field.placeholders.map((placeholder: any) => ({ field, placeholder })))
+      .find((item: any) => item.placeholder.state === 'missing_evidence');
+    assert.ok(missing, '空参数表必须产生真实的待人工补录项');
+    assert.equal(missing.field.resolvedText.includes(missing.placeholder.originalPlaceholder), true,
+      '缺少制度依据的内容必须保留原占位符，不能静默清空');
+    assert.equal(current.workpaper.resolution.coverage.manualCompletion > 0, true);
+    assert.equal(current.workpaper.resolution.manualCompletionRequired, true);
     current.workpaper.resolution = { state: 'resolved', resolutions: [{
       controlNumber: 'APP.01 - 系统A', resolvedText: '写回后的完整 TestOfDesign 文本', placeholders: [
         { placeholderId: 'ph-1', originalPlaceholder: '【政策名称】', index: 0, state: 'evidence_supported', value: '写回后的完整', evidenceRefs: [], reason: '' }
@@ -467,6 +588,14 @@ test('a legacy durable-witness rejection safely reprocesses the original policy 
   const policySha = crypto.createHash('sha256').update(policyArchive).digest('hex');
   const plans = new Map<string, any>(); const order: string[] = []; const writebackRequests: any[] = [];
   let liveText = '旧 TestOfDesign 正文'; let runSequence = 0; let commandSequence = 0;
+  const liveSnapshot: any = { controlId: ids.control, workItemId: ids.controlWork, controlNumber: control.controlNumber,
+    riskAssociationDescription: '',
+    designEvaluation: { id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', frequencyAndConsistency: '',
+      levelOfAggregation: '', criteriaForInvestigation: '' },
+    procedures: [
+      { id: 'proc-design', phaseType: 'TestOfDesign', documentProcedureResults: liveText },
+      ...[0, 1, 2, 3].map((index) => ({ id: `proc-oe-${index}`, phaseType: 'OperatingEffectiveness', documentProcedureResults: '' }))
+    ], operatingEffectiveness: { id: control.operatingEffectivenessId, operatingEffectively: null } };
   const legacyPlan: any = {
     schemaVersion: 'omnia.workpaper-plan/v1', planId: 'legacy-plan', runId: 'legacy-plan', featureVersion: '0.1.66', state: 'completed',
     surfaceStateVersion: 19, binding, safety, selectedGras: [selected], controls: [control], steps: [], alreadyOpen: [control],
@@ -489,12 +618,23 @@ test('a legacy durable-witness rejection safely reprocesses the original policy 
     order.push(`operation:${input.operationId}`);
     if (input.operationId.endsWith('controls.read.v1')) return { ...selected, controls: [control] };
     if (input.operationId.endsWith('control.preflight.v1')) return control;
-    if (input.operationId.endsWith('phase2.snapshot.read.v1')) return { controlId: ids.control, workItemId: ids.controlWork,
-      controlNumber: control.controlNumber, procedures: [{ id: 'proc-1', phaseType: 'TestOfDesign', documentProcedureResults: liveText }],
+    if (input.operationId.endsWith('phase2.snapshot.read.v1')) return { ...JSON.parse(JSON.stringify(liveSnapshot)),
       ...(input.request.receiptContext ? { __operationReceiptId: 'receipt-retry-1' } : {}) };
     if (input.operationId.endsWith('phase2.writeback.v1')) { writebackRequests.push(input.request);
-      liveText = input.request.command.payload.changes[0].value;
-      return { controlId: ids.control, accepted: true, ledger: [{ path: 'x', valueKind: 'editor', confirmed: true }] }; }
+      for (const change of input.request.command.payload.changes) {
+        if (change.backendKey === 'riskAssociationDescription') liveSnapshot.riskAssociationDescription = change.value;
+        else if (String(change.backendKey).startsWith('controlDesignEvaluation.')) {
+          liveSnapshot.designEvaluation[String(change.backendKey).slice('controlDesignEvaluation.'.length)] = change.value;
+        } else if (String(change.backendKey).startsWith('gitcNonDetailedTestingProcedures')) {
+          const procedures = liveSnapshot.procedures.filter((item: any) => item.phaseType === (change.phaseType || 'TestOfDesign'));
+          procedures[change.procedureIndex || 0].documentProcedureResults = change.value;
+          if ((change.phaseType || 'TestOfDesign') === 'TestOfDesign') liveText = change.value;
+        } else if (String(change.backendKey).startsWith('controlOperatingEffectiveness.')) {
+          liveSnapshot.operatingEffectiveness[String(change.backendKey).slice('controlOperatingEffectiveness.'.length)] = change.value;
+        }
+      }
+      return { controlId: ids.control, accepted: true,
+        ledger: input.request.command.payload.changes.map((change: any) => ({ path: change.writePath, valueKind: change.valueKind, confirmed: true })) }; }
     throw new Error(`unexpected operation ${input.operationId}`);
   } };
   const store = { async call(method: string, input: any) {
@@ -514,7 +654,9 @@ test('a legacy durable-witness rejection safely reprocesses the original policy 
     if (method === 'prepareDeletionCommand') return { commandId: `retry-command-${++commandSequence}`, idempotencyKey: crypto.randomUUID() };
     throw new Error(`unexpected store method ${method}`);
   } };
-  const ai = { review: async () => ({ output: { resolutions: [] } }) };
+  const ai = { review: async (request: any) => ({ output: { resolutions: request.input.placeholders.map((placeholder: any) => ({
+    placeholderId: placeholder.placeholderId, state: 'missing_evidence', value: '', evidenceRefs: [], reason: 'test fixture'
+  })) } }) };
   const workerModule = require(path.join(source, 'middle', 'worker.cjs'));
   const worker = workerModule.createFeatureWorker({ connector, store, events: { emit() {} }, ai });
   try {
@@ -531,9 +673,14 @@ test('a legacy durable-witness rejection safely reprocesses the original policy 
         outcomes: item.workpaper.writeback?.outcomes, counts: item.workpaper.writebackCounts
       })) }));
     assert.match(writebackRequests[0].command.commandId, /^retry-command-/u);
-    const retryEditor = JSON.parse(writebackRequests[0].command.payload.changes[0].value);
-    assert.match(retryEditor.editorData, /账户\/权限新增流程/u);
-    assert.deepEqual(retryEditor.suggestionsData, []);
+    const retryChanges = writebackRequests[0].command.payload.changes;
+    assert.equal(retryChanges.some((change: any) => change.phaseType === 'TestOfDesign'), false,
+      'missing-evidence placeholders must remain in the background workbook and must not be written to Omnia');
+    const timingChange = retryChanges.find((change: any) => change.backendKey === 'controlOperatingEffectiveness.procedureTiming');
+    assert.ok(timingChange);
+    assert.equal(timingChange.value, 'Apportion');
+    assert.equal(timingChange.concurrencyTab, 211);
+    assert.equal(timingChange.concurrencyMode, 'current_or_remove');
     const retryPlan = [...plans.values()].find((item: any) => item?.workpaper?.writebackRetry
       && item.workpaper.state === 'writeback_complete');
     assert.ok(retryPlan);
@@ -541,6 +688,7 @@ test('a legacy durable-witness rejection safely reprocesses the original policy 
     assert.equal(retryPlan.workpaper.policy.documentCount, 1);
     assert.equal(retryPlan.workpaper.policy.documents[0].name, '制度(1).zip/账户管理制度.docx');
     assert.equal(retryPlan.workpaper.state, 'writeback_complete');
+    assert.ok(retryPlan.workpaper.writebackCounts.fields.manualCompletion > 0);
     assert.equal(order.includes('store:prepareDeletionCommand'), true);
     assert.equal(order.includes('store:projectVerifiedReturn'), true);
   } finally {

@@ -2365,7 +2365,8 @@ function validateSurface(value: unknown, manifest: FeatureManifest): Declarative
   }
   for (const artifact of surface.artifacts || []) {
     if (!artifact || typeof artifact !== 'object' || Array.isArray(artifact)) throw new Error('Declarative Feature artifact is invalid.');
-    exactKeys(artifact, ['artifactId', 'kind', 'name', 'sha256', 'sizeBytes', 'available', 'reason'], 'Declarative Feature artifact');
+    const { actionId, ...requiredArtifact } = artifact;
+    exactKeys(requiredArtifact, ['artifactId', 'kind', 'name', 'sha256', 'sizeBytes', 'available', 'reason'], 'Declarative Feature artifact');
     if (
       typeof artifact.artifactId !== 'string'
       || !['source', 'template_candidate', 'template_instance', 'result', 'evidence'].includes(artifact.kind)
@@ -2378,6 +2379,7 @@ function validateSurface(value: unknown, manifest: FeatureManifest): Declarative
       || typeof artifact.available !== 'boolean'
       || typeof artifact.reason !== 'string'
       || artifact.reason.length > 500
+      || (actionId !== undefined && (typeof actionId !== 'string' || !/^[a-z0-9][a-z0-9._-]{2,127}$/u.test(actionId)))
     ) throw new Error('Declarative Feature artifact fields are invalid.');
   }
   for (const editor of surface.editors || []) {

@@ -3,6 +3,26 @@
 const CUSTOM_WORKSPACE = 'd0c7e20c-1451-48d2-9dd5-8a6f2a51bfc0';
 const CONTROL_CORE_TAB_ID = 201;
 const CONTROL_OE_TAB_ID = 209;
+const WRITEBACK_TAB_IDS = Object.freeze([201, 204, 205, 210, 211, 212, 214]);
+const WRITEBACK_TABS = new Set(WRITEBACK_TAB_IDS);
+const RECORDED_WRITEBACK_FIELDS = Object.freeze({
+  '/riskAssociationDescription': { valueKind: 'editor', tab: 210, concurrencyMode: 'remove', purgeHiddenData: true },
+  '/controlDesignEvaluation/{designEvaluationId}/competenceAndAuthorityDocumentation': { valueKind: 'editor', tab: 205, concurrencyMode: 'remove', purgeHiddenData: true },
+  '/controlDesignEvaluation/{designEvaluationId}/frequencyAndConsistency': { valueKind: 'editor', tab: 205, concurrencyMode: 'remove', purgeHiddenData: true },
+  '/controlDesignEvaluation/{designEvaluationId}/levelOfAggregation': { valueKind: 'editor', tab: 205, concurrencyMode: 'remove', purgeHiddenData: true },
+  '/controlDesignEvaluation/{designEvaluationId}/criteriaForInvestigation': { valueKind: 'editor', tab: 205, concurrencyMode: 'remove', purgeHiddenData: true },
+  '/controlRiskScopes/{riskScopeId}/controlRiskScopeDetails': { valueKind: 'editor', tab: 205, concurrencyMode: 'remove', purgeHiddenData: true,
+    wireShape: 'risk_scope_details_object' },
+  '/controlOperatingEffectiveness/{operatingEffectivenessId}/procedureTiming': { valueKind: 'enum', tab: 211,
+    concurrencyMode: 'current_or_remove', purgeHiddenData: true },
+  '/controlOperatingEffectiveness/{operatingEffectivenessId}/procedureTimingRationale': { valueKind: 'text', tab: 211,
+    concurrencyMode: 'current_or_remove', purgeHiddenData: true },
+  '/controlOperatingEffectiveness/{operatingEffectivenessId}/frequencyOfPerformance': { valueKind: 'number', tab: 211,
+    concurrencyMode: 'current_or_remove', purgeHiddenData: true },
+  '/controlOperatingEffectiveness/{operatingEffectivenessId}/frequencyOfPerformanceExplanation': { valueKind: 'text', tab: 211,
+    concurrencyMode: 'current_or_remove', purgeHiddenData: true },
+  '/controlOperatingEffectiveness/{operatingEffectivenessId}/operatingEffectively': { valueKind: 'choice', tab: 214, concurrencyMode: 'remove', purgeHiddenData: true }
+});
 const MAX_WORKSPACES = 500;
 const MAX_GRAS = 500;
 const MAX_CONTROLS = 500;
@@ -342,7 +362,9 @@ function phase2Snapshot(detail) {
   const design = detail && detail.controlDesignEvaluation && typeof detail.controlDesignEvaluation === 'object'
     ? detail.controlDesignEvaluation : null;
   const riskScopes = rows(detail && detail.controlRiskScopes).map((scope) => {
-    const detailRows = rows(scope && scope.controlRiskScopeDetails).map((item) => ({
+    const rawDetails = scope && scope.controlRiskScopeDetails;
+    const detailRows = (Array.isArray(rawDetails) ? rawDetails
+      : rawDetails && typeof rawDetails === 'object' ? [rawDetails] : []).map((item) => ({
       id: guid(item && item.id), appropriatenessAndCorrelation: text(item && item.appropriatenessAndCorrelation) }));
     return { id: guid(scope && scope.id), riskId: guid(scope && scope.riskId), details: detailRows };
   });
@@ -364,14 +386,16 @@ function phase2Snapshot(detail) {
     designEvaluation: design ? {
       id: guid(design.id), competenceAndAuthorityDocumentation: text(design.competenceAndAuthorityDocumentation),
       frequencyAndConsistency: text(design.frequencyAndConsistency), levelOfAggregation: text(design.levelOfAggregation),
-      criteriaForInvestigation: text(design.criteriaForInvestigation), dependentOnOtherControls: text(design.dependentOnOtherControls),
+      criteriaForInvestigation: text(design.criteriaForInvestigation),
+      dependentOnOtherControls: typeof design.dependentOnOtherControls === 'boolean' ? design.dependentOnOtherControls : null,
       designEffective: design.designEffective, properlyImplemented: design.properlyImplemented
     } : null,
     procedures,
     riskScopes,
     operatingEffectiveness: oe ? {
       id: guid(oe.id), procedureTiming: text(oe.procedureTiming), procedureTimingRationale: text(oe.procedureTimingRationale),
-      frequencyOfPerformance: text(oe.frequencyOfPerformance), frequencyOfPerformanceExplanation: text(oe.frequencyOfPerformanceExplanation),
+      frequencyOfPerformance: typeof oe.frequencyOfPerformance === 'number' ? oe.frequencyOfPerformance : null,
+      frequencyOfPerformanceExplanation: text(oe.frequencyOfPerformanceExplanation),
       useRecommendedSampleSize: oe.useRecommendedSampleSize, actualSampleSize: oe.actualSampleSize,
       actualSampleSizeRationale: text(oe.actualSampleSizeRationale), operatingEffectively: oe.operatingEffectively
     } : null
@@ -398,15 +422,23 @@ function resolveWritebackPath(template, snapshot) {
   }
   return path;
 }
-function procedureWritebackPath(template, snapshot, phaseType) {
-  const procedure = (snapshot.procedures || []).find((item) => item.phaseType === phaseType);
-  if (!procedure || !procedure.id) fail(`Write-back requires a unique ${phaseType} procedure id.`);
+function procedureWritebackPath(template, snapshot, phaseType, procedureIndex = 0) {
+  const procedures = (snapshot.procedures || []).filter((item) => item.phaseType === phaseType);
+  const procedure = procedures[procedureIndex];
+  if (!procedure || !procedure.id) fail(`Write-back requires ${phaseType} procedure index ${procedureIndex}.`);
   return template.replaceAll('{procedureId}', procedure.id);
 }
 function riskScopeWritebackPath(template, snapshot) {
-  const detail = (snapshot.riskScopes || []).flatMap((scope) => (scope.details || []).map((item) => ({ scopeId: scope.id, detailId: item.id })))[0];
-  if (!detail || !detail.scopeId || !detail.detailId) fail('Write-back requires a unique risk-scope detail id.');
-  return template.replaceAll('{riskScopeId}', detail.scopeId).replaceAll('{riskScopeDetailId}', detail.detailId);
+  const candidates = (snapshot.riskScopes || []).filter((scope) => scope && scope.id && Array.isArray(scope.details) && scope.details.length);
+  if (candidates.length !== 1) fail('Write-back requires one exact risk-scope details object.');
+  const scope = candidates[0];
+  const detail = scope.details[0];
+  let path = template.replaceAll('{riskScopeId}', scope.id);
+  if (path.includes('{riskScopeDetailId}')) {
+    if (!detail || !detail.id) fail('Write-back requires a risk-scope detail id.');
+    path = path.replaceAll('{riskScopeDetailId}', detail.id);
+  }
+  return path;
 }
 function normalizeOmniaEditorValue(value) {
   const raw = text(value);
@@ -422,9 +454,9 @@ function normalizeOmniaEditorValue(value) {
     trackChangesEnableFlagInEditor: parsed.trackChangesEnableFlagInEditor, plainText: parsed.plainText });
 }
 function normalizeWritebackValue(value, valueKind) {
-  if (valueKind === 'number') {
+  if (valueKind === 'number' || valueKind === 'choice') {
     const number = Number(value);
-    if (!Number.isFinite(number)) fail('Write-back number value is invalid.');
+    if (!Number.isFinite(number)) fail(`Write-back ${valueKind} value is invalid.`);
     return number;
   }
   if (valueKind === 'boolean') {
@@ -437,13 +469,15 @@ function normalizeWritebackValue(value, valueKind) {
   return text(value);
 }
 function normalizeExpectedWritebackValue(value, valueKind) {
-  if (valueKind === 'number' || valueKind === 'boolean') return normalizeWritebackValue(value, valueKind);
+  if ((valueKind === 'number' || valueKind === 'boolean' || valueKind === 'choice')
+    && (value === null || value === undefined || value === '')) return null;
+  if (valueKind === 'number' || valueKind === 'boolean' || valueKind === 'choice') return normalizeWritebackValue(value, valueKind);
   // Frozen editor values may legitimately be empty, a historical malformed
   // plain string, or a valid rich-editor envelope. Compare the exact live raw
   // value here; only the new value submitted to PATCH must pass the envelope.
   return text(value);
 }
-function extractSnapshotField(snapshot, template, phaseType) {
+function extractSnapshotField(snapshot, template, phaseType, procedureIndex = 0) {
   // Map a writePath template back to the flattened phase2Snapshot field so the
   // write-back readback can compare the written value against the same semantic
   // field (phase2Snapshot uses `procedures`/`designEvaluation`/`riskScopes`,
@@ -453,7 +487,7 @@ function extractSnapshotField(snapshot, template, phaseType) {
     return snapshot.designEvaluation ? snapshot.designEvaluation[field] : undefined;
   }
   if (template.startsWith('/gitcNonDetailedTestingProcedures/')) {
-    const procedure = (snapshot.procedures || []).find((item) => item.phaseType === (phaseType || 'TestOfDesign'));
+    const procedure = (snapshot.procedures || []).filter((item) => item.phaseType === (phaseType || 'TestOfDesign'))[procedureIndex];
     return procedure ? procedure.documentProcedureResults : undefined;
   }
   if (template.startsWith('/controlRiskScopes/')) {
@@ -467,9 +501,10 @@ function extractSnapshotField(snapshot, template, phaseType) {
   const field = template.replace(/^\//u, '');
   return snapshot[field];
 }
-function valueSatisfied(snapshot, template, expected, valueKind, phaseType) {
-  const current = extractSnapshotField(snapshot, template, phaseType);
-  if (valueKind === 'number') return Number(current) === Number(expected);
+function valueSatisfied(snapshot, template, expected, valueKind, phaseType, procedureIndex = 0) {
+  const current = extractSnapshotField(snapshot, template, phaseType, procedureIndex);
+  if (expected === null || expected === undefined) return current === null || current === undefined || text(current) === '';
+  if (valueKind === 'number' || valueKind === 'choice') return Number(current) === Number(expected);
   if (valueKind === 'boolean') return current === expected;
   return text(current) === text(expected);
 }
@@ -700,18 +735,40 @@ function createOperationHandler() {
       if (!controlId || controlId !== expectedControlId || !changes.length || changes.length > 40) {
         fail('Write-back command identity or change list is invalid.');
       }
-      const detail = exactObject(await sdk.invokeStep('writeback-control-detail', { controlId }), 'Control detail');
-      const snapshot = phase2Snapshot(detail);
+      let detail = exactObject(await sdk.invokeStep('writeback-control-detail', { controlId }), 'Control detail');
+      let snapshot = phase2Snapshot(detail);
       if (snapshot.controlId !== controlId) fail('Write-back Control identity drifted.');
       const ledger = [];
+      const groups = new Map();
       for (const change of changes) {
         const template = text(change && change.writePath);
         const valueKind = text(change && change.valueKind) || 'text';
         if (!template) fail('Write-back change lacks a signed field path.');
+        const tab = Number(change.concurrencyTab);
+        const concurrencyMode = text(change.concurrencyMode) || 'live_token';
+        const purgeHiddenData = change.purgeHiddenData !== false;
+        const phaseType = text(change.phaseType || 'TestOfDesign');
+        const procedureIndex = Number.isInteger(change.procedureIndex) && change.procedureIndex >= 0
+          ? change.procedureIndex : 0;
+        if (!WRITEBACK_TABS.has(tab) || !['live_token', 'remove', 'current_or_remove'].includes(concurrencyMode)) {
+          fail('Write-back change has an unsupported recorded Tab or concurrency mode.');
+        }
+        const recorded = template === '/gitcNonDetailedTestingProcedures/{procedureId}/documentProcedureResults'
+          ? phaseType === 'TestOfDesign' && procedureIndex === 0
+            ? { valueKind: 'editor', tab: 204, concurrencyMode: 'current_or_remove', purgeHiddenData: false }
+            : phaseType === 'OperatingEffectiveness' && procedureIndex <= 3
+              ? { valueKind: 'editor', tab: 212, concurrencyMode: 'current_or_remove', purgeHiddenData: false }
+              : null
+          : RECORDED_WRITEBACK_FIELDS[template];
+        if (!recorded || recorded.valueKind !== valueKind || recorded.tab !== tab
+          || recorded.concurrencyMode !== concurrencyMode || recorded.purgeHiddenData !== purgeHiddenData
+          || text(recorded.wireShape) !== text(change.wireShape)) {
+          fail('Write-back change is outside the exact recorded Phase 2 field contract.');
+        }
         const value = normalizeWritebackValue(change.value, valueKind);
         let path;
         if (template.includes('{procedureId}')) {
-          path = procedureWritebackPath(template, snapshot, text(change.phaseType || 'TestOfDesign'));
+          path = procedureWritebackPath(template, snapshot, phaseType, procedureIndex);
         } else if (template.includes('{riskScopeId}')) {
           path = riskScopeWritebackPath(template, snapshot);
         } else {
@@ -719,27 +776,53 @@ function createOperationHandler() {
         }
         if (!Object.hasOwn(change, 'expectedValue')) fail('Write-back change lacks the frozen current value.');
         const expectedValue = normalizeExpectedWritebackValue(change.expectedValue, valueKind);
-        if (!valueSatisfied(snapshot, template, expectedValue, valueKind, text(change.phaseType || 'TestOfDesign'))) {
+        if (!valueSatisfied(snapshot, template, expectedValue, valueKind, phaseType, procedureIndex)) {
           fail('Write-back field changed after the frozen preflight.');
         }
-        const tab = Number(change.concurrencyTab) === CONTROL_OE_TAB_ID ? CONTROL_OE_TAB_ID : CONTROL_CORE_TAB_ID;
-        const token = currentTab(detail, tab);
-        if (!token || !token.updatedOn) fail('Write-back lacks the authoritative concurrency token for its stage.');
-        const operations = [
-          { op: 'replace', path, value },
-          { op: 'replace', path: '/concurrencyTabId', value: tab },
-          { op: 'replace', path: '/concurrencyTabUpdatedOn', value: token.updatedOn },
-          { op: 'replace', path: '/isPurgeHiddenData', value: true }
-        ];
-        await invokeMutationStep(sdk, 'WORKPAPER.WRITEBACK_PATCH_FAILED', 'writeback-patch', { controlId }, operations);
-        const readback = exactObject(await sdk.invokeStep('writeback-readback', { controlId }), 'Control detail');
-        const after = phase2Snapshot(readback);
-        ledger.push({ path, valueKind, confirmed: valueSatisfied(after, template, value, valueKind, text(change.phaseType || 'TestOfDesign')) });
+        const wireValue = change.wireShape === 'risk_scope_details_object'
+          ? { appropriatenessAndCorrelation: value } : value;
+        const prepared = { change, template, valueKind, value, path, wireValue, tab, concurrencyMode,
+          purgeHiddenData, phaseType, procedureIndex };
+        // Omnia saves each OE procedure separately. The first Tab 212 save
+        // removes the token; each authoritative GET then yields the token for
+        // the next save. Keep procedure rows in distinct mutation groups so
+        // the runtime preserves that recorded request/readback sequence.
+        const procedureGroup = template.includes('{procedureId}') ? `|procedure:${phaseType}:${procedureIndex}` : '';
+        const groupKey = `${tab}|${concurrencyMode}|${purgeHiddenData ? 'purge' : 'keep'}${procedureGroup}`;
+        if (!groups.has(groupKey)) groups.set(groupKey, []);
+        groups.get(groupKey).push(prepared);
       }
+      for (const group of groups.values()) {
+        const { tab, concurrencyMode, purgeHiddenData } = group[0];
+        const operations = group.map((item) => ({ op: 'replace', path: item.path, value: item.wireValue }));
+        operations.push({ op: 'replace', path: '/concurrencyTabId', value: tab });
+        if (concurrencyMode === 'live_token') {
+          const token = currentTab(detail, tab);
+          if (!token || !token.updatedOn) fail('Write-back lacks the authoritative concurrency token for its stage.');
+          operations.push({ op: 'replace', path: '/concurrencyTabUpdatedOn', value: token.updatedOn });
+        } else if (concurrencyMode === 'current_or_remove') {
+          const token = currentTab(detail, tab);
+          operations.push(token && token.updatedOn
+            ? { op: 'replace', path: '/concurrencyTabUpdatedOn', value: token.updatedOn }
+            : { op: 'replace', path: '/concurrencyTabUpdatedOn' });
+        } else {
+          operations.push({ op: 'replace', path: '/concurrencyTabUpdatedOn' });
+        }
+        if (purgeHiddenData) operations.push({ op: 'replace', path: '/isPurgeHiddenData', value: true });
+        await invokeMutationStep(sdk, 'WORKPAPER.WRITEBACK_PATCH_FAILED', 'writeback-patch', { controlId }, operations);
+        detail = exactObject(await sdk.invokeStep('writeback-readback', { controlId }), 'Control detail');
+        snapshot = phase2Snapshot(detail);
+        for (const item of group) {
+          ledger.push({ path: item.path, backendKey: text(item.change.backendKey), sourceHeader: text(item.change.sourceHeader),
+            valueKind: item.valueKind, confirmed: valueSatisfied(snapshot, item.template, item.value,
+              item.valueKind, item.phaseType, item.procedureIndex) });
+        }
+      }
+      if (ledger.some((item) => item.confirmed !== true)) fail('Write-back authoritative readback did not confirm every field.');
       return { controlId, accepted: true, ledger };
     }
     fail(`Unsupported signed Operation: ${operationId}`);
   } });
 }
 
-module.exports = Object.freeze({ createOperationHandler, CONTROL_CORE_TAB_ID, CONTROL_OE_TAB_ID });
+module.exports = Object.freeze({ createOperationHandler, CONTROL_CORE_TAB_ID, CONTROL_OE_TAB_ID, WRITEBACK_TAB_IDS });

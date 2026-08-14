@@ -979,7 +979,12 @@ function bindInteractions(): void {
     if (action?.input?.kind === 'open_file' && surface) {
       setBusy(true);
       try {
-        const artifact = await window.featureSurface.chooseInput({featureId: surface.featureId, featureVersion: surface.featureVersion, surfaceId: surface.surfaceId, actionId: action.actionId, accept: action.input.accept});
+        const artifact = await window.featureSurface.chooseInput({
+          featureId: surface.featureId, featureVersion: surface.featureVersion, surfaceId: surface.surfaceId,
+          actionId: action.actionId, accept: action.input.accept,
+          ...(action.input.multiple !== undefined ? {multiple: action.input.multiple} : {}),
+          ...(action.input.directory !== undefined ? {directory: action.input.directory} : {})
+        });
         if (!artifact) return;
         payload = {...payload, artifact};
       } catch (error) {
@@ -1024,7 +1029,7 @@ function bindInteractions(): void {
       let artifact;
       setBusy(true);
       try {
-        if (collected.length === 1 && !fileInput.directory) {
+        if (droppedInputIsStandaloneFile(collected)) {
           const first = collected[0]!;
           artifact = await window.featureSurface.importInputBytes({featureId: surface.featureId, featureVersion: surface.featureVersion, surfaceId: surface.surfaceId, actionId: action.actionId, accept: fileInput.accept, name: first.name, bytes: first.bytes});
         } else {
@@ -1039,6 +1044,10 @@ function bindInteractions(): void {
 }
 
 interface DroppedFile { name: string; relativePath: string; bytes: Uint8Array; }
+
+export function droppedInputIsStandaloneFile(files: Array<Pick<DroppedFile, 'relativePath'>>): boolean {
+  return files.length === 1 && !/[\\/]/u.test(files[0]!.relativePath);
+}
 
 function matchesAccept(name: string, accepts: string[]): boolean {
   const lower = name.toLocaleLowerCase('en-US');
@@ -1084,6 +1093,17 @@ async function collectDroppedFiles(dataTransfer: DataTransfer | null, accepts: s
     }
   };
   for (const { entry, relativePath } of entries) await walk(entry, relativePath);
+  // Some Chromium/Windows drag sources expose `files` but no usable item
+  // entry. Preserve the same allow-list and non-empty-file rules instead of
+  // reporting a false "unsupported file" error.
+  if (!result.length) {
+    for (const file of [...(dataTransfer.files || [])]) {
+      if (result.length >= maxFiles || (!allowMultiple && result.length >= 1)) break;
+      if (file.size > 0 && matchesAccept(file.name, accepts)) {
+        result.push({ name: file.name, relativePath: file.name, bytes: new Uint8Array(await file.arrayBuffer()) });
+      }
+    }
+  }
   return result;
 }
 

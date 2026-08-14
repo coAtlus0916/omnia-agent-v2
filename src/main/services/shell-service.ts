@@ -152,6 +152,13 @@ export class ShellService {
       this.scheduleTransportReconcile();
     }) || null;
     this.chat.setChangeListener(() => this.emitChanged());
+    // Read-only Shell chat tools observe the live connection and workspace
+    // authority projection lazily, so a tool answer always reflects the current
+    // state without the Shell exposing secrets or a Connector write path.
+    this.chat.setToolContextProvider(() => ({
+      connection: this.connection,
+      workspaceDirectory: this.workspaceDirectory
+    }));
   }
 
   private scheduleTransportReconcile(): void {
@@ -797,8 +804,10 @@ export class ShellService {
     const nextAttemptAt = new Date(Date.now() + current.intervalSeconds * 1_000).toISOString();
     // Preserve the last authoritative failure while the probe is in flight.
     // It is cleared only after a live status proves the Pack is connected.
+    // The `lastAttemptAt`/`nextAttemptAt` bookkeeping is not UI-meaningful on
+    // its own; the final emit below broadcasts the settled state, so a
+    // full-snapshot broadcast + surface re-bootstrap is not fired mid-probe.
     this.database.updateKeepalive({ lastAttemptAt: attemptedAt, nextAttemptAt });
-    this.emitChanged();
     try {
       const readStatus = async () => {
         const observed = this.passiveConnectionSnapshot(await this.adapter.load());

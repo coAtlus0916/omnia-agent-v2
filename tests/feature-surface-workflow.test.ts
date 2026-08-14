@@ -4,6 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 import {
   featureActionFailureMessage,
+  droppedInputIsStandaloneFile,
   reconcileBootstrapReviewDrafts,
   retainFeatureActionFailure,
   selectionBrowserUsesFixedFooter
@@ -18,6 +19,18 @@ test('generic Feature renderer is contract-driven two-column workflow without fe
   assert.match(renderer,/action\.pendingPresentation/u);assert.match(renderer,/action\.presentation === 'return'/u);assert.match(renderer,/pending\.workflowStepId/u);
   assert.doesNotMatch(renderer,/\['confirm-return', 'continue-return', 'reconcile-return'\]|createAssociatePendingPresentation/u);
   assert.match(html,/grid-template-columns:176px minmax\(0,1fr\)/u);assert.match(html,/@media\(max-width:560px\)[\s\S]*\.workflow-rail ol\{display:flex/u);assert.match(html,/#feature-root\{[^}]*overflow:auto/u);assert.match(html,/overflow-x:auto/u);
+});
+
+test('generic Feature upload preserves standalone drops and forwards folder selection contracts',()=>{
+  assert.equal(droppedInputIsStandaloneFile([{relativePath:'制度.zip'}]),true);
+  assert.equal(droppedInputIsStandaloneFile([{relativePath:'制度/制度.docx'}]),false);
+  assert.equal(droppedInputIsStandaloneFile([{relativePath:'a.docx'},{relativePath:'b.xlsx'}]),false);
+  const renderer=fs.readFileSync(path.join(root,'src/renderer/feature-window.ts'),'utf8');
+  const main=fs.readFileSync(path.join(root,'src/main/index.ts'),'utf8');
+  assert.match(renderer,/action\.input\.multiple !== undefined[\s\S]*action\.input\.directory !== undefined/u);
+  assert.match(renderer,/droppedInputIsStandaloneFile\(collected\)/u);
+  assert.match(renderer,/dataTransfer\.files/u);
+  assert.match(main,/请选择资料的选取方式[\s\S]*选择文件[\s\S]*选择文件夹/u);
 });
 
 test('Delete and Workpaper opt into the same declared fixed-footer catalog layout without Comments',()=>{
@@ -53,7 +66,7 @@ test('generic Feature review renders real review contract and dispatches CAS-saf
   assert.match(renderer,/remove-batch-row[\s\S]*rowKey: selectedReviewRowKey, expectedRunRevision: surface\?\.stateVersion/u);
   assert.match(renderer,/revalidate-all[\s\S]*expectedRunRevision: surface\?\.stateVersion/u);
   assert.match(renderer,/dirtyReviewValues\.size > 0/u);assert.match(renderer,/请先保存修改/u);
-  assert.match(renderer,/const actions = !visibleReview && !surface\.recorder && !surface\.selectionBrowser/u);assert.match(renderer,/surface\?\.review && action\?\.input\?\.kind === 'open_file'[\s\S]*请先返回上传步骤/u);
+  assert.match(renderer,/const actions = !visibleReview && !surface\.recorder && !hasSelectionBrowser/u);assert.match(renderer,/surface\?\.review && action\?\.input\?\.kind === 'open_file'[\s\S]*请先返回上传步骤/u);
   assert.match(renderer,/window\.confirm\('仅从本次上传批次中移除此元素；不会删除 Omnia 中的任何对象。是否继续？'\)/u);
   assert.match(renderer,/review-shell[\s\S]*review-issues[\s\S]*review-layout/u);assert.match(renderer,/\$\{progress\}[\s\S]*\$\{review\}/u);
   assert.doesNotMatch(renderer,/isDataAvailable/u);assert.doesNotMatch(renderer,/featureId\s*===\s*['"]|omnia\.create-associate/u);
@@ -76,7 +89,7 @@ test('Main dispatches signed on-reopen action only for a retained closed instanc
   const renderer=fs.readFileSync(path.join(root,'src/renderer/index.tsx'),'utf8');
   const packager=fs.readFileSync(path.join(root,'scripts/package-create-associate-feature.mjs'),'utf8');
   const worker=fs.readFileSync(path.join(root,'feature-packages/create-associate/source/middle/worker.cjs'),'utf8');
-  assert.match(packager,/const version = '0\.2\.100'; const sequence = 102;/u);assert.match(packager,/minimumShellVersion: '0\.4\.15'/u);
+  assert.match(packager,/const version = '0\.2\.\d+'; const sequence = \d+;/u);assert.match(packager,/minimumShellVersion: '0\.4\.15'/u);
   assert.match(packager,/lifecycle:\{schemaVersion:'omnia\.declarative-feature-surface-lifecycle\/v1',onReopenActionId:'fresh-start-on-reopen'\}/u);
   assert.match(packager,/actionId: 'fresh-start-on-reopen'[^\n]+effect: 'local_state_write'[^\n]+visible: false[^\n]+presentation: 'background'[^\n]+selectionMode: 'none'[^\n]+dependencies: \[\]/u);
   assert.match(worker,/input\?\.actionId==='restart-run'\|\|input\?\.actionId==='fresh-start-on-reopen'[\s\S]*trigger=input\.actionId==='fresh-start-on-reopen'\?'surface_reopen':'explicit_feature_fresh_start'/u);

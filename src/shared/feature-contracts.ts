@@ -383,6 +383,8 @@ export interface DeclarativeFeatureSurface {
     sizeBytes: number;
     available: boolean;
     reason: string;
+    /** The upload action this source artifact belongs to (drop-zone filename display). */
+    actionId?: string;
   }>;
   editors?: Array<{
     issueId: string;

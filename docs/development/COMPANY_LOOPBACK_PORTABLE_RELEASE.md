@@ -88,7 +88,18 @@ remoteServerRequired = false
 - 正常关闭主窗口后，同一版本 EXE 的整个进程树归零；
 - ZIP 不包含 `data`、`connector-next-data-v3`、测试日志、API key 或 `.env`。
 
-## 6. 上一份验收产物
+## 6. 当前验收产物
+
+```text
+文件：Omnia-Agent-v5-0.4.18-Company-Loopback-Portable-20260814-r2.zip
+来源：main@7d3e803
+字节：160774159
+SHA-256：97C298DD3806BF7D347EF8A05911DD71E12637C631690BCF18B39C7C79255FF9
+```
+
+r2 已确认 ZIP CRC、250 个文件逐项与发布目录一致、四个签名 Feature 精确身份、关键文件 manifest 摘要以及 `connector-next-loopback / embedded-exe-host / remoteServerRequired=false`。便携根没有外置 Connector 目录，ZIP 不含运行数据库、日志、`.env`、`connector-next-data-v3` 或非空 `data`。本机构建未启动 Omnia；公司电脑上的真实 EXE/Pack canary 仍需单独执行。
+
+## 7. 上一份验收产物
 
 ```text
 文件：Omnia-Agent-v5-0.4.18-Company-Loopback-Portable-20260814-r1.zip
@@ -99,7 +110,7 @@ SHA-256：ECEC56AF636C17DA5FD750B6023583BA1F0D4CECD435727D85D4B1521FD64EE1
 
 该 r1 产物已确认 ZIP CRC、248 个文件逐项一致、四个签名 Feature 精确身份、关键文件 manifest 摘要以及 `connector-next-loopback / embedded-exe-host / remoteServerRequired=false`。它仍冻结 Workpaper 0.1.71，属于历史产物；当前 0.1.81 清单必须生成新的 r2。真实 EXE、四个 Feature 激活和公司电脑 Pack canary 仍需在公司电脑执行，不能由本机构建替代。
 
-## 7. 公司电脑使用
+## 8. 公司电脑使用
 
 1. 完整解压 ZIP 到当前用户可写的本地目录，不能直接在 ZIP 内运行；
 2. 直接双击 `<版本>\Omnia Agent v5.exe`；也可双击根目录 `Start Omnia Agent v5.cmd`，它只负责启动同一个 EXE；
@@ -107,7 +118,7 @@ SHA-256：ECEC56AF636C17DA5FD750B6023583BA1F0D4CECD435727D85D4B1521FD64EE1
 4. 可变数据保存在便携根的 `data` 与 `connector-next-data-v3`；更新版本时应保留这两个目录；
 5. 本模式不连接远程 Connector 更新服务器。更新时发布新的不可变 ZIP，由新包内主 EXE继续自动连接其内置 Connector Next。
 
-## 8. 下次更新
+## 9. 下次更新
 
 1. 新候选冻结并验签后，更新 `COMPANY_LOOPBACK_CURRENT_FEATURE_RELEASE_INVENTORY`；
 2. 同步版本、sequence、文件 SHA 和 package digest；

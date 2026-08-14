@@ -54,7 +54,7 @@ v5 产品根
 | `omnia.delete-elements` | `0.3.32` | 1786632995691 |
 | `omnia.workpaper-preparation` | `0.1.81` | 82 |
 
-2026-08-14 从 `c1b57b3` 干净快照生成的本地 `0.4.18` company-loopback 产物，其 `release-manifest.json` 冻结了同一集合。它是本地不可变产物事实，但当前没有对应 Git Tag，不能描述为已经公开发布，也不能替代当前源码 canary。
+2026-08-14 从 `main@7d3e803` 生成的本地 `0.4.18` company-loopback r2 产物，其 `release-manifest.json` 冻结了上述 0.1.81 集合。历史 `c1b57b3` r1 仍冻结 Workpaper 0.1.71。两者都是本地不可变产物事实；r2 当前没有对应 Git Tag，不能描述为已经公开发布，也不能替代当前精确 digest 的真实 Pack canary。
 
 `company-loopback-current` inventory、便携构建期望、复制列表、manifest 和使用说明已收敛到上述四个精确身份。构建仍会逐项验证官方签名、文件 SHA 和 package digest，任何身份漂移均失败关闭。
 

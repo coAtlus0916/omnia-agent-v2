@@ -908,6 +908,21 @@ function createFeatureWorker(ports) {
     if (actionId) entry.actionId = actionId;
     if (existing) Object.assign(existing, entry); else plan.workpaper.sources.push(entry);
   }
+  // Feature AI review is authorized against a Core-owned Feature Run, not the
+  // private plan id used by this Worker's SQLite store. Source intake Runs are
+  // valid Core identities even after their bytes have been parsed and the Run
+  // has been closed. Prefer the policy upload because it is the evidence being
+  // reviewed, then fall back to another current source or an existing Core
+  // mutation Run for historical recovery plans.
+  function featureAiReviewRunId(plan) {
+    const sources = Array.isArray(plan && plan.workpaper && plan.workpaper.sources)
+      ? plan.workpaper.sources : [];
+    const policy = [...sources].reverse().find((item) => item && item.actionId === 'upload-policy' && text(item.runId));
+    if (policy) return text(policy.runId);
+    const source = [...sources].reverse().find((item) => item && text(item.runId));
+    if (source) return text(source.runId);
+    return text(plan && plan.runId);
+  }
   async function uploadPolicy(plan, context, artifactDescriptor) {
     if (!plan || !plan.workpaper || plan.workpaper.state !== 'generated') {
       fail('WORKPAPER.POLICY_INVALID', '请先生成控制底稿模板，再上传制度资料。');
@@ -1056,6 +1071,9 @@ function createFeatureWorker(ports) {
       fail('WORKPAPER.RESOLVE_INVALID', '请先上传制度资料，再生成底稿内容。');
     }
     const runId = plan.runId || plan.planId;
+    const aiRunId = featureAiReviewRunId(plan);
+    const aiFallbacks = [];
+    let aiReviewCount = 0;
     if (!Array.isArray(plan.workpaper.policy.documents) || plan.workpaper.policy.documents.length === 0) {
       // No indexable policy text (e.g. all scanned PDFs were skipped). The
       // pre-filled template is still the authoritative write-back payload:
@@ -1147,51 +1165,68 @@ function createFeatureWorker(ports) {
         if (!snippets.length) located = missingEvidence(allPlaceholders, '未检索到相关制度片段。');
       }
       if (allPlaceholders.length && snippets.length) {
+        const instructions = [
+          '你是 IT 审计专家。只能根据给出的制度片段为已列出的占位符给出 resolution。',
+          '不得重写原文；不得编造人名、日期、系统、流程或审计结论。',
+          '每个 placeholderId 恰好返回一次。只有 state=evidence_supported 时 value 才能非空，且必须引用至少一个给出的 snippetId。',
+          '资料不足用 missing_evidence；无法唯一判断用 ambiguous；这两种 value 必须是空字符串。',
+          'evidenceRefs 只能使用给出的 snippetId。严格返回 {"resolutions":[...]}，每项含 placeholderId/state/value/evidenceRefs/reason。'
+        ].join(' ');
+        let fallback = null;
         if (!ai || typeof ai.review !== 'function') {
-          fail('WORKPAPER.POLICY_AI_UNAVAILABLE', '制度资料已命中，但 Feature AI 端口不可用；已停止回传。');
+          fallback = { code: 'WORKPAPER.POLICY_AI_UNAVAILABLE', message: 'Feature AI 端口不可用。' };
+        } else if (!aiRunId) {
+          fallback = { code: 'WORKPAPER.POLICY_AI_RUN_IDENTITY_MISSING',
+            message: '当前计划没有可用于 Feature AI review 的 Core Run identity。' };
+        } else {
+          try {
+            aiReviewCount += 1;
+            const result = await ai.review({ schemaVersion: 'omnia.feature-ai-review-request/v1',
+              capabilityId: 'phase2-policy-resolution/v1', runId: aiRunId, instructions,
+              input: { control: { controlNumber }, fields: fields.map((field) => ({ sourceHeader: field.sourceHeader,
+                sourceText: field.sourceText })), placeholders: allPlaceholders, policySnippets: snippets } });
+            const output = result && result.output;
+            const res = Array.isArray(output && output.resolutions) ? output.resolutions : [];
+            const byId = new Map();
+            for (const item of res) {
+              const id = String(item && item.placeholderId || '');
+              if (!id || byId.has(id)) fail('WORKPAPER.POLICY_AI_INVALID', '制度解析 AI 返回了缺失或重复的 placeholderId。');
+              byId.set(id, item);
+            }
+            const allowedRefs = new Set(snippets.map((item) => text(item && item.snippetId)).filter(Boolean));
+            located = allPlaceholders.map((p) => {
+              const r = byId.get(p.placeholderId);
+              if (!r || !['evidence_supported', 'missing_evidence', 'ambiguous'].includes(String(r.state))) {
+                fail('WORKPAPER.POLICY_AI_INVALID', '制度解析 AI 没有完整返回每一个占位符。');
+              }
+              const state = String(r.state);
+              const value = String(r.value || '');
+              const evidenceRefs = Array.isArray(r.evidenceRefs) ? r.evidenceRefs.map(String) : [];
+              if (state === 'evidence_supported' && (!text(value) || !evidenceRefs.length
+                || evidenceRefs.some((ref) => !allowedRefs.has(ref)))) {
+                fail('WORKPAPER.POLICY_AI_INVALID', '制度解析 AI 的证据支持结果缺少正文或合法 evidenceRefs。');
+              }
+              if (state !== 'evidence_supported' && (text(value) || evidenceRefs.length)) {
+                fail('WORKPAPER.POLICY_AI_INVALID', '无证据或歧义结果不得携带正文或 evidenceRefs。');
+              }
+              return locatedPlaceholder(p, state, value, evidenceRefs, String(r.reason || ''));
+            });
+          } catch (error) {
+            fallback = errorSummary(error);
+          }
         }
-      const instructions = [
-        '你是 IT 审计专家。只能根据给出的制度片段为已列出的占位符给出 resolution。',
-        '不得重写原文；不得编造人名、日期、系统、流程或审计结论。',
-        '每个 placeholderId 恰好返回一次。只有 state=evidence_supported 时 value 才能非空，且必须引用至少一个给出的 snippetId。',
-        '资料不足用 missing_evidence；无法唯一判断用 ambiguous；这两种 value 必须是空字符串。',
-        'evidenceRefs 只能使用给出的 snippetId。严格返回 {"resolutions":[...]}，每项含 placeholderId/state/value/evidenceRefs/reason。'
-      ].join(' ');
-      let result;
-      try {
-        result = await ai.review({ schemaVersion: 'omnia.feature-ai-review-request/v1',
-          capabilityId: 'phase2-policy-resolution/v1', runId, instructions,
-          input: { control: { controlNumber }, fields: fields.map((field) => ({ sourceHeader: field.sourceHeader,
-            sourceText: field.sourceText })), placeholders: allPlaceholders, policySnippets: snippets } });
-      } catch (error) {
-        fail('WORKPAPER.POLICY_AI_UNAVAILABLE', `制度解析 AI 调用失败，已停止回传：${text(error && error.message)}`);
-      }
-      const output = result && result.output;
-      const res = Array.isArray(output && output.resolutions) ? output.resolutions : [];
-      const byId = new Map();
-      for (const item of res) {
-        const id = String(item && item.placeholderId || '');
-        if (!id || byId.has(id)) fail('WORKPAPER.POLICY_AI_INVALID', '制度解析 AI 返回了缺失或重复的 placeholderId。');
-        byId.set(id, item);
-      }
-      const allowedRefs = new Set(snippets.map((item) => text(item && item.snippetId)).filter(Boolean));
-      located = allPlaceholders.map((p) => {
-        const r = byId.get(p.placeholderId);
-        if (!r || !['evidence_supported', 'missing_evidence', 'ambiguous'].includes(String(r.state))) {
-          fail('WORKPAPER.POLICY_AI_INVALID', '制度解析 AI 没有完整返回每一个占位符。');
+        if (fallback) {
+          const failure = { controlNumber, code: text(fallback.code) || 'WORKPAPER.POLICY_AI_UNAVAILABLE',
+            message: text(fallback.message).slice(0, 800), placeholderCount: allPlaceholders.length };
+          aiFallbacks.push(failure);
+          located = missingEvidence(allPlaceholders,
+            `制度解析 AI 未完成，已保留母版占位符继续回传（${failure.code}）：${failure.message}`);
+          for (const field of fields) {
+            if (Array.isArray(field.placeholders) && field.placeholders.length) {
+              field.placeholderWriteback = { mode: 'ai_failure_fallback', code: failure.code };
+            }
+          }
         }
-        const state = String(r.state);
-        const value = String(r.value || '');
-        const evidenceRefs = Array.isArray(r.evidenceRefs) ? r.evidenceRefs.map(String) : [];
-        if (state === 'evidence_supported' && (!text(value) || !evidenceRefs.length
-          || evidenceRefs.some((ref) => !allowedRefs.has(ref)))) {
-          fail('WORKPAPER.POLICY_AI_INVALID', '制度解析 AI 的证据支持结果缺少正文或合法 evidenceRefs。');
-        }
-        if (state !== 'evidence_supported' && (text(value) || evidenceRefs.length)) {
-          fail('WORKPAPER.POLICY_AI_INVALID', '无证据或歧义结果不得携带正文或 evidenceRefs。');
-        }
-        return locatedPlaceholder(p, state, value, evidenceRefs, String(r.reason || ''));
-      });
       }
       const byPlaceholderId = new Map(located.map((item) => [item.placeholderId, item]));
       for (const field of fields) {
@@ -1213,12 +1248,17 @@ function createFeatureWorker(ports) {
       total: placeholderResolutions.length,
       evidenceSupported: placeholderResolutions.filter((item) => item.state === 'evidence_supported').length,
       missingEvidence: placeholderResolutions.filter((item) => item.state === 'missing_evidence').length,
-      ambiguous: placeholderResolutions.filter((item) => item.state === 'ambiguous').length
+      ambiguous: placeholderResolutions.filter((item) => item.state === 'ambiguous').length,
+      aiFallback: resolutions.flatMap((item) => item.fields || []).filter((field) =>
+        field && field.placeholderWriteback && field.placeholderWriteback.mode === 'ai_failure_fallback').length
     };
     coverage.manualCompletion = coverage.missingEvidence + coverage.ambiguous;
     plan.workpaper.resolution = {
       state: 'resolved', resolutions, coverage,
       manualCompletionRequired: coverage.manualCompletion > 0,
+      ai: { state: aiFallbacks.length ? 'fallback' : aiReviewCount ? 'completed' : 'not_required',
+        reviewRunId: aiRunId, fallbackMode: aiFallbacks.length ? 'placeholder_writeback' : '',
+        reviewCount: aiReviewCount, failures: aiFallbacks },
       resolvedAt: new Date().toISOString()
     };
     plan.surfaceStateVersion += 1; await save(plan);
@@ -1323,6 +1363,9 @@ function createFeatureWorker(ports) {
     // old metadata lookup only for those plans; every new upload is handle-only.
     if (!text(sourceMetadata && sourceMetadata.runId)) {
       sourceMetadata = await store.call('readArtifactBytes', { artifactId: policySource.artifactId });
+    }
+    if (!text(policySource.runId) && text(sourceMetadata && sourceMetadata.runId)) {
+      policySource.runId = text(sourceMetadata.runId);
     }
     let handle = null;
     let extraction;
@@ -1638,22 +1681,32 @@ function createFeatureWorker(ports) {
       }
       const presentFields = resolvedFields.filter((field) => field.sourceState === 'present' && text(field.resolvedText));
       const requiresManualCompletion = (field) => Array.isArray(field && field.placeholders)
-        && field.placeholders.some((placeholder) => text(placeholder && placeholder.state) !== 'resolved');
+        && field.placeholders.some((placeholder) => text(placeholder && placeholder.state) !== 'evidence_supported');
+      const allowsPlaceholderFallback = (field) => requiresManualCompletion(field)
+        && field && field.placeholderWriteback && field.placeholderWriteback.mode === 'ai_failure_fallback'
+        && ['editor', 'text'].includes(text(field.valueKind) || 'text');
       for (const field of resolvedFields) {
         const manualCompletion = text(field.resolvedText) && requiresManualCompletion(field);
+        const fallbackAllowed = manualCompletion && allowsPlaceholderFallback(field);
+        const fallbackRequested = manualCompletion && field && field.placeholderWriteback
+          && field.placeholderWriteback.mode === 'ai_failure_fallback';
         fieldCoverage.push({ controlId: row.controlId, controlNumber: row.controlNumber,
           sourceHeader: text(field.sourceHeader), backendKey: text(field.backendKey), frontendKey: text(field.frontendKey),
           sourceState: field.sourceState || (text(field.resolvedText) ? 'present' : 'empty'),
           supportState: field.writePath ? 'recorded' : 'recording_required',
+          manualCompletionRequired: Boolean(manualCompletion),
+          writebackMode: fallbackAllowed ? 'ai_failure_placeholder_fallback'
+            : fallbackRequested ? 'ai_failure_placeholder_type_incompatible' : 'normal',
           state: !text(field.resolvedText) ? 'source_empty'
             : !field.writePath ? 'unsupported'
-              : manualCompletion ? 'manual_completion' : 'pending' });
+              : manualCompletion && !fallbackAllowed ? 'manual_completion' : 'pending' });
       }
-      // A retained missing/ambiguous placeholder is intentionally visible in
-      // the generated workbook for later human completion. It is not evidence
-      // and must never be sent to Omnia merely because the surrounding cell is
-      // non-empty (numeric fields would also fail conversion here).
-      const supportedFields = presentFields.filter((field) => field.writePath && !requiresManualCompletion(field));
+      // Normal missing/ambiguous evidence remains manual-only. If Feature AI
+      // itself failed, the explicit fallback may transmit the unchanged master
+      // placeholder through recorded text/editor APIs. Typed fields cannot
+      // safely carry a placeholder string and remain manual-only.
+      const supportedFields = presentFields.filter((field) => field.writePath
+        && (!requiresManualCompletion(field) || allowsPlaceholderFallback(field)));
       if (!supportedFields.length) {
         const manualFields = presentFields.filter((field) => field.writePath && requiresManualCompletion(field));
         outcomes.push({ controlId: row.controlId, state: 'skipped',
@@ -1764,7 +1817,11 @@ function createFeatureWorker(ports) {
     plan.workpaper.writeback = { ...progress, outcomes };
     plan.workpaper.state = uncertainCount ? 'writeback_uncertain' : 'writeback_complete';
     const unsupportedFieldCount = fieldCoverage.filter((item) => item.state === 'unsupported').length;
-    const manualCompletionFieldCount = fieldCoverage.filter((item) => item.state === 'manual_completion').length;
+    const manualCompletionFieldCount = fieldCoverage.filter((item) => item.manualCompletionRequired).length;
+    const placeholderFallbackFieldCount = fieldCoverage.filter((item) => item.writebackMode === 'ai_failure_placeholder_fallback'
+      && ['confirmed', 'unchanged'].includes(item.state)).length;
+    const placeholderFallbackIncompatibleFieldCount = fieldCoverage.filter((item) =>
+      item.writebackMode === 'ai_failure_placeholder_type_incompatible').length;
     plan.workpaper.writeback.coverage = fieldCoverage;
     plan.workpaper.writeback.coverageState = uncertainCount ? 'uncertain'
       : unsupportedFieldCount || manualCompletionFieldCount ? 'partial' : 'complete';
@@ -1775,6 +1832,8 @@ function createFeatureWorker(ports) {
         unchanged: fieldCoverage.filter((item) => item.state === 'unchanged').length,
         unsupported: unsupportedFieldCount,
         manualCompletion: manualCompletionFieldCount,
+        placeholderFallback: placeholderFallbackFieldCount,
+        placeholderFallbackTypeIncompatible: placeholderFallbackIncompatibleFieldCount,
         sourceEmpty: fieldCoverage.filter((item) => item.state === 'source_empty').length,
         uncertain: fieldCoverage.filter((item) => item.state === 'uncertain').length } };
     plan.surfaceStateVersion += 1; await save(plan);

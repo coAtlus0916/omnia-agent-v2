@@ -13,8 +13,8 @@ import { resolveProductPaths } from '../src/main/paths.js';
 
 const repository = path.resolve(import.meta.dirname, '..');
 const source = path.join(repository, 'feature-packages', 'workpaper-preparation', 'source');
-const candidate = path.join(repository, 'feature-packages', 'workpaper-preparation', 'candidates', 'workpaper-preparation-0.1.78.ofp');
-const operationCandidate = path.join(repository, 'feature-packages', 'workpaper-preparation', 'candidates', 'workpaper-preparation-operation-0.1.78.ofop');
+const candidate = path.join(repository, 'feature-packages', 'workpaper-preparation', 'candidates', 'workpaper-preparation-0.1.79.ofp');
+const operationCandidate = path.join(repository, 'feature-packages', 'workpaper-preparation', 'candidates', 'workpaper-preparation-operation-0.1.79.ofop');
 const releasePython = [
   path.join(repository, 'releases', 'runtime', 'python', 'cpython-3.13.14-embed-amd64', 'python.exe'),
   path.join(repository, 'data', 'remote-shell-product', 'runtime', 'python', 'cpython-3.13.14-embed-amd64', 'python.exe')
@@ -31,44 +31,6 @@ const phase2Template = JSON.parse(fs.readFileSync(path.join(source, 'managed', '
 function editorPayload(value: string): string {
   return JSON.stringify({ editorData: `<p>${value}</p>`, suggestionsData: [],
     trackChangesEnableFlagInEditor: false, plainText: '' });
-}
-
-// A minimal but valid ZIP (one stored empty entry "empty.txt" plus central
-// directory) so the policy-upload path can extract to an empty document list.
-function emptyZipBase64(): string {
-  const name = Buffer.from('empty.txt', 'utf8');
-  const local = Buffer.alloc(30 + name.length);
-  local.writeUInt32LE(0x04034b50, 0); // local file header signature
-  local.writeUInt16LE(20, 4); // version needed
-  local.writeUInt16LE(0, 6); // flags
-  local.writeUInt16LE(0, 8); // method (stored)
-  local.writeUInt32LE(0, 10); // crc32 (empty)
-  local.writeUInt32LE(0, 14); // compressed size
-  local.writeUInt32LE(0, 18); // uncompressed size
-  local.writeUInt16LE(name.length, 26); // name length
-  local.writeUInt16LE(0, 28); // extra length
-  name.copy(local, 30);
-  const central = Buffer.alloc(46 + name.length);
-  central.writeUInt32LE(0x02014b50, 0); // central directory header signature
-  central.writeUInt16LE(20, 4);
-  central.writeUInt16LE(20, 6);
-  central.writeUInt16LE(0, 8);
-  central.writeUInt16LE(0, 10); // method
-  central.writeUInt32LE(0, 16); // crc32
-  central.writeUInt32LE(0, 20); // compressed size
-  central.writeUInt32LE(0, 24); // uncompressed size
-  central.writeUInt16LE(name.length, 28); // name length
-  central.writeUInt16LE(0, 30); // extra length
-  central.writeUInt16LE(0, 32); // comment length
-  central.writeUInt32LE(0, 38); // local header offset
-  name.copy(central, 46);
-  const eocd = Buffer.alloc(22);
-  eocd.writeUInt32LE(0x06054b50, 0); // EOCD signature
-  eocd.writeUInt16LE(1, 8); // entry count
-  eocd.writeUInt16LE(1, 10); // entry count
-  eocd.writeUInt32LE(central.length, 12); // central dir size
-  eocd.writeUInt32LE(local.length, 16); // central dir offset
-  return Buffer.concat([local, central, eocd]).toString('base64');
 }
 
 function crc32(content: Buffer): number {
@@ -158,11 +120,11 @@ test('workpaper candidate is immutable Feature-only and installs in isolation', 
   try {
     const envelope = verifyOfficialPackage(JSON.parse(fs.readFileSync(candidate, 'utf8')), 'omnia-feature');
     assert.equal(envelope.packageId, 'omnia.workpaper-preparation');
-    assert.equal(envelope.version, '0.1.78');
-    assert.equal(envelope.sequence, 79);
+    assert.equal(envelope.version, '0.1.79');
+    assert.equal(envelope.sequence, 80);
     const operation = verifyOfficialPackage(JSON.parse(fs.readFileSync(operationCandidate, 'utf8')), 'omnia-connector-operation');
     assert.equal(operation.packageId, 'omnia.workpaper-preparation.operation');
-    assert.equal(operation.version, '0.1.78');
+    assert.equal(operation.version, '0.1.79');
     unpack(envelope, unpacked);
     const selfTest = spawnSync(process.execPath, [path.join(unpacked, 'tests', 'self-test.cjs')], {
       cwd: unpacked, encoding: 'utf8', windowsHide: true
@@ -181,7 +143,7 @@ test('workpaper candidate is immutable Feature-only and installs in isolation', 
       const manager = new FeaturePackageManager(database.db, paths);
       const installed = manager.install(candidate);
       assert.equal(installed.featureId, 'omnia.workpaper-preparation');
-      assert.equal(installed.featureVersion, '0.1.78');
+      assert.equal(installed.featureVersion, '0.1.79');
       assert.equal(installed.packageDigest, packageDigest(envelope));
     } finally { database.close(); }
   } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
@@ -405,7 +367,11 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
     control: '77777777-7777-7777-7777-777777777777', controlWork: '88888888-8888-8888-8888-888888888888',
     oe: '99999999-9999-9999-9999-999999999999'
   };
-  const opened = new Set<string>(); const directRequests: any[] = []; const writebackRequests: any[] = []; const order: string[] = []; const plans = new Map<string, any>();
+  const policyArchive = storedZip([{ name: '账户管理制度.docx', content: docxWithText('账户权限必须每季度复核，新增账号应经过审批。') }]);
+  const policyPath = path.join(temporary, 'policy.zip'); fs.writeFileSync(policyPath, policyArchive);
+  const policySha = crypto.createHash('sha256').update(policyArchive).digest('hex');
+  const opened = new Set<string>(); const directRequests: any[] = []; const writebackRequests: any[] = [];
+  const aiRequests: any[] = []; const order: string[] = []; const plans = new Map<string, any>();
   let liveProcedureText = '【政策名称】原始文本'; let runSequence = 0; let commandSequence = 0; let receiptSequence = 0;
   const binding = { connectorId: 'connector-1', sessionGeneration: 2, engagementId: ids.engagement,
     authorityInstanceId: 'authority-1', tenantOrOrgId: '', packId: 'pack-1' };
@@ -454,13 +420,19 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
     if (method === 'prepareDeletionCommand') return { commandId: `command-${++commandSequence}`, idempotencyKey: crypto.randomUUID() };
     if (method === 'recordReturnEvidence') return { evidenceId: crypto.randomUUID() };
     if (method === 'commitStandaloneArtifact') return { artifactId: 'artifact-1', sha256: crypto.createHash('sha256').update(Buffer.from(input.contentBase64, 'base64')).digest('hex') };
-    if (method === 'readArtifactBytes') return { contentBase64: emptyZipBase64(), sha256: 'zip-sha', runId: 'run-1', originalName: 'policy.zip', sizeBytes: 0 };
-    if (method === 'openPythonArtifactHandle') return { handleId: 'handle-1', runId: input.runId, path: path.resolve(repository, '.codex-tmp', 'template-test2.xlsx'), originalName: 'policy.zip', sha256: 'a'.repeat(64), sizeBytes: 0 };
+    if (method === 'readArtifactBytes') return { contentBase64: policyArchive.toString('base64'), sha256: policySha,
+      runId: 'run-1', originalName: 'policy.zip', sizeBytes: policyArchive.length };
+    if (method === 'openPythonArtifactHandle') return { handleId: 'handle-1', runId: input.runId, path: policyPath,
+      originalName: 'policy.zip', sha256: policySha, sizeBytes: policyArchive.length };
     if (method === 'releasePythonArtifactHandles') return true;
     throw new Error(`unexpected store method ${method}`);
   } };
   const workerModule = require(path.join(source, 'middle', 'worker.cjs'));
-  const worker = workerModule.createFeatureWorker({ connector, store, events: { emit() {} }, ai: { review: async () => ({ output: { resolutions: [] } }) } });
+  const worker = workerModule.createFeatureWorker({ connector, store, events: { emit() {} }, ai: { review: async (request: any) => {
+    aiRequests.push(request);
+    throw Object.assign(new Error('Feature AI review Run identity differs from the active Worker context.'),
+      { code: 'FEATURE.AI_REVIEW_RUN_MISMATCH' });
+  } } });
   const actionById = (patch: any): Map<string, any> => new Map(patch.actions.map((action: any) => [action.actionId, action]));
   try {
     const health = await worker.health(); assert.equal(health.ready, true);
@@ -501,6 +473,9 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
     '制度解析后的完整母版只保留在后台，不新增用户核对环节');
     assert.equal(order.filter((item) => item === 'store:commitStandaloneArtifact').length, 2,
       '初始可编辑模板和制度解析结果必须分别提交 Artifact');
+    assert.ok(aiRequests.length > 0, '可索引制度和母版占位符必须触发真实 Feature AI review');
+    assert.equal(aiRequests.every((request) => request.runId === 'run-1'), true,
+      'Feature AI review 必须使用 Core 管理的上传 Run，不能使用私有 planId');
     // Seed a resolved row whose final text differs from the live snapshot so
     // the write-back loop must emit a real PATCH (not a no-op skip). The
     // controlNumber code APP.01 matches the single read-back Control.
@@ -517,10 +492,18 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
       '缺少制度依据的内容必须保留原占位符，不能静默清空');
     assert.equal(current.workpaper.resolution.coverage.manualCompletion > 0, true);
     assert.equal(current.workpaper.resolution.manualCompletionRequired, true);
+    assert.equal(current.workpaper.resolution.ai.state, 'fallback');
+    assert.equal(current.workpaper.resolution.ai.reviewRunId, 'run-1');
+    assert.equal(current.workpaper.resolution.ai.failures[0].code, 'FEATURE.AI_REVIEW_RUN_MISMATCH');
+    const todContract = phase2Fields.fields.find((field: any) =>
+      field.backendKey === 'gitcNonDetailedTestingProcedures[phaseType=TestOfDesign].documentProcedureResults');
     current.workpaper.resolution = { state: 'resolved', resolutions: [{
-      controlNumber: 'APP.01 - 系统A', resolvedText: '写回后的完整 TestOfDesign 文本', placeholders: [
-        { placeholderId: 'ph-1', originalPlaceholder: '【政策名称】', index: 0, state: 'evidence_supported', value: '写回后的完整', evidenceRefs: [], reason: '' }
-      ]
+      controlNumber: 'APP.01 - 系统A', fields: [{ ...todContract, sourceState: 'present', supported: true,
+        resolvedText: '通过【政策名称】执行测试', placeholderWriteback: {
+          mode: 'ai_failure_fallback', code: 'FEATURE.AI_REVIEW_RUN_MISMATCH' }, placeholders: [
+          { placeholderId: 'ph-1', originalPlaceholder: '【政策名称】', index: 2, state: 'missing_evidence',
+            value: '', evidenceRefs: [], reason: 'AI 调用失败，保留占位符。' }
+        ] }], placeholders: [], resolvedText: '通过【政策名称】执行测试'
     }], resolvedAt: new Date().toISOString() };
     await store.call('savePlan', current);
     // Step 4: confirm-writeback opens the hidden Tab then writes back.
@@ -533,7 +516,8 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
     const patchChanges = writebackRequests[0]?.command?.payload?.changes;
     assert.ok(Array.isArray(patchChanges) && patchChanges.length === 1, 'writeback PATCH must carry one change');
     const editor = JSON.parse(patchChanges[0].value);
-    assert.equal(editor.editorData, '<p>写回后的完整 TestOfDesign 文本</p>', 'writeback PATCH must carry renderable editor HTML');
+    assert.equal(editor.editorData, '<p>通过【政策名称】执行测试</p>',
+      'AI failure fallback must write the unchanged placeholder through the recorded editor API');
     assert.deepEqual(editor.suggestionsData, []);
     assert.equal(editor.trackChangesEnableFlagInEditor, false);
     assert.equal(editor.plainText, '');
@@ -546,6 +530,10 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
     assert.ok(order.lastIndexOf('store:prepareDeletionCommand', writebackInvocation) < writebackInvocation);
     assert.ok(order.lastIndexOf('store:recordReturnEvidence', writebackInvocation) < writebackInvocation);
     assert.ok(order.indexOf('store:projectVerifiedReturn', writebackInvocation) > writebackInvocation);
+    current = null; for (const value of plans.values()) { if (value.schemaVersion === 'omnia.workpaper-plan/v1') current = value; }
+    assert.equal(current.workpaper.writebackCounts.fields.placeholderFallback, 1);
+    assert.equal(current.workpaper.writebackCounts.fields.manualCompletion, 1,
+      '占位符已传入 Pack 后仍须如实保留待人工补录统计');
   } finally {
     await worker.shutdown();
     for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }

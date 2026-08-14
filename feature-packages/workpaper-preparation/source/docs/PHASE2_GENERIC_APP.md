@@ -20,7 +20,7 @@
 
 制度资料入口的点击选择会先让用户选择“文件”或“文件夹”：文件模式支持一个或多个 `.zip/.docx/.xlsx/.xlsm/.pdf`，文件夹模式递归收集这些类型。拖入单个 ZIP 时保持原 ZIP，不再额外套一层归档；拖入文件夹或多个文件时才归一化为 ZIP。Worker 不以内联 Base64 搬运制度文件，而是使用 Core 校验后的只读文件句柄交给 CPython。
 
-2026-08-14 的六类 APP 编辑录制证明字段写回分别使用 Tab 204（TestOfDesign ProcedureResults）、205（Design Factors/RiskScopeDetails）、210（风险关联描述）、211（OE 时间与范围）、212（OE ProcedureResults）和 214（OE 结论）。同一表单保存的字段合并 PATCH；OE ProcedureResults 按程序逐项 PATCH。Tab 204/211/212 每次 PATCH 前使用最新 GET：存在当前页签 token 就携带，否则移除，PATCH 后立即重新 GET。每个字段必须权威读回相等。制度 AI 能力不可用或返回不完整时停止回传；正常返回的 `missing_evidence / ambiguous` 保留原占位符并进入人工补录统计，不再删除占位符。
+2026-08-14 的六类 APP 编辑录制证明字段写回分别使用 Tab 204（TestOfDesign ProcedureResults）、205（Design Factors/RiskScopeDetails）、210（风险关联描述）、211（OE 时间与范围）、212（OE ProcedureResults）和 214（OE 结论）。同一表单保存的字段合并 PATCH；OE ProcedureResults 按程序逐项 PATCH。Tab 204/211/212 每次 PATCH 前使用最新 GET：存在当前页签 token 就携带，否则移除，PATCH 后立即重新 GET。每个字段必须权威读回相等。Feature AI review 必须绑定 Core 管理的源文件上传 Run，不能使用 Feature 私有计划 ID。AI 能力不可用、调用/身份校验失败或返回不完整时不再停止整个流程，而是记录 `placeholder_writeback` 降级：保留原 `【占位符】`，通过已录制的 editor/text API 回传到 Pack；不接受占位字符串的 number/boolean/enum/choice 字段仍留作人工补录。AI 正常返回的 `missing_evidence / ambiguous` 继续保留原占位符并只进入人工补录统计，不冒充 AI 故障降级。
 
 2026-08-12 的 Remote 录制 `bb8e103f-097a-4199-8c6b-a16cec6001d1` 完整冻结 85 个事件、0 omission。录制证明同一 Control 的真实顺序是：
 

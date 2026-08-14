@@ -6,7 +6,10 @@ const { createPythonSidecarBridge } = require('./workpaper-preparation-python-br
 const FEATURE_ID = 'omnia.workpaper-preparation';
 const FEATURE_VERSION = '__FEATURE_VERSION__';
 const CURRENT_POINTER = 'workpaper:current';
-const MAX_BATCH_GRAS = 50;
+// The current release intentionally freezes one GRA / one APP per plan.
+// Multi-GRA selection must remain unavailable until resolution reconciliation
+// is keyed by the full GRA + APP identity instead of only the APP.xx code.
+const MAX_BATCH_GRAS = 1;
 const MAX_BATCH_CONTROLS = 2000;
 const OPEN_CONCURRENCY = 6;
 const OPERATIONS = Object.freeze({
@@ -583,8 +586,8 @@ function createFeatureWorker(ports) {
     }
   }
   async function selectElements(context, targetIds, expectedStateVersion) {
-    if (!Array.isArray(targetIds) || targetIds.length < 1 || targetIds.length > MAX_BATCH_GRAS) {
-      fail('WORKPAPER.SELECT_GRA_BATCH', `Please select between 1 and ${MAX_BATCH_GRAS} Generic Application GRAs.`);
+    if (!Array.isArray(targetIds) || targetIds.length !== MAX_BATCH_GRAS) {
+      fail('WORKPAPER.SELECT_GRA_BATCH', '当前版本每次只能选择 1 个 Generic Application GRA。');
     }
     const requestedIds = targetIds.map(text);
     if (requestedIds.some((value) => !value) || new Set(requestedIds).size !== requestedIds.length) {

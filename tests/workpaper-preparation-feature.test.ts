@@ -13,8 +13,8 @@ import { resolveProductPaths } from '../src/main/paths.js';
 
 const repository = path.resolve(import.meta.dirname, '..');
 const source = path.join(repository, 'feature-packages', 'workpaper-preparation', 'source');
-const candidate = path.join(repository, 'feature-packages', 'workpaper-preparation', 'candidates', 'workpaper-preparation-0.1.79.ofp');
-const operationCandidate = path.join(repository, 'feature-packages', 'workpaper-preparation', 'candidates', 'workpaper-preparation-operation-0.1.79.ofop');
+const candidate = path.join(repository, 'feature-packages', 'workpaper-preparation', 'candidates', 'workpaper-preparation-0.1.80.ofp');
+const operationCandidate = path.join(repository, 'feature-packages', 'workpaper-preparation', 'candidates', 'workpaper-preparation-operation-0.1.80.ofop');
 const releasePython = [
   path.join(repository, 'releases', 'runtime', 'python', 'cpython-3.13.14-embed-amd64', 'python.exe'),
   path.join(repository, 'data', 'remote-shell-product', 'runtime', 'python', 'cpython-3.13.14-embed-amd64', 'python.exe')
@@ -120,11 +120,11 @@ test('workpaper candidate is immutable Feature-only and installs in isolation', 
   try {
     const envelope = verifyOfficialPackage(JSON.parse(fs.readFileSync(candidate, 'utf8')), 'omnia-feature');
     assert.equal(envelope.packageId, 'omnia.workpaper-preparation');
-    assert.equal(envelope.version, '0.1.79');
-    assert.equal(envelope.sequence, 80);
+    assert.equal(envelope.version, '0.1.80');
+    assert.equal(envelope.sequence, 81);
     const operation = verifyOfficialPackage(JSON.parse(fs.readFileSync(operationCandidate, 'utf8')), 'omnia-connector-operation');
     assert.equal(operation.packageId, 'omnia.workpaper-preparation.operation');
-    assert.equal(operation.version, '0.1.79');
+    assert.equal(operation.version, '0.1.80');
     unpack(envelope, unpacked);
     const selfTest = spawnSync(process.execPath, [path.join(unpacked, 'tests', 'self-test.cjs')], {
       cwd: unpacked, encoding: 'utf8', windowsHide: true
@@ -135,7 +135,7 @@ test('workpaper candidate is immutable Feature-only and installs in isolation', 
     assert.match(fs.readFileSync(path.join(unpacked, 'python', 'workpaper-preparation-engine.py'), 'utf8'), /build_hidden_tab_plan/u);
     const surface = JSON.parse(fs.readFileSync(path.join(unpacked, 'frontend', 'surface.json'), 'utf8'));
     assert.equal(surface.selectionBrowser.primaryActionId, 'select-elements');
-    assert.equal(surface.actions.find((item: any) => item.actionId === 'select-elements').selectionMode, 'multiple');
+    assert.equal(surface.actions.find((item: any) => item.actionId === 'select-elements').selectionMode, 'single');
     assert.equal(surface.actions.some((item: any) => item.actionId.toLowerCase().includes('comment')), false);
     assert.doesNotMatch(fs.readFileSync(path.join(unpacked, 'middle', 'worker.cjs'), 'utf8'), /messageCard/);
     const paths = resolveProductPaths(productRoot); const database = new CoreDatabase(paths.database, cipher);
@@ -143,7 +143,7 @@ test('workpaper candidate is immutable Feature-only and installs in isolation', 
       const manager = new FeaturePackageManager(database.db, paths);
       const installed = manager.install(candidate);
       assert.equal(installed.featureId, 'omnia.workpaper-preparation');
-      assert.equal(installed.featureVersion, '0.1.79');
+      assert.equal(installed.featureVersion, '0.1.80');
       assert.equal(installed.packageDigest, packageDigest(envelope));
     } finally { database.close(); }
   } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
@@ -152,7 +152,7 @@ test('workpaper candidate is immutable Feature-only and installs in isolation', 
 test('next Workpaper package declares the generic fixed-footer split catalog layout', () => {
   const packager = fs.readFileSync(path.join(repository, 'scripts', 'package-workpaper-preparation-feature.mjs'), 'utf8');
   assert.match(packager, /schemaVersion: 'omnia\.selection-browser-layout\/v1',\s*mode: 'fixed_footer_split'/u);
-  assert.match(packager, /actionId: 'select-elements'[\s\S]*?selectionMode: 'multiple'/u);
+  assert.match(packager, /actionId: 'select-elements'[\s\S]*?selectionMode: 'single'/u);
   assert.match(packager, /stepId: 'select'[\s\S]*?stepId: 'upload'/u);
   assert.match(packager, /actionId: 'select-elements'/u);
   assert.match(packager, /actionId: 'restart-run'[\s\S]*?presentation: 'restart'/u);
@@ -369,10 +369,11 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
   };
   const policyArchive = storedZip([{ name: '账户管理制度.docx', content: docxWithText('账户权限必须每季度复核，新增账号应经过审批。') }]);
   const policyPath = path.join(temporary, 'policy.zip'); fs.writeFileSync(policyPath, policyArchive);
+  const filledWorkbookPath = path.join(temporary, 'filled.xlsx');
   const policySha = crypto.createHash('sha256').update(policyArchive).digest('hex');
   const opened = new Set<string>(); const directRequests: any[] = []; const writebackRequests: any[] = [];
   const aiRequests: any[] = []; const order: string[] = []; const plans = new Map<string, any>();
-  let liveProcedureText = '【政策名称】原始文本'; let runSequence = 0; let commandSequence = 0; let receiptSequence = 0;
+  let runSequence = 0; let commandSequence = 0; let receiptSequence = 0; let artifactSequence = 0;
   const binding = { connectorId: 'connector-1', sessionGeneration: 2, engagementId: ids.engagement,
     authorityInstanceId: 'authority-1', tenantOrOrgId: '', packId: 'pack-1' };
   const safety = { enabled: true, validForCurrentConnection: true, globalEnabled: false, globalSectionIds: [], globalWorkspaceIds: [],
@@ -391,8 +392,20 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
     coreConcurrency: { entityTabTypeId: 201, updatedOn: '2026-08-09T00:00:00.000Z' },
     oeConcurrency: openedValue ? { entityTabTypeId: 209, updatedOn: '2026-08-09T00:00:01.000Z' } : null,
     operatingEffectivenessId: ids.oe, absent: false, deleted: false });
-  const snapshot = () => ({ controlId: ids.control, workItemId: ids.controlWork, controlNumber: 'APP.01 - GRA APP',
-    procedures: [{ id: 'proc-1', phaseType: 'TestOfDesign', documentProcedureResults: liveProcedureText }] });
+  const liveSnapshot: any = {
+    controlId: ids.control, workItemId: ids.controlWork, controlNumber: 'APP.01 - GRA APP',
+    riskAssociationDescription: '',
+    designEvaluation: { id: 'design-1', competenceAndAuthorityDocumentation: '', frequencyAndConsistency: '',
+      levelOfAggregation: '', criteriaForInvestigation: '' },
+    riskScopes: [{ id: 'risk-scope-1', riskId: 'risk-1', details: [{ id: 'risk-scope-detail-1', appropriatenessAndCorrelation: '' }] }],
+    procedures: [
+      { id: 'proc-design-1', phaseType: 'TestOfDesign', documentProcedureResults: '【政策名称】原始文本' },
+      ...[0, 1, 2, 3].map((index) => ({ id: `proc-oe-${index}`, phaseType: 'OperatingEffectiveness', documentProcedureResults: '' }))
+    ],
+    operatingEffectiveness: { id: ids.oe, procedureTiming: '', procedureTimingRationale: '',
+      frequencyOfPerformance: null, frequencyOfPerformanceExplanation: '', operatingEffectively: null }
+  };
+  const snapshot = () => JSON.parse(JSON.stringify(liveSnapshot));
   const connector = { async invoke(input: any) {
     order.push(`operation:${input.operationId}`);
     if (input.operationId.endsWith('directory.read.v1')) return { ...binding, workspaces: [{ id: ids.workspace, name: 'Workspace 1' }], gras: [selected] };
@@ -403,8 +416,25 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
     if (input.operationId.endsWith('phase2.snapshot.read.v1')) return { ...snapshot(),
       ...(input.request.receiptContext ? { __operationReceiptId: `writeback-receipt-${++receiptSequence}` } : {}) };
     if (input.operationId.endsWith('phase2.writeback.v1')) {
-      writebackRequests.push(input.request); liveProcedureText = input.request.command.payload.changes[0].value;
-      return { controlId: ids.control, accepted: true, ledger: [{ path: 'x', valueKind: 'editor', confirmed: true }] };
+      writebackRequests.push(input.request);
+      for (const change of input.request.command.payload.changes) {
+        if (change.backendKey === 'riskAssociationDescription') liveSnapshot.riskAssociationDescription = change.value;
+        else if (String(change.backendKey).startsWith('controlDesignEvaluation.')) {
+          liveSnapshot.designEvaluation[String(change.backendKey).slice('controlDesignEvaluation.'.length)] = change.value;
+        } else if (String(change.backendKey).startsWith('controlRiskScopes')) {
+          liveSnapshot.riskScopes[0].details[0].appropriatenessAndCorrelation = change.value;
+        } else if (String(change.backendKey).startsWith('gitcNonDetailedTestingProcedures')) {
+          const procedures = liveSnapshot.procedures.filter((item: any) => item.phaseType === (change.phaseType || 'TestOfDesign'));
+          procedures[change.procedureIndex || 0].documentProcedureResults = change.value;
+        } else if (String(change.backendKey).startsWith('controlOperatingEffectiveness.')) {
+          liveSnapshot.operatingEffectiveness[String(change.backendKey).slice('controlOperatingEffectiveness.'.length)] = change.value;
+        }
+      }
+      return { controlId: ids.control, accepted: true,
+        ledger: input.request.command.payload.changes.map((change: any) => ({
+          path: change.writePath, backendKey: change.backendKey, sourceHeader: change.sourceHeader,
+          valueKind: change.valueKind, confirmed: true
+        })) };
     }
     throw new Error(`unexpected operation ${input.operationId}`);
   } };
@@ -419,12 +449,26 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
     if (method === 'validateReturnAuthority' || method === 'freezeReturnEvidenceSpec' || method === 'projectVerifiedReturn' || method === 'finishReturn') return true;
     if (method === 'prepareDeletionCommand') return { commandId: `command-${++commandSequence}`, idempotencyKey: crypto.randomUUID() };
     if (method === 'recordReturnEvidence') return { evidenceId: crypto.randomUUID() };
-    if (method === 'commitStandaloneArtifact') return { artifactId: 'artifact-1', sha256: crypto.createHash('sha256').update(Buffer.from(input.contentBase64, 'base64')).digest('hex') };
+    if (method === 'commitStandaloneArtifact') {
+      const bytes = Buffer.from(input.contentBase64, 'base64');
+      artifactSequence += 1;
+      if (artifactSequence === 1) fs.writeFileSync(filledWorkbookPath, bytes);
+      return { artifactId: `artifact-${artifactSequence}`,
+        sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+    }
     if (method === 'readArtifactBytes') return { contentBase64: policyArchive.toString('base64'), sha256: policySha,
       runId: 'run-1', originalName: 'policy.zip', sizeBytes: policyArchive.length };
-    if (method === 'openPythonArtifactHandle') return { handleId: 'handle-1', runId: input.runId, path: policyPath,
-      originalName: 'policy.zip', sha256: policySha, sizeBytes: policyArchive.length };
+    if (method === 'openPythonArtifactHandle') {
+      if (input.artifactId === 'filled-upload') {
+        const bytes = fs.readFileSync(filledWorkbookPath);
+        return { handleId: 'filled-handle', runId: input.runId, path: filledWorkbookPath,
+          originalName: 'filled.xlsx', sha256: crypto.createHash('sha256').update(bytes).digest('hex'), sizeBytes: bytes.length };
+      }
+      return { handleId: 'policy-handle', runId: input.runId, path: policyPath,
+        originalName: 'policy.zip', sha256: policySha, sizeBytes: policyArchive.length };
+    }
     if (method === 'releasePythonArtifactHandles') return true;
+    if (method === 'loadLatestRun') return null;
     throw new Error(`unexpected store method ${method}`);
   } };
   const workerModule = require(path.join(source, 'middle', 'worker.cjs'));
@@ -445,17 +489,26 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
     assert.equal(selectedPlan.surfacePatch.workflow.currentStepId, 'upload');
     assert.equal(actionById(selectedPlan.surfacePatch).get('upload-filled-workbook').enabled, true);
     assert.equal(opened.size, 0, 'selecting must not open any hidden Tab');
-    // Simulate policy resolution to `resolved`: the plan moves straight to
-    // resolved with no placeholders to write. Resolution now needs BOTH the
-    // filled workbook and the policy archive; the upload that lands second
-    // triggers it. Seed the replacement so the policy upload converges.
+    // Upload the exact generated workbook through the same handle-only parser
+    // used in production. The empty parameter cells are a supported real input;
+    // the policy archive lands second and then the explicit next action resolves
+    // placeholders and creates the background filled workbook.
+    const filled = await worker.handleAction({ actionId: 'upload-filled-workbook',
+      expectedStateVersion: selectedPlan.surfacePatch.stateVersion,
+      payload: { artifact: { schemaVersion: 'omnia.feature-artifact/v1', featureId: 'omnia.workpaper-preparation', kind: 'source',
+        artifactId: 'filled-upload', runId: 'filled-run' } },
+      context: { connectorBinding: binding, safetyLock: safety } });
+    assert.equal(filled.surfacePatch.workflow.currentStepId, 'upload');
+    assert.equal(actionById(filled.surfacePatch).get('next-to-writeback').enabled, false);
     let current: any = null; for (const value of plans.values()) { if (value.schemaVersion === 'omnia.workpaper-plan/v1') current = value; }
     assert.ok(current, 'a workpaper plan must be saved');
-    current.workpaper.policy = { documents: [], state: 'extracted' };
-    current.workpaper.replacement = { replacements: [], state: 'filled' };
-    await store.call('savePlan', current);
-    const uploaded = await worker.handleAction({ actionId: 'upload-policy', expectedStateVersion: 3,
-      payload: { artifact: { schemaVersion: 'omnia.feature-artifact/v1', featureId: 'omnia.workpaper-preparation', kind: 'source', artifactId: 'artifact-1', runId: 'run-1' } },
+    assert.equal(current.workpaper.replacement.state, 'filled');
+    assert.equal(current.workpaper.replacement.templateMode, 'editable_controls');
+    assert.equal(current.workpaper.replacement.replacements.length, 0, 'the generated empty parameter table must be accepted');
+
+    const uploaded = await worker.handleAction({ actionId: 'upload-policy', expectedStateVersion: filled.surfacePatch.stateVersion,
+      payload: { artifact: { schemaVersion: 'omnia.feature-artifact/v1', featureId: 'omnia.workpaper-preparation', kind: 'source',
+        artifactId: 'policy-upload', runId: 'policy-run' } },
       context: { connectorBinding: binding, safetyLock: safety } });
     assert.equal(order.includes('store:readArtifactBytes'), false,
       '新制度上传必须直接使用 Core 文件句柄，不能把 ZIP 以内联 Base64 搬入 Worker');
@@ -464,7 +517,7 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
     assert.equal(actionById(uploaded.surfacePatch).get('confirm-writeback').enabled, false);
     // Step 3: 下一步 advances to the writeback step; confirm-writeback is
     // enabled only after that transition.
-    const advanced = await worker.handleAction({ actionId: 'next-to-writeback', expectedStateVersion: 4,
+    const advanced = await worker.handleAction({ actionId: 'next-to-writeback', expectedStateVersion: uploaded.surfacePatch.stateVersion,
       context: { connectorBinding: binding, safetyLock: safety } });
     assert.equal(advanced.surfacePatch.workflow.currentStepId, 'writeback');
     assert.equal(actionById(advanced.surfacePatch).get('confirm-writeback').enabled, true);
@@ -474,11 +527,10 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
     assert.equal(order.filter((item) => item === 'store:commitStandaloneArtifact').length, 2,
       '初始可编辑模板和制度解析结果必须分别提交 Artifact');
     assert.ok(aiRequests.length > 0, '可索引制度和母版占位符必须触发真实 Feature AI review');
-    assert.equal(aiRequests.every((request) => request.runId === 'run-1'), true,
+    assert.equal(aiRequests.every((request) => request.runId === 'policy-run'), true,
       'Feature AI review 必须使用 Core 管理的上传 Run，不能使用私有 planId');
-    // Seed a resolved row whose final text differs from the live snapshot so
-    // the write-back loop must emit a real PATCH (not a no-op skip). The
-    // controlNumber code APP.01 matches the single read-back Control.
+    // Use the resolution produced by the real empty workbook + policy flow.
+    // No intermediate plan state is injected or rewritten by the test.
     current = null; for (const value of plans.values()) { if (value.schemaVersion === 'omnia.workpaper-plan/v1') current = value; }
     assert.ok(current, 'an awaiting-writeback plan must be saved');
     assert.match(current.workpaper.completedArtifact.artifactId, /^artifact-/u,
@@ -493,35 +545,32 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
     assert.equal(current.workpaper.resolution.coverage.manualCompletion > 0, true);
     assert.equal(current.workpaper.resolution.manualCompletionRequired, true);
     assert.equal(current.workpaper.resolution.ai.state, 'fallback');
-    assert.equal(current.workpaper.resolution.ai.reviewRunId, 'run-1');
+    assert.equal(current.workpaper.resolution.ai.reviewRunId, 'policy-run');
     assert.equal(current.workpaper.resolution.ai.failures[0].code, 'FEATURE.AI_REVIEW_RUN_MISMATCH');
-    const todContract = phase2Fields.fields.find((field: any) =>
-      field.backendKey === 'gitcNonDetailedTestingProcedures[phaseType=TestOfDesign].documentProcedureResults');
-    current.workpaper.resolution = { state: 'resolved', resolutions: [{
-      controlNumber: 'APP.01 - 系统A', fields: [{ ...todContract, sourceState: 'present', supported: true,
-        resolvedText: '通过【政策名称】执行测试', placeholderWriteback: {
-          mode: 'ai_failure_fallback', code: 'FEATURE.AI_REVIEW_RUN_MISMATCH' }, placeholders: [
-          { placeholderId: 'ph-1', originalPlaceholder: '【政策名称】', index: 2, state: 'missing_evidence',
-            value: '', evidenceRefs: [], reason: 'AI 调用失败，保留占位符。' }
-        ] }], placeholders: [], resolvedText: '通过【政策名称】执行测试'
-    }], resolvedAt: new Date().toISOString() };
-    await store.call('savePlan', current);
     // Step 4: confirm-writeback opens the hidden Tab then writes back.
-    const written = await worker.handleAction({ actionId: 'confirm-writeback', expectedStateVersion: 5,
+    const written = await worker.handleAction({ actionId: 'confirm-writeback', expectedStateVersion: advanced.surfacePatch.stateVersion,
       context: { connectorBinding: binding, safetyLock: safety } });
     assert.equal(written.surfacePatch.workflow.currentStepId, 'writeback');
     assert.equal(opened.size, 1, 'confirm-writeback must open the hidden Tab');
     assert.equal(directRequests.length, 1);
     assert.equal(writebackRequests.length, 1, 'writeback must emit exactly one PATCH');
     const patchChanges = writebackRequests[0]?.command?.payload?.changes;
-    assert.ok(Array.isArray(patchChanges) && patchChanges.length === 1, 'writeback PATCH must carry one change');
-    const editor = JSON.parse(patchChanges[0].value);
-    assert.equal(editor.editorData, '<p>通过【政策名称】执行测试</p>',
-      'AI failure fallback must write the unchanged placeholder through the recorded editor API');
+    assert.ok(Array.isArray(patchChanges) && patchChanges.length > 5,
+      'the real single-GRA master must write several recorded Phase 2 fields');
+    const designProcedure = patchChanges.find((change: any) => change.phaseType === 'TestOfDesign'
+      && change.backendKey === 'gitcNonDetailedTestingProcedures[phaseType=TestOfDesign].documentProcedureResults');
+    assert.ok(designProcedure, 'the generated master must write TestOfDesign through Tab 204');
+    const editor = JSON.parse(designProcedure.value);
+    assert.match(editor.editorData, /【[^【】]+】/u,
+      'AI failure fallback must retain and write original placeholders through the recorded editor API');
     assert.deepEqual(editor.suggestionsData, []);
     assert.equal(editor.trackChangesEnableFlagInEditor, false);
     assert.equal(editor.plainText, '');
-    assert.equal(patchChanges[0].expectedValue, '【政策名称】原始文本', 'writeback must freeze the previous body value');
+    assert.equal(designProcedure.expectedValue, '【政策名称】原始文本', 'writeback must freeze the previous body value');
+    assert.ok(patchChanges.some((change: any) => String(change.backendKey).startsWith('controlDesignEvaluation.')),
+      'the real flow must carry recorded Design Evaluation fields');
+    assert.ok(patchChanges.some((change: any) => change.backendKey === 'controlOperatingEffectiveness.procedureTiming'),
+      'the real flow must carry the recorded Tab 211 timing field');
     assert.match(writebackRequests[0]?.command?.commandId || '', /^command-\d+$/u, 'writeback must carry a durable Core command');
     assert.match(writebackRequests[0]?.command?.idempotencyKey || '', /^[0-9a-f-]{36}$/u, 'writeback must carry a stable delivery identity');
     assert.match(writebackRequests[0]?.planDigest || '', /^[0-9a-f]{64}$/u, 'writeback must be bound to the confirmed plan');
@@ -531,8 +580,8 @@ test('select-elements then confirm-writeback opens the hidden Tab and writes bac
     assert.ok(order.lastIndexOf('store:recordReturnEvidence', writebackInvocation) < writebackInvocation);
     assert.ok(order.indexOf('store:projectVerifiedReturn', writebackInvocation) > writebackInvocation);
     current = null; for (const value of plans.values()) { if (value.schemaVersion === 'omnia.workpaper-plan/v1') current = value; }
-    assert.equal(current.workpaper.writebackCounts.fields.placeholderFallback, 1);
-    assert.equal(current.workpaper.writebackCounts.fields.manualCompletion, 1,
+    assert.ok(current.workpaper.writebackCounts.fields.placeholderFallback > 0);
+    assert.ok(current.workpaper.writebackCounts.fields.manualCompletion > 0,
       '占位符已传入 Pack 后仍须如实保留待人工补录统计');
   } finally {
     await worker.shutdown();
@@ -745,6 +794,11 @@ test('three-step workflow rail drives select, upload, and writeback navigation',
     assert.equal(stepById(boot.surfacePatch).get('writeback').state, 'pending');
     assert.equal(actionById(boot.surfacePatch).get('select-elements').enabled, true);
     assert.equal(actionById(boot.surfacePatch).get('restart-run').enabled, false);
+    await assert.rejects(worker.handleAction({ actionId: 'select-elements', expectedStateVersion: 2,
+      payload: { targetIds: [ids.gra, 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'] },
+      context: { connectorBinding: binding, safetyLock: safety } }),
+    /当前版本每次只能选择 1 个 Generic Application GRA/u,
+    'the Worker must enforce the single-GRA boundary even if a caller bypasses the Surface');
     const selectedPlan = await worker.handleAction({ actionId: 'select-elements', expectedStateVersion: 2,
       payload: { targetIds: [ids.gra] }, context: { connectorBinding: binding, safetyLock: safety } });
     assert.equal(selectedPlan.surfacePatch.workflow.currentStepId, 'upload');

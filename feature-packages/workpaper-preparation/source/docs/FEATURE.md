@@ -2,7 +2,7 @@
 
 当前版本实现 Phase2 的录制证据范围闭环：激活隐藏 Tab 后生成可编辑的预置控制母版，上传用户填写的母版与制度资料，合并生成完整母版；确认后只写回已有录制证明的 Control/ProcedureResults/DesignEvaluation/OperatingEffectiveness 字段，并逐字段 readback。母版非空但尚无保存录制的字段会进入 `recording_required` 覆盖清单，不冒充已完成。
 
-1. 从当前 Connector authority、显式安全锁 Workspace 与 Standardized Accounts List 读取权威 Generic Application GRA，允许选择一个或多个 GRA 形成同一冻结批次。
+1. 从当前 Connector authority、显式安全锁 Workspace 与 Standardized Accounts List 读取权威 Generic Application GRA。当前版本每次只允许选择一个 GRA，冻结为一个 APP 的独立计划；多 GRA 必须等完整 GRA/APP 身份参与正文 resolution 与回传匹配后再开放。
 2. 读取该 GRA 的真实 Control 目录，逐项核验 Control、Work Item、APP、GRA、Workspace 和并发令牌。
 3. 用户确认后，按照真实录制的两阶段流程执行：先开启运行有效性测试，再明确选择“不利用前期审计证据”。
 4. 最终只在同一 Control 同时满足以下条件时判定成功：`planningOperatingEffectivenessTesting=true`、`planningCommonControlTesting=false`、`usePreviousAuditEvidence=false`、存在 OE 实体。Tab 209 时间戳是诊断证据，不是完成条件。
